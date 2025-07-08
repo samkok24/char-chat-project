@@ -1,0 +1,33 @@
+from pydantic_settings import BaseSettings
+from typing import Optional, List
+import os
+
+class Settings(BaseSettings):
+    # Database
+    database_url: str = "sqlite:///./test.db"
+    
+    # JWT
+    secret_key: str = "your-secret-key-here"
+    algorithm: str = "HS256"
+    access_token_expire_minutes: int = 10080
+    
+    # AI API Keys
+    openai_api_key: Optional[str] = "your-openai-api-key-here"
+    anthropic_api_key: Optional[str] = "your-anthropic-api-key-here"
+    google_api_key: Optional[str] = "your-google-api-key-here"
+    
+    # Server
+    backend_url: str = "http://localhost:8000"
+    frontend_url: str = "http://localhost:5173"
+    
+    # Redis
+    redis_url: str = "redis://localhost:6379"
+    
+    # CORS
+    cors_origins: List[str] = ["http://localhost:5173", "http://localhost:3000"]
+    
+    class Config:
+        env_file = ".env"
+        case_sensitive = False
+
+settings = Settings() 

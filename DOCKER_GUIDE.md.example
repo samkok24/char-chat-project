@@ -1,0 +1,32 @@
+# Docker Deployment Guide
+
+## Prerequisites
+- Docker and Docker Compose installed
+- Domain name configured
+- SSL certificate
+
+## Environment Variables
+
+Create `.env` files with the following variables:
+
+### Backend (.env.production)
+```
+DATABASE_URL=postgresql://user:password@db:5432/dbname
+SECRET_KEY=your-secret-key-here
+OPENAI_API_KEY=your-openai-api-key-here
+ANTHROPIC_API_KEY=your-anthropic-api-key-here
+GOOGLE_API_KEY=your-google-api-key-here
+```
+
+### Frontend
+```
+VITE_API_URL=https://api.yourdomain.com
+VITE_WS_URL=wss://api.yourdomain.com
+```
+
+## Deployment Steps
+
+1. Clone the repository
+2. Copy example environment files and update with your values
+3. Run `docker-compose up -d`
+4. Access your application at https://yourdomain.com 

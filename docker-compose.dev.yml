@@ -1,0 +1,82 @@
+version: '3.8'
+
+services:
+  # FastAPI 백엔드 (SQLite 사용)
+  backend:
+    env_file:
+      - ./.env
+    build:
+      context: ./backend-api
+      dockerfile: Dockerfile
+    image: char-chat-backend-dev
+    container_name: char_chat_backend
+    environment:
+      # 모든 키는 .env 파일에서 불러옵니다
+      - GEMINI_API_KEY
+      - CLAUDE_API_KEY
+      - OPENAI_API_KEY
+      - DATABASE_URL
+      - JWT_SECRET_KEY
+      - ENVIRONMENT
+      - DEBUG
+    ports:
+      - "8000:8000"
+    volumes:
+      # 데이터베이스 파일 유지를 위해 폴더를 마운트
+      - ./backend-api/data:/app/data
+    networks:
+      - char_chat_network
+
+  # Socket.IO 채팅 서버
+  chat-server:
+    build:
+      context: ./chat-server
+      dockerfile: Dockerfile
+    image: char-chat-server-dev
+    container_name: char_chat_server
+    environment:
+      NODE_ENV: development
+      PORT: 3001
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: your-super-secret-key-change-this-in-production
+      JWT_SECRET_KEY: your-super-secret-key-change-this-in-production
+    ports:
+      - "3001:3001"
+    depends_on:
+      - redis
+    networks:
+      - char_chat_network
+
+  # Redis (채팅 서버용)
+  redis:
+    image: redis:7-alpine
+    container_name: char_chat_redis
+    ports:
+      - "6379:6379"
+    networks:
+      - char_chat_network
+
+  # React 프론트엔드
+  frontend:
+    env_file:
+      - ./.env
+    build:
+      context: ./frontend/char-chat-frontend
+      dockerfile: Dockerfile
+    image: char-chat-frontend-dev
+    container_name: char_chat_frontend
+    environment:
+      - VITE_API_URL
+      - VITE_SOCKET_URL
+    ports:
+      - "5173:5173"  # Vite 기본 포트
+    depends_on:
+      - backend
+      - chat-server
+    networks:
+      - char_chat_network
+    command: ["pnpm", "run", "dev", "--host", "0.0.0.0", "--port", "5173"]
+
+networks:
+  char_chat_network:
+    driver: bridge 

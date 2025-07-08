@@ -1,0 +1,142 @@
+version: '3.8'
+
+services:
+  # PostgreSQL 데이터베이스
+  postgres:
+    image: postgres:15-alpine
+    container_name: char_chat_postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-char_chat_db}
+      POSTGRES_USER: ${POSTGRES_USER:-char_chat_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-char_chat_password}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    networks:
+      - char_chat_network
+    restart: unless-stopped
+
+  # Redis (세션 및 캐시)
+  redis:
+    image: redis:7-alpine
+    container_name: char_chat_redis
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - char_chat_network
+    restart: unless-stopped
+
+  # FastAPI 백엔드
+  backend:
+    build:
+      context: ../backend-api
+      dockerfile: Dockerfile
+    container_name: char_chat_backend
+    environment:
+      # 데이터베이스 설정
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-char_chat_user}:${POSTGRES_PASSWORD:-char_chat_password}@postgres:5432/${POSTGRES_DB:-char_chat_db}
+      
+      # Redis 설정
+      REDIS_URL: redis://redis:6379/0
+      
+      # JWT 설정
+      SECRET_KEY: ${SECRET_KEY:-your-super-secret-key-change-this-in-production}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
+      
+      # AI API 키
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      CLAUDE_API_KEY: ${CLAUDE_API_KEY}
+      IMAGEN_API_KEY: ${IMAGEN_API_KEY}
+      
+      # 환경 설정
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      DEBUG: ${DEBUG:-true}
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - char_chat_network
+    restart: unless-stopped
+
+  # Node.js 채팅 서버
+  chat-server:
+    build:
+      context: ../chat-server
+      dockerfile: Dockerfile
+    container_name: char_chat_socket
+    environment:
+      # 서버 설정
+      PORT: 3001
+      NODE_ENV: ${NODE_ENV:-development}
+      
+      # Redis 설정
+      REDIS_URL: redis://redis:6379/1
+      
+      # JWT 설정 (백엔드와 동일)
+      JWT_SECRET: ${SECRET_KEY:-your-super-secret-key-change-this-in-production}
+      
+      # 백엔드 API URL
+      API_BASE_URL: http://backend:8000
+      
+      # AI API 키
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      CLAUDE_API_KEY: ${CLAUDE_API_KEY}
+    ports:
+      - "3001:3001"
+    depends_on:
+      - redis
+      - backend
+    networks:
+      - char_chat_network
+    restart: unless-stopped
+
+  # React 프론트엔드
+  frontend:
+    build:
+      context: ../frontend/char-chat-frontend
+      dockerfile: Dockerfile
+    container_name: char_chat_frontend
+    environment:
+      VITE_API_URL: http://localhost:8000
+      VITE_SOCKET_URL: http://localhost:3001
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+      - chat-server
+    networks:
+      - char_chat_network
+    restart: unless-stopped
+
+  # Nginx 리버스 프록시
+  nginx:
+    image: nginx:alpine
+    container_name: char_chat_nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - frontend
+      - backend
+      - chat-server
+    networks:
+      - char_chat_network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  char_chat_network:
+    driver: bridge
+
