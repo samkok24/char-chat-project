@@ -12,12 +12,14 @@ dist/
 
 # Misc
 .DS_Store
-# .env # .env 파일을 커밋에서 제외하지만, 로컬에서는 사용
+.env
+*.env
 *.env.local
 *.env.development.local
 *.env.test.local
 *.env.production.local
-*.env.example
+*.env.production
+!*.env.example
 
 # Logs
 npm-debug.log*
