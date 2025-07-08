@@ -10,6 +10,11 @@ import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
 import HomePage from './pages/HomePage';
 import ChatPage from './pages/ChatPage';
+import ProfilePage from './pages/ProfilePage';
+import RubyChargePage from './pages/RubyChargePage';
+import CreateCharacterPage from './pages/CreateCharacterPage';
+import MyCharactersPage from './pages/MyCharactersPage';
+import CharacterDetailPage from './pages/CharacterDetailPage';
 import { Loader2 } from 'lucide-react';
 import './App.css';
 
@@ -80,6 +85,52 @@ const AppRouter = () => {
               <RegisterPage />
             </PublicRoute>
           }
+        />
+
+        {/* 보호된 라우트 - 프로필 */}
+        <Route
+          path="/profile"
+          element={
+            <ProtectedRoute>
+              <ProfilePage />
+            </ProtectedRoute>
+          }
+        />
+
+        {/* 보호된 라우트 - 루비 충전 */}
+        <Route
+          path="/ruby/charge"
+          element={
+            <ProtectedRoute>
+              <RubyChargePage />
+            </ProtectedRoute>
+          }
+        />
+
+        {/* 보호된 라우트 - 캐릭터 생성 */}
+        <Route
+          path="/characters/create"
+          element={
+            <ProtectedRoute>
+              <CreateCharacterPage />
+            </ProtectedRoute>
+          }
+        />
+
+        {/* 보호된 라우트 - 내 캐릭터 */}
+        <Route
+          path="/my-characters"
+          element={
+            <ProtectedRoute>
+              <MyCharactersPage />
+            </ProtectedRoute>
+          }
+        />
+
+        {/* 캐릭터 상세 페이지 - 누구나 접근 가능 */}
+        <Route
+          path="/characters/:characterId"
+          element={<CharacterDetailPage />}
         />
 
         {/* 보호된 라우트 - 채팅 */}
