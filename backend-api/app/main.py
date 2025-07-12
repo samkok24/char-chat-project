@@ -1,5 +1,6 @@
 """
 AI 캐릭터 챗 플랫폼 - FastAPI 메인 애플리케이션
+CAVEDUCK 스타일: "Chat First, Story Later"
 """
 
 from fastapi import FastAPI, HTTPException
@@ -10,10 +11,14 @@ import logging
 
 from app.core.config import settings
 from app.core.database import engine, Base
-from app.api.auth import router as auth_router
-from app.api.characters import router as characters_router
-from app.api.stories import router as stories_router
-from app.api.chat import router as chat_router
+
+# API 라우터 임포트 (우선순위 순서)
+from app.api.chat import router as chat_router          # 🔥 최우선: 채팅 API
+from app.api.auth import router as auth_router          # ✅ 필수: 인증 API  
+from app.api.characters import router as characters_router  # ✅ 필수: 캐릭터 API
+from app.api.stories import router as stories_router    # ⏳ 나중에: 스토리 API (차별점)
+from app.api.payment import router as payment_router    # ⏳ 나중에: 결제 API (단순화 예정)
+from app.api.point import router as point_router        # ⏳ 나중에: 포인트 API (단순화 예정)
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
@@ -24,7 +29,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """애플리케이션 시작/종료 시 실행되는 이벤트"""
     # 시작 시
-    logger.info("🚀 AI 캐릭터 챗 플랫폼 시작")
+    logger.info("🚀 AI 캐릭터 챗 플랫폼 시작 (CAVEDUCK 스타일)")
     
     # 데이터베이스 테이블 생성 (개발용)
     if settings.ENVIRONMENT == "development":
@@ -35,14 +40,14 @@ async def lifespan(app: FastAPI):
     yield
     
     # 종료 시
-    logger.info("�� AI 캐릭터 챗 플랫폼 종료")
+    logger.info("👋 AI 캐릭터 챗 플랫폼 종료")
 
 
 # FastAPI 앱 생성
 app = FastAPI(
     title="AI 캐릭터 챗 플랫폼 API",
-    description="character.ai와 비슷한 AI 캐릭터 챗 서비스 + AI 스토리 생성",
-    version="1.0.0",
+    description="CAVEDUCK 스타일 AI 캐릭터 채팅 서비스 - Chat First, Story Later",
+    version="2.0.0",
     docs_url="/docs" if settings.ENVIRONMENT == "development" else None,
     redoc_url="/redoc" if settings.ENVIRONMENT == "development" else None,
     lifespan=lifespan
@@ -65,19 +70,25 @@ if settings.ENVIRONMENT == "production":
     )
 
 
-# 라우터 등록
-app.include_router(auth_router, prefix="/auth", tags=["인증"])
-app.include_router(characters_router, prefix="/characters", tags=["캐릭터"])
-app.include_router(stories_router, prefix="/stories", tags=["스토리"])
-app.include_router(chat_router, prefix="/chat", tags=["채팅"])
+# 라우터 등록 (CAVEDUCK 스타일 우선순위)
+# 🔥 Phase 4: 채팅 중심 API (최우선 완성)
+app.include_router(chat_router, prefix="/chat", tags=["🔥 채팅 (최우선)"])
+app.include_router(auth_router, prefix="/auth", tags=["✅ 인증 (필수)"])
+app.include_router(characters_router, prefix="/characters", tags=["✅ 캐릭터 (필수)"])
+
+# ⏳ Phase 5+: 나중에 개발할 기능들
+app.include_router(stories_router, prefix="/stories", tags=["⏳ 스토리 (차별점)"])
+app.include_router(payment_router, prefix="/payment", tags=["⏳ 결제 (단순화 예정)"])
+app.include_router(point_router, prefix="/point", tags=["⏳ 포인트 (단순화 예정)"])
 
 
 @app.get("/")
 async def root():
     """루트 엔드포인트"""
     return {
-        "message": "AI 캐릭터 챗 플랫폼 API",
-        "version": "1.0.0",
+        "message": "AI 캐릭터 챗 플랫폼 API - CAVEDUCK 스타일",
+        "version": "2.0.0",
+        "philosophy": "Chat First, Story Later",
         "docs": "/docs",
         "status": "running"
     }
@@ -89,7 +100,8 @@ async def health_check():
     return {
         "status": "healthy",
         "environment": settings.ENVIRONMENT,
-        "database": "connected"  # 실제로는 DB 연결 상태 확인
+        "database": "connected",
+        "focus": "AI 채팅 최우선"
     }
 
 

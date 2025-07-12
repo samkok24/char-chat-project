@@ -1,54 +1,67 @@
 /**
  * 메인 App 컴포넌트
+ * CAVEDUCK 스타일: 성능 최적화 (코드 스플리팅 + API 캐싱)
  */
 
-import React from 'react';
+import React, { Suspense } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { SocketProvider } from './contexts/SocketContext';
-import LoginPage from './pages/LoginPage';
-import RegisterPage from './pages/RegisterPage';
-import HomePage from './pages/HomePage';
-import ChatPage from './pages/ChatPage';
-import ProfilePage from './pages/ProfilePage';
-import RubyChargePage from './pages/RubyChargePage';
-import CreateCharacterPage from './pages/CreateCharacterPage';
-import MyCharactersPage from './pages/MyCharactersPage';
-import CharacterDetailPage from './pages/CharacterDetailPage';
 import { Loader2 } from 'lucide-react';
 import './App.css';
+
+// 🚀 API 캐싱 설정 (성능 최적화)
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 5 * 60 * 1000, // 5분간 캐시 유지
+      cacheTime: 10 * 60 * 1000, // 10분간 메모리에 보관
+      retry: 1, // 실패 시 1번만 재시도
+      refetchOnWindowFocus: false, // 윈도우 포커스 시 재요청 방지
+    },
+  },
+});
+
+// 🚀 성능 최적화: 코드 스플리팅 (페이지별 동적 로딩)
+const LoginPage = React.lazy(() => import('./pages/LoginPage'));
+const HomePage = React.lazy(() => import('./pages/HomePage'));
+const ChatPage = React.lazy(() => import('./pages/ChatPage'));
+const CharacterDetailPage = React.lazy(() => import('./pages/CharacterDetailPage'));
+
+// ⏳ 나중에 필요한 페이지들 (지연 로딩)
+const ProfilePage = React.lazy(() => import('./pages/ProfilePage'));
+const RubyChargePage = React.lazy(() => import('./pages/RubyChargePage'));
+const CreateCharacterPage = React.lazy(() => import('./pages/CreateCharacterPage'));
+const MyCharactersPage = React.lazy(() => import('./pages/MyCharactersPage'));
+
+// 로딩 컴포넌트 (CAVEDUCK 스타일 - 심플)
+const PageLoader = () => (
+  <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+    <div className="text-center">
+      <Loader2 className="w-8 h-8 animate-spin mx-auto mb-4 text-purple-600" />
+      <p className="text-gray-600">페이지를 불러오는 중...</p>
+    </div>
+  </div>
+);
 
 // 인증이 필요한 라우트를 보호하는 컴포넌트
 const ProtectedRoute = ({ children }) => {
   const { isAuthenticated, loading } = useAuth();
 
   if (loading) {
-    return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="text-center">
-          <Loader2 className="w-8 h-8 animate-spin mx-auto mb-4" />
-          <p className="text-gray-600">로딩 중...</p>
-        </div>
-      </div>
-    );
+    return <PageLoader />;
   }
 
   return isAuthenticated ? children : <Navigate to="/login" replace />;
 };
 
-// 인증된 사용자는 접근할 수 없는 라우트 (로그인, 회원가입)
+// 인증된 사용자는 접근할 수 없는 라우트 (로그인)
 const PublicRoute = ({ children }) => {
   const { isAuthenticated, loading } = useAuth();
 
   if (loading) {
-    return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="text-center">
-          <Loader2 className="w-8 h-8 animate-spin mx-auto mb-4" />
-          <p className="text-gray-600">로딩 중...</p>
-        </div>
-      </div>
-    );
+    return <PageLoader />;
   }
 
   return isAuthenticated ? <Navigate to="/" replace /> : children;
@@ -58,96 +71,93 @@ const PublicRoute = ({ children }) => {
 const AppRouter = () => {
   return (
     <Router>
-      <Routes>
-        {/* 메인 홈페이지 - 누구나 접근 가능 */}
-        <Route
-          path="/"
-          element={
-            <SocketProvider>
-              <HomePage />
-            </SocketProvider>
-          }
-        />
-
-        {/* 인증 관련 라우트 */}
-        <Route
-          path="/login"
-          element={
-            <PublicRoute>
-              <LoginPage />
-            </PublicRoute>
-          }
-        />
-        <Route
-          path="/register"
-          element={
-            <PublicRoute>
-              <RegisterPage />
-            </PublicRoute>
-          }
-        />
-
-        {/* 보호된 라우트 - 프로필 */}
-        <Route
-          path="/profile"
-          element={
-            <ProtectedRoute>
-              <ProfilePage />
-            </ProtectedRoute>
-          }
-        />
-
-        {/* 보호된 라우트 - 루비 충전 */}
-        <Route
-          path="/ruby/charge"
-          element={
-            <ProtectedRoute>
-              <RubyChargePage />
-            </ProtectedRoute>
-          }
-        />
-
-        {/* 보호된 라우트 - 캐릭터 생성 */}
-        <Route
-          path="/characters/create"
-          element={
-            <ProtectedRoute>
-              <CreateCharacterPage />
-            </ProtectedRoute>
-          }
-        />
-
-        {/* 보호된 라우트 - 내 캐릭터 */}
-        <Route
-          path="/my-characters"
-          element={
-            <ProtectedRoute>
-              <MyCharactersPage />
-            </ProtectedRoute>
-          }
-        />
-
-        {/* 캐릭터 상세 페이지 - 누구나 접근 가능 */}
-        <Route
-          path="/characters/:characterId"
-          element={<CharacterDetailPage />}
-        />
-
-        {/* 보호된 라우트 - 채팅 */}
-        <Route
-          path="/chat/:characterId"
-          element={
-            <ProtectedRoute>
+      <Suspense fallback={<PageLoader />}>
+        <Routes>
+          {/* 🔥 CAVEDUCK 핵심 페이지 (우선 로딩) */}
+          <Route
+            path="/"
+            element={
               <SocketProvider>
-                <ChatPage />
+                <HomePage />
               </SocketProvider>
-            </ProtectedRoute>
-          }
-        />
+            }
+          />
 
-        {/* 기본 리다이렉트 */}
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
+          <Route
+            path="/login"
+            element={
+              <PublicRoute>
+                <LoginPage />
+              </PublicRoute>
+            }
+          />
+
+          <Route
+            path="/characters/:characterId"
+            element={<CharacterDetailPage />}
+          />
+
+          <Route
+            path="/chat/:characterId"
+            element={
+              <ProtectedRoute>
+                <SocketProvider>
+                  <ChatPage />
+                </SocketProvider>
+              </ProtectedRoute>
+            }
+          />
+
+          {/* ⏳ 나중에 필요한 페이지들 (지연 로딩) */}
+          <Route
+            path="/profile"
+            element={
+              <ProtectedRoute>
+                <ProfilePage />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/ruby/charge"
+            element={
+              <ProtectedRoute>
+                <RubyChargePage />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/characters/create"
+            element={
+              <ProtectedRoute>
+                <CreateCharacterPage />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/characters/:characterId/edit"
+            element={
+              <ProtectedRoute>
+                <CreateCharacterPage />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/my-characters"
+            element={
+              <ProtectedRoute>
+                <MyCharactersPage />
+              </ProtectedRoute>
+            }
+          />
+
+          {/* 기본 리다이렉트 */}
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </Suspense>
     </Router>
   );
 };
@@ -155,11 +165,13 @@ const AppRouter = () => {
 // 메인 App 컴포넌트
 function App() {
   return (
-    <AuthProvider>
-      <div className="App">
-        <AppRouter />
-      </div>
-    </AuthProvider>
+    <QueryClientProvider client={queryClient}>
+      <AuthProvider>
+        <div className="App">
+          <AppRouter />
+        </div>
+      </AuthProvider>
+    </QueryClientProvider>
   );
 }
 

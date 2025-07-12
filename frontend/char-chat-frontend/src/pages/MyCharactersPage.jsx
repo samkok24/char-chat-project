@@ -11,6 +11,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../co
 import { Badge } from '../components/ui/badge';
 import { Avatar, AvatarFallback, AvatarImage } from '../components/ui/avatar';
 import { Alert, AlertDescription } from '../components/ui/alert';
+import { LazyLoadImage } from 'react-lazy-load-image-component';
+import 'react-lazy-load-image-component/src/effects/blur.css';
+import { Skeleton } from '../components/ui/skeleton';
 import { 
   ArrowLeft,
   Plus,
@@ -64,12 +67,18 @@ const MyCharactersPage = () => {
   };
 
   const CharacterCard = ({ character }) => (
-    <Card className="hover:shadow-lg transition-all duration-200">
+    <Card className="hover:shadow-lg transition-all duration-200 flex flex-col">
       <CardHeader>
         <div className="flex items-start justify-between">
           <div className="flex items-start space-x-3">
             <Avatar className="w-12 h-12">
-              <AvatarImage src={character.avatar_url} alt={character.name} />
+              <LazyLoadImage
+                alt={character.name}
+                src={character.avatar_url}
+                effect="blur"
+                className="w-full h-full object-cover rounded-full"
+                wrapperClassName="w-full h-full"
+              />
               <AvatarFallback className="bg-gradient-to-r from-purple-500 to-blue-500 text-white">
                 {character.name.charAt(0)}
               </AvatarFallback>
@@ -93,23 +102,25 @@ const MyCharactersPage = () => {
           </div>
         </div>
       </CardHeader>
-      <CardContent>
-        <p className="text-sm text-gray-600 mb-4 line-clamp-2">
-          {character.description || '설명이 없습니다.'}
-        </p>
-        
-        <div className="flex items-center space-x-4 text-sm text-gray-500 mb-4">
-          <div className="flex items-center space-x-1">
-            <MessageCircle className="w-4 h-4" />
-            <span>{(character.chat_count || 0).toLocaleString()} 대화</span>
-          </div>
-          <div className="flex items-center space-x-1">
-            <Heart className="w-4 h-4" />
-            <span>{character.like_count || 0} 좋아요</span>
+      <CardContent className="flex-1 flex flex-col justify-between">
+        <div>
+          <p className="text-sm text-gray-600 mb-4 line-clamp-2 min-h-[40px]">
+            {character.description || '설명이 없습니다.'}
+          </p>
+          
+          <div className="flex items-center space-x-4 text-sm text-gray-500 mb-4">
+            <div className="flex items-center space-x-1">
+              <MessageCircle className="w-4 h-4" />
+              <span>{(character.chat_count || 0).toLocaleString()} 대화</span>
+            </div>
+            <div className="flex items-center space-x-1">
+              <Heart className="w-4 h-4" />
+              <span>{character.like_count || 0} 좋아요</span>
+            </div>
           </div>
         </div>
 
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between pt-4 border-t">
           <div className="flex items-center space-x-2">
             <Button
               variant="outline"
@@ -148,13 +159,72 @@ const MyCharactersPage = () => {
     </Card>
   );
 
+  const CharacterCardSkeleton = () => (
+    <Card>
+      <CardHeader>
+        <div className="flex items-start space-x-3">
+          <Skeleton className="w-12 h-12 rounded-full" />
+          <div className="flex-1 space-y-2">
+            <Skeleton className="h-5 w-3/4" />
+            <Skeleton className="h-4 w-1/2" />
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="space-y-2 mb-4">
+          <Skeleton className="h-4 w-full" />
+          <Skeleton className="h-4 w-5/6" />
+        </div>
+        <div className="flex items-center justify-between pt-4 border-t">
+          <div className="flex items-center space-x-2">
+            <Skeleton className="h-8 w-16" />
+            <Skeleton className="h-8 w-16" />
+            <Skeleton className="h-8 w-8" />
+          </div>
+          <Skeleton className="h-8 w-24" />
+        </div>
+      </CardContent>
+    </Card>
+  );
+
   if (loading) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-purple-50 via-blue-50 to-indigo-50 flex items-center justify-center">
-        <div className="text-center">
-          <Loader2 className="w-8 h-8 animate-spin mx-auto mb-4" />
-          <p className="text-gray-600">캐릭터 목록을 불러오는 중...</p>
-        </div>
+      <div className="min-h-screen bg-gradient-to-br from-purple-50 via-blue-50 to-indigo-50">
+        {/* Header is duplicated for layout consistency during loading */}
+        <header className="bg-white/80 backdrop-blur-sm shadow-sm border-b sticky top-0 z-50">
+          <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div className="flex items-center justify-between h-16">
+              <div className="flex items-center space-x-4">
+                <Link to="/" className="flex items-center space-x-2">
+                  <div className="w-8 h-8 bg-gradient-to-r from-purple-600 to-blue-600 rounded-lg flex items-center justify-center">
+                    <MessageCircle className="w-5 h-5 text-white" />
+                  </div>
+                  <h1 className="text-xl font-bold text-gray-900">AI 캐릭터 챗</h1>
+                </Link>
+              </div>
+              <Button variant="outline" onClick={() => navigate(-1)} disabled>
+                <ArrowLeft className="w-4 h-4 mr-2" />
+                뒤로 가기
+              </Button>
+            </div>
+          </div>
+        </header>
+        <main className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+          <div className="mb-8">
+            <div className="flex items-center justify-between mb-6">
+              <div>
+                <h2 className="text-3xl font-bold text-gray-900 mb-2">내 캐릭터</h2>
+                <p className="text-gray-600">내가 만든 AI 캐릭터들을 관리하세요</p>
+              </div>
+              <Skeleton className="h-10 w-40" />
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {Array.from({ length: 6 }).map((_, i) => (
+                <CharacterCardSkeleton key={i} />
+              ))}
+            </div>
+          </div>
+        </main>
       </div>
     );
   }

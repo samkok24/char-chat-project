@@ -47,7 +47,7 @@ const CharacterDetailPage = () => {
 
   useEffect(() => {
     loadCharacterData();
-  }, [characterId]);
+  }, [characterId, isAuthenticated]);
 
   const loadCharacterData = async () => {
     setLoading(true);
@@ -61,9 +61,18 @@ const CharacterDetailPage = () => {
       const commentsResponse = await charactersAPI.getComments(characterId);
       setComments(commentsResponse.data);
 
-      // TODO: 좋아요 상태 확인 API 필요
-      // 현재는 임시로 false 설정
+      // 좋아요 상태 확인 (로그인한 사용자만)
+      if (isAuthenticated) {
+        try {
+          const likeStatusResponse = await charactersAPI.getLikeStatus(characterId);
+          setIsLiked(likeStatusResponse.data.is_liked);
+        } catch (err) {
+          console.error('좋아요 상태 확인 실패:', err);
+          setIsLiked(false);
+        }
+      } else {
       setIsLiked(false);
+      }
     } catch (err) {
       console.error('캐릭터 정보 로드 실패:', err);
       setError('캐릭터 정보를 불러올 수 없습니다.');

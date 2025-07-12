@@ -3,27 +3,24 @@ version: '3.8'
 services:
   # FastAPI 백엔드 (SQLite 사용)
   backend:
-    env_file:
-      - ./.env
     build:
       context: ./backend-api
       dockerfile: Dockerfile
     image: char-chat-backend-dev
     container_name: char_chat_backend
     environment:
-      # 모든 키는 .env 파일에서 불러옵니다
-      - GEMINI_API_KEY
-      - CLAUDE_API_KEY
-      - OPENAI_API_KEY
-      - DATABASE_URL
-      - JWT_SECRET_KEY
-      - ENVIRONMENT
-      - DEBUG
+      DATABASE_URL: "sqlite+aiosqlite:////app/data/test.db"
+      ENVIRONMENT: "development"
+      DEBUG: "true"
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      CLAUDE_API_KEY: ${CLAUDE_API_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
     ports:
       - "8000:8000"
     volumes:
       # 데이터베이스 파일 유지를 위해 폴더를 마운트
-      - ./backend-api/data:/app/data
+      - ./backend-api:/app
     networks:
       - char_chat_network
 

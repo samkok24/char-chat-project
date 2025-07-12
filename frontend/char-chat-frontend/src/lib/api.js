@@ -122,6 +122,10 @@ export const charactersAPI = {
   unlikeCharacter: (id) =>
     api.delete(`/characters/${id}/like`),
   
+  // 좋아요 상태 확인 API 추가
+  getLikeStatus: (id) =>
+    api.get(`/characters/${id}/like-status`),
+  
   getCharacterSettings: (id) =>
     api.get(`/characters/${id}/settings`),
   
@@ -143,6 +147,10 @@ export const charactersAPI = {
 };
 
 export const chatAPI = {
+  // 🔥 CAVEDUCK 스타일 채팅 시작 API
+  startChat: (characterId) =>
+    api.post('/chat/start', { character_id: characterId }),
+
   getChatRooms: (params = {}) =>
     api.get('/chat/rooms', { params }),
   
@@ -186,6 +194,23 @@ export const storiesAPI = {
   
   unlikeStory: (id) =>
     api.delete(`/stories/${id}/like`),
+  
+  // 좋아요 상태 확인 API 추가
+  getLikeStatus: (id) =>
+    api.get(`/stories/${id}/like-status`),
+  
+  // 스토리 댓글 관련 API 추가
+  getComments: (storyId, params = {}) =>
+    api.get(`/stories/${storyId}/comments`, { params }),
+  
+  createComment: (storyId, data) =>
+    api.post(`/stories/${storyId}/comments`, data),
+  
+  updateComment: (commentId, data) =>
+    api.put(`/stories/comments/${commentId}`, data),
+  
+  deleteComment: (commentId) =>
+    api.delete(`/stories/comments/${commentId}`),
 };
 
 export { api, API_BASE_URL, SOCKET_URL };

@@ -248,28 +248,76 @@ class SocketController {
         });
       } catch (apiError) {
         logger.error('메시지 저장 API 오류:', apiError);
-        // API 오류가 있어도 실시간 채팅은 계속 진행
+        // 여기서 멈추지 않고 계속 진행하여 사용자 경험은 유지
       }
 
-      // Redis에 메시지 캐시
-      await redisService.cacheMessage(roomId, userMessage);
+      // AI 응답 생성 시작 (타이핑 시작)
+      this.handleTypingStart(socket, io, { roomId });
 
-      // 룸의 모든 사용자에게 메시지 전송
-      io.to(roomId).emit('new_message', userMessage);
+      const character = await redisService.getCharacter(room.characterId);
+      if (!character) {
+        socket.emit('error', { message: '캐릭터 정보를 찾을 수 없습니다.' });
+        this.handleTypingStop(socket, io, { roomId });
+        return;
+      }
+      
+      let fullResponse = '';
+      const stream = aiService.generateCharacterResponseStream(character, content, roomId);
+      const aiMessageId = uuidv4();
 
-      logger.info(`메시지 전송: ${userId} -> ${roomId}`);
+      for await (const chunk of stream) {
+        fullResponse += chunk;
+        socket.emit('ai_message_chunk', {
+          id: aiMessageId,
+          roomId,
+          chunk,
+          senderType: 'assistant',
+          senderId: character.id,
+          senderName: character.name,
+          timestamp: new Date().toISOString()
+        });
+      }
 
-      // AI 응답 생성 (비동기)
-      this.generateAIResponse(socket, io, roomId, userMessage);
+      // AI 응답 생성 완료 (타이핑 중지)
+      this.handleTypingStop(socket, io, { roomId });
+
+      if (fullResponse) {
+        // 완성된 메시지 저장
+        try {
+            await axios.post(`${config.BACKEND_API_URL}/chat/messages`, {
+              id: aiMessageId,
+              room_id: roomId,
+              sender_type: 'assistant',
+              content: fullResponse,
+            }, {
+              headers: { 'Authorization': `Bearer ${socket.token}` }
+            });
+        } catch (apiError) {
+          logger.error('AI 메시지 저장 API 오류:', apiError);
+        }
+        
+        // 대화 컨텍스트 업데이트
+        await aiService.updateConversationContext(roomId, content, fullResponse);
+
+        // 스트림 종료 이벤트
+        socket.emit('ai_message_end', { 
+            id: aiMessageId,
+            roomId, 
+            content: fullResponse 
+        });
+      } else {
+        socket.emit('error', { message: 'AI가 응답을 생성하지 못했습니다.' });
+      }
 
     } catch (error) {
-      logger.error('메시지 전송 오류:', error);
+      logger.error('메시지 전송 처리 오류:', error);
+      this.handleTypingStop(socket, io, { roomId: data.roomId });
       socket.emit('error', { message: '메시지 전송 중 오류가 발생했습니다.' });
     }
   }
 
   /**
-   * AI 응답 생성
+   * AI 응답 생성 (이제 사용되지 않음)
    */
   async generateAIResponse(socket, io, roomId, userMessage) {
     try {
@@ -392,7 +440,7 @@ class SocketController {
   }
 
   /**
-   * 메시지 기록 조회 처리
+   * 메시지 기록 조회 처리 (신규 추가)
    */
   async handleGetMessageHistory(socket, io, data) {
     try {
@@ -400,51 +448,34 @@ class SocketController {
       const userId = socket.userId;
 
       if (!roomId) {
-        socket.emit('error', { message: '채팅방 ID가 필요합니다.' });
-        return;
+        return socket.emit('error', { message: '채팅방 ID가 필요합니다.' });
       }
 
-      // 권한 확인
-      const room = this.activeRooms.get(roomId);
-      if (!room || room.userId !== userId) {
-        socket.emit('error', { message: '이 채팅방의 메시지를 조회할 권한이 없습니다.' });
-        return;
-      }
-
-      // 먼저 Redis 캐시에서 최근 메시지 확인
-      const cachedMessages = await redisService.getCachedMessages(roomId, limit);
-
-      if (cachedMessages.length > 0 && page === 1) {
-        socket.emit('message_history', {
-          roomId,
-          messages: cachedMessages.reverse(), // 시간순 정렬
-          page,
-          hasMore: false // 캐시된 메시지는 최근 것만
-        });
-        return;
-      }
+      const skip = (page - 1) * limit;
 
       // 백엔드 API에서 메시지 기록 조회
       const response = await axios.get(`${config.BACKEND_API_URL}/chat/rooms/${roomId}/messages`, {
-        params: { page, limit },
-        headers: {
-          'Authorization': `Bearer ${socket.token}`
-        }
+        headers: { 'Authorization': `Bearer ${socket.token}` },
+        params: { skip, limit }
       });
 
-      const messageHistory = response.data;
+      const messages = response.data;
 
+      // 클라이언트에 메시지 기록 전송
       socket.emit('message_history', {
         roomId,
-        messages: messageHistory.messages,
-        page: messageHistory.page,
-        totalPages: Math.ceil(messageHistory.total_messages / limit),
-        hasMore: messageHistory.page < Math.ceil(messageHistory.total_messages / limit)
+        messages,
+        page,
+        limit,
+        hasMore: messages.length === limit
       });
 
     } catch (error) {
-      logger.error('메시지 기록 조회 오류:', error);
-      socket.emit('error', { message: '메시지 기록 조회 중 오류가 발생했습니다.' });
+      logger.error('메시지 기록 조회 오류:', error.response?.data || error.message);
+      socket.emit('error', { 
+        message: '메시지 기록을 불러오는 중 오류가 발생했습니다.',
+        details: error.response?.data?.detail || error.message
+      });
     }
   }
 }

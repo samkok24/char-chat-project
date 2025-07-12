@@ -1,9 +1,11 @@
 /**
  * 홈페이지
+ * CAVEDUCK 스타일: API 캐싱으로 성능 최적화
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '../contexts/AuthContext';
 import { charactersAPI } from '../lib/api';
 import { Button } from '../components/ui/button';
@@ -11,6 +13,9 @@ import { Input } from '../components/ui/input';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
 import { Avatar, AvatarFallback, AvatarImage } from '../components/ui/avatar';
+import { LazyLoadImage } from 'react-lazy-load-image-component';
+import 'react-lazy-load-image-component/src/effects/blur.css';
+import { Skeleton } from '../components/ui/skeleton';
 import { 
   Search, 
   Plus, 
@@ -37,37 +42,38 @@ import {
 } from "../components/ui/dropdown-menu";
 
 const HomePage = () => {
-  const [characters, setCharacters] = useState([]);
-  const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-
   const { user, isAuthenticated, logout } = useAuth();
   const navigate = useNavigate();
 
-  useEffect(() => {
-    loadCharacters();
-  }, [searchQuery]);
-
-  const loadCharacters = async () => {
-    setLoading(true);
-    try {
-      const response = await charactersAPI.getCharacters({
-        search: searchQuery || undefined,
-        limit: 20
-      });
-      setCharacters(response.data);
-    } catch (error) {
-      console.error('캐릭터 목록 로드 실패:', error);
-      // API가 실패하면 빈 배열로 설정
-      setCharacters([]);
-    } finally {
-      setLoading(false);
-    }
-  };
+  // 🚀 React Query를 사용한 캐릭터 목록 캐싱
+  const { 
+    data: characters = [], 
+    isLoading: loading, 
+    error,
+    refetch 
+  } = useQuery({
+    queryKey: ['characters', searchQuery],
+    queryFn: async () => {
+      try {
+        const response = await charactersAPI.getCharacters({
+          search: searchQuery || undefined,
+          limit: 20
+        });
+        return response.data;
+      } catch (error) {
+        console.error('캐릭터 목록 로드 실패:', error);
+        return []; // 실패 시 빈 배열 반환
+      }
+    },
+    staleTime: 5 * 60 * 1000, // 5분간 캐시 유지
+    cacheTime: 10 * 60 * 1000, // 10분간 메모리에 보관
+  });
 
   const handleSearch = (e) => {
     e.preventDefault();
-    loadCharacters();
+    // React Query가 자동으로 새로운 쿼리 키로 요청
+    // searchQuery 상태가 변경되면 자동으로 refetch됨
   };
 
   const handleLogout = () => {
@@ -99,7 +105,13 @@ const HomePage = () => {
       <CardHeader className="pb-3">
         <div className="flex items-start space-x-3">
           <Avatar className="w-12 h-12">
-            <AvatarImage src={character.avatar_url} alt={character.name} />
+            <LazyLoadImage
+              alt={character.name}
+              src={character.avatar_url}
+              effect="blur"
+              className="w-full h-full object-cover rounded-full"
+              wrapperClassName="w-full h-full"
+            />
             <AvatarFallback className="bg-gradient-to-r from-purple-500 to-blue-500 text-white">
               {character.name.charAt(0)}
             </AvatarFallback>
@@ -148,6 +160,28 @@ const HomePage = () => {
     </Card>
   );
 
+  const CharacterCardSkeleton = () => (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-start space-x-3">
+          <Skeleton className="w-12 h-12 rounded-full" />
+          <div className="flex-1 space-y-2">
+            <Skeleton className="h-5 w-3/4" />
+            <Skeleton className="h-4 w-1/2" />
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="pt-0">
+        <div className="space-y-2 mb-4">
+          <Skeleton className="h-4 w-full" />
+          <Skeleton className="h-4 w-full" />
+          <Skeleton className="h-4 w-3/4" />
+        </div>
+        <Skeleton className="h-9 w-full" />
+      </CardContent>
+    </Card>
+  );
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-purple-50 via-blue-50 to-indigo-50">
       {/* 헤더 */}
@@ -189,7 +223,7 @@ const HomePage = () => {
                           <AvatarFallback className="bg-gradient-to-r from-purple-600 to-blue-600 text-white">
                             {user?.username?.charAt(0)?.toUpperCase() || 'U'}
                           </AvatarFallback>
-                    </Avatar>
+                        </Avatar>
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent className="w-56" align="end">
@@ -199,7 +233,7 @@ const HomePage = () => {
                           <p className="text-xs leading-none text-muted-foreground">
                             {user?.email}
                           </p>
-                  </div>
+                        </div>
                       </DropdownMenuLabel>
                       <DropdownMenuSeparator />
                       <DropdownMenuItem onClick={() => navigate('/profile')}>
@@ -233,7 +267,7 @@ const HomePage = () => {
                       로그인
                     </Button>
                   </Link>
-                  <Link to="/register">
+                  <Link to="/login">
                     <Button className="bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700">
                       <UserPlus className="w-4 h-4 mr-2" />
                       회원가입
@@ -287,7 +321,7 @@ const HomePage = () => {
                 회원가입하면 나만의 캐릭터를 만들고, 대화 기록을 저장하며, 스토리를 생성할 수 있습니다.
               </p>
               <div className="flex justify-center space-x-4">
-                <Link to="/register">
+                <Link to="/login">
                   <Button className="bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700">
                     무료 회원가입
                   </Button>
@@ -316,19 +350,20 @@ const HomePage = () => {
           </div>
 
           {loading ? (
-            <div className="text-center py-12">
-              <Loader2 className="w-8 h-8 animate-spin mx-auto mb-4" />
-              <p className="text-gray-600">캐릭터를 불러오는 중...</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6">
+              {Array.from({ length: 10 }).map((_, i) => (
+                <CharacterCardSkeleton key={i} />
+              ))}
             </div>
           ) : characters.length > 0 ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6">
               {characters.map((character) => (
                 <CharacterCard key={character.id} character={character} />
               ))}
             </div>
           ) : (
-            <div className="text-center py-12">
-              <Sparkles className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+            <div className="text-center py-16">
+              <MessageCircle className="w-16 h-16 text-gray-400 mx-auto mb-4" />
               <h3 className="text-lg font-medium text-gray-900 mb-2">
                 캐릭터가 없습니다
               </h3>

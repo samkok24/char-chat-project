@@ -37,3 +37,20 @@ class CommentWithUser(CommentResponse):
     """사용자 정보를 포함한 댓글 응답 스키마"""
     username: str
     user_avatar_url: str | None = None 
+
+
+class StoryCommentResponse(CommentBase):
+    """스토리 댓글 응답 스키마"""
+    model_config = ConfigDict(from_attributes=True)
+    
+    id: uuid.UUID
+    story_id: uuid.UUID
+    user_id: uuid.UUID
+    created_at: datetime
+    updated_at: datetime
+
+
+class StoryCommentWithUser(StoryCommentResponse):
+    """사용자 정보를 포함한 스토리 댓글 응답 스키마"""
+    username: str
+    user_avatar_url: str | None = None 

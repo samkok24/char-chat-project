@@ -72,6 +72,64 @@ class AIService {
   }
 
   /**
+   * 스트리밍 캐릭터 응답 생성
+   */
+  async* generateCharacterResponseStream(character, userMessage, roomId) {
+    try {
+      const settings = character.settings || this.defaultSettings;
+      const aiModel = settings.ai_model || this.defaultSettings.model;
+
+      const context = await this.getConversationContext(roomId);
+      const systemPrompt = this.buildSystemPrompt(character, settings);
+      const conversationHistory = this.buildConversationHistory(context, userMessage);
+      
+      if (aiModel.includes('gemini')) {
+        yield* this.generateGeminiStream(systemPrompt, conversationHistory, settings);
+      } else {
+        // 기본값으로 Gemini 사용
+        yield* this.generateGeminiStream(systemPrompt, conversationHistory, settings);
+      }
+    } catch (error) {
+      logger.error('AI 스트리밍 응답 생성 오류:', error);
+      yield this.getFallbackResponse(character);
+    }
+  }
+
+  /**
+   * Gemini를 사용한 스트리밍 응답 생성
+   */
+  async* generateGeminiStream(systemPrompt, conversationHistory, settings) {
+    if (!this.gemini) {
+      throw new Error('Gemini API 키가 설정되지 않았습니다.');
+    }
+
+    const model = this.gemini.getGenerativeModel({
+      model: 'gemini-pro',
+      systemInstruction: {
+        parts: [{ text: systemPrompt }],
+        role: "user"
+      },
+    });
+
+    const result = await model.generateContentStream({
+      contents: conversationHistory,
+      generationConfig: {
+        temperature: parseFloat(settings.temperature) || this.defaultSettings.temperature,
+        maxOutputTokens: parseInt(settings.max_tokens) || this.defaultSettings.maxTokens,
+        topP: 0.8,
+        topK: 40
+      }
+    });
+
+    for await (const chunk of result.stream) {
+      const chunkText = chunk.text();
+      if (chunkText) {
+        yield chunkText;
+      }
+    }
+  }
+
+  /**
    * Gemini를 사용한 응답 생성
    */
   async generateGeminiResponse(systemPrompt, conversationHistory, settings) {
@@ -80,11 +138,17 @@ class AIService {
         throw new Error('Gemini API 키가 설정되지 않았습니다.');
       }
 
-      // 프롬프트 구성
-      const prompt = `${systemPrompt}\n\n대화 기록:\n${conversationHistory}\n\n위 대화를 바탕으로 캐릭터로서 자연스럽게 응답해주세요. 한국어로 답변하세요.`;
+      // 시스템 지침을 포함하여 모델 동적 생성
+      const model = this.gemini.getGenerativeModel({
+        model: 'gemini-pro',
+        systemInstruction: {
+          parts: [{ text: systemPrompt }],
+          role: "user" // system prompt의 역할을 명시
+        },
+      });
 
-      const result = await this.geminiModel.generateContent({
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      const result = await model.generateContent({
+        contents: conversationHistory, // 구조화된 대화 기록 전달
         generationConfig: {
           temperature: parseFloat(settings.temperature) || this.defaultSettings.temperature,
           maxOutputTokens: parseInt(settings.max_tokens) || this.defaultSettings.maxTokens,
@@ -148,28 +212,43 @@ class AIService {
    * 시스템 프롬프트 구성
    */
   buildSystemPrompt(character, settings) {
-    let systemPrompt = settings.system_prompt || `당신은 ${character.name}입니다.`;
+    let systemPrompt = `당신은 AI 캐릭터 '${character.name}'입니다. 다음 설정에 따라 사용자와 대화하세요.`;
 
-    // 캐릭터 정보 추가
-    if (character.personality) {
-      systemPrompt += `\n\n성격: ${character.personality}`;
-    }
-
-    if (character.background_story) {
-      systemPrompt += `\n\n배경 스토리: ${character.background_story}`;
-    }
-
+    // 1. 기본 정보 (Info)
+    let info = `- 이름: ${character.name}`;
     if (character.description) {
-      systemPrompt += `\n\n설명: ${character.description}`;
+      info += `\n- 설명: ${character.description}`;
+    }
+    systemPrompt += `\n\n[기본 정보]\n${info}`;
+
+    // 2. 성격 및 배경 (Persona)
+    let persona = '';
+    if (character.personality) {
+      persona += `\n- 성격: ${character.personality}`;
+    }
+    if (character.background_story) {
+      persona += `\n- 배경: ${character.background_story}`;
+    }
+    if (character.speech_style) {
+      persona += `\n- 말투: ${character.speech_style}`;
+    }
+    if (persona) {
+      systemPrompt += `\n\n[성격 및 배경]\n${persona}`;
     }
 
-    // 기본 지침 추가
-    systemPrompt += `\n\n지침:
-- 항상 ${character.name}의 성격과 배경에 맞게 응답하세요.
-- 자연스럽고 친근한 대화를 유지하세요.
-- 사용자의 메시지에 적절히 반응하고 대화를 이어가세요.
-- 한국어로 응답하세요.
-- 너무 길지 않게 적절한 길이로 응답하세요.`;
+    // 3. 응답 예시 (Few-shot)
+    if (character.greeting) {
+      systemPrompt += `\n\n[응답 예시]\n- 첫인사: "${character.greeting}"`;
+    }
+
+    // 4. 지침 (Instructions)
+    const instructions = `
+- 반드시 [성격 및 배경]에 충실하여 '${character.name}'으로서 대화하세요.
+- 사용자의 말을 경청하고, 자연스럽게 대화를 이어가세요.
+- 절대로 AI나 챗봇임을 드러내지 마세요.
+- 모든 답변은 한국어로 해야 합니다.
+- 답변은 1~2 문장 내외로 간결하게 유지하세요.`;
+    systemPrompt += `\n\n[지침]\n${instructions}`;
 
     return systemPrompt;
   }
@@ -178,20 +257,27 @@ class AIService {
    * 대화 히스토리 구성
    */
   buildConversationHistory(context, currentMessage) {
-    let history = '';
+    const history = [];
 
     if (context && context.messages) {
       // 최근 10개 메시지만 사용
       const recentMessages = context.messages.slice(-10);
       
       for (const msg of recentMessages) {
-        const sender = msg.senderType === 'user' ? '사용자' : msg.senderName || '캐릭터';
-        history += `${sender}: ${msg.content}\n`;
+        // Gemini API에 맞는 역할(role)로 변경 ('character' -> 'model')
+        const role = msg.senderType === 'user' ? 'user' : 'model';
+        history.push({
+          role: role,
+          parts: [{ text: msg.content.trim() }]
+        });
       }
     }
 
     // 현재 메시지 추가
-    history += `사용자: ${currentMessage}\n`;
+    history.push({
+      role: 'user',
+      parts: [{ text: currentMessage.trim() }]
+    });
 
     return history;
   }

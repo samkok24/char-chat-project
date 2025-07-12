@@ -28,6 +28,12 @@ class User(Base):
     character_likes = relationship("CharacterLike", back_populates="user", cascade="all, delete-orphan")
     story_likes = relationship("StoryLike", back_populates="user", cascade="all, delete-orphan")
     character_comments = relationship("CharacterComment", back_populates="user", cascade="all, delete-orphan")
+    story_comments = relationship("StoryComment", back_populates="user", cascade="all, delete-orphan")
+    
+    # 결제 관련 관계
+    payments = relationship("Payment", back_populates="user", cascade="all, delete-orphan")
+    point_transactions = relationship("PointTransaction", back_populates="user", cascade="all, delete-orphan")
+    user_point = relationship("UserPoint", back_populates="user", uselist=False, cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<User(id={self.id}, email={self.email}, username={self.username})>"

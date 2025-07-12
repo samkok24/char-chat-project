@@ -48,7 +48,7 @@ class ChatMessageResponse(ChatMessageBase):
     created_at: datetime
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 
 class CharacterForChatResponse(BaseModel):
@@ -58,7 +58,7 @@ class CharacterForChatResponse(BaseModel):
     avatar_url: Optional[str] = None
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 
 class ChatRoomResponse(BaseModel):
@@ -73,7 +73,7 @@ class ChatRoomResponse(BaseModel):
     updated_at: datetime
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 
 class SendMessageResponse(BaseModel):

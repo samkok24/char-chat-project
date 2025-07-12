@@ -26,3 +26,22 @@ class CharacterComment(Base):
 
     def __repr__(self):
         return f"<CharacterComment(id={self.id}, character_id={self.character_id}, user_id={self.user_id})>" 
+
+
+class StoryComment(Base):
+    """스토리 댓글 모델"""
+    __tablename__ = "story_comments"
+
+    id = Column(UUID(), primary_key=True, default=uuid.uuid4, index=True)
+    story_id = Column(UUID(), ForeignKey("stories.id"), nullable=False, index=True)
+    user_id = Column(UUID(), ForeignKey("users.id"), nullable=False, index=True)
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    # 관계 설정
+    story = relationship("Story", back_populates="comments")
+    user = relationship("User", back_populates="story_comments")
+
+    def __repr__(self):
+        return f"<StoryComment(id={self.id}, story_id={self.story_id}, user_id={self.user_id})>" 

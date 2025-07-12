@@ -40,6 +40,7 @@ class StoryResponse(StoryBase):
     character_id: Optional[uuid.UUID]
     like_count: int
     view_count: int
+    comment_count: int
     created_at: datetime
     updated_at: datetime
 
@@ -54,6 +55,7 @@ class StoryListResponse(BaseModel):
     keywords: Optional[List[str]]
     like_count: int
     view_count: int
+    comment_count: int
     created_at: datetime
     creator_username: str
     character_name: Optional[str]

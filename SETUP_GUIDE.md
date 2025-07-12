@@ -1,6 +1,8 @@
-# AI 캐릭터 챗 프로젝트 설정 가이드
+# CAVEDUCK 스타일 설정 가이드 🦆
 
-## 🚀 빠른 시작
+> **Simple is Best** - 최소한의 설정으로 빠르게 시작하기
+
+## 🚀 30초 빠른 시작
 
 ### Windows 사용자
 ```bash
@@ -8,100 +10,145 @@
 start_servers.bat
 ```
 
-### 수동 실행
+### Mac/Linux 사용자
+```bash
+# 실행 권한 부여
+chmod +x start_servers.sh
+./start_servers.sh
+```
 
-#### 1. 백엔드 서버 (FastAPI) 실행
+**끝! 브라우저에서 http://localhost:5173 접속**
+
+## 📦 최소 요구사항
+
+- **Python** 3.8+ 
+- **Node.js** 16+
+- **Redis** (선택사항)
+
+## 🛠️ 수동 설치 (3단계)
+
+### 1️⃣ 백엔드 설정 (1분)
 ```bash
 cd backend-api
 pip install -r requirements.txt
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+python -m uvicorn app.main:app --reload
 ```
 
-#### 2. 프론트엔드 서버 (React) 실행
+### 2️⃣ 채팅 서버 설정 (1분)
 ```bash
-cd frontend/char-chat-frontend
+cd chat-server
 npm install
 npm run dev
 ```
 
-## 📝 주요 수정 사항
-
-### 1. 회원가입 문제 해결
-- **문제**: User 모델의 필드명 불일치 (`hashed_password` vs `password_hash`)
-- **해결**: 서비스 코드에서 올바른 필드명 사용하도록 수정
-
-### 2. 데이터베이스 설정
-- **변경**: PostgreSQL → SQLite (개발 환경)
-- **파일**: `backend-api/app/core/config.py`, `backend-api/app/core/database.py`
-
-### 3. API 키 설정
-- **위치**: `backend-api/app/core/config.py`에 하드코딩 (개발용)
-- **포함된 API 키**:
-  - Gemini API
-  - Claude API
-  - OpenAI API
-
-## 🔧 환경 설정
-
-### 필수 요구사항
-- Python 3.8+
-- Node.js 16+
-- npm 또는 pnpm
-
-### 포트 정보
-- **백엔드 API**: http://localhost:8000
-- **프론트엔드**: http://localhost:5173
-- **채팅 서버** (선택): http://localhost:3001
-
-## 🌟 기능 확인
-
-1. **회원가입**: http://localhost:5173/register
-2. **로그인**: http://localhost:5173/login
-3. **메인 페이지**: http://localhost:5173
-
-## ⚠️ 주의사항
-
-1. **API 키 보안**: 현재 API 키가 코드에 하드코딩되어 있습니다. 프로덕션에서는 환경 변수 사용을 권장합니다.
-
-2. **데이터베이스**: SQLite는 개발용입니다. 프로덕션에서는 PostgreSQL 사용을 권장합니다.
-
-3. **Redis**: 현재 Redis가 없어도 실행되지만, 채팅 기능에는 Redis가 필요할 수 있습니다.
-
-## 🐛 문제 해결
-
-### 회원가입이 안 될 때
-1. 백엔드 서버가 실행 중인지 확인 (포트 8000)
-2. 브라우저 개발자 도구에서 네트워크 오류 확인
-3. `test.db` 파일 권한 확인
-
-### 데이터베이스 오류
+### 3️⃣ 프론트엔드 설정 (1분)
 ```bash
-# test.db 파일 삭제 후 재시작
-cd backend-api
-del test.db  # Windows
-rm test.db   # Linux/Mac
+cd frontend/char-chat-frontend
+pnpm install  # 또는 npm install
+pnpm run dev  # 또는 npm run dev
 ```
 
+## 🔑 환경 설정 (필수)
+
+### `.env` 파일 생성
+```bash
+# backend-api/.env
+GEMINI_API_KEY=your_gemini_key_here
+DATABASE_URL=sqlite:///./test.db  # 개발용
+SECRET_KEY=your-secret-key-here
+```
+
+### API 키 발급처
+- **Gemini**: https://makersuite.google.com/app/apikey
+- **Claude** (선택): https://console.anthropic.com/
+
+## 🌐 접속 정보
+
+| 서비스 | URL | 용도 |
+|--------|-----|------|
+| 프론트엔드 | http://localhost:5173 | 메인 웹사이트 |
+| 백엔드 API | http://localhost:8000 | API 서버 |
+| API 문서 | http://localhost:8000/docs | Swagger UI |
+| 채팅 서버 | http://localhost:3001 | Socket.IO |
+
+## ⚡ Docker로 한 번에 실행
+
+```bash
+docker-compose up -d
+```
+
+**Docker가 없다면?**
+```bash
+# Windows
+winget install Docker.DockerDesktop
+
+# Mac
+brew install --cask docker
+
+# Linux
+curl -fsSL https://get.docker.com | sh
+```
+
+## 🚨 자주 발생하는 문제
+
 ### 포트 충돌
-다른 프로그램이 포트를 사용 중인 경우:
-- 백엔드: `--port 8001`로 변경
-- 프론트엔드: `vite.config.js`에서 포트 변경
+```bash
+# 사용 중인 포트 확인
+netstat -ano | findstr :8000  # Windows
+lsof -i :8000                  # Mac/Linux
 
-## 📚 추가 개발
+# 포트 변경
+python -m uvicorn app.main:app --port 8001
+```
 
-### 캐릭터 생성 기능 추가
-1. 캐릭터 관리 페이지 개발
-2. AI 모델 연동 강화
-3. 이미지 업로드 기능 구현
+### 데이터베이스 초기화
+```bash
+cd backend-api
+rm test.db  # 기존 DB 삭제
+python -m uvicorn app.main:app  # 재시작하면 자동 생성
+```
 
-### 채팅 기능 개선
-1. Redis 설치 및 설정
-2. Socket.IO 서버 활성화
-3. 실시간 채팅 UI 개선
+### npm 에러
+```bash
+# 캐시 정리
+npm cache clean --force
+rm -rf node_modules package-lock.json
+npm install
+```
 
-## 🤝 도움말
+## 🎯 개발 팁
 
-문제가 있으시면 다음을 확인해주세요:
-1. 모든 의존성이 설치되었는지 확인
-2. Python과 Node.js 버전 확인
-3. 방화벽 설정 확인 (포트 8000, 5173) 
+### 빠른 재시작
+- **백엔드**: 코드 수정하면 자동 재시작 (--reload 옵션)
+- **프론트엔드**: HMR로 즉시 반영
+- **채팅 서버**: nodemon으로 자동 재시작
+
+### 로그 확인
+```bash
+# 백엔드 로그
+tail -f backend-api/logs/app.log
+
+# 프론트엔드 로그
+브라우저 개발자 도구 (F12) > Console
+
+# 채팅 서버 로그
+콘솔에 실시간 출력
+```
+
+## 🦆 CAVEDUCK 스타일 체크리스트
+
+- [ ] 3초 이내 페이지 로드
+- [ ] 모바일에서 테스트
+- [ ] 불필요한 기능 제거
+- [ ] 심플한 UI 유지
+- [ ] 직관적인 UX
+
+## 📞 도움이 필요하면
+
+1. **에러 메시지 복사** → Google 검색
+2. **ChatGPT에 물어보기** → 빠른 해결
+3. **GitHub Issues** → 커뮤니티 도움
+
+---
+
+**Remember: Keep It Simple! 🦆** 

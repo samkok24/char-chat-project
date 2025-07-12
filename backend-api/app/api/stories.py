@@ -2,7 +2,7 @@
 스토리 관련 API 라우터
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional
 import uuid
@@ -13,10 +13,17 @@ from app.models.user import User
 from app.models.story import Story
 from app.schemas.story import (
     StoryCreate, StoryUpdate, StoryResponse, StoryListResponse,
-    StoryGenerationRequest, StoryGenerationResponse
+    StoryGenerationRequest, StoryGenerationResponse, StoryWithDetails
+)
+from app.schemas.comment import (
+    CommentCreate, CommentUpdate, StoryCommentResponse, StoryCommentWithUser
 )
 from app.services import story_service
 from app.services.story_service import story_generation_service
+from app.services.comment_service import (
+    create_story_comment, get_story_comments, get_story_comment_by_id,
+    update_story_comment, delete_story_comment
+)
 
 router = APIRouter()
 
@@ -124,7 +131,7 @@ async def get_my_stories(
     )
 
 
-@router.get("/{story_id}", response_model=StoryResponse)
+@router.get("/{story_id}", response_model=StoryWithDetails)
 async def get_story(
     story_id: uuid.UUID,
     background_tasks: BackgroundTasks,
@@ -144,7 +151,20 @@ async def get_story(
     # 조회수 증가 (백그라운드 작업)
     background_tasks.add_task(story_service.increment_story_view_count, db, story_id)
     
-    return StoryResponse.model_validate(story)
+    # StoryResponse 형식으로 먼저 변환
+    story_dict = StoryResponse.model_validate(story).model_dump()
+    
+    # 추가 정보 포함
+    story_dict["creator_username"] = story.creator.username if story.creator else None
+    story_dict["character_name"] = story.character.name if story.character else None
+    
+    # 좋아요 상태 추가 (로그인한 사용자인 경우만)
+    if current_user:
+        story_dict["is_liked"] = await story_service.is_story_liked_by_user(db, story_id, current_user.id)
+    else:
+        story_dict["is_liked"] = False
+    
+    return StoryWithDetails(**story_dict)
 
 
 @router.put("/{story_id}", response_model=StoryResponse)
@@ -257,4 +277,107 @@ async def get_story_like_status(
         "is_liked": is_liked,
         "like_count": story.like_count
     }
+
+
+@router.post("/{story_id}/comments", response_model=StoryCommentResponse, status_code=status.HTTP_201_CREATED)
+async def create_story_comment_endpoint(
+    story_id: uuid.UUID,
+    comment_data: CommentCreate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """스토리에 댓글 작성"""
+    story = await story_service.get_story_by_id(db, story_id)
+    if not story:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="스토리를 찾을 수 없습니다."
+        )
+    
+    if not story.is_public:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="비공개 스토리에는 댓글을 작성할 수 없습니다."
+        )
+    
+    comment = await create_story_comment(db, story_id, current_user.id, comment_data)
+    return comment
+
+
+@router.get("/{story_id}/comments", response_model=List[StoryCommentWithUser])
+async def get_story_comments_endpoint(
+    story_id: uuid.UUID,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db)
+):
+    """스토리 댓글 목록 조회"""
+    story = await story_service.get_story_by_id(db, story_id)
+    if not story:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="스토리를 찾을 수 없습니다."
+        )
+    
+    comments = await get_story_comments(db, story_id, skip, limit)
+    
+    # StoryCommentWithUser 형식으로 변환
+    comments_with_user = []
+    for comment in comments:
+        comment_dict = StoryCommentResponse.from_orm(comment).model_dump()
+        comment_dict["username"] = comment.user.username
+        comment_dict["user_avatar_url"] = getattr(comment.user, "avatar_url", None)
+        comments_with_user.append(StoryCommentWithUser(**comment_dict))
+    
+    return comments_with_user
+
+
+@router.put("/comments/{comment_id}", response_model=StoryCommentResponse)
+async def update_story_comment_endpoint(
+    comment_id: uuid.UUID,
+    comment_data: CommentUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """스토리 댓글 수정"""
+    comment = await get_story_comment_by_id(db, comment_id)
+    if not comment:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="댓글을 찾을 수 없습니다."
+        )
+    
+    # 작성자만 수정 가능
+    if comment.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="이 댓글을 수정할 권한이 없습니다."
+        )
+    
+    updated_comment = await update_story_comment(db, comment_id, comment_data)
+    return updated_comment
+
+
+@router.delete("/comments/{comment_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_story_comment_endpoint(
+    comment_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """스토리 댓글 삭제"""
+    comment = await get_story_comment_by_id(db, comment_id)
+    if not comment:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="댓글을 찾을 수 없습니다."
+        )
+    
+    # 작성자만 삭제 가능
+    if comment.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="이 댓글을 삭제할 권한이 없습니다."
+        )
+    
+    await delete_story_comment(db, comment_id)
 

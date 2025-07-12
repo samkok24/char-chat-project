@@ -2,7 +2,7 @@
  * Socket.IO 컨텍스트
  */
 
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import { io } from 'socket.io-client';
 import { SOCKET_URL } from '../lib/api';
 import { useAuth } from './AuthContext';
@@ -24,6 +24,9 @@ export const SocketProvider = ({ children }) => {
   const [messages, setMessages] = useState([]);
   const [typingUsers, setTypingUsers] = useState([]);
   const [aiTyping, setAiTyping] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [hasMoreMessages, setHasMoreMessages] = useState(true);
+  const [currentPage, setCurrentPage] = useState(1);
   const { user, isAuthenticated } = useAuth();
 
   // Socket 연결 설정
@@ -66,6 +69,8 @@ export const SocketProvider = ({ children }) => {
           console.log('채팅방 나감:', data);
           setCurrentRoom(null);
           setMessages([]);
+          setHasMoreMessages(true); // 상태 초기화
+          setCurrentPage(1); // 상태 초기화
         });
 
         newSocket.on('new_message', (message) => {
@@ -80,6 +85,9 @@ export const SocketProvider = ({ children }) => {
           } else {
             setMessages(prev => [...data.messages, ...prev]);
           }
+          setHasMoreMessages(data.hasMore);
+          setCurrentPage(data.page);
+          setHistoryLoading(false);
         });
 
         newSocket.on('user_typing_start', (data) => {
@@ -103,6 +111,43 @@ export const SocketProvider = ({ children }) => {
         newSocket.on('ai_typing_stop', (data) => {
           console.log('AI 타이핑 종료:', data);
           setAiTyping(false);
+        });
+
+        // AI 메시지 스트리밍 처리
+        newSocket.on('ai_message_chunk', (data) => {
+          setMessages(prev => {
+            const existingMessageIndex = prev.findIndex(m => m.id === data.id);
+            if (existingMessageIndex !== -1) {
+              // 기존 메시지에 청크 추가
+              const updatedMessages = [...prev];
+              updatedMessages[existingMessageIndex] = {
+                ...updatedMessages[existingMessageIndex],
+                content: updatedMessages[existingMessageIndex].content + data.chunk,
+                isStreaming: true,
+              };
+              return updatedMessages;
+            } else {
+              // 새 메시지로 추가
+              return [...prev, {
+                id: data.id,
+                roomId: data.roomId,
+                senderType: 'assistant',
+                senderId: data.senderId,
+                senderName: data.senderName,
+                content: data.chunk,
+                timestamp: data.timestamp,
+                isStreaming: true,
+              }];
+            }
+          });
+        });
+
+        newSocket.on('ai_message_end', (data) => {
+          setMessages(prev => prev.map(m => 
+            m.id === data.id 
+              ? { ...m, content: data.content, isStreaming: false } 
+              : m
+          ));
         });
 
         newSocket.on('ai_error', (data) => {
@@ -129,21 +174,27 @@ export const SocketProvider = ({ children }) => {
   }, [isAuthenticated, user]);
 
   // 채팅방 입장
-  const joinRoom = (roomId) => {
+  const joinRoom = useCallback((roomId) => {
     if (socket && connected) {
+      // 상태 초기화
+      setMessages([]);
+      setHasMoreMessages(true);
+      setCurrentPage(1);
+      setHistoryLoading(true);
+
       socket.emit('join_room', { roomId });
     }
-  };
+  }, [socket, connected]);
 
   // 채팅방 나가기
-  const leaveRoom = (roomId) => {
+  const leaveRoom = useCallback((roomId) => {
     if (socket && connected) {
       socket.emit('leave_room', { roomId });
     }
-  };
+  }, [socket, connected]);
 
   // 메시지 전송
-  const sendMessage = (roomId, content, messageType = 'text') => {
+  const sendMessage = useCallback((roomId, content, messageType = 'text') => {
     if (socket && connected) {
       socket.emit('send_message', {
         roomId,
@@ -151,27 +202,28 @@ export const SocketProvider = ({ children }) => {
         messageType,
       });
     }
-  };
+  }, [socket, connected]);
 
   // 타이핑 상태 전송
-  const startTyping = (roomId) => {
+  const startTyping = useCallback((roomId) => {
     if (socket && connected) {
       socket.emit('typing_start', { roomId });
     }
-  };
+  }, [socket, connected]);
 
-  const stopTyping = (roomId) => {
+  const stopTyping = useCallback((roomId) => {
     if (socket && connected) {
       socket.emit('typing_stop', { roomId });
     }
-  };
+  }, [socket, connected]);
 
   // 메시지 기록 요청
-  const getMessageHistory = (roomId, page = 1, limit = 20) => {
-    if (socket && connected) {
+  const getMessageHistory = useCallback((roomId, page = 1, limit = 50) => {
+    if (socket && connected && !historyLoading) {
+      setHistoryLoading(true);
       socket.emit('get_message_history', { roomId, page, limit });
     }
-  };
+  }, [socket, connected, historyLoading]);
 
   const value = {
     socket,
@@ -180,6 +232,9 @@ export const SocketProvider = ({ children }) => {
     messages,
     typingUsers,
     aiTyping,
+    historyLoading,
+    hasMoreMessages,
+    currentPage,
     joinRoom,
     leaveRoom,
     sendMessage,

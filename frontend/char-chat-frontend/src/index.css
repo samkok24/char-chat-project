@@ -1,1 +1,20 @@
+@import "tailwindcss";
 
+@layer utilities {
+  .border {
+    border-width: 1px;
+  }
+  .streaming-cursor {
+    display: inline-block;
+    width: 8px;
+    height: 1em;
+    background-color: currentColor;
+    animation: blink 1s step-end infinite;
+    margin-left: 2px;
+  }
+  @keyframes blink {
+    50% {
+      opacity: 0;
+    }
+  }
+}

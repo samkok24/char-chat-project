@@ -8,14 +8,19 @@ import os
 
 
 class Settings(BaseSettings):
+    # 환경 설정 (추가됨)
+    ENVIRONMENT: str = "development"
+    DEBUG: bool = True  # DEBUG 필드 추가
+    
     GEMINI_API_KEY: Optional[str] = None
     CLAUDE_API_KEY: Optional[str] = None
     OPENAI_API_KEY: Optional[str] = None
     IMAGEN_API_KEY: Optional[str] = None
     
-    DATABASE_URL: str
+    DATABASE_URL: str = "sqlite:///./data/test.db"  # 기본값 추가
+    REDIS_URL: str = "redis://localhost:6379"  # 이 줄 추가!
     
-    JWT_SECRET_KEY: str
+    JWT_SECRET_KEY: str = "your-super-secret-jwt-key-change-this-in-production"  # 기본값 추가
     JWT_ALGORITHM: str = "HS256"
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = 7
@@ -43,4 +48,3 @@ def validate_settings():
 
 # 설정 검증 실행
 validate_settings()
-

@@ -1,28 +1,310 @@
 """
-캐릭터 관련 서비스
+캐릭터 관련 서비스 - CAVEDUCK 스타일 고급 캐릭터 생성
 """
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, delete, func, and_, or_
 from sqlalchemy.orm import selectinload, joinedload
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import uuid
+import json
 
-from app.models.character import Character, CharacterSetting
+from app.models.character import Character, CharacterSetting, CharacterExampleDialogue
 from app.models.user import User
 from app.models.like import CharacterLike
-from app.schemas.character import CharacterCreate, CharacterUpdate, CharacterSettingCreate, CharacterSettingUpdate
+from app.schemas import (
+    CharacterCreate, 
+    CharacterUpdate, 
+    CharacterSettingCreate,
+    CharacterSettingUpdate,
+    CharacterCreateRequest,
+    CharacterUpdateRequest
+)
 
+
+# 🔥 CAVEDUCK 스타일 고급 캐릭터 생성 서비스
+
+async def create_advanced_character(
+    db: AsyncSession,
+    creator_id: uuid.UUID,
+    character_data: CharacterCreateRequest
+) -> Character:
+    """CAVEDUCK 스타일 고급 캐릭터 생성"""
+    
+    # 1단계: 기본 정보로 캐릭터 생성
+    basic_info = character_data.basic_info
+    
+    character = Character(
+        creator_id=creator_id,
+        # 기본 정보
+        name=basic_info.name,
+        description=basic_info.description,
+        personality=basic_info.personality,
+        speech_style=basic_info.speech_style,
+        greeting=basic_info.greeting,
+        
+        # 세계관 설정
+        world_setting=basic_info.world_setting,
+        user_display_description=basic_info.user_display_description,
+        use_custom_description=basic_info.use_custom_description,
+        
+        # 도입부 시스템 (JSON 저장)
+        introduction_scenes=[scene.model_dump() for scene in basic_info.introduction_scenes],
+        
+        # 캐릭터 타입 및 언어
+        character_type=basic_info.character_type,
+        base_language=basic_info.base_language,
+        
+        # 2단계: 미디어 설정
+        avatar_url=character_data.media_settings.avatar_url if character_data.media_settings else None,
+        image_descriptions=[img.model_dump() for img in character_data.media_settings.image_descriptions] if character_data.media_settings else [],
+        voice_settings=character_data.media_settings.voice_settings.model_dump() if character_data.media_settings and character_data.media_settings.voice_settings else None,
+        
+        # 4단계: 호감도 시스템
+        has_affinity_system=character_data.affinity_system.has_affinity_system if character_data.affinity_system else False,
+        affinity_rules=character_data.affinity_system.affinity_rules if character_data.affinity_system else None,
+        affinity_stages=[stage.model_dump() for stage in character_data.affinity_system.affinity_stages] if character_data.affinity_system else [],
+        
+        # 5단계: 공개 설정
+        is_public=character_data.publish_settings.is_public,
+        custom_module_id=character_data.publish_settings.custom_module_id,
+        use_translation=character_data.publish_settings.use_translation
+    )
+    
+    db.add(character)
+    await db.flush()  # ID 할당
+    
+    # 3단계: 예시 대화 저장
+    if character_data.example_dialogues and character_data.example_dialogues.dialogues:
+        for dialogue in character_data.example_dialogues.dialogues:
+            example_dialogue = CharacterExampleDialogue(
+                character_id=character.id,
+                user_message=dialogue.user_message,
+                character_response=dialogue.character_response,
+                order_index=dialogue.order_index
+            )
+            db.add(example_dialogue)
+    
+    # 고급 캐릭터 설정 생성
+    advanced_setting = CharacterSetting(
+        character_id=character.id,
+        system_prompt=generate_advanced_system_prompt(character, character_data),
+        ai_model='gemini-pro',
+        temperature=0.7,
+        max_tokens=1000,
+        use_memory=True,
+        memory_length=20,
+        response_style='natural'
+    )
+    db.add(advanced_setting)
+    
+    await db.commit()
+    
+    # 완전한 캐릭터 정보 반환
+    return await get_advanced_character_by_id(db, character.id)
+
+
+async def update_advanced_character(
+    db: AsyncSession,
+    character_id: uuid.UUID,
+    character_data: CharacterUpdateRequest
+) -> Optional[Character]:
+    """CAVEDUCK 스타일 고급 캐릭터 수정"""
+    
+    character = await get_character_by_id(db, character_id)
+    if not character:
+        return None
+    
+    # 각 단계별 업데이트 처리
+    update_data = {}
+    
+    # 1단계: 기본 정보 업데이트
+    if character_data.basic_info:
+        basic_info = character_data.basic_info
+        update_data.update({
+            'name': basic_info.name,
+            'description': basic_info.description,
+            'personality': basic_info.personality,
+            'speech_style': basic_info.speech_style,
+            'greeting': basic_info.greeting,
+            'world_setting': basic_info.world_setting,
+            'user_display_description': basic_info.user_display_description,
+            'use_custom_description': basic_info.use_custom_description,
+            'introduction_scenes': [scene.model_dump() for scene in basic_info.introduction_scenes],
+            'character_type': basic_info.character_type,
+            'base_language': basic_info.base_language
+        })
+    
+    # 2단계: 미디어 설정 업데이트
+    if character_data.media_settings:
+        media = character_data.media_settings
+        update_data.update({
+            'avatar_url': media.avatar_url,
+            'image_descriptions': [img.model_dump() for img in media.image_descriptions],
+            'voice_settings': media.voice_settings.model_dump() if media.voice_settings else None
+        })
+    
+    # 4단계: 호감도 시스템 업데이트
+    if character_data.affinity_system:
+        affinity = character_data.affinity_system
+        update_data.update({
+            'has_affinity_system': affinity.has_affinity_system,
+            'affinity_rules': affinity.affinity_rules,
+            'affinity_stages': [stage.model_dump() for stage in affinity.affinity_stages]
+        })
+    
+    # 5단계: 공개 설정 업데이트
+    if character_data.publish_settings:
+        publish = character_data.publish_settings
+        update_data.update({
+            'is_public': publish.is_public,
+            'custom_module_id': publish.custom_module_id,
+            'use_translation': publish.use_translation
+        })
+    
+    # 캐릭터 정보 업데이트
+    if update_data:
+        await db.execute(
+            update(Character)
+            .where(Character.id == character_id)
+            .values(**update_data)
+        )
+    
+    # 3단계: 예시 대화 업데이트
+    if character_data.example_dialogues is not None:
+        # 기존 예시 대화 삭제
+        await db.execute(
+            delete(CharacterExampleDialogue)
+            .where(CharacterExampleDialogue.character_id == character_id)
+        )
+        
+        # 새로운 예시 대화 추가
+        for dialogue in character_data.example_dialogues.dialogues:
+            example_dialogue = CharacterExampleDialogue(
+                character_id=character_id,
+                user_message=dialogue.user_message,
+                character_response=dialogue.character_response,
+                order_index=dialogue.order_index
+            )
+            db.add(example_dialogue)
+    
+    await db.commit()
+    
+    return await get_advanced_character_by_id(db, character_id)
+
+
+async def get_advanced_character_by_id(db: AsyncSession, character_id: uuid.UUID) -> Optional[Character]:
+    """고급 캐릭터 상세 정보 조회 (예시 대화 포함)"""
+    result = await db.execute(
+        select(Character)
+        .options(
+            selectinload(Character.settings),
+            selectinload(Character.example_dialogues),
+            joinedload(Character.creator)
+        )
+        .where(Character.id == character_id)
+    )
+    return result.scalar_one_or_none()
+
+
+def generate_advanced_system_prompt(character: Character, character_data: CharacterCreateRequest) -> str:
+    """고급 캐릭터를 위한 시스템 프롬프트 생성"""
+    
+    prompt_parts = []
+    
+    # 기본 캐릭터 정보
+    prompt_parts.append(f"당신은 {character.name}입니다.")
+    
+    if character.personality:
+        prompt_parts.append(f"성격: {character.personality}")
+    
+    if character.speech_style:
+        prompt_parts.append(f"말투: {character.speech_style}")
+    
+    # 세계관 설정
+    if character.world_setting:
+        prompt_parts.append(f"세계관: {character.world_setting}")
+    
+    # 도입부 컨텍스트 (비밀 정보 포함)
+    if character.introduction_scenes:
+        for i, scene in enumerate(character.introduction_scenes):
+            if isinstance(scene, dict) and scene.get('secret'):
+                prompt_parts.append(f"비밀 정보 {i+1}: {scene['secret']}")
+    
+    # 호감도 시스템
+    if character.has_affinity_system and character.affinity_rules:
+        prompt_parts.append(f"호감도 규칙: {character.affinity_rules}")
+    
+    # 예시 대화 활용 (프롬프트에 포함하지 않고 별도 처리)
+    prompt_parts.append("사용자와 자연스럽고 일관된 대화를 나누세요.")
+    
+    return "\n\n".join(prompt_parts)
+
+
+async def get_character_example_dialogues(
+    db: AsyncSession, 
+    character_id: uuid.UUID
+) -> List[CharacterExampleDialogue]:
+    """캐릭터의 예시 대화 목록 조회"""
+    result = await db.execute(
+        select(CharacterExampleDialogue)
+        .where(CharacterExampleDialogue.character_id == character_id)
+        .order_by(CharacterExampleDialogue.order_index)
+    )
+    return result.scalars().all()
+
+
+async def add_character_example_dialogue(
+    db: AsyncSession,
+    character_id: uuid.UUID,
+    user_message: str,
+    character_response: str,
+    order_index: int = 0
+) -> CharacterExampleDialogue:
+    """캐릭터 예시 대화 추가"""
+    dialogue = CharacterExampleDialogue(
+        character_id=character_id,
+        user_message=user_message,
+        character_response=character_response,
+        order_index=order_index
+    )
+    db.add(dialogue)
+    await db.commit()
+    await db.refresh(dialogue)
+    return dialogue
+
+
+async def delete_character_example_dialogue(
+    db: AsyncSession,
+    dialogue_id: uuid.UUID
+) -> bool:
+    """캐릭터 예시 대화 삭제"""
+    result = await db.execute(
+        delete(CharacterExampleDialogue)
+        .where(CharacterExampleDialogue.id == dialogue_id)
+    )
+    await db.commit()
+    return result.rowcount > 0
+
+
+# 🔧 기존 서비스 함수들 (레거시 호환성)
 
 async def create_character(
     db: AsyncSession,
     creator_id: uuid.UUID,
     character_data: CharacterCreate
 ) -> Character:
-    """캐릭터 생성"""
+    """캐릭터 생성 (레거시)"""
+    # 🔧 레거시 스키마를 새로운 모델 구조에 매핑
+    character_dict = character_data.model_dump()
+    
+    # background_story를 world_setting으로 매핑
+    if 'background_story' in character_dict:
+        character_dict['world_setting'] = character_dict.pop('background_story')
+    
     character = Character(
         creator_id=creator_id,
-        **character_data.model_dump()
+        **character_dict
     )
     db.add(character)
     
@@ -117,6 +399,10 @@ async def update_character(
 ) -> Optional[Character]:
     """캐릭터 정보 수정"""
     update_data = character_data.model_dump(exclude_unset=True)
+    
+    # 🔧 레거시 스키마를 새로운 모델 구조에 매핑
+    if 'background_story' in update_data:
+        update_data['world_setting'] = update_data.pop('background_story')
     
     if update_data:
         await db.execute(

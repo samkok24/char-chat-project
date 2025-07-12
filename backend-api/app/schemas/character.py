@@ -1,69 +1,312 @@
 """
-캐릭터 관련 Pydantic 스키마
+캐릭터 관련 Pydantic 스키마 - CAVEDUCK 스타일 고급 캐릭터 생성
 """
 
-from pydantic import BaseModel, Field, ConfigDict, computed_field
-from typing import Optional
+from pydantic import BaseModel, Field, ConfigDict, computed_field, HttpUrl, validator
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 from decimal import Decimal
 import uuid
+from uuid import UUID
 
+
+# 🔥 1단계: 기본 정보 스키마
+
+class IntroductionScene(BaseModel):
+    """도입부 시나리오"""
+    title: str = Field(..., max_length=100)
+    content: str = Field(..., max_length=2000)
+    secret: Optional[str] = Field(None, max_length=1000)  # 비밀 정보
+
+
+class CharacterBasicInfo(BaseModel):
+    """캐릭터 기본 정보 (1단계)"""
+    # 기본 정보
+    name: str = Field(..., min_length=1, max_length=100)
+    description: Optional[str] = Field(None)
+    personality: Optional[str] = Field(None)
+    background_story: Optional[str] = Field(None)
+    avatar_url: Optional[HttpUrl] = None
+    is_public: bool = True
+    
+    # 캐릭터 타입 및 언어
+    character_type: str = Field(default="roleplay", pattern="^(roleplay|simulator)$")
+    base_language: str = Field(default="ko", max_length=10)
+    
+    tags: Optional[List[str]] = Field(default_factory=list)
+    example_dialogues: Optional[Dict[str, str]] = Field(default_factory=dict)
+
+
+# 🎨 2단계: 미디어 설정 스키마
+
+class ImageDescription(BaseModel):
+    """이미지 설명"""
+    description: str = Field(..., max_length=500)
+    url: Optional[str] = Field(None, max_length=500)
+
+
+class VoiceSettings(BaseModel):
+    """음성 설정"""
+    voice_id: Optional[str] = None
+    voice_style: Optional[str] = None
+    enabled: bool = False
+
+
+class CharacterMediaSettings(BaseModel):
+    """캐릭터 미디어 설정 (2단계)"""
+    avatar_url: Optional[str] = Field(None, max_length=500)
+    image_descriptions: List[ImageDescription] = Field(default_factory=list)
+    voice_settings: Optional[VoiceSettings] = None
+
+
+# 💬 3단계: 예시 대화 스키마
+
+class ExampleDialogue(BaseModel):
+    """예시 대화"""
+    user_message: str = Field(..., max_length=500)
+    character_response: str = Field(..., max_length=1000)
+    order_index: int = 0
+
+
+class CharacterExampleDialogues(BaseModel):
+    """캐릭터 예시 대화 설정 (3단계)"""
+    dialogues: List[ExampleDialogue] = Field(default_factory=list)
+
+
+# ❤️ 4단계: 호감도 시스템 스키마
+
+class AffinityStage(BaseModel):
+    """호감도 단계"""
+    min_value: int = Field(..., ge=0)
+    max_value: Optional[int] = Field(None, ge=0)
+    description: str = Field(..., max_length=500)
+
+
+class CharacterAffinitySystem(BaseModel):
+    """캐릭터 호감도 시스템 (4단계)"""
+    has_affinity_system: bool = False
+    affinity_rules: Optional[str] = Field(None, max_length=2000)  # 증감 규칙
+    affinity_stages: List[AffinityStage] = Field(default_factory=list)
+
+
+# 🚀 5단계: 공개 설정 스키마
+
+class CharacterPublishSettings(BaseModel):
+    """캐릭터 공개 설정 (5단계)"""
+    is_public: bool = True
+    custom_module_id: Optional[uuid.UUID] = None
+    use_translation: bool = True
+
+
+# 🔧 통합 캐릭터 생성/수정 스키마
+
+class CharacterCreateRequest(BaseModel):
+    """CAVEDUCK 스타일 캐릭터 생성 요청"""
+    # 1단계: 기본 정보
+    basic_info: CharacterBasicInfo
+    
+    # 2단계: 미디어 설정
+    media_settings: Optional[CharacterMediaSettings] = None
+    
+    # 3단계: 예시 대화
+    example_dialogues: Optional[CharacterExampleDialogues] = None
+    
+    # 4단계: 호감도 시스템
+    affinity_system: Optional[CharacterAffinitySystem] = None
+    
+    # 5단계: 공개 설정
+    publish_settings: CharacterPublishSettings = Field(default_factory=CharacterPublishSettings)
+
+
+class CharacterUpdateRequest(BaseModel):
+    """CAVEDUCK 스타일 캐릭터 수정 요청"""
+    # 모든 필드를 Optional로 설정
+    basic_info: Optional[CharacterBasicInfo] = None
+    media_settings: Optional[CharacterMediaSettings] = None
+    example_dialogues: Optional[CharacterExampleDialogues] = None
+    affinity_system: Optional[CharacterAffinitySystem] = None
+    publish_settings: Optional[CharacterPublishSettings] = None
+
+
+# 📊 응답 스키마
+
+class CharacterExampleDialogueResponse(BaseModel):
+    """예시 대화 응답"""
+    model_config = ConfigDict(from_attributes=True)
+    
+    id: uuid.UUID
+    user_message: str
+    character_response: str
+    order_index: int
+    created_at: datetime
+
+
+class CharacterSettingResponse(BaseModel):
+    """캐릭터 AI 설정 응답"""
+    model_config = ConfigDict(from_attributes=True)
+    
+    id: uuid.UUID
+    character_id: uuid.UUID
+    ai_model: str
+    temperature: Decimal
+    max_tokens: int
+    system_prompt: Optional[str]
+    custom_prompt_template: Optional[str]
+    use_memory: bool
+    memory_length: int
+    response_style: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class CharacterDetailResponse(BaseModel):
+    """캐릭터 상세 정보 응답"""
+    model_config = ConfigDict(from_attributes=True)
+    
+    # 기본 정보
+    id: uuid.UUID
+    creator_id: uuid.UUID
+    name: str
+    description: Optional[str]
+    personality: Optional[str]
+    speech_style: Optional[str]
+    greeting: Optional[str]
+    
+    # 세계관
+    world_setting: Optional[str]
+    user_display_description: Optional[str]
+    use_custom_description: bool
+    
+    # 도입부 (JSON 형태로 저장된 데이터)
+    introduction_scenes: Optional[List[Dict[str, Any]]]
+    
+    # 캐릭터 타입
+    character_type: str
+    base_language: str
+    
+    # 미디어
+    avatar_url: Optional[str]
+    image_descriptions: Optional[List[Dict[str, Any]]]
+    voice_settings: Optional[Dict[str, Any]]
+    
+    # 호감도 시스템
+    has_affinity_system: bool
+    affinity_rules: Optional[str]
+    affinity_stages: Optional[List[Dict[str, Any]]]
+    
+    # 공개 설정
+    is_public: bool
+    is_active: bool
+    custom_module_id: Optional[uuid.UUID]
+    use_translation: bool
+    
+    # 통계
+    chat_count: int
+    like_count: int
+    
+    # 타임스탬프
+    created_at: datetime
+    updated_at: datetime
+    
+    # 관련 데이터
+    example_dialogues: List[CharacterExampleDialogueResponse] = Field(default_factory=list)
+    settings: Optional[CharacterSettingResponse] = None
+    creator_username: Optional[str] = None
+
+
+class CharacterListResponse(BaseModel):
+    """캐릭터 목록 응답 (간소화)"""
+    model_config = ConfigDict(from_attributes=True)
+    
+    id: uuid.UUID
+    name: str
+    description: Optional[str]
+    greeting: Optional[str]
+    avatar_url: Optional[str]
+    chat_count: int
+    like_count: int
+    is_public: bool
+    created_at: datetime
+    creator_username: Optional[str] = None
+
+
+# 🔧 고급 설정 스키마
+
+class WorldSettingCreate(BaseModel):
+    """세계관 생성"""
+    name: str = Field(..., max_length=100)
+    description: str = Field(..., max_length=3000)
+    rules: Optional[str] = Field(None, max_length=2000)
+    is_public: bool = False
+
+
+class WorldSettingResponse(BaseModel):
+    """세계관 응답"""
+    model_config = ConfigDict(from_attributes=True)
+    
+    id: uuid.UUID
+    name: str
+    description: str
+    rules: Optional[str]
+    is_public: bool
+    usage_count: int
+    created_at: datetime
+
+
+class CustomModuleCreate(BaseModel):
+    """커스텀 모듈 생성"""
+    name: str = Field(..., max_length=100)
+    description: Optional[str] = Field(None, max_length=1000)
+    custom_prompt: Optional[str] = Field(None, max_length=5000)
+    lorebook: Optional[Dict[str, Any]] = None
+    is_public: bool = False
+
+
+class CustomModuleResponse(BaseModel):
+    """커스텀 모듈 응답"""
+    model_config = ConfigDict(from_attributes=True)
+    
+    id: uuid.UUID
+    name: str
+    description: Optional[str]
+    is_public: bool
+    usage_count: int
+    created_at: datetime
+
+
+# 레거시 호환성을 위한 기존 스키마들 (단순화된 버전)
 
 class CharacterBase(BaseModel):
-    """캐릭터 기본 스키마"""
+    """캐릭터 기본 스키마 (레거시 호환성)"""
     name: str = Field(..., min_length=1, max_length=100)
     description: Optional[str] = Field(None, max_length=1000)
     personality: Optional[str] = Field(None, max_length=2000)
+    speech_style: Optional[str] = Field(None, max_length=2000)
+    greeting: Optional[str] = Field(None, max_length=500)
     background_story: Optional[str] = Field(None, max_length=5000)
     avatar_url: Optional[str] = Field(None, max_length=500)
     is_public: bool = True
 
 
 class CharacterCreate(CharacterBase):
-    """캐릭터 생성 스키마"""
+    """캐릭터 생성 스키마 (레거시)"""
     pass
 
 
 class CharacterUpdate(BaseModel):
-    """캐릭터 업데이트 스키마"""
+    """캐릭터 업데이트 스키마 (레거시)"""
     name: Optional[str] = Field(None, min_length=1, max_length=100)
     description: Optional[str] = Field(None, max_length=1000)
     personality: Optional[str] = Field(None, max_length=2000)
+    speech_style: Optional[str] = Field(None, max_length=2000)
+    greeting: Optional[str] = Field(None, max_length=500)
     background_story: Optional[str] = Field(None, max_length=5000)
     avatar_url: Optional[str] = Field(None, max_length=500)
     is_public: Optional[bool] = None
 
 
-class CharacterSettingBase(BaseModel):
-    """캐릭터 설정 기본 스키마"""
-    system_prompt: Optional[str] = Field(None, max_length=5000)
-    temperature: Optional[Decimal] = Field(0.7, ge=0.0, le=2.0)
-    max_tokens: Optional[int] = Field(1000, ge=1, le=4000)
-    ai_model: Optional[str] = Field("gemini-pro", max_length=50)
-
-
-class CharacterSettingCreate(CharacterSettingBase):
-    """캐릭터 설정 생성 스키마"""
-    pass
-
-
-class CharacterSettingUpdate(CharacterSettingBase):
-    """캐릭터 설정 업데이트 스키마"""
-    pass
-
-
-class CharacterSettingResponse(CharacterSettingBase):
-    """캐릭터 설정 응답 스키마"""
-    model_config = ConfigDict(from_attributes=True)
-    
-    id: uuid.UUID
-    character_id: uuid.UUID
-    created_at: datetime
-    updated_at: datetime
-
-
 class CharacterResponse(CharacterBase):
-    """캐릭터 응답 스키마"""
+    """캐릭터 응답 스키마 (레거시)"""
     model_config = ConfigDict(from_attributes=True)
     
     id: uuid.UUID
@@ -73,24 +316,30 @@ class CharacterResponse(CharacterBase):
     like_count: int
     created_at: datetime
     updated_at: datetime
-    # settings: Optional[CharacterSettingResponse] = None # 이 필드를 제거하여 문제 해결
-
-
-class CharacterListResponse(BaseModel):
-    """캐릭터 목록 응답 스키마"""
-    model_config = ConfigDict(from_attributes=True)
-    
-    id: uuid.UUID
-    name: str
-    description: Optional[str]
-    avatar_url: Optional[str]
-    chat_count: int
-    like_count: int
-    is_public: bool
-    created_at: datetime
 
 
 class CharacterWithCreator(CharacterResponse):
-    """캐릭터 정보 + 생성자 정보"""
+    """캐릭터 정보 + 생성자 정보 (레거시)"""
     creator_username: Optional[str] = None
+    is_liked: Optional[bool] = False
+
+
+class CharacterSetting(BaseModel):
+    ai_model: str = Field("gpt-4-turbo", max_length=100)
+    system_prompt: Optional[str] = Field(None)
+    temperature: float = Field(0.7, ge=0.0, le=2.0)
+    max_tokens: int = Field(1024, ge=1)
+    use_memory: bool = True
+    memory_length: int = Field(10, ge=1)
+
+class CharacterSettingCreate(CharacterSetting):
+    pass
+
+class CharacterSettingUpdate(BaseModel):
+    ai_model: Optional[str] = Field(None, max_length=100)
+    system_prompt: Optional[str] = Field(None)
+    temperature: Optional[float] = Field(None, ge=0.0, le=2.0)
+    max_tokens: Optional[int] = Field(None, ge=1)
+    use_memory: Optional[bool] = None
+    memory_length: Optional[int] = Field(None, ge=1)
 
