@@ -4,11 +4,12 @@ CAVEDUCK 스타일: "Chat First, Story Later"
 """
 
 from fastapi import FastAPI, HTTPException
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from contextlib import asynccontextmanager
 import logging
-
+import os
 from app.core.config import settings
 from app.core.database import engine, Base
 
@@ -19,7 +20,7 @@ from app.api.characters import router as characters_router  # ✅ 필수: 캐릭
 from app.api.stories import router as stories_router    # ⏳ 나중에: 스토리 API (차별점)
 from app.api.payment import router as payment_router    # ⏳ 나중에: 결제 API (단순화 예정)
 from app.api.point import router as point_router        # ⏳ 나중에: 포인트 API (단순화 예정)
-
+from app.api.files import router as files_router
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -52,7 +53,8 @@ app = FastAPI(
     redoc_url="/redoc" if settings.ENVIRONMENT == "development" else None,
     lifespan=lifespan
 )
-
+os.makedirs("/app/data/uploads", exist_ok=True) # 디렉토리 존재 보장
+app.mount("/static", StaticFiles(directory="/app/data/uploads"), name="static")
 # CORS 미들웨어 설정
 app.add_middleware(
     CORSMiddleware,
@@ -75,6 +77,8 @@ if settings.ENVIRONMENT == "production":
 app.include_router(chat_router, prefix="/chat", tags=["🔥 채팅 (최우선)"])
 app.include_router(auth_router, prefix="/auth", tags=["✅ 인증 (필수)"])
 app.include_router(characters_router, prefix="/characters", tags=["✅ 캐릭터 (필수)"])
+app.include_router(files_router, prefix="/files", tags=["🗂️ 파일"])
+
 
 # ⏳ Phase 5+: 나중에 개발할 기능들
 app.include_router(stories_router, prefix="/stories", tags=["⏳ 스토리 (차별점)"])

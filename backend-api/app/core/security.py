@@ -145,3 +145,34 @@ def verify_password_reset_token(token: str) -> Optional[str]:
     except JWTError:
         return None
 
+
+async def get_current_user_optional(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    db: AsyncSession = Depends(get_db)
+) -> Optional[User]:
+    """
+    현재 사용자를 가져오지만, 필수는 아닙니다.
+    토큰이 없거나 유효하지 않으면 None을 반환합니다.
+    """
+    if credentials is None:
+        return None
+
+    try:
+        token = credentials.credentials
+        payload = verify_token(token, "access")
+        if payload is None:
+            return None
+        
+        user_id: str = payload.get("sub")
+        if user_id is None:
+            return None
+            
+    except JWTError:
+        return None
+    
+    # 순환 참조 방지를 위해 함수 내에서 임포트
+    from app.services.user_service import get_user_by_id
+    user = await get_user_by_id(db, user_id)
+    
+    return user
+

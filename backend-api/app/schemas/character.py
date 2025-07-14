@@ -25,7 +25,19 @@ class CharacterBasicInfo(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     description: Optional[str] = Field(None)
     personality: Optional[str] = Field(None)
-    background_story: Optional[str] = Field(None)
+    speech_style: Optional[str] = Field(None, max_length=2000)
+    greeting: Optional[str] = Field(None, max_length=500)
+
+    # 세계관 설정
+    world_setting: Optional[str] = Field(None)
+    user_display_description: Optional[str] = Field(None)
+    use_custom_description: bool = False
+
+    # 도입부 시스템
+    introduction_scenes: List[IntroductionScene] = Field(default_factory=list)
+
+    # 레거시 호환 및 기타 필드
+    background_story: Optional[str] = Field(None, max_length=5000, description="world_setting으로 대체됨")
     avatar_url: Optional[HttpUrl] = None
     is_public: bool = True
     
@@ -212,7 +224,7 @@ class CharacterDetailResponse(BaseModel):
     example_dialogues: List[CharacterExampleDialogueResponse] = Field(default_factory=list)
     settings: Optional[CharacterSettingResponse] = None
     creator_username: Optional[str] = None
-
+    is_liked: Optional[bool] = False
 
 class CharacterListResponse(BaseModel):
     """캐릭터 목록 응답 (간소화)"""
@@ -320,6 +332,7 @@ class CharacterResponse(CharacterBase):
 
 class CharacterWithCreator(CharacterResponse):
     """캐릭터 정보 + 생성자 정보 (레거시)"""
+    creator_id: uuid.UUID
     creator_username: Optional[str] = None
     is_liked: Optional[bool] = False
 

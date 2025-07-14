@@ -20,12 +20,23 @@ async def create_character_comment(
     comment_data: CommentCreate
 ) -> CharacterComment:
     """캐릭터 댓글 생성"""
+    # 1. 대상 캐릭터를 먼저 조회합니다.
+    character = await db.get(Character, character_id)
+    if not character:
+        # 이 경우는 보통 API 레벨에서 처리되지만, 안전을 위해 추가합니다.
+        raise ValueError("Character not found to update comment count.")
+
+    # 2. 댓글 객체를 생성합니다.
     comment = CharacterComment(
         character_id=character_id,
         user_id=user_id,
         content=comment_data.content
     )
     db.add(comment)
+
+    # 3. 조회된 캐릭터 객체의 댓글 수를 1 증가시킵니다.
+    character.comment_count += 1
+    
     await db.commit()
     await db.refresh(comment)
     return comment
@@ -81,13 +92,30 @@ async def delete_character_comment(
     db: AsyncSession,
     comment_id: uuid.UUID
 ) -> bool:
-    """댓글 삭제"""
-    result = await db.execute(
-        delete(CharacterComment)
-        .where(CharacterComment.id == comment_id)
+    """댓글 삭제 (안정성 강화 버전)"""
+    # 1. 삭제할 댓글을 조회하여, 어떤 캐릭터에 속해있는지 character_id를 확보합니다.
+    #    .with_for_update()를 사용하여 이 레코드를 비관적 잠금(pessimistic lock) 처리할 수 있으나,
+    #    현재 시스템에서는 동시 삭제 가능성이 낮으므로 간단하게 구현합니다.
+    comment_to_delete = await db.get(CharacterComment, comment_id)
+    if not comment_to_delete:
+        return False
+        
+    character_id_to_update = comment_to_delete.character_id
+
+    # 2. 댓글을 삭제 대기열에 추가합니다.
+    await db.delete(comment_to_delete)
+    
+    # 3. 별도의 UPDATE 구문을 사용하여 'comment_count'를 1 감소시킵니다.
+    #    이렇게 하면 세션 상태에 의존하지 않아 훨씬 안정적입니다.
+    await db.execute(
+        update(Character)
+        .where(Character.id == character_id_to_update)
+        .values(comment_count=Character.comment_count - 1)
     )
+
+    # 4. 모든 변경사항(DELETE와 UPDATE)을 하나의 트랜잭션으로 커밋합니다.
     await db.commit()
-    return result.rowcount > 0
+    return True
 
 
 async def count_character_comments(

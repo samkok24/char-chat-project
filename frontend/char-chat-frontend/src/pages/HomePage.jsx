@@ -3,8 +3,8 @@
  * CAVEDUCK 스타일: API 캐싱으로 성능 최적화
  */
 
-import React, { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import React, { useState, useEffect } from 'react';
+import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '../contexts/AuthContext';
 import { charactersAPI } from '../lib/api';
@@ -45,6 +45,7 @@ const HomePage = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const { user, isAuthenticated, logout } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
 
   // 🚀 React Query를 사용한 캐릭터 목록 캐싱
   const { 
@@ -66,9 +67,15 @@ const HomePage = () => {
         return []; // 실패 시 빈 배열 반환
       }
     },
-    staleTime: 5 * 60 * 1000, // 5분간 캐시 유지
+    staleTime: 30 * 1000, // 30초간 캐시 유지
     cacheTime: 10 * 60 * 1000, // 10분간 메모리에 보관
+    refetchOnWindowFocus: true, // 창 포커스 시 자동 갱신
   });
+
+  // 페이지 진입 시마다 데이터 새로고침
+  useEffect(() => {
+    refetch();
+  }, [location, refetch]);
 
   const handleSearch = (e) => {
     e.preventDefault();
@@ -86,7 +93,8 @@ const HomePage = () => {
       navigate('/login');
       return;
     }
-    navigate(`/chat/${characterId}`);
+    // "대화하기" 버튼은 실제 채팅 페이지로 바로 이동
+    navigate(`/ws/chat/${characterId}`);
   };
 
   const createCharacter = () => {
@@ -147,8 +155,8 @@ const HomePage = () => {
 
         <Button
           onClick={(e) => {
-            e.stopPropagation();
-            startChat(character.id);
+            e.stopPropagation(); // 카드 전체의 클릭 이벤트 전파 방지
+            startChat(character.id); // "대화하기" 버튼은 startChat 함수 호출
           }}
           className="w-full bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 transition-all duration-200"
           size="sm"

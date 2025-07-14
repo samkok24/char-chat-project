@@ -19,6 +19,7 @@ async def get_or_create_chat_room(
     """사용자와 캐릭터 간의 채팅방을 가져오거나 새로 생성"""
     result = await db.execute(
         select(ChatRoom)
+        .options(selectinload(ChatRoom.character))  # character 정보를 즉시 로드하도록 수정
         .where(ChatRoom.user_id == user_id, ChatRoom.character_id == character_id)
     )
     chat_room = result.scalar_one_or_none()

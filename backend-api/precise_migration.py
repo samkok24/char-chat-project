@@ -43,6 +43,10 @@ TABLES_TO_CREATE = {
 # --- 추가해야 할 컬럼 목록 ---
 # (테이블 이름, 컬럼 이름, 컬럼 타입 및 제약조건)
 COLUMNS_TO_ADD = {
+    "users": [
+        ("bio", "VARCHAR(500)"),
+        ("avatar_url", "VARCHAR(500)")
+    ],
     "characters": [
         ("speech_style", "TEXT"),
         ("greeting", "TEXT"),
@@ -59,6 +63,7 @@ COLUMNS_TO_ADD = {
         ("affinity_stages", "TEXT"), # TEXT for JSON
         ("custom_module_id", "CHAR(36)"),
         ("use_translation", "BOOLEAN DEFAULT 1"),
+        ("comment_count", "INTEGER DEFAULT 0")
     ],
     "character_settings": [
         ("custom_prompt_template", "TEXT"),
@@ -157,5 +162,5 @@ def get_all_table_schemas():
             print("\n🔌 데이터베이스 연결을 닫았습니다.")
 
 if __name__ == "__main__":
-    # run_precise_migration()
-    get_all_table_schemas() 
+    run_precise_migration()
+    # get_all_table_schemas() 

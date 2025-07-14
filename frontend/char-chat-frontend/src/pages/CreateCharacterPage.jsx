@@ -3,10 +3,10 @@
  * 5단계 탭 시스템: 기본정보 → 미디어 → 예시대화 → 호감도 → 공개설정
  */
 
-import React, { useState, useEffect } from 'react';
-import { useNavigate, Link, useParams } from 'react-router-dom';
+import React, { useState, useEffect, useRef, useMemo } from 'react'; // useMemo 추가
+import { useNavigate, Link, useParams,useLocation  } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { charactersAPI } from '../lib/api';
+import { charactersAPI, filesAPI, API_BASE_URL } from '../lib/api';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
@@ -36,12 +36,14 @@ import {
   Sparkles,
   BookOpen,
   Mic,
-  Palette
+  Palette,
+  X
 } from 'lucide-react';
 
 const CreateCharacterPage = () => {
   const { characterId } = useParams();
   const isEditMode = !!characterId;
+  const fileInputRef = useRef(null);
 
   // 🔥 CAVEDUCK 스타일 5단계 데이터 구조
   const [activeTab, setActiveTab] = useState('basic');
@@ -62,10 +64,11 @@ const CreateCharacterPage = () => {
       character_type: 'roleplay',
       base_language: 'ko'
     },
-    // 2단계: 미디어 설정
+    // [1단계] 상태 구조 변경: 역할을 명확히 분리
     media_settings: {
       avatar_url: '',
-      image_descriptions: [],
+      image_descriptions: [], // 서버에 저장된 기존 이미지 {url, description}
+      newly_added_files: [],  // 새로 추가할 파일 목록 (File 객체)
       voice_settings: {
         voice_id: null,
         voice_style: null,
@@ -153,21 +156,13 @@ const CreateCharacterPage = () => {
   const loadCharacterData = async () => {
     setLoading(true);
     try {
-      // 🔥 고급 캐릭터 상세 정보 API 호출
-      const response = await fetch(`/api/characters/advanced/${characterId}`, {
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token')}`
-        }
-      });
-      
-      if (!response.ok) {
-        throw new Error('캐릭터 정보를 불러올 수 없습니다.');
-      }
-      
-      const char = await response.json();
+      // 이제 API가 항상 일관된 형식의 데이터를 주므로, 코드가 매우 깔끔해집니다.
+      const response = await charactersAPI.getCharacter(characterId);
+      const char = response.data;
       
       // 🔥 고급 캐릭터 데이터 구조로 매핑
       setFormData(prev => ({
+        ...prev,
         basic_info: {
           name: char.name || '',
           description: char.description || '',
@@ -182,17 +177,18 @@ const CreateCharacterPage = () => {
           base_language: char.base_language || 'ko'
         },
         media_settings: {
+          ...prev.media_settings, 
           avatar_url: char.avatar_url || '',
           image_descriptions: char.image_descriptions || [],
           voice_settings: char.voice_settings || {
             voice_id: null,
             voice_style: null,
             enabled: false
-          }
+          },
+          // local_image_previews: char.image_descriptions?.map(img => img.url) || [],
+          newly_added_files: [],
         },
-        example_dialogues: {
-          dialogues: char.example_dialogues || []
-        },
+        example_dialogues: { dialogues: char.example_dialogues || [] },
         affinity_system: {
           has_affinity_system: char.has_affinity_system || false,
           affinity_rules: char.affinity_rules || '',
@@ -259,119 +255,74 @@ const CreateCharacterPage = () => {
     updateFormData('example_dialogues', 'dialogues', dialogues);
   };
 
+  const handleImageUpload = (e) => {
+    const files = Array.from(e.target.files);
+    if (files.length === 0) return;
+    setFormData(prev => ({
+      ...prev,
+      media_settings: {
+        ...prev.media_settings,
+        newly_added_files: [...prev.media_settings.newly_added_files, ...files]
+      }
+    }));
+  };
+
+  // [2단계] 이미지 제거 핸들러 분리
+  const handleRemoveExistingImage = (indexToRemove) => {
+    setFormData(prev => ({
+      ...prev,
+      media_settings: {
+        ...prev.media_settings,
+        image_descriptions: prev.media_settings.image_descriptions.filter((_, index) => index !== indexToRemove)
+      }
+    }));
+  };
+  
+  const handleRemoveNewFile = (indexToRemove) => {
+    setFormData(prev => ({
+      ...prev,
+      media_settings: {
+        ...prev.media_settings,
+        newly_added_files: prev.media_settings.newly_added_files.filter((_, index) => index !== indexToRemove)
+      }
+    }));
+  };
+
+  // [3단계] 저장 로직 단순화
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
     setError('');
 
     try {
+      let uploadedImageUrls = [];
+      if (formData.media_settings.newly_added_files.length > 0) {
+        const uploadResponse = await filesAPI.uploadImages(formData.media_settings.newly_added_files);
+        uploadedImageUrls = uploadResponse.data;
+      }
+      
+      const existingImageUrls = formData.media_settings.image_descriptions.map(img => img.url);
+      const finalImageUrls = [...existingImageUrls, ...uploadedImageUrls];
+
+      const characterData = {
+        ...formData,
+        media_settings: {
+          ...formData.media_settings,
+          image_descriptions: finalImageUrls.map(url => ({ description: '', url }))
+        }
+      };
+
       if (isEditMode) {
-        // 🔥 고급 캐릭터 수정 API 호출
-        const updateData = {
-          basic_info: {
-            name: formData.basic_info.name,
-            description: formData.basic_info.description,
-            personality: formData.basic_info.personality,
-            speech_style: formData.basic_info.speech_style,
-            greeting: formData.basic_info.greeting,
-            world_setting: formData.basic_info.world_setting,
-            user_display_description: formData.basic_info.user_display_description,
-            use_custom_description: formData.basic_info.use_custom_description,
-            introduction_scenes: formData.basic_info.introduction_scenes,
-            character_type: formData.basic_info.character_type,
-            base_language: formData.basic_info.base_language
-          },
-          media_settings: {
-            avatar_url: formData.media_settings.avatar_url,
-            image_descriptions: formData.media_settings.image_descriptions,
-            voice_settings: formData.media_settings.voice_settings
-          },
-          example_dialogues: {
-            dialogues: formData.example_dialogues.dialogues
-          },
-          affinity_system: {
-            has_affinity_system: formData.affinity_system.has_affinity_system,
-            affinity_rules: formData.affinity_system.affinity_rules,
-            affinity_stages: formData.affinity_system.affinity_stages
-          },
-          publish_settings: {
-            is_public: formData.publish_settings.is_public,
-            custom_module_id: formData.publish_settings.custom_module_id,
-            use_translation: formData.publish_settings.use_translation
-          }
-        };
-        
-        const response = await fetch(`/api/characters/advanced/${characterId}`, {
-          method: 'PUT',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${localStorage.getItem('token')}`
-          },
-          body: JSON.stringify(updateData)
-        });
-        
-        if (!response.ok) {
-          const errorData = await response.json();
-          throw new Error(errorData.detail || '캐릭터 수정에 실패했습니다.');
-        }
-        
-        navigate('/my-characters');
+        await charactersAPI.updateAdvancedCharacter(characterId, characterData);
+        navigate(`/characters/${characterId}`, { state: { fromEdit: true } });
       } else {
-        // 🔥 고급 캐릭터 생성 API 호출
-        const createData = {
-          basic_info: {
-            name: formData.basic_info.name,
-            description: formData.basic_info.description,
-            personality: formData.basic_info.personality,
-            speech_style: formData.basic_info.speech_style,
-            greeting: formData.basic_info.greeting,
-            world_setting: formData.basic_info.world_setting,
-            user_display_description: formData.basic_info.user_display_description,
-            use_custom_description: formData.basic_info.use_custom_description,
-            introduction_scenes: formData.basic_info.introduction_scenes,
-            character_type: formData.basic_info.character_type,
-            base_language: formData.basic_info.base_language
-          },
-          media_settings: {
-            avatar_url: formData.media_settings.avatar_url,
-            image_descriptions: formData.media_settings.image_descriptions,
-            voice_settings: formData.media_settings.voice_settings
-          },
-          example_dialogues: {
-            dialogues: formData.example_dialogues.dialogues
-          },
-          affinity_system: {
-            has_affinity_system: formData.affinity_system.has_affinity_system,
-            affinity_rules: formData.affinity_system.affinity_rules,
-            affinity_stages: formData.affinity_system.affinity_stages
-          },
-          publish_settings: {
-            is_public: formData.publish_settings.is_public,
-            custom_module_id: formData.publish_settings.custom_module_id,
-            use_translation: formData.publish_settings.use_translation
-          }
-        };
-        
-        const response = await fetch('/api/characters/advanced', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${localStorage.getItem('token')}`
-          },
-          body: JSON.stringify(createData)
-        });
-        
-        if (!response.ok) {
-          const errorData = await response.json();
-          throw new Error(errorData.detail || '캐릭터 생성에 실패했습니다.');
-        }
-        
-        const result = await response.json();
-        navigate(`/chat/${result.id}`);
+        const response = await charactersAPI.createAdvancedCharacter(characterData);
+        navigate(`/characters/${response.data.id}`, { state: { fromCreate: true } });
       }
     } catch (err) {
       console.error(`캐릭터 ${isEditMode ? '수정' : '생성'} 실패:`, err);
-      setError(err.message || `캐릭터 ${isEditMode ? '수정' : '생성'}에 실패했습니다.`);
+      const errorMessage = err.response?.data?.detail || err.message || `캐릭터 ${isEditMode ? '수정' : '생성'}에 실패했습니다.`;
+      setError(errorMessage);
     } finally {
       setLoading(false);
     }
@@ -583,78 +534,143 @@ const CreateCharacterPage = () => {
     </div>
   );
 
-  const renderMediaTab = () => (
-    <div className="space-y-6">
-      <div className="space-y-4">
-        <h3 className="text-lg font-semibold flex items-center">
-          <Image className="w-5 h-5 mr-2" />
-          이미지
-        </h3>
-        
-        <div>
-          <Label htmlFor="avatar_url">아바타 이미지 URL</Label>
-          <Input
-            id="avatar_url"
-            type="url"
-            value={formData.media_settings.avatar_url}
-            onChange={(e) => updateFormData('media_settings', 'avatar_url', e.target.value)}
-            placeholder="https://example.com/avatar.jpg"
-            maxLength={500}
-          />
-        </div>
+  const renderMediaTab = () => {
+    // 새로 추가된 파일에 대한 임시 미리보기 URL 생성 (렌더링 시점에만)
+    const newImagePreviews = useMemo(() => 
+      formData.media_settings.newly_added_files.map(file => ({
+        url: URL.createObjectURL(file),
+        isNew: true // 새 이미지임을 구분하기 위한 플래그
+      })), 
+      [formData.media_settings.newly_added_files]
+    );
 
-        <div className="p-4 border-2 border-dashed border-gray-300 rounded-lg text-center">
-          <Upload className="w-8 h-8 mx-auto mb-2 text-gray-400" />
-          <p className="text-sm text-gray-500">이미지 업로드 기능 (곧 추가 예정)</p>
-        </div>
-      </div>
+    // 컴포넌트 언마운트 시 임시 URL 메모리 해제
+    useEffect(() => {
+      return () => {
+        newImagePreviews.forEach(preview => URL.revokeObjectURL(preview.url));
+      };
+    }, [newImagePreviews]);
 
-      <Separator />
+    const existingImages = formData.media_settings.image_descriptions.map(img => ({ ...img, isNew: false }));
+    const allImages = [...existingImages, ...newImagePreviews];
 
-      <div className="space-y-4">
-        <h3 className="text-lg font-semibold flex items-center">
-          <Volume2 className="w-5 h-5 mr-2" />
-          슈퍼보이스 설정
-        </h3>
-        
-        <div className="flex items-center space-x-2">
-          <Switch
-            id="voice_enabled"
-            checked={formData.media_settings.voice_settings.enabled}
-            onCheckedChange={(checked) => updateFormData('media_settings', 'voice_settings', {
-              ...formData.media_settings.voice_settings,
-              enabled: checked
-            })}
-          />
-          <Label htmlFor="voice_enabled">음성 기능 사용</Label>
-        </div>
-
-        {formData.media_settings.voice_settings.enabled && (
-          <div className="space-y-3">
-            <div>
-              <Label>음성 ID</Label>
-              <Select 
-                value={formData.media_settings.voice_settings.voice_id || ''} 
-                onValueChange={(value) => updateFormData('media_settings', 'voice_settings', {
-                  ...formData.media_settings.voice_settings,
-                  voice_id: value
-                })}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="음성을 선택하세요" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="voice1">여성 음성 1</SelectItem>
-                  <SelectItem value="voice2">남성 음성 1</SelectItem>
-                  <SelectItem value="voice3">중성 음성 1</SelectItem>
-                </SelectContent>
-              </Select>
+    return (
+      <div className="space-y-6">
+        <div className="space-y-4">
+          <h3 className="text-lg font-semibold flex items-center">
+            <Image className="w-5 h-5 mr-2" />
+            이미지 갤러리
+          </h3>
+          
+          {/* 이미지 업로드 UI */}
+          <Card className="p-4">
+            <div className="flex items-center space-x-4">
+              <input
+                type="file"
+                ref={fileInputRef}
+                onChange={handleImageUpload}
+                multiple
+                accept="image/*"
+                className="hidden"
+              />
+              <Button type="button" variant="outline" onClick={() => fileInputRef.current.click()}>
+                <Upload className="w-4 h-4 mr-2" />
+                이미지 업로드
+              </Button>
+              <p className="text-sm text-gray-500">
+                캐릭터와 관련된 이미지를 업로드하세요. 갤러리에 표시됩니다.
+              </p>
             </div>
+
+            {/* 이미지 미리보기 영역 */}
+            {allImages.length > 0 && (
+              <div className="mt-4 grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-3">
+                {allImages.map((image, index) => {
+                  const imageUrl = image.isNew ? image.url : `${API_BASE_URL}${image.url}`;
+                  return (
+                    <div key={image.url} className="relative aspect-square group">
+                      <img
+                        src={imageUrl}
+                        alt={`미리보기 ${index + 1}`}
+                        className="w-full h-full object-cover rounded-md"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => image.isNew ? handleRemoveNewFile(index - existingImages.length) : handleRemoveExistingImage(index)}
+                        className="absolute top-1 right-1 bg-black/50 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </Card>
+
+          <div>
+            <Label htmlFor="avatar_url">아바타 이미지 URL (선택 사항)</Label>
+            <Input
+              id="avatar_url"
+              type="url"
+              value={formData.media_settings.avatar_url}
+              onChange={(e) => updateFormData('media_settings', 'avatar_url', e.target.value)}
+              placeholder="https://example.com/avatar.jpg"
+              maxLength={500}
+            />
+             <p className="text-sm text-gray-500 mt-1">
+              업로드 대신 이미지 주소를 직접 입력하여 대표 아바타를 설정할 수도 있습니다.
+            </p>
           </div>
-        )}
+        </div>
+
+        <Separator />
+
+        <div className="space-y-4">
+          <h3 className="text-lg font-semibold flex items-center">
+            <Volume2 className="w-5 h-5 mr-2" />
+            슈퍼보이스 설정
+          </h3>
+          
+          <div className="flex items-center space-x-2">
+            <Switch
+              id="voice_enabled"
+              checked={formData.media_settings.voice_settings.enabled}
+              onCheckedChange={(checked) => updateFormData('media_settings', 'voice_settings', {
+                ...formData.media_settings.voice_settings,
+                enabled: checked
+              })}
+            />
+            <Label htmlFor="voice_enabled">음성 기능 사용</Label>
+          </div>
+
+          {formData.media_settings.voice_settings.enabled && (
+            <div className="space-y-3">
+              <div>
+                <Label>음성 ID</Label>
+                <Select 
+                  value={formData.media_settings.voice_settings.voice_id || ''} 
+                  onValueChange={(value) => updateFormData('media_settings', 'voice_settings', {
+                    ...formData.media_settings.voice_settings,
+                    voice_id: value
+                  })}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="음성을 선택하세요" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="voice1">여성 음성 1</SelectItem>
+                    <SelectItem value="voice2">남성 음성 1</SelectItem>
+                    <SelectItem value="voice3">중성 음성 1</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   const renderDialoguesTab = () => (
     <div className="space-y-6">

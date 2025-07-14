@@ -415,6 +415,21 @@ async def update_character(
     return await get_character_by_id(db, character_id)
 
 
+async def update_character_public_status(
+    db: AsyncSession,
+    character_id: uuid.UUID,
+    is_public: bool
+) -> Optional[Character]:
+    """캐릭터의 공개 상태를 수정합니다."""
+    await db.execute(
+        update(Character)
+        .where(Character.id == character_id)
+        .values(is_public=is_public)
+    )
+    await db.commit()
+    return await get_character_by_id(db, character_id)
+
+
 async def delete_character(db: AsyncSession, character_id: uuid.UUID) -> bool:
     """캐릭터 삭제"""
     result = await db.execute(

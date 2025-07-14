@@ -28,12 +28,14 @@ const LoginPage = React.lazy(() => import('./pages/LoginPage'));
 const HomePage = React.lazy(() => import('./pages/HomePage'));
 const ChatPage = React.lazy(() => import('./pages/ChatPage'));
 const CharacterDetailPage = React.lazy(() => import('./pages/CharacterDetailPage'));
+const ChatRedirectPage = React.lazy(() => import('./pages/ChatRedirectPage')); // 새로 추가
 
 // ⏳ 나중에 필요한 페이지들 (지연 로딩)
 const ProfilePage = React.lazy(() => import('./pages/ProfilePage'));
 const RubyChargePage = React.lazy(() => import('./pages/RubyChargePage'));
 const CreateCharacterPage = React.lazy(() => import('./pages/CreateCharacterPage'));
 const MyCharactersPage = React.lazy(() => import('./pages/MyCharactersPage'));
+// const UserPage = React.lazy(() => import('./pages/UserPage')); // 이 줄을 주석 처리 또는 삭제
 
 // 로딩 컴포넌트 (CAVEDUCK 스타일 - 심플)
 const PageLoader = () => (
@@ -97,8 +99,15 @@ const AppRouter = () => {
             element={<CharacterDetailPage />}
           />
 
+          {/* 사용자가 '대화하기'를 눌렀을 때도 상세 페이지를 먼저 보여줌 */}
           <Route
             path="/chat/:characterId"
+            element={<ChatRedirectPage />}
+          />
+          
+          {/* 실제 웹소켓 채팅이 이루어지는 페이지 */}
+          <Route
+            path="/ws/chat/:characterId"
             element={
               <ProtectedRoute>
                 <SocketProvider>
@@ -153,6 +162,11 @@ const AppRouter = () => {
               </ProtectedRoute>
             }
           />
+
+          {/* <Route
+            path="/users/:userId"
+            element={<UserPage />}
+          /> */}
 
           {/* 기본 리다이렉트 */}
           <Route path="*" element={<Navigate to="/" replace />} />

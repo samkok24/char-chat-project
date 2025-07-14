@@ -109,12 +109,22 @@ export const charactersAPI = {
   
   createCharacter: (data) =>
     api.post('/characters', data),
+
+  // 🔥 CAVEDUCK 스타일 고급 생성 API
+  createAdvancedCharacter: (data) =>
+    api.post('/characters/advanced', data),
   
+  updateAdvancedCharacter: (id, data) =>
+    api.put(`/characters/advanced/${id}`, data),
+
   updateCharacter: (id, data) =>
     api.put(`/characters/${id}`, data),
   
   deleteCharacter: (id) =>
     api.delete(`/characters/${id}`),
+
+  toggleCharacterPublic: (id) =>
+    api.patch(`/characters/${id}/toggle-public`),
   
   likeCharacter: (id) =>
     api.post(`/characters/${id}/like`),
@@ -211,6 +221,20 @@ export const storiesAPI = {
   
   deleteComment: (commentId) =>
     api.delete(`/stories/comments/${commentId}`),
+};
+
+export const filesAPI = {
+  uploadImages: (files) => {
+    const formData = new FormData();
+    files.forEach(file => {
+      formData.append('files', file);
+    });
+    return api.post('/files/upload', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    });
+  },
 };
 
 export { api, API_BASE_URL, SOCKET_URL };

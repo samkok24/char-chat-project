@@ -45,7 +45,8 @@ class Character(Base):
     has_affinity_system = Column(Boolean, default=False)
     affinity_rules = Column(Text)
     affinity_stages = Column(JSON)
-    
+
+
     # 🚀 공개 설정
     is_public = Column(Boolean, default=True, index=True)
     is_active = Column(Boolean, default=True)
@@ -53,6 +54,7 @@ class Character(Base):
     # 📊 통계
     chat_count = Column(Integer, default=0)
     like_count = Column(Integer, default=0)
+    comment_count = Column(Integer, default=0) # 이 줄을 추가해 주세요.
     
     # 🔧 고급 설정
     custom_module_id = Column(UUID(), nullable=True)

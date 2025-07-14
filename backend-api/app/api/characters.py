@@ -55,7 +55,8 @@ from app.services.character_service import (
     create_advanced_character,
     update_advanced_character,
     get_advanced_character_by_id,
-    get_character_example_dialogues
+    get_character_example_dialogues,
+    update_character_public_status # 서비스 함수 임포트 추가
 )
 from app.services.comment_service import (
     create_character_comment,
@@ -368,14 +369,63 @@ async def get_my_characters(
     return characters
 
 
-@router.get("/{character_id}", response_model=CharacterWithCreator)
+# @router.get("/{character_id}", response_model=CharacterWithCreator)
+# async def get_character(
+#     character_id: uuid.UUID,
+#     current_user: Optional[User] = Depends(get_current_user),
+#     db: AsyncSession = Depends(get_db)
+# ):
+#     """캐릭터 상세 조회 (레거시)"""
+#     character = await get_character_by_id(db, character_id)
+#     if not character:
+#         raise HTTPException(
+#             status_code=status.HTTP_404_NOT_FOUND,
+#             detail="캐릭터를 찾을 수 없습니다."
+#         )
+    
+#     # 비공개 캐릭터는 생성자만 조회 가능
+#     if not character.is_public and (not current_user or character.creator_id != current_user.id):
+#         raise HTTPException(
+#             status_code=status.HTTP_403_FORBIDDEN,
+#             detail="이 캐릭터에 접근할 권한이 없습니다."
+#         )
+    
+#     # 🔧 새로운 모델 구조와 호환되도록 수동으로 응답 구성
+#     character_dict = {
+#         "id": character.id,
+#         "creator_id": character.creator_id, # 이 줄 추가
+#         "name": character.name,
+#         "description": character.description,
+#         "personality": character.personality,
+#         "speech_style": character.speech_style,
+#         "greeting": character.greeting,
+#         "background_story": getattr(character, 'world_setting', None),  # 세계관을 배경 스토리로 매핑
+#         "avatar_url": character.avatar_url,
+#         "is_public": character.is_public,
+#         "is_active": character.is_active,
+#         "chat_count": character.chat_count,
+#         "like_count": character.like_count,
+#         "created_at": character.created_at,
+#         "updated_at": character.updated_at,
+#         "creator_username": character.creator.username if character.creator else None
+#     }
+    
+#     # 좋아요 상태 추가 (로그인한 사용자인 경우만)
+#     if current_user:
+#         character_dict["is_liked"] = await is_character_liked_by_user(db, character_id, current_user.id)
+#     else:
+#         character_dict["is_liked"] = False
+    
+#     return CharacterWithCreator(**character_dict)
+@router.get("/{character_id}", response_model=CharacterDetailResponse) # 1. 응답 모델을 고급 버전으로 변경
 async def get_character(
     character_id: uuid.UUID,
     current_user: Optional[User] = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """캐릭터 상세 조회 (레거시)"""
-    character = await get_character_by_id(db, character_id)
+    """캐릭터 상세 조회 (고급 응답 모델 사용)"""
+    # 2. 데이터를 가져오는 서비스도 고급 버전으로 변경
+    character = await get_advanced_character_by_id(db, character_id) 
     if not character:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -389,34 +439,16 @@ async def get_character(
             detail="이 캐릭터에 접근할 권한이 없습니다."
         )
     
-    # 🔧 새로운 모델 구조와 호환되도록 수동으로 응답 구성
-    character_dict = {
-        "id": character.id,
-        "creator_id": character.creator_id,
-        "name": character.name,
-        "description": character.description,
-        "personality": character.personality,
-        "speech_style": character.speech_style,
-        "greeting": character.greeting,
-        "background_story": getattr(character, 'world_setting', None),  # 세계관을 배경 스토리로 매핑
-        "avatar_url": character.avatar_url,
-        "is_public": character.is_public,
-        "is_active": character.is_active,
-        "chat_count": character.chat_count,
-        "like_count": character.like_count,
-        "created_at": character.created_at,
-        "updated_at": character.updated_at,
-        "creator_username": character.creator.username if character.creator else None
-    }
+    # 3. 🔥 고급 응답 모델로 변환하는 헬퍼 함수를 재사용
+    response_data = await convert_character_to_detail_response(character, db)
     
-    # 좋아요 상태 추가 (로그인한 사용자인 경우만)
+    # is_liked 상태 추가 (로그인한 사용자인 경우만)
     if current_user:
-        character_dict["is_liked"] = await is_character_liked_by_user(db, character_id, current_user.id)
+        response_data.is_liked = await is_character_liked_by_user(db, character_id, current_user.id)
     else:
-        character_dict["is_liked"] = False
-    
-    return CharacterWithCreator(**character_dict)
-
+        response_data.is_liked = False
+        
+    return response_data
 
 @router.put("/{character_id}", response_model=CharacterResponse)
 async def update_character_info(
@@ -441,6 +473,32 @@ async def update_character_info(
         )
     
     updated_character = await update_character(db, character_id, character_data)
+    return updated_character
+
+
+@router.patch("/{character_id}/toggle-public", response_model=CharacterResponse)
+async def toggle_character_public_status(
+    character_id: uuid.UUID,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """캐릭터의 공개/비공개 상태를 토글합니다."""
+    character = await get_character_by_id(db, character_id)
+    if not character:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="캐릭터를 찾을 수 없습니다."
+        )
+    
+    # 생성자만 상태 변경 가능
+    if character.creator_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="이 캐릭터의 공개 상태를 변경할 권한이 없습니다."
+        )
+        
+    updated_character = await update_character_public_status(db, character_id, not character.is_public)
+    
     return updated_character
 
 

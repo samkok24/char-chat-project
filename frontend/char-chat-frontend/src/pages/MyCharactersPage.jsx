@@ -148,7 +148,7 @@ const MyCharactersPage = () => {
           </div>
           <Button
             size="sm"
-            onClick={() => navigate(`/chat/${character.id}`)}
+            onClick={() => navigate(`/characters/${character.id}`)} // 상세 페이지로 이동하도록 수정
             className="bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700"
           >
             <MessageCircle className="w-4 h-4 mr-1" />
