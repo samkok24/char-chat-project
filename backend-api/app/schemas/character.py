@@ -242,6 +242,13 @@ class CharacterListResponse(BaseModel):
     creator_username: Optional[str] = None
 
 
+class RecentCharacterResponse(CharacterListResponse):
+    """최근 대화한 캐릭터 응답 (UX 강화용 확장)"""
+    chat_room_id: uuid.UUID  # 해당 채팅방 ID (클릭 시 이동용)
+    last_chat_time: Optional[datetime]  # 마지막 대화 시간
+    last_message_snippet: Optional[str] = Field(None, max_length=100)  # 마지막 메시지 짧은 요약
+
+
 # 🔧 고급 설정 스키마
 
 class WorldSettingCreate(BaseModel):

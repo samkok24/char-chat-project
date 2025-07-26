@@ -35,7 +35,7 @@ const ProfilePage = React.lazy(() => import('./pages/ProfilePage'));
 const RubyChargePage = React.lazy(() => import('./pages/RubyChargePage'));
 const CreateCharacterPage = React.lazy(() => import('./pages/CreateCharacterPage'));
 const MyCharactersPage = React.lazy(() => import('./pages/MyCharactersPage'));
-// const UserPage = React.lazy(() => import('./pages/UserPage')); // 이 줄을 주석 처리 또는 삭제
+const StoryImporterPage = React.lazy(() => import('./pages/StoryImporterPage'));
 
 // 로딩 컴포넌트 (CAVEDUCK 스타일 - 심플)
 const PageLoader = () => (
@@ -163,10 +163,19 @@ const AppRouter = () => {
             }
           />
 
-          {/* <Route
+          <Route
             path="/users/:userId"
-            element={<UserPage />}
-          /> */}
+            element={<ProfilePage />}
+          />
+
+          <Route
+            path="/story-importer"
+            element={
+              <ProtectedRoute>
+                <StoryImporterPage />
+              </ProtectedRoute>
+            }
+          />
 
           {/* 기본 리다이렉트 */}
           <Route path="*" element={<Navigate to="/" replace />} />

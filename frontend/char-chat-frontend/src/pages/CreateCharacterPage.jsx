@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect, useRef, useMemo } from 'react'; // useMemo 추가
-import { useNavigate, Link, useParams,useLocation  } from 'react-router-dom';
+import { useNavigate, Link, useParams, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { charactersAPI, filesAPI, API_BASE_URL } from '../lib/api';
 import { Button } from '../components/ui/button';
@@ -37,16 +37,22 @@ import {
   BookOpen,
   Mic,
   Palette,
-  X
+  X,
+  Wand2 // Wand2 아이콘 추가
 } from 'lucide-react';
+import { StoryImporterModal } from '../components/StoryImporterModal'; // StoryImporterModal 컴포넌트 추가
 
 const CreateCharacterPage = () => {
   const { characterId } = useParams();
   const isEditMode = !!characterId;
   const fileInputRef = useRef(null);
+  const navigate = useNavigate();
+  const location = useLocation();
 
   // 🔥 CAVEDUCK 스타일 5단계 데이터 구조
   const [activeTab, setActiveTab] = useState('basic');
+  const [isStoryImporterOpen, setIsStoryImporterOpen] = useState(false); // 모달 상태 추가
+
   const [formData, setFormData] = useState({
     // 1단계: 기본 정보
     basic_info: {
@@ -102,7 +108,6 @@ const CreateCharacterPage = () => {
   const [pageTitle, setPageTitle] = useState('새 캐릭터 만들기');
 
   const { isAuthenticated } = useAuth();
-  const navigate = useNavigate();
 
   // 탭 정보 정의
   const tabs = [
@@ -142,6 +147,27 @@ const CreateCharacterPage = () => {
       emoji: '🚀'
     }
   ];
+
+  useEffect(() => {
+    const prefilledData = location.state?.prefilledData;
+    if (prefilledData) {
+      // prefilledData의 키 중에서 basic_info에 존재하는 키만 골라 업데이트합니다.
+      const updatedBasicInfo = { ...formData.basic_info };
+      Object.keys(prefilledData).forEach(key => {
+        if (key in updatedBasicInfo) {
+          updatedBasicInfo[key] = prefilledData[key];
+        }
+      });
+
+      setFormData(prev => ({
+        ...prev,
+        basic_info: updatedBasicInfo,
+      }));
+      
+      // 사용자가 내용을 바로 확인할 수 있도록 기본 정보 탭으로 이동
+      setActiveTab('basic');
+    }
+  }, [location.state]);
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -321,15 +347,100 @@ const CreateCharacterPage = () => {
       }
     } catch (err) {
       console.error(`캐릭터 ${isEditMode ? '수정' : '생성'} 실패:`, err);
-      const errorMessage = err.response?.data?.detail || err.message || `캐릭터 ${isEditMode ? '수정' : '생성'}에 실패했습니다.`;
-      setError(errorMessage);
+
+        // Pydantic 검증 에러 처리
+      if (err.response?.data?.detail && Array.isArray(err.response.data.detail)) {
+        const validationErrors = err.response.data.detail;
+        const errorMessages = validationErrors.map(error => {
+          // 필드 위치를 한글로 변환
+          const fieldPath = error.loc.join(' > ');
+          const fieldMapping = {
+            'body > basic_info > name': '캐릭터 이름',
+            'body > basic_info > description': '캐릭터 설명',
+            'body > basic_info > greeting': '첫 인사',
+            'body > basic_info > personality': '성격',
+            'body > basic_info > speech_style': '말투',
+            'body > basic_info > world_setting': '세계관',
+          };
+          
+          const fieldName = fieldMapping[fieldPath] || fieldPath;
+          
+          // 에러 타입별 메시지
+          if (error.type === 'string_too_short') {
+            return `${fieldName}을(를) 입력해주세요.`;
+          } else if (error.type === 'string_too_long') {
+            return `${fieldName}이(가) 너무 깁니다. (최대 ${error.ctx.max_length}자)`;
+          } else if (error.type === 'missing') {
+            return `${fieldName}은(는) 필수 항목입니다.`;
+          } else {
+            return `${fieldName}: ${error.msg}`;
+          }
+        });
+        
+        setError(errorMessages.join('\n'));
+      } else {
+        const errorMessage = err.response?.data?.detail || err.message || `캐릭터 ${isEditMode ? '수정' : '생성'}에 실패했습니다.`;
+        setError(errorMessage);
+      }
     } finally {
       setLoading(false);
     }
   };
 
+  const handleApplyImportedData = (data) => {
+    // StoryImporterModal에서 전달받은 데이터로 폼 채우기
+    setFormData(prev => ({
+      ...prev,
+      basic_info: {
+        ...prev.basic_info,
+        name: data.name || prev.basic_info.name,
+        description: data.description || prev.basic_info.description,
+        world_setting: data.world_setting || prev.basic_info.world_setting,
+        // 필요에 따라 다른 필드도 채울 수 있습니다.
+      },
+      affinity_system: {
+        ...prev.affinity_system,
+        has_affinity_system: data.social_tendency !== undefined,
+        affinity_rules: data.social_tendency !== undefined 
+          ? `대인관계 성향 점수(${data.social_tendency})를 기반으로 함` 
+          : prev.affinity_system.affinity_rules,
+      }
+    }));
+    setIsStoryImporterOpen(false); // 모달 닫기
+    alert(`'${data.name}'의 정보가 폼에 적용되었습니다. 내용을 확인하고 저장해주세요.`);
+  };
+
+
   const renderBasicInfoTab = () => (
-    <div className="space-y-6">
+    <CardContent className="p-6 space-y-8">
+      {/* AI 스토리 임포터 기능 소개 섹션 */}
+      {!isEditMode && (
+        <Card className="bg-purple-50 dark:bg-purple-900/20 border-purple-200 dark:border-purple-700/50 shadow-md hover:shadow-lg transition-shadow">
+          <CardHeader className="flex flex-row items-center gap-4">
+            <div className="flex-shrink-0">
+              <div className="p-3 bg-purple-100 dark:bg-purple-800/50 rounded-full">
+                <Sparkles className="w-6 h-6 text-purple-600 dark:text-purple-300" />
+              </div>
+            </div>
+            <div className="flex-grow">
+              <CardTitle className="text-lg font-bold text-purple-800 dark:text-purple-200">
+                AI로 캐릭터 설정 1분 만에 끝내기 🚀
+              </CardTitle>
+              <CardDescription className="text-purple-600 dark:text-purple-300/80">
+                웹소설, 시나리오를 붙여넣으면 AI가 핵심 설정을 분석하여 자동으로 완성해줘요.
+              </CardDescription>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <Button className="w-full bg-purple-600 hover:bg-purple-700 text-white font-semibold" onClick={() => setIsStoryImporterOpen(true)}>
+              <Wand2 className="w-5 h-5 mr-2" />
+              AI로 분석하여 자동 완성
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* 기존 기본 정보 입력 필드 */}
       <div className="space-y-4">
         <div>
           <Label htmlFor="name">캐릭터 이름 *</Label>
@@ -531,7 +642,7 @@ const CreateCharacterPage = () => {
           </Card>
         ))}
       </div>
-    </div>
+    </CardContent>
   );
 
   const renderMediaTab = () => {
@@ -873,7 +984,14 @@ const CreateCharacterPage = () => {
   );
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-purple-50 via-blue-50 to-indigo-50">
+    <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
+      {isStoryImporterOpen && (
+        <StoryImporterModal 
+          isOpen={isStoryImporterOpen}
+          onClose={() => setIsStoryImporterOpen(false)}
+          onApply={handleApplyImportedData}
+        />
+      )}
       {/* 헤더 */}
       <header className="bg-white/80 backdrop-blur-sm shadow-sm border-b sticky top-0 z-50">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -913,7 +1031,11 @@ const CreateCharacterPage = () => {
         {error && (
           <Alert variant="destructive" className="mb-6">
             <AlertCircle className="h-4 w-4" />
-            <AlertDescription>{error}</AlertDescription>
+            <AlertDescription>
+              {error.split('\n').map((line, index) => (
+                <div key={index}>{line}</div>
+              ))}
+            </AlertDescription>
           </Alert>
         )}
 

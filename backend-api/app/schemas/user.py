@@ -41,6 +41,15 @@ class UserResponse(UserBase):
     created_at: datetime
     updated_at: datetime
 
+class UserProfileResponse(UserResponse):
+    """
+    사용자 프로필 페이지를 위한 스키마 (통계 정보 포함)
+    """
+    character_count: int = 0
+    total_chat_count: int = 0
+    total_like_count: int = 0   
+    # 보유 루비(포인트)는 별도의 API로 조회하는 것이 더 적합할 수 있음 (향후 고려)
+    # point_balance: int = 0
 
 class UserProfile(UserResponse):
     """사용자 프로필 스키마 (추가 정보 포함)"""

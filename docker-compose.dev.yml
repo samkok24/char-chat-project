@@ -8,14 +8,12 @@ services:
       dockerfile: Dockerfile
     image: char-chat-backend-dev
     container_name: char_chat_backend
+    env_file:
+      - ./.env
     environment:
       DATABASE_URL: "sqlite+aiosqlite:////app/data/test.db"
       ENVIRONMENT: "development"
       DEBUG: "true"
-      GEMINI_API_KEY: ${GEMINI_API_KEY}
-      CLAUDE_API_KEY: ${CLAUDE_API_KEY}
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
     ports:
       - "8000:8000"
     volumes:

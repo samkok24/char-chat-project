@@ -11,7 +11,7 @@ const SOCKET_URL = 'http://localhost:3001'; // import.meta.env.VITE_SOCKET_URL |
 // Axios 인스턴스 생성
 const api = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 10000,
+  timeout: 100000,
   headers: {
     'Content-Type': 'application/json',
   },
@@ -79,7 +79,7 @@ api.interceptors.response.use(
   }
 );
 
-// API 함수들
+// 🔐 인증 관련 API
 export const authAPI = {
   login: (email, password) =>
     api.post('/auth/login', { email, password }),
@@ -95,8 +95,38 @@ export const authAPI = {
   
   refreshToken: (refreshToken) =>
     api.post('/auth/refresh', { refresh_token: refreshToken }),
+  
+  verifyEmail: (token) =>
+    api.post('/auth/verify-email', { token }),
+  
+  sendVerificationEmail: () =>
+    api.post('/auth/send-verification-email'),
 };
 
+// 👤 사용자 관련 API
+export const usersAPI = {
+  // 사용자 프로필 조회
+  getUserProfile: (userId) =>
+    api.get(`/users/${userId}`),
+  
+  // 사용자 프로필 수정
+  updateUserProfile: (userId, data) =>
+    api.put(`/users/${userId}`, data),
+  
+  // 사용자가 생성한 캐릭터 목록
+  getUserCharacters: (userId, params = {}) =>
+    api.get(`/users/${userId}/characters`, { params }),
+  
+  // 사용자가 생성한 스토리 목록
+  getUserStories: (userId, params = {}) =>
+    api.get(`/users/${userId}/stories`, { params }),
+
+  // 최근 대화한 캐릭터 목록
+  getRecentCharacters: (params = {}) =>
+    api.get('/me/characters/recent', { params }),
+};
+
+// 🎭 캐릭터 관련 API
 export const charactersAPI = {
   getCharacters: (params = {}) =>
     api.get('/characters', { params }),
@@ -116,6 +146,9 @@ export const charactersAPI = {
   
   updateAdvancedCharacter: (id, data) =>
     api.put(`/characters/advanced/${id}`, data),
+  
+  getAdvancedCharacter: (id) =>
+    api.get(`/characters/advanced/${id}`),
 
   updateCharacter: (id, data) =>
     api.put(`/characters/${id}`, data),
@@ -132,7 +165,6 @@ export const charactersAPI = {
   unlikeCharacter: (id) =>
     api.delete(`/characters/${id}/like`),
   
-  // 좋아요 상태 확인 API 추가
   getLikeStatus: (id) =>
     api.get(`/characters/${id}/like-status`),
   
@@ -141,6 +173,12 @@ export const charactersAPI = {
   
   updateCharacterSettings: (id, data) =>
     api.put(`/characters/${id}/settings`, data),
+  
+  createCharacterSettings: (id, data) =>
+    api.post(`/characters/${id}/settings`, data),
+  
+  getCharacterStats: (id) =>
+    api.get(`/characters/${id}/stats`),
   
   // 댓글 관련 API
   getComments: (characterId, params = {}) =>
@@ -154,13 +192,38 @@ export const charactersAPI = {
   
   deleteComment: (commentId) =>
     api.delete(`/characters/comments/${commentId}`),
+  
+  // 세계관 설정 API
+  createWorldSetting: (data) =>
+    api.post('/characters/world-settings', data),
+  
+  getWorldSettings: (params = {}) =>
+    api.get('/characters/world-settings', { params }),
+  
+  // 커스텀 모듈 API
+  createCustomModule: (data) =>
+    api.post('/characters/custom-modules', data),
+  
+  getCustomModules: (params = {}) =>
+    api.get('/characters/custom-modules', { params }),
 };
 
+// 💬 채팅 관련 API
 export const chatAPI = {
   // 🔥 CAVEDUCK 스타일 채팅 시작 API
   startChat: (characterId) =>
     api.post('/chat/start', { character_id: characterId }),
 
+  sendMessage: (data) =>
+    api.post('/chat/message', data),
+  
+  getChatHistory: (sessionId) =>
+    api.get(`/chat/history/${sessionId}`),
+  
+  getChatSessions: () =>
+    api.get('/chat/sessions'),
+  
+  // 채팅룸 관련 API (레거시)
   getChatRooms: (params = {}) =>
     api.get('/chat/rooms', { params }),
   
@@ -173,10 +236,11 @@ export const chatAPI = {
   getMessages: (roomId, params = {}) =>
     api.get(`/chat/rooms/${roomId}/messages`, { params }),
   
-  sendMessage: (data) =>
+  sendMessageLegacy: (data) =>
     api.post('/chat/messages', data),
 };
 
+// 📖 스토리 관련 API
 export const storiesAPI = {
   getStories: (params = {}) =>
     api.get('/stories', { params }),
@@ -205,11 +269,10 @@ export const storiesAPI = {
   unlikeStory: (id) =>
     api.delete(`/stories/${id}/like`),
   
-  // 좋아요 상태 확인 API 추가
   getLikeStatus: (id) =>
     api.get(`/stories/${id}/like-status`),
   
-  // 스토리 댓글 관련 API 추가
+  // 스토리 댓글 관련 API
   getComments: (storyId, params = {}) =>
     api.get(`/stories/${storyId}/comments`, { params }),
   
@@ -223,6 +286,50 @@ export const storiesAPI = {
     api.delete(`/stories/comments/${commentId}`),
 };
 
+// ✨ 스토리 임포터 관련 API
+export const storyImporterAPI = {
+  analyzeStory: (content, ai_model, title = null) => {
+    return api.post('/story-importer/analyze', { content, ai_model, title });
+  },
+};
+
+// 💎 포인트 관련 API
+export const pointAPI = {
+  getBalance: () =>
+    api.get('/point/balance'),
+  
+  usePoints: (data) =>
+    api.post('/point/use', data),
+  
+  getTransactions: (params = {}) =>
+    api.get('/point/transactions', { params }),
+  
+  getTransactionsSummary: () =>
+    api.get('/point/transactions/summary'),
+};
+
+// 💳 결제 관련 API
+export const paymentAPI = {
+  getProducts: () =>
+    api.get('/payment/products'),
+  
+  createProduct: (data) =>
+    api.post('/payment/products', data),
+  
+  checkout: (data) =>
+    api.post('/payment/checkout', data),
+  
+  webhook: (data) =>
+    api.post('/payment/webhook', data),
+  
+  getPaymentHistory: (params = {}) =>
+    api.get('/payment/history', { params }),
+  
+  getPayment: (paymentId) =>
+    api.get(`/payment/payment/${paymentId}`),
+};
+
+// 📁 파일 관련 API
 export const filesAPI = {
   uploadImages: (files) => {
     const formData = new FormData();

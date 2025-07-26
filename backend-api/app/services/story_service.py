@@ -16,15 +16,13 @@ from app.models.user import User
 from app.models.character import Character
 from app.models.like import StoryLike
 from app.schemas.story import StoryCreate, StoryUpdate, StoryGenerationRequest
-from app.services.ai_service import AIService
+from app.services.ai_service import get_ai_completion,AIModel
 
 
 class StoryGenerationService:
     """스토리 생성 서비스 - 웹소설생성봇 로직 기반"""
     
-    def __init__(self):
-        self.ai_service = AIService()
-        
+    def __init__(self):        
         # 역할별 시스템 프롬프트 (웹소설생성봇에서 가져옴)
         self.role_prompts = {
             "concept_refiner": """당신은 **컨셉 정리자**입니다.
@@ -106,7 +104,8 @@ class StoryGenerationService:
         character_id: Optional[uuid.UUID] = None,
         genre: Optional[str] = None,
         length: str = "medium",
-        tone: str = "neutral"
+        tone: str = "neutral",
+        ai_model: AIModel = "gemini"  # AI 모델 선택 파라미터 추가
     ) -> Dict[str, Any]:
         """스토리 생성 메인 함수"""
         
@@ -118,10 +117,10 @@ class StoryGenerationService:
             if tone != "neutral":
                 concept_input += f"\n톤: {tone}"
                 
-            concept = await self._call_ai("concept_refiner", concept_input)
+            concept = await self._call_ai("concept_refiner", concept_input, model=ai_model)
             
             # 2. 세계관 설계
-            world = await self._call_ai("world_builder", concept)
+            world = await self._call_ai("world_builder", concept, model=ai_model)
             
             # 3. 캐릭터 설계 (기존 캐릭터가 있으면 활용)
             character_info = ""
@@ -130,7 +129,7 @@ class StoryGenerationService:
                 character_info = f"\n\n기존 캐릭터 정보를 활용하여 설계하세요."
             
             character_prompt = f"{concept}\n\n{world}{character_info}"
-            characters = await self._call_ai("character_designer", character_prompt)
+            characters = await self._call_ai("character_designer", character_prompt,ai_model)
             
             # 4. 스토리 작성
             story_prompt = f"""
@@ -144,10 +143,10 @@ class StoryGenerationService:
 키워드: {', '.join(keywords)}
 """
             
-            story_content = await self._call_ai("story_writer", story_prompt)
+            story_content = await self._call_ai("story_writer", story_prompt,model=ai_model)
             
             # 5. 제목 생성
-            title = await self._generate_title(keywords, story_content)
+            title = await self._generate_title(keywords, story_content,model=ai_model)
             
             # 6. 예상 읽기 시간 계산 (한국어 기준 분당 300자)
             reading_time = max(1, len(story_content) // 300)
@@ -170,22 +169,24 @@ class StoryGenerationService:
         except Exception as e:
             raise Exception(f"스토리 생성 중 오류 발생: {str(e)}")
 
-    async def _call_ai(self, role: str, content: str) -> str:
-        """AI 서비스 호출"""
+    async def _call_ai(self, role: str, content: str, model: AIModel) -> str:
         system_prompt = self.role_prompts.get(role, "")
         temperature = self.temperatures.get(role, 0.7)
+        max_tokens = 3000 if role == "story_writer" else 1500 # 토큰 수 조정
         
-        # AI 서비스의 generate_text 메서드 호출 (실제 구현 필요)
-        response = await self.ai_service.generate_text(
-            prompt=content,
-            system_prompt=system_prompt,
+        # 시스템 프롬프트와 사용자 프롬프트를 결합
+        full_prompt = f"{system_prompt}\n\n---\n\n{content}"
+        
+        # get_ai_completion 함수 호출
+        response = await get_ai_completion(
+            prompt=full_prompt,
+            model=model,
             temperature=temperature,
-            max_tokens=2000 if role == "story_writer" else 1000
+            max_tokens=max_tokens
         )
         
         return response
-
-    async def _generate_title(self, keywords: List[str], content: str) -> str:
+    async def _generate_title(self, keywords: List[str], content: str, model: AIModel) -> str:
         """스토리 제목 생성"""
         title_prompt = f"""
 키워드: {', '.join(keywords)}
@@ -199,7 +200,7 @@ class StoryGenerationService:
 - 키워드의 핵심을 반영
 """
         
-        title = await self._call_ai("concept_refiner", title_prompt)
+        title = await self._call_ai("concept_refiner", title_prompt,model=model)
         return title.strip().replace('"', '').replace("'", "")[:20]
 
 

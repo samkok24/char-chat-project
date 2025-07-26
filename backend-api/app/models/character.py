@@ -51,6 +51,9 @@ class Character(Base):
     is_public = Column(Boolean, default=True, index=True)
     is_active = Column(Boolean, default=True)
     
+    # ✨ 생성 출처
+    source_type = Column(String(20), nullable=False, default='ORIGINAL') # 'ORIGINAL' 또는 'IMPORTED'
+    
     # 📊 통계
     chat_count = Column(Integer, default=0)
     like_count = Column(Integer, default=0)

@@ -48,6 +48,8 @@ COLUMNS_TO_ADD = {
         ("avatar_url", "VARCHAR(500)")
     ],
     "characters": [
+        ("comment_count", "INTEGER DEFAULT 0"),
+        ("source_type", "VARCHAR(20) DEFAULT 'ORIGINAL'"),
         ("speech_style", "TEXT"),
         ("greeting", "TEXT"),
         ("world_setting", "TEXT"),
@@ -63,7 +65,6 @@ COLUMNS_TO_ADD = {
         ("affinity_stages", "TEXT"), # TEXT for JSON
         ("custom_module_id", "CHAR(36)"),
         ("use_translation", "BOOLEAN DEFAULT 1"),
-        ("comment_count", "INTEGER DEFAULT 0")
     ],
     "character_settings": [
         ("custom_prompt_template", "TEXT"),

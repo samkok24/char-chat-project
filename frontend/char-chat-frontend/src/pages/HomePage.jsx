@@ -40,6 +40,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "../components/ui/dropdown-menu";
+import { RecentCharactersList } from '../components/RecentCharactersList'; // 추가
+import { CharacterCard, CharacterCardSkeleton } from '../components/CharacterCard'; // 수정
 
 const HomePage = () => {
   const [searchQuery, setSearchQuery] = useState('');
@@ -105,95 +107,10 @@ const HomePage = () => {
     navigate(`/characters/${characterId}`);
   };
 
-  const CharacterCard = ({ character }) => (
-    <Card 
-      className="hover:shadow-lg transition-all duration-200 cursor-pointer group hover:scale-105"
-      onClick={() => viewCharacterDetail(character.id)}
-    >
-      <CardHeader className="pb-3">
-        <div className="flex items-start space-x-3">
-          <Avatar className="w-12 h-12">
-            <LazyLoadImage
-              alt={character.name}
-              src={character.avatar_url}
-              effect="blur"
-              className="w-full h-full object-cover rounded-full"
-              wrapperClassName="w-full h-full"
-            />
-            <AvatarFallback className="bg-gradient-to-r from-purple-500 to-blue-500 text-white">
-              {character.name.charAt(0)}
-            </AvatarFallback>
-          </Avatar>
-          <div className="flex-1 min-w-0">
-            <CardTitle className="text-lg truncate">{character.name}</CardTitle>
-            <CardDescription className="text-sm">
-              by {character.creator_username || 'Unknown'}
-            </CardDescription>
-          </div>
-        </div>
-      </CardHeader>
-      <CardContent className="pt-0">
-        <p className="text-sm text-gray-600 mb-4 line-clamp-3">
-          {character.description || '설명이 없습니다.'}
-        </p>
-        
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center space-x-4 text-sm text-gray-500">
-            <div className="flex items-center space-x-1">
-              <MessageCircle className="w-4 h-4" />
-              <span>{(character.chat_count || 0).toLocaleString()}</span>
-            </div>
-            <div className="flex items-center space-x-1">
-              <Heart className="w-4 h-4" />
-              <span>{character.like_count || 0}</span>
-            </div>
-          </div>
-          <Badge variant="secondary" className="bg-green-100 text-green-800">
-            공개
-          </Badge>
-        </div>
-
-        <Button
-          onClick={(e) => {
-            e.stopPropagation(); // 카드 전체의 클릭 이벤트 전파 방지
-            startChat(character.id); // "대화하기" 버튼은 startChat 함수 호출
-          }}
-          className="w-full bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 transition-all duration-200"
-          size="sm"
-        >
-          <MessageCircle className="w-4 h-4 mr-2" />
-          대화하기
-        </Button>
-      </CardContent>
-    </Card>
-  );
-
-  const CharacterCardSkeleton = () => (
-    <Card>
-      <CardHeader className="pb-3">
-        <div className="flex items-start space-x-3">
-          <Skeleton className="w-12 h-12 rounded-full" />
-          <div className="flex-1 space-y-2">
-            <Skeleton className="h-5 w-3/4" />
-            <Skeleton className="h-4 w-1/2" />
-          </div>
-        </div>
-      </CardHeader>
-      <CardContent className="pt-0">
-        <div className="space-y-2 mb-4">
-          <Skeleton className="h-4 w-full" />
-          <Skeleton className="h-4 w-full" />
-          <Skeleton className="h-4 w-3/4" />
-        </div>
-        <Skeleton className="h-9 w-full" />
-      </CardContent>
-    </Card>
-  );
-
   return (
-    <div className="min-h-screen bg-gradient-to-br from-purple-50 via-blue-50 to-indigo-50">
+    <div className="min-h-screen bg-gray-900 text-gray-200">
       {/* 헤더 */}
-      <header className="bg-white/80 backdrop-blur-sm shadow-sm border-b sticky top-0 z-50">
+      <header className="bg-gray-800/80 backdrop-blur-sm shadow-sm border-b border-gray-700 sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between h-16">
             <div className="flex items-center space-x-4">
@@ -201,23 +118,23 @@ const HomePage = () => {
                 <div className="w-8 h-8 bg-gradient-to-r from-purple-600 to-blue-600 rounded-lg flex items-center justify-center">
                   <MessageCircle className="w-5 h-5 text-white" />
                 </div>
-                <h1 className="text-xl font-bold text-gray-900">AI 캐릭터 챗</h1>
+                <h1 className="text-xl font-bold text-white">AI 캐릭터 챗</h1>
               </Link>
             </div>
 
             <div className="flex items-center space-x-4">
               {isAuthenticated ? (
                 <>
-                  <Button variant="outline" onClick={createCharacter}>
+                  <Button variant="outline" onClick={createCharacter} className="text-white border-gray-600 hover:bg-gray-700 hover:text-white">
                     <Plus className="w-4 h-4 mr-2" />
                     캐릭터 생성
                   </Button>
                   <Link to="/my-characters">
-                    <Button variant="outline">
+                    <Button variant="outline" className="text-white border-gray-600 hover:bg-gray-700 hover:text-white">
                       내 캐릭터
                     </Button>
                   </Link>
-                  <Button variant="outline">
+                  <Button variant="outline" className="text-white border-gray-600 hover:bg-gray-700 hover:text-white">
                     <BookOpen className="w-4 h-4 mr-2" />
                     스토리
                   </Button>
@@ -270,7 +187,7 @@ const HomePage = () => {
               ) : (
                 <>
                   <Link to="/login">
-                    <Button variant="outline">
+                    <Button variant="outline" className="text-white border-gray-600 hover:bg-gray-700 hover:text-white">
                       <LogIn className="w-4 h-4 mr-2" />
                       로그인
                     </Button>
@@ -290,68 +207,42 @@ const HomePage = () => {
 
       {/* 메인 컨텐츠 */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {/* 환영 섹션 */}
-        <div className="text-center mb-12">
-          <div className="mb-6">
-            <div className="w-20 h-20 bg-gradient-to-r from-purple-600 to-blue-600 rounded-full flex items-center justify-center mx-auto mb-4">
-              <Sparkles className="w-10 h-10 text-white" />
-            </div>
-          </div>
-          
-          <h2 className="text-4xl font-bold text-gray-900 mb-4">
-            AI 캐릭터와 대화하고 스토리를 만들어보세요
-          </h2>
-          <p className="text-xl text-gray-600 mb-8 max-w-3xl mx-auto">
-            다양한 개성을 가진 AI 캐릭터들과 대화하거나, 나만의 캐릭터를 만들어 특별한 스토리를 생성해보세요. 
-            무한한 상상력의 세계가 여러분을 기다립니다.
-          </p>
-          
-          {/* 검색 */}
-          <form onSubmit={handleSearch} className="max-w-md mx-auto mb-8">
+        
+        {/* 검색 */}
+        <section className="mb-12">
+          <form onSubmit={handleSearch} className="max-w-xl mx-auto">
             <div className="relative">
-              <Search className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
+              <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400" />
               <Input
                 type="text"
-                placeholder="캐릭터 검색..."
+                placeholder="어떤 캐릭터를 찾아볼까요?"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-10 pr-4 py-2 bg-white/80 backdrop-blur-sm"
+                className="w-full pl-12 pr-4 py-3 bg-gray-800 border-gray-700 text-lg rounded-full focus:ring-purple-500 focus:border-purple-500"
               />
             </div>
           </form>
+        </section>
 
-          {!isAuthenticated && (
-            <div className="bg-white/80 backdrop-blur-sm rounded-lg p-6 mb-8 max-w-2xl mx-auto">
-              <h3 className="text-lg font-semibold text-gray-900 mb-2">
-                더 많은 기능을 이용하려면 가입하세요!
-              </h3>
-              <p className="text-gray-600 mb-4">
-                회원가입하면 나만의 캐릭터를 만들고, 대화 기록을 저장하며, 스토리를 생성할 수 있습니다.
-              </p>
-              <div className="flex justify-center space-x-4">
-                <Link to="/login">
-                  <Button className="bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700">
-                    무료 회원가입
-                  </Button>
-                </Link>
-                <Link to="/login">
-                  <Button variant="outline">
-                    로그인
-                  </Button>
-                </Link>
-              </div>
-            </div>
-          )}
-        </div>
+        {/* 최근 대화한 캐릭터 (로그인 시에만 보임) */}
+        {isAuthenticated && (
+          <section className="mb-12">
+            <h2 className="text-2xl font-bold mb-4 flex items-center">
+              <Sparkles className="w-6 h-6 mr-2 text-purple-400" />
+              최근 대화
+            </h2>
+            <RecentCharactersList limit={4} />
+          </section>
+        )}
 
         {/* 캐릭터 섹션 */}
-        <div className="mb-8">
+        <section className="mb-8">
           <div className="flex items-center justify-between mb-6">
             <div>
-              <h3 className="text-2xl font-bold text-gray-900 mb-2">인기 캐릭터</h3>
-              <p className="text-gray-600">다른 사용자들이 만든 흥미로운 AI 캐릭터들을 만나보세요</p>
+              <h3 className="text-2xl font-bold text-white mb-1">탐색</h3>
+              <p className="text-gray-400">다른 사용자들이 만든 흥미로운 AI 캐릭터들을 만나보세요</p>
             </div>
-            <div className="flex items-center space-x-2 text-sm text-gray-500">
+            <div className="flex items-center space-x-2 text-sm text-gray-400">
               <Users className="w-4 h-4" />
               <span>{characters.length}개의 캐릭터</span>
             </div>
@@ -370,12 +261,12 @@ const HomePage = () => {
               ))}
             </div>
           ) : (
-            <div className="text-center py-16">
-              <MessageCircle className="w-16 h-16 text-gray-400 mx-auto mb-4" />
-              <h3 className="text-lg font-medium text-gray-900 mb-2">
+            <div className="text-center py-16 bg-gray-800 rounded-lg">
+              <MessageCircle className="w-16 h-16 text-gray-500 mx-auto mb-4" />
+              <h3 className="text-lg font-medium text-white mb-2">
                 캐릭터가 없습니다
               </h3>
-              <p className="text-gray-600 mb-4">
+              <p className="text-gray-400 mb-4">
                 아직 공개된 캐릭터가 없습니다. 첫 번째 캐릭터를 만들어보세요!
               </p>
               {isAuthenticated && (
@@ -389,40 +280,7 @@ const HomePage = () => {
               )}
             </div>
           )}
-        </div>
-
-        {/* 기능 소개 섹션 */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mt-16">
-          <div className="text-center">
-            <div className="w-16 h-16 bg-gradient-to-r from-purple-500 to-pink-500 rounded-full flex items-center justify-center mx-auto mb-4">
-              <MessageCircle className="w-8 h-8 text-white" />
-            </div>
-            <h3 className="text-xl font-semibold text-gray-900 mb-2">AI 채팅</h3>
-            <p className="text-gray-600">
-              다양한 개성을 가진 AI 캐릭터들과 자연스러운 대화를 나누세요
-            </p>
-          </div>
-          
-          <div className="text-center">
-            <div className="w-16 h-16 bg-gradient-to-r from-blue-500 to-cyan-500 rounded-full flex items-center justify-center mx-auto mb-4">
-              <BookOpen className="w-8 h-8 text-white" />
-            </div>
-            <h3 className="text-xl font-semibold text-gray-900 mb-2">스토리 생성</h3>
-            <p className="text-gray-600">
-              AI와 함께 창의적인 스토리를 만들고 나만의 세계를 구축하세요
-            </p>
-          </div>
-          
-          <div className="text-center">
-            <div className="w-16 h-16 bg-gradient-to-r from-green-500 to-teal-500 rounded-full flex items-center justify-center mx-auto mb-4">
-              <Users className="w-8 h-8 text-white" />
-            </div>
-            <h3 className="text-xl font-semibold text-gray-900 mb-2">캐릭터 생성</h3>
-            <p className="text-gray-600">
-              나만의 독특한 AI 캐릭터를 만들고 다른 사용자들과 공유하세요
-            </p>
-          </div>
-        </div>
+        </section>
       </main>
     </div>
   );

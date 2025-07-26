@@ -17,6 +17,8 @@ from app.core.database import engine, Base
 from app.api.chat import router as chat_router          # 🔥 최우선: 채팅 API
 from app.api.auth import router as auth_router          # ✅ 필수: 인증 API  
 from app.api.characters import router as characters_router  # ✅ 필수: 캐릭터 API
+from app.api.users import router as users_router
+from app.api.story_importer import router as story_importer_router # ✨ 신규: 스토리 임포터 API
 from app.api.stories import router as stories_router    # ⏳ 나중에: 스토리 API (차별점)
 from app.api.payment import router as payment_router    # ⏳ 나중에: 결제 API (단순화 예정)
 from app.api.point import router as point_router        # ⏳ 나중에: 포인트 API (단순화 예정)
@@ -77,11 +79,13 @@ if settings.ENVIRONMENT == "production":
 app.include_router(chat_router, prefix="/chat", tags=["🔥 채팅 (최우선)"])
 app.include_router(auth_router, prefix="/auth", tags=["✅ 인증 (필수)"])
 app.include_router(characters_router, prefix="/characters", tags=["✅ 캐릭터 (필수)"])
+app.include_router(users_router, prefix="", tags=["✅ 유저 (필수)"])  # prefix 없음 - /users/{id} 형태
+app.include_router(story_importer_router, prefix="/story-importer", tags=["✨ 스토리 임포터 (신규)"])
 app.include_router(files_router, prefix="/files", tags=["🗂️ 파일"])
 
 
-# ⏳ Phase 5+: 나중에 개발할 기능들
-app.include_router(stories_router, prefix="/stories", tags=["⏳ 스토리 (차별점)"])
+# ⏳ Phase 3: 콘텐츠 확장 API (향후 개발)
+app.include_router(stories_router, prefix="/stories", tags=["📚 스토리"])
 app.include_router(payment_router, prefix="/payment", tags=["⏳ 결제 (단순화 예정)"])
 app.include_router(point_router, prefix="/point", tags=["⏳ 포인트 (단순화 예정)"])
 
