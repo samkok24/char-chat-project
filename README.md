@@ -1,4 +1,4 @@
-# 🦆 CAVEDUCK Style AI Chat
+# 🦆 AI Chat
 
 > **Simple is Best** - AI 캐릭터와 대화하는 가장 간단한 방법
 
@@ -78,22 +78,6 @@ GEMINI_API_KEY=your_key_here
 - [ ] Phase 4: UI 재설계
 - [ ] Phase 5: 성능 개선
 - [ ] Phase 6: 채팅 최적화
-
-자세한 내용: [CAVEDUCK_ROADMAP.md](CAVEDUCK_ROADMAP.md)
-
-## 🤝 기여하기
-
-1. Fork
-2. Feature branch 생성 (`git checkout -b feature/simple-feature`)
-3. Commit (`git commit -m 'Add simple feature'`)
-4. Push (`git push origin feature/simple-feature`)
-5. Pull Request
-
-**규칙**: 새 기능보다 기존 기능 개선 우선!
-
-## 📄 라이센스
-
-MIT License - 자유롭게 사용하세요!
 
 ## 🙏 감사의 말
 
