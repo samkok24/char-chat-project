@@ -63,7 +63,7 @@ http://localhost:5173
 GEMINI_API_KEY=your_key_here
 ```
 
-## 🦆 CAVEDUCK 원칙
+## 🦆 원칙
 
 1. **기능 최소화** - 채팅에만 집중
 2. **빠른 속도** - 3초 룰
@@ -78,12 +78,6 @@ GEMINI_API_KEY=your_key_here
 - [ ] Phase 4: UI 재설계
 - [ ] Phase 5: 성능 개선
 - [ ] Phase 6: 채팅 최적화
-
-## 🙏 감사의 말
-
-- CAVEDUCK - 심플함의 교과서
-- Character.AI - 영감의 원천
-- 모든 오픈소스 기여자들
 
 ---
 
