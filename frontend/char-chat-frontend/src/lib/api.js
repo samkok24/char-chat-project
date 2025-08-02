@@ -5,8 +5,8 @@
 import axios from 'axios';
 
 // API 기본 URL 설정
-const API_BASE_URL = 'http://localhost:8000'; // import.meta.env.VITE_API_URL || 'http://localhost:8000';
-const SOCKET_URL = 'http://localhost:3001'; // import.meta.env.VITE_SOCKET_URL || 'http://localhost:3001';
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:3001';
 
 // Axios 인스턴스 생성
 const api = axios.create({
@@ -238,6 +238,13 @@ export const chatAPI = {
   
   sendMessageLegacy: (data) =>
     api.post('/chat/messages', data),
+    
+  // 채팅 삭제 관련 API
+  clearChatMessages: (roomId) =>
+    api.delete(`/chat/rooms/${roomId}/messages`),
+    
+  deleteChatRoom: (roomId) =>
+    api.delete(`/chat/rooms/${roomId}`),
 };
 
 // 📖 스토리 관련 API

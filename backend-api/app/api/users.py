@@ -25,14 +25,17 @@ router = APIRouter()
 async def get_my_recent_characters(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
-    limit: int = 10
+    limit: int = 10,
+    page: int = 1
 ):
     """
     최근 대화한 캐릭터 목록을 조회합니다.
     - **limit**: 가져올 캐릭터의 최대 수 (기본값: 10)
+    - **page**: 페이지 번호 (기본값: 1)
     """
+    skip = (page - 1) * limit
     characters = await user_service.get_recent_characters_for_user(
-        db, user_id=current_user.id, limit=limit
+        db, user_id=current_user.id, limit=limit, skip=skip
     )
     
     # Character 모델 객체를 CharacterListResponse 스키마에 맞게 변환

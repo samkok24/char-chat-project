@@ -137,7 +137,7 @@ async def get_user_profile(db: AsyncSession, user_id: str) -> UserProfileRespons
     )
 
 
-async def get_recent_characters_for_user(db: AsyncSession, user_id: uuid.UUID, limit: int = 10) -> list[Character]:
+async def get_recent_characters_for_user(db: AsyncSession, user_id: uuid.UUID, limit: int = 10, skip: int = 0) -> list[Character]:
     """
     사용자가 최근에 대화한 캐릭터 목록을 반환합니다.
     creator 정보를 함께 로드하고, last_message_snippet을 포함합니다.
@@ -169,6 +169,7 @@ async def get_recent_characters_for_user(db: AsyncSession, user_id: uuid.UUID, l
         .options(selectinload(Character.creator))
         .order_by(last_message_subquery.c.last_chat_time.desc().nullslast())
         .limit(limit)
+        .offset(skip)
     )
     rows = result.all()
     characters = []

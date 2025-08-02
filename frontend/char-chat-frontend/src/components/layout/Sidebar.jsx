@@ -4,7 +4,7 @@ import { chatAPI } from '../../lib/api';
 import { useAuth } from '../../contexts/AuthContext';
 import { Avatar, AvatarFallback, AvatarImage } from '../ui/avatar';
 import { Button } from '../ui/button';
-import { MessageSquare, Plus, Home, Star, User } from 'lucide-react';
+import { MessageSquare, Plus, Home, Star, User, History } from 'lucide-react';
 import { Skeleton } from '../ui/skeleton';
 
 const Sidebar = () => {
@@ -55,6 +55,7 @@ const Sidebar = () => {
       <nav className="flex-1 p-4 space-y-2">
         <NavItem to="/" icon={Home}>홈</NavItem>
         <NavItem to="/my-characters" icon={Star}>내 캐릭터</NavItem>
+        <NavItem to="/history" icon={History}>대화내역</NavItem>
         
         <div className="pt-4">
           <h2 className="px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">최근 대화</h2>

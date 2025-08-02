@@ -3,7 +3,7 @@
 """
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update
+from sqlalchemy import select, update, delete
 from sqlalchemy.orm import selectinload, joinedload
 from typing import Optional, List
 import uuid
@@ -88,4 +88,38 @@ async def get_chat_rooms_for_user(
         .options(selectinload(ChatRoom.character))
         .order_by(ChatRoom.updated_at.desc())
     )
-    return result.scalars().all() 
+    return result.scalars().all()
+
+async def get_chat_room_by_id(
+    db: AsyncSession, room_id: uuid.UUID
+) -> Optional[ChatRoom]:
+    """ID로 채팅방 조회"""
+    result = await db.execute(
+        select(ChatRoom)
+        .where(ChatRoom.id == room_id)
+        .options(selectinload(ChatRoom.character))
+    )
+    return result.scalar_one_or_none()
+
+async def delete_all_messages_in_room(
+    db: AsyncSession, room_id: uuid.UUID
+) -> None:
+    """채팅방의 모든 메시지 삭제"""
+    await db.execute(
+        delete(ChatMessage).where(ChatMessage.chat_room_id == room_id)
+    )
+    await db.commit()
+
+async def delete_chat_room(
+    db: AsyncSession, room_id: uuid.UUID
+) -> None:
+    """채팅방 삭제 (연관된 메시지도 함께 삭제)"""
+    # 먼저 메시지 삭제
+    await db.execute(
+        delete(ChatMessage).where(ChatMessage.chat_room_id == room_id)
+    )
+    # 그 다음 채팅방 삭제
+    await db.execute(
+        delete(ChatRoom).where(ChatRoom.id == room_id)
+    )
+    await db.commit() 

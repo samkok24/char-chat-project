@@ -238,9 +238,8 @@ class SocketController {
       // 백엔드 API에 메시지 저장
       try {
         await axios.post(`${config.BACKEND_API_URL}/chat/messages`, {
-          room_id: roomId,
-          content,
-          message_type: messageType
+          character_id: room.characterId,
+          content
         }, {
           headers: {
             'Authorization': `Bearer ${socket.token}`
@@ -251,67 +250,48 @@ class SocketController {
         // 여기서 멈추지 않고 계속 진행하여 사용자 경험은 유지
       }
 
-      // AI 응답 생성 시작 (타이핑 시작)
-      this.handleTypingStart(socket, io, { roomId });
+      // AI 응답 생성 시작 (AI 타이핑 시작)
+      io.to(roomId).emit('ai_typing_start', { roomId });
 
-      const character = await redisService.getCharacter(room.characterId);
-      if (!character) {
-        socket.emit('error', { message: '캐릭터 정보를 찾을 수 없습니다.' });
-        this.handleTypingStop(socket, io, { roomId });
-        return;
-      }
-      
-      let fullResponse = '';
-      const stream = aiService.generateCharacterResponseStream(character, content, roomId);
-      const aiMessageId = uuidv4();
-
-      for await (const chunk of stream) {
-        fullResponse += chunk;
-        socket.emit('ai_message_chunk', {
-          id: aiMessageId,
-          roomId,
-          chunk,
-          senderType: 'assistant',
-          senderId: character.id,
-          senderName: character.name,
-          timestamp: new Date().toISOString()
+      try {
+        // 백엔드 API에서 AI 응답 생성 (이미 메시지 저장까지 처리함)
+        const aiResponse = await axios.post(`${config.BACKEND_API_URL}/chat/messages`, {
+          character_id: room.characterId,
+          content
+        }, {
+          headers: {
+            'Authorization': `Bearer ${socket.token}`
+          }
         });
-      }
 
-      // AI 응답 생성 완료 (타이핑 중지)
-      this.handleTypingStop(socket, io, { roomId });
+        // AI 응답 생성 완료 (AI 타이핑 중지)
+        io.to(roomId).emit('ai_typing_stop', { roomId });
 
-      if (fullResponse) {
-        // 완성된 메시지 저장
-        try {
-            await axios.post(`${config.BACKEND_API_URL}/chat/messages`, {
-              id: aiMessageId,
-              room_id: roomId,
-              sender_type: 'assistant',
-              content: fullResponse,
-            }, {
-              headers: { 'Authorization': `Bearer ${socket.token}` }
-            });
-        } catch (apiError) {
-          logger.error('AI 메시지 저장 API 오류:', apiError);
+        if (aiResponse.data && aiResponse.data.ai_message) {
+          const aiMessage = aiResponse.data.ai_message;
+          
+          // AI 메시지를 룸의 모든 사용자에게 브로드캐스트
+          const aiMessageData = {
+            id: aiMessage.id,
+            roomId,
+            senderType: 'character', // assistant 대신 character 사용
+            senderId: room.characterId,
+            senderName: room.characterName || 'AI',
+            content: aiMessage.content,
+            timestamp: aiMessage.created_at || new Date().toISOString()
+          };
+          
+          io.to(roomId).emit('new_message', aiMessageData);
         }
-        
-        // 대화 컨텍스트 업데이트
-        await aiService.updateConversationContext(roomId, content, fullResponse);
-
-        // 스트림 종료 이벤트
-        socket.emit('ai_message_end', { 
-            id: aiMessageId,
-            roomId, 
-            content: fullResponse 
-        });
-      } else {
-        socket.emit('error', { message: 'AI가 응답을 생성하지 못했습니다.' });
+      } catch (apiError) {
+        logger.error('AI 응답 생성 오류:', apiError.response?.data || apiError.message);
+        io.to(roomId).emit('ai_typing_stop', { roomId });
+        socket.emit('error', { message: 'AI 응답 생성 중 오류가 발생했습니다.' });
       }
 
     } catch (error) {
       logger.error('메시지 전송 처리 오류:', error);
-      this.handleTypingStop(socket, io, { roomId: data.roomId });
+      io.to(data.roomId).emit('ai_typing_stop', { roomId: data.roomId });
       socket.emit('error', { message: '메시지 전송 중 오류가 발생했습니다.' });
     }
   }
@@ -461,10 +441,19 @@ class SocketController {
 
       const messages = response.data;
 
+      // 백엔드 형식을 프론트엔드 형식으로 변환
+      const formattedMessages = messages.map(msg => ({
+        id: msg.id,
+        roomId: roomId,
+        senderType: msg.sender_type, // 그대로 사용 (user 또는 character)
+        content: msg.content,
+        timestamp: msg.created_at || msg.timestamp
+      }));
+
       // 클라이언트에 메시지 기록 전송
       socket.emit('message_history', {
         roomId,
-        messages,
+        messages: formattedMessages,
         page,
         limit,
         hasMore: messages.length === limit

@@ -25,7 +25,7 @@ async def get_gemini_completion(prompt: str, temperature: float = 0.7, max_token
         AI 모델이 생성한 텍스트 응답.
     """
     try:
-        model = genai.GenerativeModel('gemini-1.5-pro-latest')
+        model = genai.GenerativeModel('gemini-2.5-pro')
         
         # GenerationConfig를 사용하여 JSON 모드 등을 활성화할 수 있음 (향후 확장)
         generation_config = genai.types.GenerationConfig(

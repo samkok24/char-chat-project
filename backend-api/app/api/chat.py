@@ -15,6 +15,7 @@ from app.models.user import User
 from app.models.character import CharacterSetting
 
 from app.services import chat_service
+from app.services import ai_service
 from app.schemas.chat import (
     ChatRoomResponse, 
     ChatMessageResponse, 
@@ -78,18 +79,28 @@ async def send_message(
     # 3. AI 응답 생성 (CAVEDUCK 스타일 최적화)
     history = await chat_service.get_messages_by_room_id(db, room.id, limit=20)
     
-    ai_service = AIService()
-    ai_response_text = await ai_service.generate_character_response(
-        character_name=character.name,
-        character_description=character.description,
-        character_personality=character.personality,
-        speech_style=character.speech_style,  # 말투 추가
-        greeting=character.greeting,  # 인사말 추가
-        conversation_history=[
-            {"role": msg.sender_type, "content": msg.content} for msg in history
-        ],
+    # 캐릭터 프롬프트 구성
+    character_prompt = f"""당신은 '{character.name}'입니다.
+설명: {character.description}
+성격: {character.personality}
+말투: {character.speech_style}
+인사말: {character.greeting}
+
+위 설정에 맞게 대답해주세요."""
+
+    # 대화 히스토리 구성
+    history_for_ai = []
+    for msg in history[-10:]:  # 최근 10개 메시지만 사용
+        if msg.sender_type == "user":
+            history_for_ai.append({"role": "user", "parts": [msg.content]})
+        else:
+            history_for_ai.append({"role": "model", "parts": [msg.content]})
+    
+    # AI 응답 생성
+    ai_response_text = await ai_service.get_ai_chat_response(
+        character_prompt=character_prompt,
         user_message=request.content,
-        model=settings.ai_model if settings else 'gemini-pro'
+        history=history_for_ai
     )
 
     # 4. AI 응답 메시지 저장
@@ -143,6 +154,23 @@ async def get_user_chat_rooms_legacy(
     """사용자의 채팅방 목록 조회 (레거시 호환성)"""
     return await get_chat_sessions(current_user, db)
 
+@router.get("/rooms/{room_id}", response_model=ChatRoomResponse)
+async def get_chat_room(
+    room_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """특정 채팅방 정보 조회"""
+    room = await chat_service.get_chat_room_by_id(db, room_id)
+    if not room:
+        raise HTTPException(status_code=404, detail="채팅방을 찾을 수 없습니다.")
+    
+    # 권한 확인
+    if room.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="이 채팅방에 접근할 권한이 없습니다.")
+    
+    return room
+
 @router.get("/rooms/{room_id}/messages", response_model=List[ChatMessageResponse])
 async def get_messages_in_room_legacy(
     room_id: uuid.UUID,
@@ -162,4 +190,42 @@ async def send_message_and_get_response_legacy(
 ):
     """메시지 전송 및 AI 응답 생성 (레거시 호환성)"""
     return await send_message(request, current_user, db)
+
+@router.delete("/rooms/{room_id}/messages")
+async def clear_chat_messages(
+    room_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """채팅방의 모든 메시지 삭제 (대화 초기화)"""
+    # 채팅방 권한 확인
+    room = await chat_service.get_chat_room_by_id(db, room_id)
+    if not room:
+        raise HTTPException(status_code=404, detail="채팅방을 찾을 수 없습니다.")
+    
+    if room.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="이 채팅방에 접근할 권한이 없습니다.")
+    
+    # 메시지 삭제
+    await chat_service.delete_all_messages_in_room(db, room_id)
+    return {"message": "채팅 내용이 초기화되었습니다."}
+
+@router.delete("/rooms/{room_id}")
+async def delete_chat_room(
+    room_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """채팅방 완전 삭제"""
+    # 채팅방 권한 확인
+    room = await chat_service.get_chat_room_by_id(db, room_id)
+    if not room:
+        raise HTTPException(status_code=404, detail="채팅방을 찾을 수 없습니다.")
+    
+    if room.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="이 채팅방에 접근할 권한이 없습니다.")
+    
+    # 채팅방 삭제 (연관된 메시지도 함께 삭제됨)
+    await chat_service.delete_chat_room(db, room_id)
+    return {"message": "채팅방이 삭제되었습니다."}
 

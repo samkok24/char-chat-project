@@ -29,12 +29,14 @@ services:
       dockerfile: Dockerfile
     image: char-chat-server-dev
     container_name: char_chat_server
+    env_file:
+      - ./.env
     environment:
       NODE_ENV: development
       PORT: 3001
       REDIS_URL: redis://redis:6379
-      JWT_SECRET: your-super-secret-key-change-this-in-production
-      JWT_SECRET_KEY: your-super-secret-key-change-this-in-production
+      BACKEND_API_URL: http://backend:8000
+      # JWT_SECRET와 JWT_SECRET_KEY는 .env 파일에서 로드됨
     ports:
       - "3001:3001"
     depends_on:
@@ -61,8 +63,8 @@ services:
     image: char-chat-frontend-dev
     container_name: char_chat_frontend
     environment:
-      - VITE_API_URL
-      - VITE_SOCKET_URL
+      VITE_API_URL: http://localhost:8000
+      VITE_SOCKET_URL: http://localhost:3001
     ports:
       - "5173:5173"  # Vite 기본 포트
     depends_on:

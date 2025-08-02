@@ -42,6 +42,7 @@ import {
 } from "../components/ui/dropdown-menu";
 import { RecentCharactersList } from '../components/RecentCharactersList'; // 추가
 import { CharacterCard, CharacterCardSkeleton } from '../components/CharacterCard'; // 수정
+import AppLayout from '../components/layout/AppLayout';
 
 const HomePage = () => {
   const [searchQuery, setSearchQuery] = useState('');
@@ -108,9 +109,10 @@ const HomePage = () => {
   };
 
   return (
-    <div className="min-h-screen bg-gray-900 text-gray-200">
-      {/* 헤더 */}
-      <header className="bg-gray-800/80 backdrop-blur-sm shadow-sm border-b border-gray-700 sticky top-0 z-50">
+    <AppLayout>
+      <div className="min-h-full bg-gray-900 text-gray-200">
+        {/* 헤더 */}
+        <header className="bg-gray-800/80 backdrop-blur-sm shadow-sm border-b border-gray-700 sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between h-16">
             <div className="flex items-center space-x-4">
@@ -282,7 +284,8 @@ const HomePage = () => {
           )}
         </section>
       </main>
-    </div>
+      </div>
+    </AppLayout>
   );
 };
 

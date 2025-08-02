@@ -19,9 +19,28 @@ import {
   MessageCircle,
   User,
   Bot,
-  AlertCircle
+  AlertCircle,
+  Trash2,
+  MoreVertical
 } from 'lucide-react';
 import { Textarea } from '../components/ui/textarea'; // Textarea 추가
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '../components/ui/alert-dialog';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '../components/ui/dropdown-menu';
 
 const ChatPage = () => {
   const { characterId } = useParams();
@@ -40,6 +59,7 @@ const ChatPage = () => {
     historyLoading,
     hasMoreMessages,
     currentPage,
+    currentRoom,
   } = useSocket();
   
   const [character, setCharacter] = useState(null);
@@ -89,11 +109,11 @@ const ChatPage = () => {
 
   useEffect(() => {
     // 소켓 연결 및 채팅방 정보 로드 완료 후 채팅방 입장
-    if (connected && chatRoomId) {
+    if (connected && chatRoomId && currentRoom?.id !== chatRoomId) {
         joinRoom(chatRoomId);
         getMessageHistory(chatRoomId, 1);
     }
-  }, [connected, chatRoomId, joinRoom, getMessageHistory]);
+  }, [connected, chatRoomId, currentRoom]); // currentRoom 추가하여 중복 입장 방지
 
   // Add this new useEffect block
   useEffect(() => {
@@ -189,6 +209,21 @@ const ChatPage = () => {
       inputRef.current.style.height = 'auto';
     }
   };
+  
+  // 대화 초기화
+  const handleClearChat = async () => {
+    if (!chatRoomId) return;
+    
+    try {
+      await chatAPI.clearChatMessages(chatRoomId);
+      setMessages([]);
+      // 페이지 새로고침하거나 소켓 재연결
+      window.location.reload();
+    } catch (error) {
+      console.error('대화 초기화 실패:', error);
+      setError('대화 초기화에 실패했습니다.');
+    }
+  };
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -198,7 +233,7 @@ const ChatPage = () => {
   };
   
   const MessageBubble = ({ message, isLast }) => {
-    const isUser = message.senderType === 'user';
+    const isUser = message.senderType === 'user' || message.sender_type === 'user';
     const bubbleRef = isLast ? messagesEndRef : null;
 
     return (
@@ -297,7 +332,37 @@ const ChatPage = () => {
                 </div>
               </div>
             </div>
-            {/* 여기에 메뉴 버튼 등을 추가할 수 있습니다. */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="icon" className="rounded-full">
+                  <MoreVertical className="w-5 h-5" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <DropdownMenuItem onSelect={(e) => e.preventDefault()}>
+                      <Trash2 className="w-4 h-4 mr-2" />
+                      대화 내용 초기화
+                    </DropdownMenuItem>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>대화 내용을 초기화하시겠습니까?</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        이 작업은 되돌릴 수 없습니다. 모든 대화 내용이 삭제됩니다.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>취소</AlertDialogCancel>
+                      <AlertDialogAction onClick={handleClearChat}>
+                        초기화
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
       </header>
@@ -328,13 +393,32 @@ const ChatPage = () => {
               </p>
             </div>
           ) : (
-            messages.map((message, index) => (
-              <MessageBubble 
-                key={message.id || `msg-${index}`} 
-                message={message}
-                isLast={index === messages.length - 1} 
-              />
-            ))
+            <>
+              {messages.map((message, index) => (
+                <MessageBubble 
+                  key={message.id || `msg-${index}`} 
+                  message={message}
+                  isLast={index === messages.length - 1 && !aiTyping} 
+                />
+              ))}
+              {aiTyping && (
+                <div className="flex items-start space-x-3">
+                  <Avatar className="w-8 h-8 flex-shrink-0">
+                    <AvatarImage src={character?.avatar_url} alt={character?.name} />
+                    <AvatarFallback className="bg-gradient-to-r from-purple-500 to-blue-500 text-white">
+                      {character?.name?.charAt(0) || <Bot className="w-4 h-4" />}
+                    </AvatarFallback>
+                  </Avatar>
+                  <div className="max-w-xs lg:max-w-md px-4 py-2 rounded-lg shadow-md bg-white text-gray-900">
+                    <div className="flex space-x-1">
+                      <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
+                      <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
+                      <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </>
           )}
           <div ref={messagesEndRef} />
         </div>
