@@ -79,3 +79,26 @@ async def read_user_profile(
             detail="해당 사용자를 찾을 수 없습니다."
         )
     return profile_data
+
+@router.get("/me/model-settings")
+async def get_user_model_settings(
+    current_user: User = Depends(get_current_user)
+):
+    """현재 사용자의 AI 모델 설정 조회"""
+    return {
+        "preferred_model": current_user.preferred_model,
+        "preferred_sub_model": current_user.preferred_sub_model
+    }
+
+@router.put("/me/model-settings")
+async def update_user_model_settings(
+    model: str,
+    sub_model: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """사용자의 AI 모델 설정 업데이트"""
+    await user_service.update_user_model_settings(
+        db, current_user.id, model, sub_model
+    )
+    return {"message": "모델 설정이 업데이트되었습니다."}

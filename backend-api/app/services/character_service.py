@@ -544,11 +544,11 @@ async def is_character_liked_by_user(db: AsyncSession, character_id: uuid.UUID, 
 
 async def increment_character_chat_count(db: AsyncSession, character_id: uuid.UUID) -> bool:
     """캐릭터 채팅 수 증가"""
-    await db.execute(
+    result = await db.execute(
         update(Character)
         .where(Character.id == character_id)
         .values(chat_count=Character.chat_count + 1)
     )
     await db.commit()
-    return True
+    return result.rowcount > 0
 

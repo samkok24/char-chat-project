@@ -124,6 +124,15 @@ export const usersAPI = {
   // 최근 대화한 캐릭터 목록
   getRecentCharacters: (params = {}) =>
     api.get('/me/characters/recent', { params }),
+    
+  // 모델 설정 관련
+  getModelSettings: () =>
+    api.get('/me/model-settings'),
+    
+  updateModelSettings: (model, subModel) =>
+    api.put('/me/model-settings', null, { 
+      params: { model, sub_model: subModel } 
+    }),
 };
 
 // 🎭 캐릭터 관련 API
@@ -349,6 +358,60 @@ export const filesAPI = {
       },
     });
   },
+};
+
+// 📝 기억노트 관련 API
+export const memoryNotesAPI = {
+  // 특정 캐릭터의 기억노트 목록 조회
+  getMemoryNotesByCharacter: (characterId) =>
+    api.get(`/memory-notes/character/${characterId}`),
+
+  // 기억노트 생성
+  createMemoryNote: (memoryData) =>
+    api.post('/memory-notes', memoryData),
+
+  // 기억노트 수정
+  updateMemoryNote: (memoryId, memoryData) =>
+    api.put(`/memory-notes/${memoryId}`, memoryData),
+
+  // 기억노트 삭제
+  deleteMemoryNote: (memoryId) =>
+    api.delete(`/memory-notes/${memoryId}`),
+
+  // 기억노트 단일 조회
+  getMemoryNote: (memoryId) =>
+    api.get(`/memory-notes/${memoryId}`),
+};
+
+// 👤 유저 페르소나 관련 API
+export const userPersonasAPI = {
+  // 사용자의 모든 페르소나 목록 조회
+  getUserPersonas: () =>
+    api.get('/user-personas'),
+
+  // 페르소나 생성
+  createUserPersona: (personaData) =>
+    api.post('/user-personas', personaData),
+
+  // 페르소나 수정
+  updateUserPersona: (personaId, personaData) =>
+    api.put(`/user-personas/${personaId}`, personaData),
+
+  // 페르소나 삭제
+  deleteUserPersona: (personaId) =>
+    api.delete(`/user-personas/${personaId}`),
+
+  // 페르소나 단일 조회
+  getUserPersona: (personaId) =>
+    api.get(`/user-personas/${personaId}`),
+
+  // 활성 페르소나 설정
+  setActivePersona: (personaId) =>
+    api.post('/user-personas/set-active', { persona_id: personaId }),
+
+  // 현재 활성 페르소나 조회
+  getCurrentActivePersona: () =>
+    api.get('/user-personas/active/current'),
 };
 
 export { api, API_BASE_URL, SOCKET_URL };

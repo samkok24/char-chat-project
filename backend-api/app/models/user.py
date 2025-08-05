@@ -19,6 +19,11 @@ class User(Base):
     hashed_password = Column(String(255), nullable=False)
     is_active = Column(Boolean, default=True)
     is_verified = Column(Boolean, default=False)
+    
+    # AI 모델 설정
+    preferred_model = Column(String(50), default='gemini')  # gemini, claude, gpt, argo
+    preferred_sub_model = Column(String(50), default='gemini-2.5-pro')  # 세부 모델 버전
+    
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -34,6 +39,10 @@ class User(Base):
     payments = relationship("Payment", back_populates="user", cascade="all, delete-orphan")
     point_transactions = relationship("PointTransaction", back_populates="user", cascade="all, delete-orphan")
     user_point = relationship("UserPoint", back_populates="user", uselist=False, cascade="all, delete-orphan")
+    
+    # 기억노트 및 페르소나 관계
+    memory_notes = relationship("MemoryNote", back_populates="user", cascade="all, delete-orphan")
+    user_personas = relationship("UserPersona", back_populates="user", cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<User(id={self.id}, email={self.email}, username={self.username})>"

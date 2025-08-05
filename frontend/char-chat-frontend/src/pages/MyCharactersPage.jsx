@@ -218,7 +218,7 @@ const MyCharactersPage = () => {
               </div>
               <Skeleton className="h-10 w-40" />
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                          <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
               {Array.from({ length: 6 }).map((_, i) => (
                 <CharacterCardSkeleton key={i} />
               ))}
@@ -279,7 +279,7 @@ const MyCharactersPage = () => {
           )}
 
           {characters.length > 0 ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                          <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
               {characters.map((character) => (
                 <CharacterCard key={character.id} character={character} />
               ))}
@@ -308,7 +308,7 @@ const MyCharactersPage = () => {
 
         {/* 통계 카드 */}
         {characters.length > 0 && (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-12">
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-12">
             <Card>
               <CardHeader className="pb-3">
                 <CardTitle className="text-base">총 캐릭터 수</CardTitle>

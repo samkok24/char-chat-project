@@ -1,13 +1,9 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
-import { Badge } from './ui/badge';
-import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
 import { LazyLoadImage } from 'react-lazy-load-image-component';
 import 'react-lazy-load-image-component/src/effects/blur.css';
 import { Skeleton } from './ui/skeleton';
-import { Button } from './ui/button';
-import { MessageCircle, Heart, Clock } from 'lucide-react';
+import { MessageCircle, Heart } from 'lucide-react';
 
 export const CharacterCard = ({ character, onCardClick, onButtonClick, footerContent }) => {
   const navigate = useNavigate();
@@ -30,86 +26,71 @@ export const CharacterCard = ({ character, onCardClick, onButtonClick, footerCon
   };
 
   return (
-    <Card 
-      className="hover:shadow-lg transition-all duration-200 cursor-pointer group hover:scale-105"
+    <div 
+      className="bg-gray-800 rounded-xl overflow-hidden hover:bg-gray-700 transition-all duration-200 cursor-pointer group border border-gray-700 hover:border-purple-500"
       onClick={handleCardClick}
     >
-      <CardHeader className="pb-3">
-        <div className="flex items-start space-x-3">
-          <Avatar className="w-12 h-12">
-            <LazyLoadImage
-              alt={character.name}
-              src={character.avatar_url}
-              effect="blur"
-              className="w-full h-full object-cover rounded-full"
-              wrapperClassName="w-full h-full"
-            />
-            <AvatarFallback className="bg-gradient-to-r from-purple-500 to-blue-500 text-white">
-              {character.name.charAt(0)}
-            </AvatarFallback>
-          </Avatar>
-          <div className="flex-1 min-w-0">
-            <CardTitle className="text-lg truncate">{character.name}</CardTitle>
-            <CardDescription className="text-sm">
-              by {character.creator_username || 'Unknown'}
-            </CardDescription>
+      {/* 캐릭터 이미지 */}
+      <div className="aspect-square relative overflow-hidden bg-gray-900">
+        <LazyLoadImage
+          alt={character.name}
+          src={character.avatar_url || '/placeholder-avatar.png'}
+          effect="blur"
+          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+          wrapperClassName="w-full h-full"
+        />
+        {!character.avatar_url && (
+          <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-purple-600 to-blue-600">
+            <span className="text-4xl font-bold text-white">
+              {character.name.charAt(0).toUpperCase()}
+            </span>
           </div>
-        </div>
-      </CardHeader>
-      <CardContent className="pt-0">
-        <p className="text-sm text-gray-600 mb-4 line-clamp-3">
+        )}
+      </div>
+      
+      {/* 캐릭터 정보 */}
+      <div className="p-4">
+        <h3 className="font-medium text-white truncate">{character.name}</h3>
+        <p className="text-sm text-gray-400 truncate">by {character.creator_username || 'Unknown'}</p>
+        
+        {/* 설명 */}
+        <p className="text-sm text-gray-500 mt-1 line-clamp-2">
           {character.description || '설명이 없습니다.'}
         </p>
         
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center space-x-4 text-sm text-gray-500">
-            <div className="flex items-center space-x-1">
-              <MessageCircle className="w-4 h-4" />
-              <span>{(character.chat_count || 0).toLocaleString()}</span>
-            </div>
-            <div className="flex items-center space-x-1">
-              <Heart className="w-4 h-4" />
-              <span>{character.like_count || 0}</span>
-            </div>
-          </div>
-          <Badge variant="secondary" className="bg-green-100 text-green-800">
-            공개
-          </Badge>
+        {/* 상태 정보 */}
+        <div className="flex items-center gap-3 mt-3 text-xs text-gray-500">
+          <span className="flex items-center">
+            <MessageCircle className="w-3 h-3 mr-1" />
+            {(character.chat_count || 0).toLocaleString()}
+          </span>
+          <span className="flex items-center">
+            <Heart className="w-3 h-3 mr-1" />
+            {character.like_count || 0}
+          </span>
         </div>
-
-        {footerContent ? footerContent : (
-          <Button
-            onClick={handleButtonClick}
-            className="w-full bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 transition-all duration-200"
-            size="sm"
-          >
-            <MessageCircle className="w-4 h-4 mr-2" />
-            대화하기
-          </Button>
-        )}
-      </CardContent>
-    </Card>
+      </div>
+    </div>
   );
 };
 
 export const CharacterCardSkeleton = () => (
-    <Card>
-      <CardHeader className="pb-3">
-        <div className="flex items-start space-x-3">
-          <Skeleton className="w-12 h-12 rounded-full" />
-          <div className="flex-1 space-y-2">
-            <Skeleton className="h-5 w-3/4" />
-            <Skeleton className="h-4 w-1/2" />
-          </div>
-        </div>
-      </CardHeader>
-      <CardContent className="pt-0">
-        <div className="space-y-2 mb-4">
-          <Skeleton className="h-4 w-full" />
-          <Skeleton className="h-4 w-full" />
-          <Skeleton className="h-4 w-3/4" />
-        </div>
-        <Skeleton className="h-9 w-full" />
-      </CardContent>
-    </Card>
-  ); 
+  <div className="bg-gray-800 rounded-xl overflow-hidden border border-gray-700">
+    {/* 이미지 스켈레톤 */}
+    <Skeleton className="aspect-square bg-gray-700" />
+    
+    {/* 정보 스켈레톤 */}
+    <div className="p-4 space-y-3">
+      <Skeleton className="h-5 w-3/4 bg-gray-700" />
+      <Skeleton className="h-4 w-1/2 bg-gray-700" />
+      <div className="space-y-1">
+        <Skeleton className="h-3 w-full bg-gray-700" />
+        <Skeleton className="h-3 w-4/5 bg-gray-700" />
+      </div>
+      <div className="flex gap-3">
+        <Skeleton className="h-3 w-12 bg-gray-700" />
+        <Skeleton className="h-3 w-12 bg-gray-700" />
+      </div>
+    </div>
+  </div>
+); 

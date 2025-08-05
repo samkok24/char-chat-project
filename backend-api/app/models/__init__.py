@@ -21,6 +21,8 @@ from .payment import (
 from .like import CharacterLike, StoryLike
 from .comment import CharacterComment, StoryComment
 from .bookmark import CharacterBookmark
+from .memory_note import MemoryNote
+from .user_persona import UserPersona
 
 __all__ = [
     "User",
@@ -41,5 +43,7 @@ __all__ = [
     "CharacterComment",
     "StoryComment",
     "CharacterBookmark",
+    "MemoryNote",
+    "UserPersona",
 ]
 

@@ -9,7 +9,7 @@ import { Textarea } from '../components/ui/textarea';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import {
-  ArrowLeft, Wand2, Loader2, AlertCircle, UserPlus, BarChart, BookText, Globe, Users, Info
+  ArrowLeft, Wand2, Loader2, AlertCircle, UserPlus, BarChart, BookText, Globe, Users, Info, Upload
 } from 'lucide-react';
 import AnalyzedCharacterCard from '../components/AnalyzedCharacterCard';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../components/ui/tooltip';
@@ -21,6 +21,59 @@ const StoryImporterPage = () => {
   const [error, setError] = useState('');
   const [analysisResult, setAnalysisResult] = useState(null);
   const [isSaving, setIsSaving] = useState(false); // 저장 로딩 상태 추가
+  const MAX_CHARS = 500000; // 최대 글자 수
+
+  // 파일 업로드 핸들러
+  const handleFileUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const allowedTypes = ['.txt', '.doc', '.docx', '.hwp', '.hwpx'];
+    const fileExtension = file.name.substring(file.name.lastIndexOf('.')).toLowerCase();
+    
+    if (!allowedTypes.includes(fileExtension)) {
+      setError('지원하지 않는 파일 형식입니다. (.txt, .doc, .docx, .hwp, .hwpx 파일만 가능)');
+      return;
+    }
+
+    setLoading(true);
+    setError('');
+    
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      
+      // TODO: 백엔드에 파일 업로드 API 구현 필요
+      // const response = await storyImporterAPI.uploadFile(formData);
+      // setStoryText(response.data.content);
+      
+      // 임시로 FileReader로 txt 파일만 읽기
+      if (fileExtension === '.txt') {
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          const content = event.target.result;
+          if (content.length > MAX_CHARS) {
+            setError(`파일 내용이 너무 깁니다. (최대 ${MAX_CHARS.toLocaleString()}자)`);
+            setStoryText(content.substring(0, MAX_CHARS));
+          } else {
+            setStoryText(content);
+          }
+          setLoading(false);
+        };
+        reader.onerror = () => {
+          setError('파일 읽기 중 오류가 발생했습니다.');
+          setLoading(false);
+        };
+        reader.readAsText(file, 'utf-8');
+      } else {
+        setError('현재는 .txt 파일만 지원됩니다. 다른 형식은 준비 중입니다.');
+        setLoading(false);
+      }
+    } catch (err) {
+      setError('파일 업로드 중 오류가 발생했습니다.');
+      setLoading(false);
+    }
+  };
 
   const handleAnalyze = async () => {
     if (!storyText.trim()) {
@@ -102,13 +155,50 @@ const StoryImporterPage = () => {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <Textarea
-              value={storyText}
-              onChange={(e) => setStoryText(e.target.value)}
-              placeholder="이곳에 분석할 이야기를 붙여넣으세요..."
-              className="min-h-[300px] text-base"
-              disabled={loading || isSaving} // 저장 중에도 비활성화
-            />
+            <div className="flex gap-2 mb-2">
+              <input
+                type="file"
+                id="fileUpload"
+                accept=".txt,.doc,.docx,.hwp,.hwpx"
+                onChange={handleFileUpload}
+                className="hidden"
+                disabled={loading || isSaving}
+              />
+              <label htmlFor="fileUpload">
+                <Button 
+                  variant="outline" 
+                  size="sm"
+                  disabled={loading || isSaving}
+                  className="cursor-pointer"
+                  asChild
+                >
+                  <span>
+                    <Upload className="mr-2 h-4 w-4" />
+                    파일 업로드
+                  </span>
+                </Button>
+              </label>
+              <span className="text-sm text-gray-500 flex items-center">
+                (.txt, .doc, .docx, .hwp, .hwpx 지원)
+              </span>
+            </div>
+            <div className="space-y-2">
+              <Textarea
+                value={storyText}
+                onChange={(e) => {
+                  if (e.target.value.length <= MAX_CHARS) {
+                    setStoryText(e.target.value);
+                  }
+                }}
+                placeholder="이곳에 분석할 이야기를 붙여넣으세요..."
+                className="min-h-[300px] text-base"
+                disabled={loading || isSaving} // 저장 중에도 비활성화
+                maxLength={MAX_CHARS}
+              />
+              <div className="text-sm text-gray-500 text-right">
+                {storyText.length.toLocaleString()} / {MAX_CHARS.toLocaleString()} 글자
+              </div>
+            </div>
             {error && (
               <Alert variant="destructive">
                 <AlertCircle className="h-4 w-4" />

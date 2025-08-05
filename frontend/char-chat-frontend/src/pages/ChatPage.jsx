@@ -21,7 +21,10 @@ import {
   Bot,
   AlertCircle,
   Trash2,
-  MoreVertical
+  MoreVertical,
+  Settings,
+  Book,
+  UserCog
 } from 'lucide-react';
 import { Textarea } from '../components/ui/textarea'; // Textarea 추가
 import {
@@ -41,6 +44,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '../components/ui/dropdown-menu';
+import ModelSelectionModal from '../components/ModelSelectionModal';
 
 const ChatPage = () => {
   const { characterId } = useParams();
@@ -67,6 +71,10 @@ const ChatPage = () => {
   const [newMessage, setNewMessage] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [showModelModal, setShowModelModal] = useState(false);
+  const [modalInitialTab, setModalInitialTab] = useState('model');
+  const [currentModel, setCurrentModel] = useState('gemini');
+  const [currentSubModel, setCurrentSubModel] = useState('gemini-2.5-pro');
   
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
@@ -225,6 +233,30 @@ const ChatPage = () => {
     }
   };
 
+  // 모델 변경 핸들러
+  const handleModelChange = (modelId, subModelId) => {
+    setCurrentModel(modelId);
+    setCurrentSubModel(subModelId);
+    console.log(`모델 변경: ${modelId} - ${subModelId}`);
+  };
+
+  // 사용자 모델 설정 로드
+  useEffect(() => {
+    const loadUserModelSettings = async () => {
+      try {
+        const response = await usersAPI.getModelSettings();
+        setCurrentModel(response.data.preferred_model || 'gemini');
+        setCurrentSubModel(response.data.preferred_sub_model || 'gemini-2.5-pro');
+      } catch (error) {
+        console.error('모델 설정 로드 실패:', error);
+      }
+    };
+
+    if (user) {
+      loadUserModelSettings();
+    }
+  }, [user]);
+
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -339,6 +371,27 @@ const ChatPage = () => {
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={() => {
+                  setModalInitialTab('model');
+                  setShowModelModal(true);
+                }}>
+                  <Settings className="w-4 h-4 mr-2" />
+                  모델 설정
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => {
+                  setModalInitialTab('profile');
+                  setShowModelModal(true);
+                }}>
+                  <UserCog className="w-4 h-4 mr-2" />
+                  유저 페르소나
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => {
+                  setModalInitialTab('notes');
+                  setShowModelModal(true);
+                }}>
+                  <Book className="w-4 h-4 mr-2" />
+                  기억노트
+                </DropdownMenuItem>
                 <AlertDialog>
                   <AlertDialogTrigger asChild>
                     <DropdownMenuItem onSelect={(e) => e.preventDefault()}>
@@ -448,6 +501,18 @@ const ChatPage = () => {
           </form>
         </div>
       </footer>
+
+      {/* 모델 선택 모달 */}
+      <ModelSelectionModal
+        isOpen={showModelModal}
+        onClose={() => setShowModelModal(false)}
+        currentModel={currentModel}
+        currentSubModel={currentSubModel}
+        onModelChange={handleModelChange}
+        initialTab={modalInitialTab}
+        characterName={character?.name}
+        characterId={character?.id}
+      />
     </div>
   );
 };

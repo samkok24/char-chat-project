@@ -181,3 +181,21 @@ async def get_recent_characters_for_user(db: AsyncSession, user_id: uuid.UUID, l
         characters.append(char)
         
     return characters
+
+async def update_user_model_settings(
+    db: AsyncSession, 
+    user_id: uuid.UUID, 
+    preferred_model: str, 
+    preferred_sub_model: str
+) -> bool:
+    """사용자의 AI 모델 설정 업데이트"""
+    result = await db.execute(
+        update(User)
+        .where(User.id == user_id)
+        .values(
+            preferred_model=preferred_model,
+            preferred_sub_model=preferred_sub_model
+        )
+    )
+    await db.commit()
+    return result.rowcount > 0

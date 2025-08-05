@@ -115,8 +115,7 @@ const Header = () => {
             ) : (
               <>
                 <Link to="/login">
-                  <Button variant="outline">
-                    <LogIn className="w-4 h-4 mr-2" />
+                  <Button className="bg-purple-600 text-white px-6 py-2 rounded-lg font-medium border-0 transition-none hover:bg-purple-600 hover:text-white active:bg-purple-600 focus:bg-purple-600">
                     로그인
                   </Button>
                 </Link>

@@ -171,13 +171,10 @@ const ProfilePage = () => {
             <p>준비 중인 기능입니다.</p>
           </TabsContent>
           <TabsContent value="history" className="mt-6">
-            <Card>
-              <CardContent>
-                {/* TODO: 최근 채팅, 좋아요 등의 타임라인 */}
-                <RecentCharactersList limit={5} /> {/* 최근 대화한 캐릭터 목록 추가 */}
-                {/* <p className="text-center text-gray-500">최근 활동 내역이 여기에 표시됩니다.</p> */}
-              </CardContent>
-            </Card>
+            <div className="bg-gray-800 rounded-lg p-4">
+              <h3 className="text-white font-semibold mb-4">최근 대화</h3>
+              <RecentCharactersList limit={4} />
+            </div>
           </TabsContent>
         </Tabs>
       </div>

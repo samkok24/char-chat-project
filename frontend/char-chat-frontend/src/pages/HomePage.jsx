@@ -40,8 +40,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "../components/ui/dropdown-menu";
-import { RecentCharactersList } from '../components/RecentCharactersList'; // 추가
-import { CharacterCard, CharacterCardSkeleton } from '../components/CharacterCard'; // 수정
+import { RecentCharactersList } from '../components/RecentCharactersList';
+import { CharacterCard, CharacterCardSkeleton } from '../components/CharacterCard';
 import AppLayout from '../components/layout/AppLayout';
 
 const HomePage = () => {
@@ -111,38 +111,12 @@ const HomePage = () => {
   return (
     <AppLayout>
       <div className="min-h-full bg-gray-900 text-gray-200">
-        {/* 헤더 */}
-        <header className="bg-gray-800/80 backdrop-blur-sm shadow-sm border-b border-gray-700 sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center justify-between h-16">
-            <div className="flex items-center space-x-4">
-              <Link to="/" className="flex items-center space-x-2">
-                <div className="w-8 h-8 bg-gradient-to-r from-purple-600 to-blue-600 rounded-lg flex items-center justify-center">
-                  <MessageCircle className="w-5 h-5 text-white" />
-                </div>
-                <h1 className="text-xl font-bold text-white">AI 캐릭터 챗</h1>
-              </Link>
-            </div>
-
-            <div className="flex items-center space-x-4">
-              {isAuthenticated ? (
-                <>
-                  <Button variant="outline" onClick={createCharacter} className="text-white border-gray-600 hover:bg-gray-700 hover:text-white">
-                    <Plus className="w-4 h-4 mr-2" />
-                    캐릭터 생성
-                  </Button>
-                  <Link to="/my-characters">
-                    <Button variant="outline" className="text-white border-gray-600 hover:bg-gray-700 hover:text-white">
-                      내 캐릭터
-                    </Button>
-                  </Link>
-                  <Button variant="outline" className="text-white border-gray-600 hover:bg-gray-700 hover:text-white">
-                    <BookOpen className="w-4 h-4 mr-2" />
-                    스토리
-                  </Button>
-                  
-                  {/* 프로필 드롭다운 메뉴 */}
-                  <DropdownMenu>
+        {/* 프로필 드롭다운을 우상단에 배치 */}
+        <div className="absolute top-4 right-4 z-50">
+          {isAuthenticated ? (
+            <>
+              {/* 프로필 드롭다운 메뉴 */}
+              <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <Button variant="ghost" className="relative h-10 w-10 rounded-full">
                         <Avatar className="h-10 w-10">
@@ -185,104 +159,88 @@ const HomePage = () => {
                       </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
-                </>
-              ) : (
-                <>
-                  <Link to="/login">
-                    <Button variant="outline" className="text-white border-gray-600 hover:bg-gray-700 hover:text-white">
-                      <LogIn className="w-4 h-4 mr-2" />
-                      로그인
-                    </Button>
-                  </Link>
-                  <Link to="/login">
-                    <Button className="bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700">
-                      <UserPlus className="w-4 h-4 mr-2" />
-                      회원가입
-                    </Button>
-                  </Link>
-                </>
-              )}
+                  </>
+                ) : (
+                  <>
+                    <Link to="/login">
+                      <Button className="bg-purple-600 text-white px-6 py-2 rounded-lg font-medium border-0 transition-none hover:bg-purple-600 hover:text-white active:bg-purple-600 focus:bg-purple-600">
+                        로그인
+                      </Button>
+                    </Link>
+                  </>
+                )}
             </div>
-          </div>
-        </div>
-      </header>
 
-      {/* 메인 컨텐츠 */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        
-        {/* 검색 */}
-        <section className="mb-12">
-          <form onSubmit={handleSearch} className="max-w-xl mx-auto">
-            <div className="relative">
-              <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400" />
-              <Input
-                type="text"
-                placeholder="어떤 캐릭터를 찾아볼까요?"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-12 pr-4 py-3 bg-gray-800 border-gray-700 text-lg rounded-full focus:ring-purple-500 focus:border-purple-500"
-              />
-            </div>
-          </form>
-        </section>
-
-        {/* 최근 대화한 캐릭터 (로그인 시에만 보임) */}
-        {isAuthenticated && (
-          <section className="mb-12">
-            <h2 className="text-2xl font-bold mb-4 flex items-center">
-              <Sparkles className="w-6 h-6 mr-2 text-purple-400" />
-              최근 대화
-            </h2>
-            <RecentCharactersList limit={4} />
-          </section>
-        )}
-
-        {/* 캐릭터 섹션 */}
-        <section className="mb-8">
-          <div className="flex items-center justify-between mb-6">
-            <div>
-              <h3 className="text-2xl font-bold text-white mb-1">탐색</h3>
-              <p className="text-gray-400">다른 사용자들이 만든 흥미로운 AI 캐릭터들을 만나보세요</p>
-            </div>
-            <div className="flex items-center space-x-2 text-sm text-gray-400">
-              <Users className="w-4 h-4" />
-              <span>{characters.length}개의 캐릭터</span>
+        {/* 메인 컨텐츠 */}
+        <main className="px-8 py-6">
+          {/* Welcome 섹션 */}
+          <div className="mb-8">
+            <h1 className="text-2xl font-normal text-gray-300">
+              {isAuthenticated ? 'Welcome back,' : 'Welcome,'}
+            </h1>
+            <div className="flex items-center gap-2 mt-1">
+              <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+              <h2 className="text-2xl font-normal text-white">{user?.username || 'Guest'}</h2>
             </div>
           </div>
 
-          {loading ? (
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6">
-              {Array.from({ length: 10 }).map((_, i) => (
-                <CharacterCardSkeleton key={i} />
-              ))}
-            </div>
-          ) : characters.length > 0 ? (
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6">
-              {characters.map((character) => (
-                <CharacterCard key={character.id} character={character} />
-              ))}
-            </div>
-          ) : (
-            <div className="text-center py-16 bg-gray-800 rounded-lg">
-              <MessageCircle className="w-16 h-16 text-gray-500 mx-auto mb-4" />
-              <h3 className="text-lg font-medium text-white mb-2">
-                캐릭터가 없습니다
-              </h3>
-              <p className="text-gray-400 mb-4">
-                아직 공개된 캐릭터가 없습니다. 첫 번째 캐릭터를 만들어보세요!
-              </p>
-              {isAuthenticated && (
-                <Button 
-                  onClick={createCharacter}
-                  className="bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700"
-                >
-                  <Plus className="w-4 h-4 mr-2" />
-                  캐릭터 생성하기
-                </Button>
-              )}
-            </div>
+
+          {/* 검색 */}
+          <div className="mb-12 max-w-2xl">
+            <form onSubmit={handleSearch}>
+              <div className="relative">
+                <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-500" />
+                <Input
+                  type="text"
+                  placeholder="어떤 캐릭터를 찾아볼까요?"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full pl-12 pr-4 py-3 bg-gray-800 border-gray-700 text-white placeholder-gray-400 rounded-full focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
+                />
+              </div>
+            </form>
+          </div>
+
+          {/* 최근 대화 섹션 */}
+          {isAuthenticated && (
+            <section className="mb-10">
+              <h2 className="text-xl font-normal text-white mb-5">최근 대화</h2>
+              <RecentCharactersList limit={8} />
+            </section>
           )}
-        </section>
+
+          {/* Scenes 섹션 (나중에 구현) */}
+          {/* <section className="mb-10">
+            <h2 className="text-xl font-normal text-white mb-5">Scenes</h2>
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+              Scene cards will go here
+            </div>
+          </section> */}
+
+          {/* 탐색 섹션 */}
+          <section className="mb-10">
+            <h2 className="text-xl font-normal text-white mb-5">탐색</h2>
+
+            {loading ? (
+              <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
+                {Array.from({ length: 12 }).map((_, i) => (
+                  <CharacterCardSkeleton key={i} />
+                ))}
+              </div>
+            ) : characters.length > 0 ? (
+              <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
+                {characters.map((character) => (
+                  <CharacterCard key={character.id} character={character} />
+                ))}
+              </div>
+            ) : (
+              <div className="text-center py-16">
+                <p className="text-gray-400">
+                  아직 공개된 캐릭터가 없습니다.
+                </p>
+              </div>
+            )}
+          </section>
       </main>
       </div>
     </AppLayout>

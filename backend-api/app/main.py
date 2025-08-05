@@ -19,6 +19,8 @@ from app.api.auth import router as auth_router          # ✅ 필수: 인증 API
 from app.api.characters import router as characters_router  # ✅ 필수: 캐릭터 API
 from app.api.users import router as users_router
 from app.api.story_importer import router as story_importer_router # ✨ 신규: 스토리 임포터 API
+from app.api.memory_notes import router as memory_notes_router
+from app.api.user_personas import router as user_personas_router # ✨ 신규: 기억노트 API
 from app.api.stories import router as stories_router    # ⏳ 나중에: 스토리 API (차별점)
 from app.api.payment import router as payment_router    # ⏳ 나중에: 결제 API (단순화 예정)
 from app.api.point import router as point_router        # ⏳ 나중에: 포인트 API (단순화 예정)
@@ -81,6 +83,8 @@ app.include_router(auth_router, prefix="/auth", tags=["✅ 인증 (필수)"])
 app.include_router(characters_router, prefix="/characters", tags=["✅ 캐릭터 (필수)"])
 app.include_router(users_router, prefix="", tags=["✅ 유저 (필수)"])  # prefix 없음 - /users/{id} 형태
 app.include_router(story_importer_router, prefix="/story-importer", tags=["✨ 스토리 임포터 (신규)"])
+app.include_router(memory_notes_router, prefix="/memory-notes", tags=["✨ 기억노트 (신규)"])
+app.include_router(user_personas_router, prefix="/user-personas", tags=["👤 유저 페르소나 (신규)"])
 app.include_router(files_router, prefix="/files", tags=["🗂️ 파일"])
 
 

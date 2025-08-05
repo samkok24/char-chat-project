@@ -7,7 +7,7 @@ from typing import List, Optional
 class StoryImportRequest(BaseModel):
     """스토리 분석 요청 시 Body에 담길 데이터"""
     title: Optional[str] = None
-    content: str = Field(..., min_length=100, description="분석할 스토리 본문")
+    content: str = Field(..., min_length=100, max_length=500000, description="분석할 스토리 본문")
     ai_model: Optional[str] = Field("gemini", description="사용할 AI 모델 (gemini, claude 등)")
 
 class AnalyzedCharacter(BaseModel):

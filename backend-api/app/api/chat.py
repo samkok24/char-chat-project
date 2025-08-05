@@ -12,10 +12,12 @@ import uuid
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.user import User
-from app.models.character import CharacterSetting
+from app.models.character import CharacterSetting, CharacterExampleDialogue
 
 from app.services import chat_service
 from app.services import ai_service
+from app.services.memory_note_service import get_active_memory_notes_by_character
+from app.services.user_persona_service import get_active_persona_by_user
 from app.schemas.chat import (
     ChatRoomResponse, 
     ChatMessageResponse, 
@@ -35,9 +37,20 @@ async def start_chat(
     db: AsyncSession = Depends(get_db),
 ):
     """채팅 시작 - CAVEDUCK 스타일 간단한 채팅 시작"""
+    # 채팅방 가져오기 또는 생성
     chat_room = await chat_service.get_or_create_chat_room(
         db, user_id=current_user.id, character_id=request.character_id
     )
+    
+    # 새로 생성된 채팅방인 경우 (메시지가 없는 경우)
+    existing_messages = await chat_service.get_messages_by_room_id(db, chat_room.id, limit=1)
+    if not existing_messages and chat_room.character.greeting:
+        # 캐릭터의 인사말을 첫 메시지로 저장
+        await chat_service.save_message(
+            db, chat_room.id, "assistant", chat_room.character.greeting
+        )
+        await db.commit()
+    
     return chat_room
 
 @router.post("/message", response_model=SendMessageResponse)
@@ -66,7 +79,7 @@ async def send_message(
             character_id=character.id,
             ai_model='gemini-pro',
             temperature=0.7,
-            max_tokens=500
+            max_tokens=300
         )
         db.add(settings)
         await db.commit()
@@ -79,34 +92,100 @@ async def send_message(
     # 3. AI 응답 생성 (CAVEDUCK 스타일 최적화)
     history = await chat_service.get_messages_by_room_id(db, room.id, limit=20)
     
-    # 캐릭터 프롬프트 구성
+    # 예시 대화 가져오기
+    example_dialogues_result = await db.execute(
+        select(CharacterExampleDialogue)
+        .where(CharacterExampleDialogue.character_id == character.id)
+        .order_by(CharacterExampleDialogue.order_index)
+    )
+    example_dialogues = example_dialogues_result.scalars().all()
+    
+    # 활성화된 기억노트 가져오기
+    active_memories = await get_active_memory_notes_by_character(
+        db, current_user.id, character.id
+    )
+    
+    # 현재 활성 유저 페르소나 가져오기
+    active_persona = await get_active_persona_by_user(db, current_user.id)
+    
+    # 캐릭터 프롬프트 구성 (모든 정보 포함)
     character_prompt = f"""당신은 '{character.name}'입니다.
-설명: {character.description}
-성격: {character.personality}
-말투: {character.speech_style}
-인사말: {character.greeting}
 
-위 설정에 맞게 대답해주세요."""
+[기본 정보]
+설명: {character.description or '설정 없음'}
+성격: {character.personality or '설정 없음'}
+말투: {character.speech_style or '설정 없음'}
+배경 스토리: {character.background_story or '설정 없음'}
+
+[세계관]
+{character.world_setting or '설정 없음'}
+
+[첫 인사]
+{character.greeting or '안녕하세요.'}"""
+
+    # 유저 페르소나 정보 추가
+    if active_persona:
+        character_prompt += f"""
+
+[대화 상대 정보]
+이름: {active_persona.name}
+특징: {active_persona.description}
+위의 정보는 당신이 대화하고 있는 상대방에 대한 정보입니다. 이를 바탕으로 자연스럽게 대화하세요."""
+
+    # 호감도 시스템이 있는 경우
+    if character.has_affinity_system and character.affinity_rules:
+        character_prompt += f"\n\n[호감도 시스템]\n{character.affinity_rules}"
+        if character.affinity_stages:
+            character_prompt += f"\n호감도 단계: {character.affinity_stages}"
+    
+    # 도입부 장면이 있는 경우
+    if character.introduction_scenes:
+        character_prompt += f"\n\n[도입부 설정]\n{character.introduction_scenes}"
+    
+    # 예시 대화가 있는 경우
+    if example_dialogues:
+        character_prompt += "\n\n[예시 대화]"
+        for dialogue in example_dialogues:
+            character_prompt += f"\nUser: {dialogue.user_message}"
+            character_prompt += f"\n{character.name}: {dialogue.character_response}"
+    
+    # 기억노트가 있는 경우
+    if active_memories:
+        character_prompt += "\n\n[사용자와의 중요한 기억]"
+        for memory in active_memories:
+            character_prompt += f"\n• {memory.title}: {memory.content}"
+    
+    # 커스텀 프롬프트가 있는 경우
+    if settings and settings.system_prompt:
+        character_prompt += f"\n\n[추가 지시사항]\n{settings.system_prompt}"
+    
+    character_prompt += "\n\n위의 모든 설정에 맞게 캐릭터를 완벽하게 연기해주세요."
 
     # 대화 히스토리 구성
     history_for_ai = []
-    for msg in history[-10:]:  # 최근 10개 메시지만 사용
+    for msg in history[-10:]:  # 최근 10개 메시지 사용 (빠른 응답을 위해 최적화)
         if msg.sender_type == "user":
             history_for_ai.append({"role": "user", "parts": [msg.content]})
         else:
             history_for_ai.append({"role": "model", "parts": [msg.content]})
     
-    # AI 응답 생성
+    # AI 응답 생성 (사용자가 선택한 모델 사용)
     ai_response_text = await ai_service.get_ai_chat_response(
         character_prompt=character_prompt,
         user_message=request.content,
-        history=history_for_ai
+        history=history_for_ai,
+        preferred_model=current_user.preferred_model,
+        preferred_sub_model=current_user.preferred_sub_model
     )
 
     # 4. AI 응답 메시지 저장
     ai_message = await chat_service.save_message(
         db, room.id, "assistant", ai_response_text
     )
+    
+    # 5. 캐릭터 채팅 수 증가 (사용자 메시지 기준으로 1회만 증가)
+    from app.services import character_service
+    await character_service.increment_character_chat_count(db, room.character_id)
     
     return SendMessageResponse(
         user_message=user_message,
