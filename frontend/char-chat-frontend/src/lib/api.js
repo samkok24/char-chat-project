@@ -31,13 +31,14 @@ api.interceptors.request.use(
   }
 );
 
-// 응답 인터셉터 - 토큰 만료 처리
+// 응답 인터셉터 - 토큰 만료/권한 오류 처리
 api.interceptors.response.use(
   (response) => {
     return response;
   },
   async (error) => {
-    const originalRequest = error.config;
+    const originalRequest = error.config || {};
+    const status = error.response?.status;
 
     // 인증이 필요없는 공개 엔드포인트들
     const publicEndpoints = [
@@ -49,7 +50,8 @@ api.interceptors.response.use(
       originalRequest.url?.includes(endpoint) && originalRequest.method === 'get'
     );
 
-    if (error.response?.status === 401 && !originalRequest._retry && !isPublicEndpoint) {
+    // 401 Unauthorized 또는 403 Forbidden에서 토큰 갱신 시도 (공개 GET 엔드포인트 제외)
+    if ((status === 401 || status === 403) && !originalRequest._retry && !isPublicEndpoint) {
       originalRequest._retry = true;
 
       try {
@@ -63,6 +65,11 @@ api.interceptors.response.use(
           localStorage.setItem('access_token', access_token);
           localStorage.setItem('refresh_token', newRefreshToken);
 
+          // 토큰 갱신 이벤트 브로드캐스트 (동일 탭)
+          try {
+            window.dispatchEvent(new CustomEvent('auth:tokenRefreshed', { detail: { access_token, refresh_token: newRefreshToken } }));
+          } catch (_) {}
+
           // 원래 요청 재시도
           originalRequest.headers.Authorization = `Bearer ${access_token}`;
           return api(originalRequest);
@@ -71,6 +78,9 @@ api.interceptors.response.use(
         // 리프레시 토큰도 만료된 경우 로그아웃
         localStorage.removeItem('access_token');
         localStorage.removeItem('refresh_token');
+        try {
+          window.dispatchEvent(new Event('auth:loggedOut'));
+        } catch (_) {}
         window.location.href = '/login';
       }
     }
@@ -124,6 +134,9 @@ export const usersAPI = {
   // 최근 대화한 캐릭터 목록
   getRecentCharacters: (params = {}) =>
     api.get('/me/characters/recent', { params }),
+  // 내가 좋아요한 캐릭터 목록
+  getLikedCharacters: (params = {}) =>
+    api.get('/me/characters/liked', { params }),
     
   // 모델 설정 관련
   getModelSettings: () =>

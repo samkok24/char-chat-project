@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import { LazyLoadImage } from 'react-lazy-load-image-component';
 import 'react-lazy-load-image-component/src/effects/blur.css';
 import { Skeleton } from './ui/skeleton';
+import { resolveImageUrl } from '../lib/images';
+import { DEFAULT_SQUARE_URI } from '../lib/placeholder';
 import { MessageCircle, Heart } from 'lucide-react';
 
 export const CharacterCard = ({ character, onCardClick, onButtonClick, footerContent }) => {
@@ -34,24 +36,17 @@ export const CharacterCard = ({ character, onCardClick, onButtonClick, footerCon
       <div className="aspect-square relative overflow-hidden bg-gray-900">
         <LazyLoadImage
           alt={character.name}
-          src={character.avatar_url || '/placeholder-avatar.png'}
+          src={resolveImageUrl(character.thumbnail_url || character.avatar_url) || DEFAULT_SQUARE_URI}
           effect="blur"
           className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
           wrapperClassName="w-full h-full"
         />
-        {!character.avatar_url && (
-          <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-purple-600 to-blue-600">
-            <span className="text-4xl font-bold text-white">
-              {character.name.charAt(0).toUpperCase()}
-            </span>
-          </div>
-        )}
       </div>
       
       {/* 캐릭터 정보 */}
       <div className="p-4">
         <h3 className="font-medium text-white truncate">{character.name}</h3>
-        <p className="text-sm text-gray-400 truncate">by {character.creator_username || 'Unknown'}</p>
+        <p className="text-sm text-gray-400 truncate">{character.creator_username || 'Unknown'}</p>
         
         {/* 설명 */}
         <p className="text-sm text-gray-500 mt-1 line-clamp-2">

@@ -8,12 +8,13 @@ from typing import List
 import uuid
 
 from app.core.security import get_current_active_user
+from app.core.paths import get_upload_dir
 from app.models.user import User
 
 router = APIRouter()
 
-# 파일을 저장할 기본 디렉토리 (서버 내부 경로)
-UPLOAD_DIRECTORY = "/app/data/uploads"
+# 파일을 저장할 기본 디렉토리 (OS별 자동 결정)
+UPLOAD_DIRECTORY = get_upload_dir()
 
 @router.post("/upload", response_model=List[str])
 async def upload_files(

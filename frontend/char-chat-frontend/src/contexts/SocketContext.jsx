@@ -157,7 +157,36 @@ export const SocketProvider = ({ children }) => {
 
         setSocket(newSocket);
 
+        // 토큰 갱신 시 소켓 인증 토큰 업데이트 및 재연결
+        const handleTokenRefreshed = (e) => {
+          const at = e?.detail?.access_token || localStorage.getItem('access_token');
+          if (newSocket && at) {
+            try {
+              newSocket.auth = { token: at };
+              // 소켓이 연결되어 있으면 재연결 시도
+              if (newSocket.connected) {
+                newSocket.disconnect();
+              }
+              newSocket.connect();
+            } catch (_) {}
+          }
+        };
+        const handleLoggedOut = () => {
+          try {
+            newSocket.close();
+          } catch (_) {}
+          setSocket(null);
+          setConnected(false);
+          setCurrentRoom(null);
+          setMessages([]);
+        };
+
+        window.addEventListener('auth:tokenRefreshed', handleTokenRefreshed);
+        window.addEventListener('auth:loggedOut', handleLoggedOut);
+
         return () => {
+          window.removeEventListener('auth:tokenRefreshed', handleTokenRefreshed);
+          window.removeEventListener('auth:loggedOut', handleLoggedOut);
           newSocket.close();
         };
       }

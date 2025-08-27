@@ -235,20 +235,8 @@ class SocketController {
         senderName: userInfo.username
       };
 
-      // 백엔드 API에 메시지 저장
-      try {
-        await axios.post(`${config.BACKEND_API_URL}/chat/messages`, {
-          character_id: room.characterId,
-          content
-        }, {
-          headers: {
-            'Authorization': `Bearer ${socket.token}`
-          }
-        });
-      } catch (apiError) {
-        logger.error('메시지 저장 API 오류:', apiError);
-        // 여기서 멈추지 않고 계속 진행하여 사용자 경험은 유지
-      }
+      // 메시지 저장은 아래 AI 응답 생성 요청(/chat/messages)에서 함께 처리되므로
+      // 별도의 선행 저장 호출을 제거합니다.
 
       // AI 응답 생성 시작 (AI 타이핑 시작)
       io.to(roomId).emit('ai_typing_start', { roomId });

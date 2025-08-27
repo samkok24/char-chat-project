@@ -7,6 +7,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useSocket } from '../contexts/SocketContext';
 import { charactersAPI, chatAPI } from '../lib/api'; // chatAPI 임포트
+import { resolveImageUrl } from '../lib/images';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
@@ -78,7 +79,6 @@ const ChatPage = () => {
   
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
-  const prevHistoryLoadingRef = useRef();
   const chatContainerRef = useRef(null); // For scroll handling
   const prevScrollHeightRef = useRef(0); // For scroll position restoration
 
@@ -123,26 +123,7 @@ const ChatPage = () => {
     }
   }, [connected, chatRoomId, currentRoom]); // currentRoom 추가하여 중복 입장 방지
 
-  // Add this new useEffect block
-  useEffect(() => {
-    // historyLoading 상태가 true -> false로 변경될 때 인사말 주입 로직 실행
-    if (prevHistoryLoadingRef.current && !historyLoading) {
-      if (messages.length === 0 && character?.greeting) {
-        const greetingMessage = {
-          id: `greeting-${character.id}`,
-          roomId: chatRoomId,
-          senderType: 'assistant',
-          senderId: character.id,
-          content: character.greeting,
-          created_at: new Date().toISOString(),
-          isStreaming: false,
-        };
-        setMessages([greetingMessage]);
-      }
-    }
-    // 현재 historyLoading 상태를 ref에 저장
-    prevHistoryLoadingRef.current = historyLoading;
-  }, [historyLoading, messages, character, chatRoomId, setMessages]);
+  // 서버에서 인사말을 저장하므로, 클라이언트에서 별도 주입하지 않습니다.
 
 
   useEffect(() => {
@@ -277,7 +258,7 @@ const ChatPage = () => {
             </AvatarFallback>
           ) : (
             <>
-              <AvatarImage src={character?.avatar_url} alt={character?.name} />
+              <AvatarImage src={resolveImageUrl(character?.avatar_url)} alt={character?.name} />
               <AvatarFallback className="bg-gradient-to-r from-purple-500 to-blue-500 text-white">
                 {character?.name?.charAt(0) || <Bot className="w-4 h-4" />}
               </AvatarFallback>
@@ -349,7 +330,7 @@ const ChatPage = () => {
               </Button>
               <div className="flex items-center space-x-3">
                 <Avatar className="w-10 h-10 border-2 border-white shadow-sm">
-                  <AvatarImage src={character?.avatar_url} alt={character?.name} />
+                  <AvatarImage src={resolveImageUrl(character?.avatar_url)} alt={character?.name} />
                   <AvatarFallback className="bg-gradient-to-r from-purple-500 to-blue-500 text-white">
                     {character?.name?.charAt(0) || <Bot className="w-5 h-5" />}
                   </AvatarFallback>
@@ -457,7 +438,7 @@ const ChatPage = () => {
               {aiTyping && (
                 <div className="flex items-start space-x-3">
                   <Avatar className="w-8 h-8 flex-shrink-0">
-                    <AvatarImage src={character?.avatar_url} alt={character?.name} />
+                    <AvatarImage src={resolveImageUrl(character?.avatar_url)} alt={character?.name} />
                     <AvatarFallback className="bg-gradient-to-r from-purple-500 to-blue-500 text-white">
                       {character?.name?.charAt(0) || <Bot className="w-4 h-4" />}
                     </AvatarFallback>

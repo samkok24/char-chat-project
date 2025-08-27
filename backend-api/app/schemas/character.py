@@ -235,11 +235,29 @@ class CharacterListResponse(BaseModel):
     description: Optional[str]
     greeting: Optional[str]
     avatar_url: Optional[str]
+    # 썸네일(목록/카드용): avatar가 없으면 첫 갤러리 이미지를 사용
+    thumbnail_url: Optional[str] = None
+    # 계산을 위해 목록 응답에도 이미지 설명 배열을 전달(옵션)
+    image_descriptions: Optional[List[Dict[str, Any]]] = None
     chat_count: int
     like_count: int
     is_public: bool
     created_at: datetime
     creator_username: Optional[str] = None
+
+    def model_post_init(self, __context: Any) -> None:  # type: ignore[override]
+        # avatar_url 우선, 없으면 image_descriptions[0].url 사용
+        if not getattr(self, 'thumbnail_url', None):
+            avatar = getattr(self, 'avatar_url', None)
+            if avatar:
+                self.thumbnail_url = avatar
+            else:
+                images = getattr(self, 'image_descriptions', None) or []
+                if isinstance(images, list) and images:
+                    first = images[0]
+                    url = first.get('url') if isinstance(first, dict) else None
+                    if url:
+                        self.thumbnail_url = url
 
 
 class RecentCharacterResponse(CharacterListResponse):

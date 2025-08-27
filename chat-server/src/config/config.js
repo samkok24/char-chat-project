@@ -11,7 +11,7 @@ module.exports = {
   REDIS_URL: process.env.REDIS_URL || 'redis://localhost:6379',
   
   // 백엔드 API 설정
-  BACKEND_API_URL: process.env.BACKEND_API_URL || 'http://localhost:8000',
+  BACKEND_API_URL: process.env.BACKEND_API_URL || process.env.API_BASE_URL || 'http://localhost:8000',
   
   // AI API 키
   GEMINI_API_KEY: process.env.GEMINI_API_KEY,
@@ -19,7 +19,7 @@ module.exports = {
   OPENAI_API_KEY: process.env.OPENAI_API_KEY,
   
   // JWT 설정
-  JWT_SECRET_KEY: process.env.JWT_SECRET_KEY || 'your-super-secret-jwt-key-change-this-in-production',
+  JWT_SECRET_KEY: process.env.JWT_SECRET_KEY || process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-this-in-production',
   
   // 채팅 설정
   MAX_MESSAGE_LENGTH: 5000,

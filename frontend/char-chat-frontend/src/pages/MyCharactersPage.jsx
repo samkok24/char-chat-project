@@ -3,9 +3,10 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useLocation } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '../contexts/AuthContext';
-import { charactersAPI } from '../lib/api';
+import { charactersAPI, usersAPI } from '../lib/api';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
@@ -14,6 +15,7 @@ import { Alert, AlertDescription } from '../components/ui/alert';
 import { LazyLoadImage } from 'react-lazy-load-image-component';
 import 'react-lazy-load-image-component/src/effects/blur.css';
 import { Skeleton } from '../components/ui/skeleton';
+import { resolveImageUrl } from '../lib/images';
 import { 
   ArrowLeft,
   Plus,
@@ -26,6 +28,50 @@ import {
   Loader2,
   AlertCircle
 } from 'lucide-react';
+import AppLayout from '../components/layout/AppLayout';
+import { CharacterCard as SharedCharacterCard, CharacterCardSkeleton as SharedCharacterCardSkeleton } from '../components/CharacterCard';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '../components/ui/tabs';
+
+// 좋아요한 캐릭터 탭 컴포넌트
+const FavoritesTab = () => {
+  const { data: liked = [], isLoading, isError, refetch } = useQuery({
+    queryKey: ['liked-characters-page'],
+    queryFn: async () => {
+      const response = await usersAPI.getLikedCharacters({ limit: 100 });
+      return response.data || [];
+    },
+    staleTime: 0,
+    refetchOnMount: 'always',
+    refetchOnWindowFocus: true,
+  });
+
+  if (isLoading) {
+    return (
+      <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 mt-4">
+        {Array.from({ length: 12 }).map((_, i) => (
+          <SharedCharacterCardSkeleton key={i} />
+        ))}
+      </div>
+    );
+  }
+  if (isError) {
+    return (
+      <div className="text-red-400 mb-4">관심 캐릭터를 불러오지 못했습니다.</div>
+    );
+  }
+  if (!liked.length) {
+    return <div className="text-gray-400 mt-4">좋아요한 캐릭터가 없습니다.</div>;
+  }
+  return (
+    <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 mt-4">
+      {liked.map((c) => (
+        <SharedCharacterCard key={c.id} character={c} />
+      ))}
+    </div>
+  );
+};
+
+// 메인 UI와 통일을 위해 공용 레이아웃/카드 컴포넌트 사용 (중복 방지)
 
 const MyCharactersPage = () => {
   const [characters, setCharacters] = useState([]);
@@ -34,6 +80,7 @@ const MyCharactersPage = () => {
 
   const { user } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
 
   useEffect(() => {
     loadMyCharacters();
@@ -74,7 +121,7 @@ const MyCharactersPage = () => {
             <Avatar className="w-12 h-12">
               <LazyLoadImage
                 alt={character.name}
-                src={character.avatar_url}
+                src={resolveImageUrl(character.avatar_url)}
                 effect="blur"
                 className="w-full h-full object-cover rounded-full"
                 wrapperClassName="w-full h-full"
@@ -189,160 +236,92 @@ const MyCharactersPage = () => {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-purple-50 via-blue-50 to-indigo-50">
-        {/* Header is duplicated for layout consistency during loading */}
-        <header className="bg-white/80 backdrop-blur-sm shadow-sm border-b sticky top-0 z-50">
-          <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div className="flex items-center justify-between h-16">
-              <div className="flex items-center space-x-4">
-                <Link to="/" className="flex items-center space-x-2">
-                  <div className="w-8 h-8 bg-gradient-to-r from-purple-600 to-blue-600 rounded-lg flex items-center justify-center">
-                    <MessageCircle className="w-5 h-5 text-white" />
-                  </div>
-                  <h1 className="text-xl font-bold text-gray-900">AI 캐릭터 챗</h1>
-                </Link>
-              </div>
-              <Button variant="outline" onClick={() => navigate(-1)} disabled>
-                <ArrowLeft className="w-4 h-4 mr-2" />
-                뒤로 가기
-              </Button>
-            </div>
-          </div>
-        </header>
-        <main className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-          <div className="mb-8">
+      <AppLayout>
+        <div className="min-h-full bg-gray-900 text-gray-200">
+          <main className="px-8 py-6">
             <div className="flex items-center justify-between mb-6">
-              <div>
-                <h2 className="text-3xl font-bold text-gray-900 mb-2">내 캐릭터</h2>
-                <p className="text-gray-600">내가 만든 AI 캐릭터들을 관리하세요</p>
+              <div className="flex items-center gap-3">
+                <Button variant="ghost" disabled className="p-2 rounded-full text-gray-500 hover:bg-gray-800">
+                  <ArrowLeft className="w-5 h-5" />
+                </Button>
+                <h2 className="text-xl font-normal text-white">내 캐릭터</h2>
               </div>
               <Skeleton className="h-10 w-40" />
             </div>
-                          <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
-              {Array.from({ length: 6 }).map((_, i) => (
-                <CharacterCardSkeleton key={i} />
+            <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
+              {Array.from({ length: 12 }).map((_, i) => (
+                <SharedCharacterCardSkeleton key={i} />
               ))}
             </div>
-          </div>
-        </main>
-      </div>
+          </main>
+        </div>
+      </AppLayout>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-purple-50 via-blue-50 to-indigo-50">
-      {/* 헤더 */}
-      <header className="bg-white/80 backdrop-blur-sm shadow-sm border-b sticky top-0 z-50">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center justify-between h-16">
-            <div className="flex items-center space-x-4">
-              <Link to="/" className="flex items-center space-x-2">
-                <div className="w-8 h-8 bg-gradient-to-r from-purple-600 to-blue-600 rounded-lg flex items-center justify-center">
-                  <MessageCircle className="w-5 h-5 text-white" />
-                </div>
-                <h1 className="text-xl font-bold text-gray-900">AI 캐릭터 챗</h1>
-              </Link>
-            </div>
-            <Button
-              variant="outline"
-              onClick={() => navigate(-1)}
-            >
-              <ArrowLeft className="w-4 h-4 mr-2" />
-              뒤로 가기
-            </Button>
-          </div>
-        </div>
-      </header>
-
+    <AppLayout>
+      <div className="min-h-full bg-gray-900 text-gray-200">
       {/* 메인 컨텐츠 */}
-      <main className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div className="mb-8">
-          <div className="flex items-center justify-between mb-6">
-            <div>
-              <h2 className="text-3xl font-bold text-gray-900 mb-2">내 캐릭터</h2>
-              <p className="text-gray-600">내가 만든 AI 캐릭터들을 관리하세요</p>
-            </div>
+      <main className="px-8 py-6">
+        <div className="flex items-center justify-between mb-6">
+          <div className="flex items-center gap-3">
             <Button
-              onClick={() => navigate('/characters/create')}
-              className="bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700"
+              variant="ghost"
+              onClick={() => navigate(-1)}
+              className="p-2 rounded-full text-gray-300 hover:text-white hover:bg-gray-800"
             >
-              <Plus className="w-4 h-4 mr-2" />
-              새 캐릭터 만들기
+              <ArrowLeft className="w-5 h-5" />
             </Button>
+            <h2 className="text-xl font-normal text-white">내 캐릭터</h2>
           </div>
+          <Button
+            onClick={() => navigate('/characters/create')}
+            className="bg-purple-600 text-white px-4 py-2 rounded-lg font-medium border-0 transition-none hover:bg-purple-600"
+          >
+            <Plus className="w-4 h-4 mr-2" />
+            새 캐릭터 만들기
+          </Button>
+        </div>
 
-          {error && (
-            <Alert variant="destructive" className="mb-6">
-              <AlertCircle className="h-4 w-4" />
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
-          )}
-
-          {characters.length > 0 ? (
-                          <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
-              {characters.map((character) => (
-                <CharacterCard key={character.id} character={character} />
-              ))}
-            </div>
-          ) : (
-            <Card className="text-center py-12">
-              <CardContent>
-                <MessageCircle className="w-16 h-16 text-gray-400 mx-auto mb-4" />
-                <h3 className="text-xl font-semibold text-gray-900 mb-2">
-                  아직 만든 캐릭터가 없습니다
-                </h3>
-                <p className="text-gray-600 mb-6">
-                  나만의 AI 캐릭터를 만들어 특별한 대화를 시작해보세요!
-                </p>
+        <Tabs defaultValue={location.hash === '#favorites' ? 'favorites' : 'mine'} className="mt-2">
+          <TabsList className="bg-gray-800 border border-gray-700">
+            <TabsTrigger value="mine">내가 만든 캐릭터</TabsTrigger>
+            <TabsTrigger value="favorites">내가 좋아하는 캐릭터</TabsTrigger>
+          </TabsList>
+          {/* 내가 만든 캐릭터 탭 */}
+          <TabsContent value="mine">
+            {error && (<div className="text-red-400 mb-4">{error}</div>)}
+            {characters.length > 0 ? (
+              <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 mt-4">
+                {characters.map((character) => (
+                  <SharedCharacterCard key={character.id} character={character} />
+                ))}
+              </div>
+            ) : (
+              <div className="text-center py-16">
+                <MessageCircle className="w-16 h-16 text-gray-500 mx-auto mb-4" />
+                <h3 className="text-lg font-semibold text-white mb-2">아직 만든 캐릭터가 없습니다</h3>
+                <p className="text-gray-400 mb-6">나만의 AI 캐릭터를 만들어 특별한 대화를 시작해보세요!</p>
                 <Button
                   onClick={() => navigate('/characters/create')}
-                  className="bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700"
+                  className="bg-purple-600 text-white px-4 py-2 rounded-lg font-medium border-0 transition-none hover:bg-purple-600"
                 >
                   <Plus className="w-4 h-4 mr-2" />
                   첫 캐릭터 만들기
                 </Button>
-              </CardContent>
-            </Card>
-          )}
-        </div>
+              </div>
+            )}
+          </TabsContent>
 
-        {/* 통계 카드 */}
-        {characters.length > 0 && (
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-12">
-            <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="text-base">총 캐릭터 수</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-3xl font-bold text-purple-600">{characters.length}</p>
-              </CardContent>
-            </Card>
-            
-            <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="text-base">총 대화 수</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-3xl font-bold text-blue-600">
-                  {characters.reduce((sum, char) => sum + (char.chat_count || 0), 0).toLocaleString()}
-                </p>
-              </CardContent>
-            </Card>
-            
-            <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="text-base">총 좋아요</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-3xl font-bold text-pink-600">
-                  {characters.reduce((sum, char) => sum + (char.like_count || 0), 0)}
-                </p>
-              </CardContent>
-            </Card>
-          </div>
-        )}
+          {/* 내가 좋아하는 캐릭터 탭 */}
+          <TabsContent value="favorites">
+            <FavoritesTab />
+          </TabsContent>
+        </Tabs>
       </main>
     </div>
+    </AppLayout>
   );
 };
 

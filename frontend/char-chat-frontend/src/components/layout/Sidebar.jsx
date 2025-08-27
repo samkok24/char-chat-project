@@ -3,6 +3,7 @@ import { Link, NavLink, useNavigate } from 'react-router-dom';
 import { chatAPI } from '../../lib/api';
 import { useAuth } from '../../contexts/AuthContext';
 import { Avatar, AvatarFallback, AvatarImage } from '../ui/avatar';
+import { resolveImageUrl } from '../../lib/images';
 import { Button } from '../ui/button';
 import { MessageSquare, Plus, Home, Star, User, History, UserCog, LogOut, Settings, Gem } from 'lucide-react';
 import { Skeleton } from '../ui/skeleton';
@@ -118,7 +119,7 @@ const Sidebar = () => {
                   }
                 >
                   <Avatar className="w-8 h-8 mr-3">
-                    <AvatarImage src={room.character.avatar_url} />
+                    <AvatarImage src={resolveImageUrl(room.character.avatar_url)} />
                     <AvatarFallback className="bg-purple-600 text-white text-xs">
                       {room.character.name.charAt(0)}
                     </AvatarFallback>
@@ -139,7 +140,7 @@ const Sidebar = () => {
           <DropdownMenuTrigger asChild>
             <div className="flex items-center space-x-3 px-1 cursor-pointer hover:bg-gray-700 rounded-lg py-2 transition-colors">
               <Avatar className="w-8 h-8">
-                <AvatarImage src={user?.avatar_url} alt={user?.username} />
+                <AvatarImage src={resolveImageUrl(user?.avatar_url)} alt={user?.username} />
                 <AvatarFallback className="bg-purple-600 text-white text-sm">
                   {user?.username?.charAt(0)?.toUpperCase() || 'G'}
                 </AvatarFallback>

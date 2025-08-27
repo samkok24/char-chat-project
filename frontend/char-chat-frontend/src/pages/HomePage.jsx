@@ -7,7 +7,7 @@ import React, { useState, useEffect } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '../contexts/AuthContext';
-import { charactersAPI } from '../lib/api';
+import { charactersAPI, usersAPI } from '../lib/api';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
@@ -16,6 +16,7 @@ import { Avatar, AvatarFallback, AvatarImage } from '../components/ui/avatar';
 import { LazyLoadImage } from 'react-lazy-load-image-component';
 import 'react-lazy-load-image-component/src/effects/blur.css';
 import { Skeleton } from '../components/ui/skeleton';
+import { resolveImageUrl } from '../lib/images';
 import { 
   Search, 
   Plus, 
@@ -41,8 +42,10 @@ import {
   DropdownMenuTrigger,
 } from "../components/ui/dropdown-menu";
 import { RecentCharactersList } from '../components/RecentCharactersList';
+import { RecentChatCard } from '../components/RecentChatCard';
 import { CharacterCard, CharacterCardSkeleton } from '../components/CharacterCard';
 import AppLayout from '../components/layout/AppLayout';
+import TrendingCharacters from '../components/TrendingCharacters';
 
 const HomePage = () => {
   const [searchQuery, setSearchQuery] = useState('');
@@ -100,6 +103,19 @@ const HomePage = () => {
     navigate(`/ws/chat/${characterId}`);
   };
 
+  // 관심 캐릭터(좋아요한 캐릭터) 불러오기
+  const { data: favoriteChars = [], isLoading: favLoading } = useQuery({
+    queryKey: ['liked-characters', isAuthenticated],
+    enabled: !!isAuthenticated,
+    queryFn: async () => {
+      const res = await usersAPI.getLikedCharacters({ limit: 12 });
+      return res.data || [];
+    },
+    staleTime: 0,
+    refetchOnMount: 'always',
+    refetchOnWindowFocus: true,
+  });
+
   const createCharacter = () => {
     navigate('/characters/create');
   };
@@ -120,7 +136,7 @@ const HomePage = () => {
                     <DropdownMenuTrigger asChild>
                       <Button variant="ghost" className="relative h-10 w-10 rounded-full">
                         <Avatar className="h-10 w-10">
-                          <AvatarImage src={user?.avatar_url} alt={user?.username} />
+                          <AvatarImage src={resolveImageUrl(user?.avatar_url)} alt={user?.username} />
                           <AvatarFallback className="bg-gradient-to-r from-purple-600 to-blue-600 text-white">
                             {user?.username?.charAt(0)?.toUpperCase() || 'U'}
                           </AvatarFallback>
@@ -201,12 +217,40 @@ const HomePage = () => {
             </form>
           </div>
 
+          {/* Trending 섹션 */}
+          <TrendingCharacters />
+
           {/* 최근 대화 섹션 */}
           {isAuthenticated && (
-            <section className="mb-10">
-              <h2 className="text-xl font-normal text-white mb-5">최근 대화</h2>
-              <RecentCharactersList limit={8} />
-            </section>
+            <>
+              {/* 관심 캐릭터(좋아요) 섹션 */}
+              {favoriteChars.length > 0 && (
+                <section className="mt-8">
+                  <div className="flex items-center justify-between mb-3">
+                    <h2 className="text-lg font-bold text-white">관심 캐릭터</h2>
+                    <Link to="/favorites" className="text-sm text-gray-400 hover:text-white">더보기</Link>
+                  </div>
+                  <div className="flex overflow-x-auto gap-3 pb-2 scrollbar-hide">
+                    {favoriteChars.map((char) => (
+                      <div key={char.id} className="flex-shrink-0">
+                        <RecentChatCard
+                          character={char}
+                          onClick={() => navigate(`/chat/${char.id}`)}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              <section className="mb-10">
+                <div className="flex items-center justify-between mb-5">
+                  <h2 className="text-xl font-normal text-white">최근 대화</h2>
+                  <Link to="/history" className="text-sm text-gray-400 hover:text-white">더보기</Link>
+                </div>
+                <RecentCharactersList limit={8} />
+              </section>
+            </>
           )}
 
           {/* Scenes 섹션 (나중에 구현) */}

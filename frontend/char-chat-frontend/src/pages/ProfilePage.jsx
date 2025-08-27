@@ -12,6 +12,7 @@ import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Avatar, AvatarFallback, AvatarImage } from '../components/ui/avatar';
+import { resolveImageUrl } from '../lib/images';
 import { Badge } from '../components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { 
@@ -129,7 +130,7 @@ const ProfilePage = () => {
         <Card className="mb-8 overflow-hidden">
           <CardContent className="p-6 flex flex-col sm:flex-row items-center space-y-4 sm:space-y-0 sm:space-x-6">
             <Avatar className="w-24 h-24 text-4xl">
-              <AvatarImage src={profile.avatar_url} alt={profile.username} />
+              <AvatarImage src={resolveImageUrl(profile.avatar_url)} alt={profile.username} />
               <AvatarFallback>{profile.username.charAt(0).toUpperCase()}</AvatarFallback>
             </Avatar>
             <div className="flex-grow text-center sm:text-left">

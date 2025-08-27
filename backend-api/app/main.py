@@ -12,6 +12,7 @@ import logging
 import os
 from app.core.config import settings
 from app.core.database import engine, Base
+from app.core.paths import get_upload_dir
 
 # API 라우터 임포트 (우선순위 순서)
 from app.api.chat import router as chat_router          # 🔥 최우선: 채팅 API
@@ -57,8 +58,8 @@ app = FastAPI(
     redoc_url="/redoc" if settings.ENVIRONMENT == "development" else None,
     lifespan=lifespan
 )
-os.makedirs("/app/data/uploads", exist_ok=True) # 디렉토리 존재 보장
-app.mount("/static", StaticFiles(directory="/app/data/uploads"), name="static")
+UPLOAD_DIR = get_upload_dir()
+app.mount("/static", StaticFiles(directory=UPLOAD_DIR), name="static")
 # CORS 미들웨어 설정
 app.add_middleware(
     CORSMiddleware,

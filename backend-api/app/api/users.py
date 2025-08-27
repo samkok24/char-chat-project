@@ -9,7 +9,7 @@ import uuid
 from app.core.database import get_db
 from app.models.user import User
 from app.schemas.user import UserProfileResponse
-from app.schemas.character import RecentCharacterResponse
+from app.schemas.character import RecentCharacterResponse, CharacterListResponse
 from app.services import user_service
 from app.core.security import get_current_user
 
@@ -47,6 +47,7 @@ async def get_my_recent_characters(
             description=char.description,
             greeting=char.greeting,
             avatar_url=char.avatar_url,
+            image_descriptions=getattr(char, 'image_descriptions', []),
             chat_count=char.chat_count,
             like_count=char.like_count,
             is_public=char.is_public,
@@ -55,6 +56,39 @@ async def get_my_recent_characters(
             chat_room_id=char.chat_room_id,
             last_chat_time=char.last_chat_time,
             last_message_snippet=char.last_message_snippet
+        ) for char in characters
+    ]
+
+
+@router.get(
+    "/me/characters/liked",
+    response_model=List[CharacterListResponse],
+    summary="내가 좋아요(관심)한 캐릭터 목록",
+    description="현재 로그인한 사용자가 좋아요 또는 기존 북마크로 표시한 캐릭터 목록을 최신순으로 반환합니다."
+)
+async def get_my_liked_characters(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    limit: int = 20,
+    page: int = 1
+):
+    skip = (page - 1) * limit
+    characters = await user_service.get_liked_characters_for_user(
+        db, user_id=current_user.id, limit=limit, skip=skip
+    )
+    return [
+        CharacterListResponse(
+            id=char.id,
+            name=char.name,
+            description=char.description,
+            greeting=char.greeting,
+            avatar_url=char.avatar_url,
+            image_descriptions=getattr(char, 'image_descriptions', []),
+            chat_count=char.chat_count,
+            like_count=char.like_count,
+            is_public=char.is_public,
+            created_at=char.created_at,
+            creator_username=char.creator.username if char.creator else None,
         ) for char in characters
     ]
 

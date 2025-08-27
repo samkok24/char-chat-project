@@ -327,6 +327,7 @@ async def get_characters(
     limit: int = Query(20, ge=1, le=100),
     search: Optional[str] = Query(None, max_length=100),
     creator_id: Optional[uuid.UUID] = Query(None),
+    sort: Optional[str] = Query(None, description="정렬: views|likes|recent"),
     db: AsyncSession = Depends(get_db)
 ):
     """캐릭터 목록 조회"""
@@ -345,7 +346,8 @@ async def get_characters(
             db=db, 
             skip=skip, 
             limit=limit,
-            search=search
+            search=search,
+            sort=sort,
         )
     
     return characters

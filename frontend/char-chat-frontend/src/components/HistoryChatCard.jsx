@@ -2,10 +2,12 @@ import React from 'react';
 import { formatDistanceToNow } from 'date-fns';
 import { ko } from 'date-fns/locale';
 import { Skeleton } from './ui/skeleton';
+import { resolveImageUrl } from '../lib/images';
+import { DEFAULT_AVATAR_URI } from '../lib/placeholder';
 import { MessageCircle, MoreVertical, Heart } from 'lucide-react';
 
 export const HistoryChatCard = ({ character, onClick }) => {
-  const defaultAvatar = "https://via.placeholder.com/90x114/6B7280/FFFFFF?text=캐릭터";
+  const defaultAvatar = DEFAULT_AVATAR_URI;
   
   const formatTime = (dateString) => {
     if (!dateString) return '';
@@ -59,7 +61,7 @@ export const HistoryChatCard = ({ character, onClick }) => {
           <div className="w-[30%] relative bg-[#0d0f11] flex-shrink-0 rounded-l-2xl overflow-hidden">
             <div className="absolute inset-0">
               <img
-                src={character.avatar_url || defaultAvatar}
+                src={resolveImageUrl(character.avatar_url) || defaultAvatar}
                 alt={character.name}
                 className="w-full h-full object-cover cursor-zoom-in"
                 title="클릭하여 캐릭터 정보 보기"

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { usersAPI } from '../lib/api';
+import { useQuery } from '@tanstack/react-query';
 import { Skeleton } from './ui/skeleton';
 import { Alert, AlertDescription } from './ui/alert';
 import { formatDistanceToNow } from 'date-fns';
@@ -22,25 +23,33 @@ import {
 import { RecentChatCard, RecentChatCardSkeleton } from './RecentChatCard';
 
 export const RecentCharactersList = ({ limit = 4 }) => {
-  const [characters, setCharacters] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
   const navigate = useNavigate();
 
+  const { data: characters = [], isLoading: loading, isError, refetch } = useQuery({
+    queryKey: ['recent-characters', limit],
+    queryFn: async () => {
+      const response = await usersAPI.getRecentCharacters({ limit });
+      return response.data || [];
+    },
+    staleTime: 0,
+    refetchOnMount: 'always',
+    refetchOnWindowFocus: true,
+    retry: 1,
+  });
+
+  // 토큰 갱신/가시성 회복 시 재요청
   useEffect(() => {
-    const fetchRecentCharacters = async () => {
-      try {
-        setLoading(true);
-        const response = await usersAPI.getRecentCharacters({ limit });
-        setCharacters(response.data);
-      } catch (err) {
-        setError('최근 대화한 캐릭터를 불러오는데 실패했습니다.');
-      } finally {
-        setLoading(false);
-      }
+    const onTokenRefreshed = () => refetch();
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') refetch();
     };
-    fetchRecentCharacters();
-  }, [limit]);
+    window.addEventListener('auth:tokenRefreshed', onTokenRefreshed);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.removeEventListener('auth:tokenRefreshed', onTokenRefreshed);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [refetch]);
 
   const handleCharacterClick = (characterId, chatRoomId) => {
     navigate(`/chat/${chatRoomId || characterId}`);
@@ -49,11 +58,9 @@ export const RecentCharactersList = ({ limit = 4 }) => {
   const handleDeleteChatRoom = async (chatRoomId) => {
     try {
       await chatAPI.deleteChatRoom(chatRoomId);
-      // 목록에서 제거
-      setCharacters(prev => prev.filter(char => char.chat_room_id !== chatRoomId));
+      refetch();
     } catch (error) {
       console.error('채팅방 삭제 실패:', error);
-      setError('채팅방 삭제에 실패했습니다.');
     }
   };
 
@@ -69,10 +76,15 @@ export const RecentCharactersList = ({ limit = 4 }) => {
     );
   }
 
-  if (error) {
+  if (isError) {
     return (
       <Alert variant="destructive">
-        <AlertDescription>{error}</AlertDescription>
+        <AlertDescription>
+          최근 대화한 캐릭터를 불러오는데 실패했습니다.
+          <Button variant="outline" size="sm" className="ml-2" onClick={() => refetch()}>
+            다시 시도
+          </Button>
+        </AlertDescription>
       </Alert>
     );
   }

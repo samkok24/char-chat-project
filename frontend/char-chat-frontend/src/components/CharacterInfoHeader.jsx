@@ -1,4 +1,4 @@
-import { Star, MessageCircle, MoreVertical, Heart, Edit, Trash2, Settings, Users, EyeOff } from 'lucide-react';
+import { MessageCircle, MoreVertical, Heart, Edit, Trash2, Settings, Users, EyeOff } from 'lucide-react';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
 import { useNavigate } from 'react-router-dom';
@@ -66,13 +66,9 @@ const CharacterInfoHeader = ({ character, likeCount, isLiked, handleLike, isOwne
       </div>
 
       <div className="flex items-start justify-between">
-        <div className="flex items-center space-x-4">
-            <h1 className="text-4xl font-bold">{character.name}</h1>
-            <Star className="w-6 h-6 text-yellow-400 mt-2" />
-        </div>
-        <Button onClick={handleLike} variant="outline" className={`border-gray-600 ${isLiked ? 'bg-red-500/10 border-red-500 text-red-500' : 'hover:bg-gray-800'}`}>
-            <Heart className="w-4 h-4 mr-2" />
-            {isLiked ? '좋아요' : '좋아요'}
+        <h1 className="text-4xl font-bold">{character.name}</h1>
+        <Button onClick={handleLike} variant="ghost" size="icon" className={`${isLiked ? 'text-red-500 hover:text-red-500' : ''}`}>
+          <Heart className={`w-6 h-6 ${isLiked ? 'fill-current' : ''}`} />
         </Button>
       </div>
 

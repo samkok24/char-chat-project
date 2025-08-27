@@ -42,7 +42,34 @@ async def get_gemini_completion(prompt: str, temperature: float = 0.7, max_token
             prompt,
             generation_config=generation_config
         )
-        return response.text
+
+        # 안전한 텍스트 추출: 차단되었거나 text가 비어있을 수 있음
+        try:
+            if hasattr(response, 'text') and response.text:
+                return response.text
+        except Exception:
+            # .text 접근시 예외가 발생할 수 있으니 아래로 폴백
+            pass
+
+        # 후보에서 텍스트 파츠를 수집
+        try:
+            candidates = getattr(response, 'candidates', []) or []
+            for cand in candidates:
+                content = getattr(cand, 'content', None)
+                if not content:
+                    continue
+                parts = getattr(content, 'parts', []) or []
+                text_parts = [getattr(p, 'text', '') for p in parts if getattr(p, 'text', '')]
+                joined = "".join(text_parts).strip()
+                if joined:
+                    return joined
+        except Exception:
+            # 파싱 실패 시 아래 폴백
+            pass
+
+        # 안전 정책에 의해 차단되었을 가능성 → 우회/폴백 메시지 또는 다른 모델로 폴백
+        # 여기서는 사용자 경험을 위해 간단한 안내 메시지로 대응
+        return "안전 정책에 의해 이 요청의 응답이 제한되었습니다. 표현을 조금 바꿔 다시 시도해 주세요."
     except Exception as e:
         # 실제 운영 환경에서는 더 상세한 로깅 및 예외 처리가 필요
         import logging
@@ -163,12 +190,19 @@ async def get_ai_chat_response(
         return await get_gemini_completion(full_prompt, model=model_name)
         
     elif preferred_model == 'claude':
-        if preferred_sub_model == 'claude-4-sonnet':
-            model_name = 'claude-4-sonnet'
-        elif preferred_sub_model == 'claude-3.7-sonnet':
-            model_name = 'claude-3.7-sonnet'
-        else:  # claude-3.5-sonnet-v2
-            model_name = 'claude-3.5-sonnet-v2'
+        # 프론트의 가상 서브모델명을 실제 Anthropic 모델 ID로 매핑
+        # 유효하지 않은 값이 들어오면 최신 안정 버전으로 폴백
+        claude_default = 'claude-3-5-sonnet-20241022'
+        claude_mapping = {
+            # UI 표기 → 실제 모델 ID
+            'claude-4-sonnet': claude_default,            # 존재하지 않는 가상 표기 → 최신 3.5 Sonnet으로 폴백
+            'claude-3.7-sonnet': claude_default,          # 최신 3.7가 도입되기 전 호환 표기 → 폴백
+            'claude-3.5-sonnet-v2': claude_default,       # 가상 v2 표기 → 폴백
+            # 이미 실제 ID가 넘어오는 경우도 허용
+            'claude-3-5-sonnet-20241022': 'claude-3-5-sonnet-20241022',
+        }
+
+        model_name = claude_mapping.get(preferred_sub_model, claude_default)
         return await get_claude_completion(full_prompt, model=model_name)
         
     elif preferred_model == 'gpt':

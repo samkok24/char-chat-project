@@ -371,7 +371,8 @@ async def get_public_characters(
     db: AsyncSession,
     skip: int = 0,
     limit: int = 20,
-    search: Optional[str] = None
+    search: Optional[str] = None,
+    sort: Optional[str] = None,
 ) -> List[Character]:
     """공개 캐릭터 목록 조회"""
     query = select(Character).where(
@@ -386,7 +387,27 @@ async def get_public_characters(
             )
         )
     
-    query = query.order_by(Character.like_count.desc(), Character.created_at.desc()).offset(skip).limit(limit)
+    # 정렬 옵션
+    order_sort = (sort or "").lower() if sort else None
+    if order_sort in ["views", "view", "조회수", "chats", "chat_count"]:
+        # 조회수 개념: 채팅 수 기준 내림차순, 동률 시 좋아요/최신순 보조 정렬
+        query = query.order_by(
+            Character.chat_count.desc(),
+            Character.like_count.desc(),
+            Character.created_at.desc(),
+        )
+    elif order_sort in ["likes", "like", "좋아요"]:
+        query = query.order_by(
+            Character.like_count.desc(),
+            Character.created_at.desc(),
+        )
+    elif order_sort in ["recent", "latest", "최신", "created_at"]:
+        query = query.order_by(Character.created_at.desc())
+    else:
+        # 기본 정렬: 좋아요 내림차순, 최신순
+        query = query.order_by(Character.like_count.desc(), Character.created_at.desc())
+
+    query = query.offset(skip).limit(limit)
     
     result = await db.execute(query)
     return result.scalars().all()

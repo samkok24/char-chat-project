@@ -6,6 +6,8 @@ import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate,useLocation} from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { charactersAPI,API_BASE_URL } from '../lib/api';
+import { resolveImageUrl } from '../lib/images';
+import { DEFAULT_SQUARE_URI } from '../lib/placeholder';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Button } from '../components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '../components/ui/avatar';
@@ -83,7 +85,7 @@ const CharacterDetailPage = () => {
         const uniqueImages = [...new Set(allImages)];
 
         setGalleryImages(uniqueImages);
-        setActiveImage(uniqueImages[0] || 'https://via.placeholder.com/400'); // 기본 이미지
+        setActiveImage(uniqueImages[0] || DEFAULT_SQUARE_URI); // 기본 이미지
         
         // 좋아요 상태 확인
         if (isAuthenticated) {
@@ -163,6 +165,9 @@ const CharacterDetailPage = () => {
       
       // 🚀 메인 페이지의 캐릭터 목록 캐시를 무효화하여 자동 업데이트 유도
       queryClient.invalidateQueries({ queryKey: ['characters'] });
+      // 관심(좋아요) 목록 캐시 무효화: 홈 섹션 및 즐겨찾기 페이지 모두
+      queryClient.invalidateQueries({ queryKey: ['liked-characters'] });
+      queryClient.invalidateQueries({ queryKey: ['liked-characters-page'] });
     },
     onError: (err) => {
       console.error('좋아요 처리 실패:', err);
@@ -248,7 +253,7 @@ const CharacterDetailPage = () => {
           <div className="lg:col-span-1">
             <div className="aspect-w-1 aspect-h-1 mb-4">
               <img 
-                src={activeImage && activeImage.startsWith('/') ? `${API_BASE_URL}${activeImage}` : activeImage} 
+                src={resolveImageUrl(activeImage) || activeImage} 
                 alt={character.name} 
                 className="w-full h-full object-cover rounded-lg" 
               />
@@ -257,7 +262,7 @@ const CharacterDetailPage = () => {
               {galleryImages.slice(0, 16).map((imgUrl, index) => (
                 <button key={index} onClick={() => setActiveImage(imgUrl)} className="aspect-w-1 aspect-h-1">
                   <img 
-                    src={imgUrl.startsWith('/') ? `${API_BASE_URL}${imgUrl}` : imgUrl} 
+                    src={resolveImageUrl(imgUrl) || imgUrl} 
                     alt={`${character.name} thumbnail ${index + 1}`} 
                     className="w-full h-full object-cover rounded-md" 
                   />

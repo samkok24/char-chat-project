@@ -37,6 +37,7 @@ const CreateCharacterPage = React.lazy(() => import('./pages/CreateCharacterPage
 const MyCharactersPage = React.lazy(() => import('./pages/MyCharactersPage'));
 const StoryImporterPage = React.lazy(() => import('./pages/StoryImporterPage'));
 const ChatHistoryPage = React.lazy(() => import('./pages/ChatHistoryPage'));
+const FavoritesPage = React.lazy(() => import('./pages/FavoritesPage'));
 
 // 로딩 컴포넌트 (CAVEDUCK 스타일 - 심플)
 const PageLoader = () => (
@@ -169,6 +170,15 @@ const AppRouter = () => {
             element={
               <ProtectedRoute>
                 <MyCharactersPage />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/favorites"
+            element={
+              <ProtectedRoute>
+                <FavoritesPage />
               </ProtectedRoute>
             }
           />

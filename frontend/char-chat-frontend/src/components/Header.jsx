@@ -3,6 +3,7 @@
  */
 
 import React from 'react';
+import { resolveImageUrl } from '../lib/images';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { Button } from './ui/button';
@@ -62,6 +63,11 @@ const Header = () => {
                     내 캐릭터
                   </Button>
                 </Link>
+                <Link to="/favorites">
+                  <Button variant="outline">
+                    관심 캐릭터
+                  </Button>
+                </Link>
                 <Button variant="outline">
                   <BookOpen className="w-4 h-4 mr-2" />
                   스토리
@@ -72,7 +78,7 @@ const Header = () => {
                   <DropdownMenuTrigger asChild>
                     <Button variant="ghost" className="relative h-10 w-10 rounded-full">
                       <Avatar className="h-10 w-10">
-                        <AvatarImage src={user?.avatar_url} alt={user?.username} />
+                        <AvatarImage src={resolveImageUrl(user?.avatar_url)} alt={user?.username} />
                         <AvatarFallback className="bg-gradient-to-r from-purple-600 to-blue-600 text-white">
                           {user?.username?.charAt(0)?.toUpperCase() || 'U'}
                         </AvatarFallback>

@@ -1,11 +1,15 @@
 import React from 'react';
+import { resolveImageUrl } from '../lib/images';
+import { DEFAULT_AVATAR_URI } from '../lib/placeholder';
 import { formatDistanceToNow } from 'date-fns';
 import { ko } from 'date-fns/locale';
 import { Skeleton } from './ui/skeleton';
 import { Heart, MessageCircle } from 'lucide-react';
 
 export const RecentChatCard = ({ character, onClick }) => {
-  const defaultAvatar = "https://via.placeholder.com/90x114/6B7280/FFFFFF?text=캐릭터";
+  const defaultAvatar = DEFAULT_AVATAR_URI;
+  
+  const safeUrl = (url) => resolveImageUrl(url) || defaultAvatar;
   
   const formatChatCount = (count) => {
     if (!count) return '0';
@@ -43,42 +47,43 @@ export const RecentChatCard = ({ character, onClick }) => {
                   width="90"
                   height="114"
                   className="object-cover object-center bg-[#2a2f35] shrink-0 grow-0 h-full w-full"
-                  src={character.avatar_url || defaultAvatar}
+                  src={safeUrl(character.thumbnail_url || character.avatar_url)}
                   onError={(e) => {
                     e.target.src = defaultAvatar;
                   }}
                 />
+                {/* 인디케이터: 이미지 우하단에 항상 표시 */}
+                <div className="absolute bottom-1 right-1 py-0.5 px-1.5 rounded bg-black/60">
+                  <div className="flex items-center gap-x-2 text-gray-200">
+                    <div className="flex items-center gap-x-0.5">
+                      <MessageCircle className="w-3 h-3" />
+                      <span className="text-[10px] leading-none">{formatChatCount(character.chat_count ?? 0)}</span>
+                    </div>
+                    <div className="flex items-center gap-x-0.5">
+                      <Heart className="w-3 h-3" />
+                      <span className="text-[10px] leading-none">{formatChatCount(character.like_count ?? 0)}</span>
+                    </div>
+                  </div>
+                </div>
               </span>
 
               {/* 정보 영역 */}
-              <div className="overflow-auto h-full flex flex-col justify-between w-full">
+              {/* 스크롤 숨기고 내용은 줄바꿈+말줄임 처리 */}
+              <div className="overflow-hidden h-full flex flex-col justify-between w-full">
                 <div>
                   <p className="mb-[2px] text-base font-medium leading-tight line-clamp-1 text-ellipsis break-anywhere overflow-hidden whitespace-normal text-white">
                     {character.name}
                   </p>
                   <div className="text-gray-400 font-normal text-sm truncate mb-[5px]">
-                    By @{character.creator_username || 'unknown'}
+                    {character.creator_username || 'unknown'}
                   </div>
                   <p className="text-gray-300 font-normal line-clamp-3 text-sm text-ellipsis overflow-hidden whitespace-normal break-anywhere">
                     {character.description || '캐릭터 설명이 없습니다.'}
                   </p>
                 </div>
 
-                {/* 하단 정보 */}
-                <div className="w-full flex flex-row justify-between items-center">
-                  <div className="flex flex-row gap-3">
-                    {/* 채팅 수 */}
-                    <div className="flex flex-row gap-1 items-center">
-                      <MessageCircle className="w-[14px] h-[14px] text-gray-400" />
-                      <p className="text-sm text-gray-400">{formatChatCount(character.chat_count || 0)}</p>
-                    </div>
-                    {/* 좋아요 수 */}
-                    <div className="flex flex-row gap-1 items-center">
-                      <Heart className="w-[14px] h-[14px] text-gray-400" />
-                      <p className="text-sm text-gray-400">{formatChatCount(character.like_count || 0)}</p>
-                    </div>
-                  </div>
-                </div>
+                {/* 하단 정보 영역은 간결화 (인디케이터는 이미지 내부 표시) */}
+                <div className="w-full" />
               </div>
             </div>
           </div>
@@ -98,7 +103,7 @@ export const RecentChatCardSkeleton = () => {
               className="shrink-0 grow-0 bg-gray-700" 
               style={{ width: '90px', height: '114px', borderRadius: '14px' }} 
             />
-            <div className="overflow-auto h-full flex flex-col justify-between w-full">
+            <div className="overflow-hidden h-full flex flex-col justify-between w-full">
               <div>
                 <Skeleton className="h-5 w-32 bg-gray-700 mb-[2px]" />
                 <Skeleton className="h-4 w-20 bg-gray-700 mb-[5px]" />

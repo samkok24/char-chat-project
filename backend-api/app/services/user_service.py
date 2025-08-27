@@ -3,13 +3,15 @@
 """
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update
-from typing import Optional, Union, Dict
+from sqlalchemy import select, update, and_, or_, func
+from typing import Optional, Union, Dict, List
 import uuid
 from sqlalchemy import func
 from sqlalchemy.orm import selectinload
 
 from app.models.character import Character
+from app.models.like import CharacterLike
+from app.models.bookmark import CharacterBookmark
 from app.schemas.user import UserProfileResponse
 
 from app.models.user import User
@@ -181,6 +183,38 @@ async def get_recent_characters_for_user(db: AsyncSession, user_id: uuid.UUID, l
         characters.append(char)
         
     return characters
+
+
+async def get_liked_characters_for_user(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    limit: int = 20,
+    skip: int = 0
+) -> List[Character]:
+    """
+    사용자가 좋아요(=관심)에 추가한 캐릭터 목록을 반환합니다.
+    기존 북마크(CharacterBookmark)도 함께 포함하여 후방 호환합니다.
+    정렬: 좋아요/북마크 추가일 최신순.
+    """
+    result = await db.execute(
+        select(Character)
+        .outerjoin(
+            CharacterLike,
+            and_(CharacterLike.character_id == Character.id, CharacterLike.user_id == user_id)
+        )
+        .outerjoin(
+            CharacterBookmark,
+            and_(CharacterBookmark.character_id == Character.id, CharacterBookmark.user_id == user_id)
+        )
+        .where(
+            or_(CharacterLike.id.is_not(None), CharacterBookmark.id.is_not(None))
+        )
+        .options(selectinload(Character.creator))
+        .order_by(func.coalesce(CharacterLike.created_at, CharacterBookmark.created_at).desc().nullslast())
+        .limit(limit)
+        .offset(skip)
+    )
+    return result.scalars().unique().all()
 
 async def update_user_model_settings(
     db: AsyncSession, 
