@@ -5,7 +5,7 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate,useLocation} from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { charactersAPI,API_BASE_URL } from '../lib/api';
+import { charactersAPI,API_BASE_URL, api } from '../lib/api';
 import { resolveImageUrl } from '../lib/images';
 import { DEFAULT_SQUARE_URI } from '../lib/placeholder';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
@@ -28,6 +28,8 @@ import {
 import CharacterInfoHeader from '../components/CharacterInfoHeader'; // 컴포넌트 임포트
 import ChatInteraction from '../components/ChatInteraction'; // 컴포넌트 임포트
 import CharacterDetails from '../components/CharacterDetails'; // 컴포넌트 임포트
+import AnalyzedCharacterCard from '../components/AnalyzedCharacterCard';
+import { getReadingProgress } from '../lib/reading';
 
 const CharacterDetailPage = () => {
   const { characterId } = useParams();
@@ -50,6 +52,7 @@ const CharacterDetailPage = () => {
   const [comments, setComments] = useState([]);
   const [commentText, setCommentText] = useState('');
   const [submittingComment, setSubmittingComment] = useState(false);
+  const [tags, setTags] = useState([]);
 
   // 3. 바로 여기에 handleGoBack 함수를 만듭니다.
   const handleGoBack = () => {
@@ -96,6 +99,13 @@ const CharacterDetailPage = () => {
         // 댓글 로드
         const commentsResponse = await charactersAPI.getComments(characterId);
         setComments(commentsResponse.data);
+
+        // 태그 로드
+        try {
+          const tagRes = await api.get(`/characters/${characterId}/tags`);
+          setTags(tagRes.data || []);
+        } catch (_) {}
+
 
       } catch (err) {
         console.error('캐릭터 정보 로드 실패:', err);
@@ -202,6 +212,13 @@ const CharacterDetailPage = () => {
     togglePublicMutation.mutate();
   };
 
+  // 웹소설 원작 표시/연동 판단
+  const searchParams = new URLSearchParams(location.search || '');
+  const isWebNovel = (character?.source_type === 'IMPORTED') || (location.state?.source === 'webnovel') || (searchParams.get('source') === 'webnovel');
+  const workId = location.state?.workId || searchParams.get('workId') || null;
+  const progress = getReadingProgress(workId);
+  const continueChapter = progress > 0 ? progress : 1;
+
   const deleteCharacter = async () => {
     if (!window.confirm('정말로 이 캐릭터를 삭제하시겠습니까?')) return;
     try {
@@ -283,7 +300,39 @@ const CharacterDetailPage = () => {
               onDelete={deleteCharacter}
               onSettings={() => navigate(`/characters/${characterId}/settings`)}
               onTogglePublic={handleTogglePublic} // 핸들러 함수 전달
+              isWebNovel={isWebNovel}
+              workId={workId}
+              tags={tags}
             />
+
+            {isWebNovel && workId && (
+              <div className="flex items-center gap-2">
+                <Button className="bg-purple-600 hover:bg-purple-700" onClick={() => navigate(`/works/${workId}/chapters/1`)}>
+                  첫화보기
+                </Button>
+                <Button variant="outline" className="border-gray-700 text-gray-200" onClick={() => navigate(`/works/${workId}/chapters/${continueChapter}`)}>
+                  이어보기{progress > 0 ? ` (${continueChapter}화)` : ''}
+                </Button>
+                <Button variant="secondary" className="bg-pink-600 hover:bg-pink-700" onClick={() => navigate(`/works/${workId}/chapters/${continueChapter}?chat=1`)}>
+                  대화하기
+                </Button>
+              </div>
+            )}
+
+            {isWebNovel && (
+              <div className="mt-4">
+                <h3 className="text-lg font-semibold mb-2">소설 캐릭터 요약</h3>
+                <AnalyzedCharacterCard
+                  initialCharacter={{
+                    name: character.name,
+                    description: character.description || '',
+                    social_tendency: 50,
+                  }}
+                  readOnly
+                />
+              </div>
+            )}
+
             <ChatInteraction onStartChat={startChat} />
             <CharacterDetails 
               character={character}
@@ -294,6 +343,7 @@ const CharacterDetailPage = () => {
               handleDeleteComment={handleDeleteComment}
               submittingComment={submittingComment}
               user={user}
+              tags={tags}
             />
           </div>
         </div>

@@ -10,6 +10,7 @@ import uuid
 import json
 
 from app.models.character import Character, CharacterSetting, CharacterExampleDialogue
+from app.models.tag import Tag, CharacterTag
 from app.models.user import User
 from app.models.like import CharacterLike
 from app.schemas import (
@@ -200,7 +201,8 @@ async def get_advanced_character_by_id(db: AsyncSession, character_id: uuid.UUID
         .options(
             selectinload(Character.settings),
             selectinload(Character.example_dialogues),
-            joinedload(Character.creator)
+            joinedload(Character.creator),
+            selectinload(Character.tags)
         )
         .where(Character.id == character_id)
     )
@@ -348,7 +350,11 @@ async def get_characters_by_creator(
     include_private: bool = False
 ) -> List[Character]:
     """생성자별 캐릭터 목록 조회"""
-    query = select(Character).where(Character.creator_id == creator_id)
+    query = (
+        select(Character)
+        .options(joinedload(Character.creator))
+        .where(Character.creator_id == creator_id)
+    )
     
     if not include_private:
         query = query.where(Character.is_public == True)
@@ -373,10 +379,14 @@ async def get_public_characters(
     limit: int = 20,
     search: Optional[str] = None,
     sort: Optional[str] = None,
+    source_type: Optional[str] = None,
+    tags: Optional[list[str]] = None,
 ) -> List[Character]:
     """공개 캐릭터 목록 조회"""
-    query = select(Character).where(
-        and_(Character.is_public == True, Character.is_active == True)
+    query = (
+        select(Character)
+        .options(joinedload(Character.creator))
+        .where(and_(Character.is_public == True, Character.is_active == True))
     )
     
     if search:
@@ -386,7 +396,23 @@ async def get_public_characters(
                 Character.description.ilike(f"%{search}%")
             )
         )
+
+    # 출처 유형 필터 (예: ORIGINAL, IMPORTED)
+    if source_type:
+        query = query.where(Character.source_type == source_type)
     
+    # 태그 필터 (AND)
+    if tags:
+        query = query.join(Character.tags)
+        for slug in tags:
+            query = query.where(Tag.slug == slug)
+    
+    # 태그 필터 (AND)
+    if tags:
+        query = query.join(Character.tags)
+        for slug in tags:
+            query = query.where(Tag.slug == slug)
+
     # 정렬 옵션
     order_sort = (sort or "").lower() if sort else None
     if order_sort in ["views", "view", "조회수", "chats", "chat_count"]:

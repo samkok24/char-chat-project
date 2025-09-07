@@ -1,35 +1,31 @@
 import React from 'react';
+import { Link } from 'react-router-dom';
 import { resolveImageUrl } from '../lib/images';
 import { DEFAULT_AVATAR_URI } from '../lib/placeholder';
 import { formatDistanceToNow } from 'date-fns';
 import { ko } from 'date-fns/locale';
 import { Skeleton } from './ui/skeleton';
 import { Heart, MessageCircle } from 'lucide-react';
+import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
+import { formatCount } from '../lib/format';
 
 export const RecentChatCard = ({ character, onClick }) => {
   const defaultAvatar = DEFAULT_AVATAR_URI;
   
   const safeUrl = (url) => resolveImageUrl(url) || defaultAvatar;
   
-  const formatChatCount = (count) => {
-    if (!count) return '0';
-    if (count >= 1000000) {
-      return `${(count / 1000000).toFixed(1)}M`;
-    }
-    if (count >= 1000) {
-      return `${(count / 1000).toFixed(1)}k`;
-    }
-    return count.toString();
-  };
+  const formatChatCount = (count) => formatCount(count);
 
   return (
-    <a 
-      className="flex w-fit group"
+    <div 
+      className="flex w-fit group cursor-pointer"
       onClick={(e) => {
-        e.preventDefault();
+        e.preventDefault?.();
         onClick();
       }}
-      href="#"
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } }}
     >
       <div>
         <div className="group/card h-[146px] bg-[#1f2327] hover:cursor-pointer hover:bg-[#252a2f] rounded-2xl relative transition-colors duration-200 border border-[#2a2f35] hover:border-[#3a4047]" style={{ width: '312px' }}>
@@ -68,28 +64,37 @@ export const RecentChatCard = ({ character, onClick }) => {
               </span>
 
               {/* 정보 영역 */}
-              {/* 스크롤 숨기고 내용은 줄바꿈+말줄임 처리 */}
-              <div className="overflow-hidden h-full flex flex-col justify-between w-full">
-                <div>
+              {/* 상대 위치 컨테이너: 하단에 크리에이터 영역 고정 */}
+              <div className="relative overflow-hidden h-full w-full pb-6">
+                <div className="pr-1">
                   <p className="mb-[2px] text-base font-medium leading-tight line-clamp-1 text-ellipsis break-anywhere overflow-hidden whitespace-normal text-white">
                     {character.name}
                   </p>
-                  <div className="text-gray-400 font-normal text-sm truncate mb-[5px]">
-                    {character.creator_username || 'unknown'}
-                  </div>
                   <p className="text-gray-300 font-normal line-clamp-3 text-sm text-ellipsis overflow-hidden whitespace-normal break-anywhere">
                     {character.description || '캐릭터 설명이 없습니다.'}
                   </p>
                 </div>
 
-                {/* 하단 정보 영역은 간결화 (인디케이터는 이미지 내부 표시) */}
-                <div className="w-full" />
+                {/* 하단 고정: 크리에이터 아바타 + 닉네임 */}
+                {character.creator_username && character.creator_id && (
+                  <Link
+                    to={`/users/${character.creator_id}/creator`}
+                    onClick={(e) => e.stopPropagation()}
+                    className="absolute left-0 bottom-0 inline-flex items-center gap-2 text-sm text-gray-300 hover:text-white truncate"
+                  >
+                    <Avatar className="w-5 h-5">
+                      <AvatarImage src={''} alt={character.creator_username} />
+                      <AvatarFallback className="text-xs">{character.creator_username?.charAt(0)?.toUpperCase() || 'U'}</AvatarFallback>
+                    </Avatar>
+                    <span className="truncate max-w-[140px]">{character.creator_username}</span>
+                  </Link>
+                )}
               </div>
             </div>
           </div>
         </div>
       </div>
-    </a>
+    </div>
   );
 };
 

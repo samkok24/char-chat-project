@@ -2,11 +2,12 @@
  * 마이페이지
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { usersAPI } from '../lib/api'; 
-import Header from '../components/Header';
+import { usersAPI, filesAPI } from '../lib/api'; 
+import AppLayout from '../components/layout/AppLayout';
+import AvatarCropModal from '../components/AvatarCropModal';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
@@ -14,7 +15,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../co
 import { Avatar, AvatarFallback, AvatarImage } from '../components/ui/avatar';
 import { resolveImageUrl } from '../lib/images';
 import { Badge } from '../components/ui/badge';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
+// Tabs 제거: 대시보드로 리팩토링
 import { 
   User,
   Mail,
@@ -25,6 +26,9 @@ import {
   Edit,
   Save,
   X,
+  Globe,
+  Upload,
+  Trash2,
   Users,
   Loader2,
   AlertCircle,
@@ -57,6 +61,17 @@ const ProfilePage = () => {
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [avatarUploading, setAvatarUploading] = useState(false);
+  const [avatarDeleting, setAvatarDeleting] = useState(false);
+  const fileInputRef = useRef(null);
+  const [cropSrc, setCropSrc] = useState('');
+  const [isCropOpen, setIsCropOpen] = useState(false);
+
+  // 대시보드 통계 상태 (항상 훅은 컴포넌트 최상단에서 선언)
+  const [overview, setOverview] = useState(null);
+  const [series, setSeries] = useState([]);
+  const [seriesRange, setSeriesRange] = useState('24h'); // '24h' | '7d'
+  const [topChars, setTopChars] = useState([]);
 
   // [추가] API를 호출하여 데이터를 가져오는 useEffect 로직입니다.
   useEffect(() => {
@@ -79,16 +94,56 @@ const ProfilePage = () => {
     loadProfile();
   }, [userIdToLoad, isAuthenticated, navigate]);
 
+  // 통계 로드 (profile이 준비된 후 실행)
+  useEffect(() => {
+    if (!profile) return;
+    (async () => {
+      try {
+        const [ov, ts, top] = await Promise.all([
+          usersAPI.getCreatorStatsOverview(profile.id, { range: '30d' }),
+          usersAPI.getCreatorTimeseries(profile.id, { metric: 'chats', range: seriesRange }),
+          usersAPI.getCreatorTopCharacters(profile.id, { metric: 'chats', range: '7d', limit: 5 })
+        ]);
+        setOverview(ov.data || {});
+        setSeries(ts.data?.series || ts.data || []);
+        setTopChars(top.data || []);
+      } catch (e) {
+        // 백엔드 통계 API가 없거나 실패한 경우, 사용자 캐릭터 목록으로 대체 집계
+        console.warn('통계 API 미구현/실패 - 사용자 캐릭터 목록으로 대체 집계');
+        try {
+          const res = await usersAPI.getUserCharacters(profile.id, { limit: 1000 });
+          const chars = res.data || [];
+          const character_total = chars.length;
+          const character_public = chars.filter(c => c.is_public).length;
+          const chats_total = chars.reduce((s, c) => s + (c.chat_count || 0), 0);
+          const likes_total = chars.reduce((s, c) => s + (c.like_count || 0), 0);
+          setOverview({ character_total, character_public, chats_total, unique_users_30d: 0, likes_total });
+          const total = chats_total;
+          const count = seriesRange === '24h' ? 24 : 7;
+          const pseudo = Array.from({ length: count }).map((_, i) => ({ date: String(i), value: Math.round(total / count || 0) }));
+          setSeries(pseudo);
+          const top5 = [...chars]
+            .sort((a, b) => (b.chat_count || 0) - (a.chat_count || 0))
+            .slice(0, 5)
+            .map(c => ({ id: c.id, name: c.name, avatar_url: c.avatar_url, value_7d: c.chat_count || 0 }));
+          setTopChars(top5);
+        } catch (err) {
+          console.error('대체 집계도 실패:', err);
+        }
+      }
+    })();
+  }, [profile, seriesRange]);
+
   // [추가] 통계 카드를 위한 재사용 컴포넌트입니다.
-  const StatCard = ({ title, value, icon: Icon }) => (
-    <Card className="text-center p-4">
+  const StatCard = ({ title, value, icon: Icon, onClick, clickable = false }) => (
+    <Card className={`text-center p-4 ${clickable ? 'cursor-pointer hover:bg-gray-750/50 transition-colors' : ''}`} onClick={onClick}>
       <CardHeader className="p-0 mb-2">
         <CardTitle className="text-sm font-medium text-gray-500 dark:text-gray-400">{title}</CardTitle>
       </CardHeader>
       <CardContent className="p-0">
         <div className="text-3xl font-bold flex items-center justify-center">
           <Icon className="w-6 h-6 mr-2 text-purple-500" />
-          {value.toLocaleString()}
+          {value?.toLocaleString?.() ?? '0'}
         </div>
       </CardContent>
     </Card>
@@ -114,10 +169,70 @@ const ProfilePage = () => {
   const isOwnProfile = currentUser?.id === profile.id;
   const joinDate = new Date(profile.created_at).toLocaleDateString('ko-KR');
 
+  const Sparkline = ({ data = [], width = 220, height = 48 }) => {
+    if (!data.length) return <div className="text-xs text-gray-500">데이터 없음</div>;
+    const max = Math.max(...data.map(d => d.value || d));
+    const min = Math.min(...data.map(d => d.value || d));
+    const range = Math.max(1, max - min);
+    const step = width / Math.max(1, data.length - 1);
+    const points = data.map((d, i) => {
+      const v = (d.value ?? d) - min;
+      const x = i * step;
+      const y = height - (v / range) * height;
+      return `${x},${y}`;
+    }).join(' ');
+    return (
+      <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} className="overflow-visible">
+        <polyline fill="none" stroke="#8b5cf6" strokeWidth="2" points={points} />
+      </svg>
+    );
+  };
+
+  const handleClickUploadAvatar = () => {
+    try { fileInputRef.current?.click(); } catch (_) {}
+  };
+
+  const validateExt = (file) => {
+    const allowed = ['jpg','jpeg','png','webp','gif'];
+    const name = (file?.name || '').toLowerCase();
+    const ext = name.split('.').pop();
+    return allowed.includes(ext);
+  };
+
+  const handleChangeAvatar = async (e) => {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    if (!validateExt(files[0])) {
+      alert('jpg, jpeg, png, webp, gif 형식만 업로드할 수 있습니다.');
+      e.target.value = '';
+      return;
+    }
+    // 크롭 모달 오픈: objectURL 생성
+    const objectUrl = URL.createObjectURL(files[0]);
+    setCropSrc(objectUrl);
+    setIsCropOpen(true);
+    if (e.target) e.target.value = '';
+  };
+
+  const handleDeleteAvatar = async () => {
+    if (!profile.avatar_url) return;
+    if (!window.confirm('프로필 이미지를 삭제할까요?')) return;
+    setAvatarDeleting(true);
+    try {
+      await usersAPI.updateUserProfile(profile.id, { avatar_url: null });
+      setProfile(prev => ({ ...prev, avatar_url: null }));
+    } catch (err) {
+      console.error('프로필 이미지 삭제 실패:', err);
+      alert('프로필 이미지 삭제에 실패했습니다.');
+    } finally {
+      setAvatarDeleting(false);
+    }
+  };
+
   // --- 기존의 return 문 전체를 아래 내용으로 교체합니다. ---
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-800 dark:text-gray-200">
-      <div className="max-w-4xl mx-auto p-4 sm:p-6 lg:p-8">
+    <AppLayout>
+      <div className="max-w-5xl mx-auto p-4 sm:p-6 lg:p-8 text-gray-200">
         {/* [수정] 뒤로가기 버튼 추가 */}
         <header className="mb-6">
           <Button variant="ghost" onClick={() => navigate(-1)}>
@@ -127,59 +242,165 @@ const ProfilePage = () => {
         </header>
 
         {/* [수정] 프로필 카드: 더미 데이터 대신 'profile' 상태의 실제 데이터를 사용 */}
-        <Card className="mb-8 overflow-hidden">
+        <Card className="mb-8 overflow-hidden bg-gray-800 border border-gray-700">
           <CardContent className="p-6 flex flex-col sm:flex-row items-center space-y-4 sm:space-y-0 sm:space-x-6">
-            <Avatar className="w-24 h-24 text-4xl">
-              <AvatarImage src={resolveImageUrl(profile.avatar_url)} alt={profile.username} />
-              <AvatarFallback>{profile.username.charAt(0).toUpperCase()}</AvatarFallback>
-            </Avatar>
+            <div className="relative">
+              <Avatar className="w-24 h-24 text-4xl">
+                <AvatarImage src={resolveImageUrl(profile.avatar_url)} alt={profile.username} />
+                <AvatarFallback>{profile.username.charAt(0).toUpperCase()}</AvatarFallback>
+              </Avatar>
+              {/* 삭제 아이콘 (이미지가 있을 때만) */}
+              {profile.avatar_url && (
+                <button
+                  type="button"
+                  onClick={handleDeleteAvatar}
+                  disabled={avatarDeleting}
+                  className="absolute -top-2 -right-2 bg-black/70 hover:bg-black text-white rounded-full p-1"
+                  title="프로필 이미지 삭제"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              )}
+              {/* 업로드 아이콘 */}
+              <button
+                type="button"
+                onClick={handleClickUploadAvatar}
+                disabled={avatarUploading}
+                className="absolute -bottom-2 -right-2 bg-purple-600 hover:bg-purple-700 text-white rounded-full p-1"
+                title="프로필 이미지 업로드"
+              >
+                <Upload className="w-4 h-4" />
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                onChange={handleChangeAvatar}
+                className="hidden"
+              />
+            </div>
+
+            {/* 크롭 모달 */}
+            <AvatarCropModal
+              isOpen={isCropOpen}
+              src={cropSrc}
+              outputSize={1024}
+              onCancel={() => {
+                try { URL.revokeObjectURL(cropSrc); } catch (_) {}
+                setIsCropOpen(false);
+                setCropSrc('');
+              }}
+              onConfirm={async (croppedFile) => {
+                setIsCropOpen(false);
+                setAvatarUploading(true);
+                try {
+                  const res = await filesAPI.uploadImages([croppedFile]);
+                  const uploadedUrl = Array.isArray(res.data) ? res.data[0] : res.data;
+                  await usersAPI.updateUserProfile(profile.id, { avatar_url: uploadedUrl });
+                  setProfile(prev => ({ ...prev, avatar_url: uploadedUrl }));
+                } catch (err) {
+                  console.error('프로필 이미지 업로드 실패:', err);
+                  alert('프로필 이미지 업로드에 실패했습니다.');
+                } finally {
+                  setAvatarUploading(false);
+                  try { URL.revokeObjectURL(cropSrc); } catch (_) {}
+                  setCropSrc('');
+                }
+              }}
+            />
             <div className="flex-grow text-center sm:text-left">
               <div className="flex items-center justify-center sm:justify-start space-x-4 mb-1">
-                <h1 className="text-2xl font-bold">{profile.username}</h1>
+                <h1 className="text-2xl font-bold text-white">{profile.username}</h1>
                 {isOwnProfile && ( // [수정] 내 프로필일 때만 '프로필 수정' 버튼 표시
                   <Button onClick={() => navigate('/profile/edit')} variant="outline" size="sm">
                     프로필 수정
                   </Button>
                 )}
               </div>
-              <p className="text-sm text-gray-500">{profile.email}</p>
-              <p className="text-sm text-gray-500 mt-1">가입일: {joinDate}</p>
+              <p className="text-sm text-gray-400">{profile.email}</p>
+              <p className="text-sm text-gray-400 mt-1">가입일: {joinDate}</p>
               <p className="mt-3 text-base">{profile.bio || '자기소개가 없습니다.'}</p>
             </div>
           </CardContent>
         </Card>
 
-        {/* [수정] 통계 카드: 더미 데이터 대신 'profile' 상태의 실제 데이터를 사용 */}
+        {/* KPI 카드 */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-          <StatCard title="보유 루비" value={0} icon={Gem} /> {/* TODO: 포인트 API 연동 */}
-          <StatCard title="만든 캐릭터" value={profile.character_count} icon={Users} />
-          <StatCard title="총 대화 수" value={profile.total_chat_count} icon={MessageCircle} />
-          <StatCard title="받은 좋아요" value={profile.total_like_count} icon={Heart} />
+          <StatCard
+            title="캐릭터 수"
+            value={overview?.character_total ?? profile.character_count ?? 0}
+            icon={Users}
+            clickable
+            onClick={() => navigate('/my-characters')}
+          />
+          <StatCard title="공개 캐릭터" value={overview?.character_public ?? 0} icon={Globe} />
+          <StatCard
+            title="누적 대화"
+            value={overview?.chats_total ?? profile.total_chat_count ?? 0}
+            icon={MessageCircle}
+            clickable
+            onClick={() => navigate('/history')}
+          />
+          <StatCard title="최근 30일 유저수" value={overview?.unique_users_30d ?? 0} icon={User} />
         </div>
 
-        {/* [수정] 탭 메뉴: 캐릭터 수를 동적으로 표시 */}
-        <Tabs defaultValue="characters" className="w-full">
-          <TabsList className="grid w-full grid-cols-3">
-            <TabsTrigger value="characters">캐릭터 ({profile.character_count})</TabsTrigger>
-            <TabsTrigger value="liked">좋아요한 캐릭터</TabsTrigger>
-            <TabsTrigger value="history">대화 기록</TabsTrigger>
-          </TabsList>
-          <TabsContent value="characters" className="mt-6">
-            <p>내가 만든 캐릭터 목록이 여기에 표시됩니다.</p>
-            {/* TODO: /users/{id}/characters API 연동 */}
-          </TabsContent>
-          <TabsContent value="liked" className="mt-6">
-            <p>준비 중인 기능입니다.</p>
-          </TabsContent>
-          <TabsContent value="history" className="mt-6">
-            <div className="bg-gray-800 rounded-lg p-4">
-              <h3 className="text-white font-semibold mb-4">최근 대화</h3>
-              <RecentCharactersList limit={4} />
-            </div>
-          </TabsContent>
-        </Tabs>
+        {/* 시계열 범위 선택 */}
+        <div className="flex items-center justify-end mb-2 gap-3">
+          <span className="text-sm text-gray-400">범위</span>
+          <label className="flex items-center gap-1 text-sm cursor-pointer">
+            <input type="radio" name="ts-range" value="24h" checked={seriesRange==='24h'} onChange={() => setSeriesRange('24h')} />
+            <span>최근 24시간</span>
+          </label>
+          <label className="flex items-center gap-1 text-sm cursor-pointer">
+            <input type="radio" name="ts-range" value="7d" checked={seriesRange==='7d'} onChange={() => setSeriesRange('7d')} />
+            <span>최근 7일</span>
+          </label>
+        </div>
+
+        {/* 최근 X 범위 대화 추이 */}
+        <Card className="mb-8 overflow-hidden bg-gray-800 border border-gray-700">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-white text-base">최근 {seriesRange==='24h'?'24시간':'7일'} 대화 추이</CardTitle>
+          </CardHeader>
+          <CardContent className="pt-0">
+            <div className="p-3"><Sparkline data={series} width={480} height={64} /></div>
+          </CardContent>
+        </Card>
+
+        {/* Top 5 캐릭터 */}
+        <Card className="mb-2 overflow-hidden bg-gray-800 border border-gray-700">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-white text-base">최근 7일 Top 5 캐릭터</CardTitle>
+          </CardHeader>
+          <CardContent className="pt-0">
+            {(!topChars || topChars.length === 0) && (
+              <div className="text-sm text-gray-400 p-3">데이터 없음</div>
+            )}
+            <ul className="divide-y divide-gray-700">
+              {topChars.map((c) => (
+                <li key={c.id} className="flex items-center gap-3 py-2">
+                  <Avatar className="w-8 h-8">
+                    <AvatarImage src={resolveImageUrl(c.avatar_url)} alt={c.name} />
+                    <AvatarFallback>{c.name?.charAt(0)?.toUpperCase() || 'C'}</AvatarFallback>
+                  </Avatar>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between">
+                      <span className="text-white text-sm truncate">{c.name}</span>
+                      <span className="text-purple-300 text-sm">{(c.value_7d ?? c.value)?.toLocaleString?.() ?? 0}</span>
+                    </div>
+                    {Array.isArray(c.series) && c.series.length > 0 && (
+                      <Sparkline data={c.series} width={180} height={36} />
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </CardContent>
+        </Card>
+
+        {/* 탭 제거: 대시보드 단일 화면 */}
       </div>
-    </div>
+    </AppLayout>
   );
 };
 

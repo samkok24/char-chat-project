@@ -3,12 +3,12 @@
 """
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, delete
+from sqlalchemy import select, update, delete, func
 from sqlalchemy.orm import selectinload, joinedload
 from typing import Optional, List
 import uuid
 
-from app.models.chat import ChatRoom, ChatMessage
+from app.models.chat import ChatRoom, ChatMessage, ChatMessageEdit
 from app.models.user import User
 from app.models.character import Character
 from app.schemas.chat import ChatMessageResponse
@@ -78,6 +78,34 @@ async def get_messages_by_room_id(
     )
     return result.scalars().all()
 
+
+async def get_message_by_id(db: AsyncSession, message_id: uuid.UUID) -> Optional[ChatMessage]:
+    result = await db.execute(select(ChatMessage).where(ChatMessage.id == message_id))
+    return result.scalar_one_or_none()
+
+
+async def update_message_content(db: AsyncSession, message_id: uuid.UUID, content: str) -> ChatMessage:
+    # 기존 내용 조회
+    res0 = await db.execute(select(ChatMessage).where(ChatMessage.id == message_id))
+    msg = res0.scalar_one()
+    old = msg.content
+    # 수정 이력 기록
+    edit = ChatMessageEdit(message_id=message_id, user_id=msg.chat_room.user_id if hasattr(msg, 'chat_room') else None, old_content=old, new_content=content)
+    db.add(edit)
+    # 본문 업데이트
+    await db.execute(update(ChatMessage).where(ChatMessage.id == message_id).values(content=content))
+    await db.commit()
+    res = await db.execute(select(ChatMessage).where(ChatMessage.id == message_id))
+    return res.scalar_one()
+
+
+async def apply_feedback(db: AsyncSession, message_id: uuid.UUID, upvote: bool) -> ChatMessage:
+    field = ChatMessage.upvotes if upvote else ChatMessage.downvotes
+    await db.execute(update(ChatMessage).where(ChatMessage.id == message_id).values({field.key: field + 1}))
+    await db.commit()
+    res = await db.execute(select(ChatMessage).where(ChatMessage.id == message_id))
+    return res.scalar_one()
+
 async def get_chat_rooms_for_user(
     db: AsyncSession, user_id: uuid.UUID
 ) -> List[ChatRoom]:
@@ -109,6 +137,9 @@ async def delete_all_messages_in_room(
         delete(ChatMessage).where(ChatMessage.chat_room_id == room_id)
     )
     await db.commit()
+
+
+# (핀 고정 기능 제거됨 - 로컬 저장소 기반 UI 고정 사용)
 
 async def delete_chat_room(
     db: AsyncSession, room_id: uuid.UUID

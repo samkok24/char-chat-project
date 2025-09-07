@@ -231,6 +231,7 @@ class CharacterListResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     
     id: uuid.UUID
+    creator_id: uuid.UUID
     name: str
     description: Optional[str]
     greeting: Optional[str]

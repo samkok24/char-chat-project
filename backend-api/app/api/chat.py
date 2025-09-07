@@ -23,7 +23,10 @@ from app.schemas.chat import (
     ChatMessageResponse, 
     CreateChatRoomRequest, 
     SendMessageRequest,
-    SendMessageResponse
+    SendMessageResponse,
+    ChatMessageUpdate,
+    RegenerateRequest,
+    MessageFeedback,
 )
 
 router = APIRouter()
@@ -84,10 +87,18 @@ async def send_message(
         db.add(settings)
         await db.commit()
 
-    # 2. 사용자 메시지 저장
-    user_message = await chat_service.save_message(
-        db, room.id, "user", request.content
-    )
+    # 2. 사용자 메시지 저장 (continue 모드면 저장하지 않음)
+    save_user_message = True
+    clean_content = (request.content or "").strip()
+    is_continue = (clean_content == "" or clean_content.lower() in {"continue", "계속", "continue please"})
+    if is_continue:
+        save_user_message = False
+    if save_user_message:
+        user_message = await chat_service.save_message(
+            db, room.id, "user", request.content
+        )
+    else:
+        user_message = None
 
     # 3. AI 응답 생성 (CAVEDUCK 스타일 최적화)
     history = await chat_service.get_messages_by_room_id(db, room.id, limit=20)
@@ -119,9 +130,7 @@ async def send_message(
 
 [세계관]
 {character.world_setting or '설정 없음'}
-
-[첫 인사]
-{character.greeting or '안녕하세요.'}"""
+"""
 
     # 유저 페르소나 정보 추가
     if active_persona:
@@ -159,23 +168,42 @@ async def send_message(
     if settings and settings.system_prompt:
         character_prompt += f"\n\n[추가 지시사항]\n{settings.system_prompt}"
     
+    # 인사 반복 방지 가이드
     character_prompt += "\n\n위의 모든 설정에 맞게 캐릭터를 완벽하게 연기해주세요."
+    character_prompt += "\n새로운 인사말이나 자기소개는 금지합니다. 기존 맥락을 이어서 답변하세요."
 
-    # 대화 히스토리 구성
+    # 대화 히스토리 구성 (요약 + 최근 50개)
     history_for_ai = []
-    for msg in history[-10:]:  # 최근 10개 메시지 사용 (빠른 응답을 위해 최적화)
+    # 1) 요약 존재 시 프롬프트 앞부분에 포함
+    if getattr(room, 'summary', None):
+        history_for_ai.append({"role": "system", "parts": [f"(요약) {room.summary}"]})
+    
+    # 2) 최근 50개 사용
+    recent_limit = 50
+    for msg in history[-recent_limit:]:
         if msg.sender_type == "user":
             history_for_ai.append({"role": "user", "parts": [msg.content]})
         else:
             history_for_ai.append({"role": "model", "parts": [msg.content]})
+
+    # 첫 인사 섹션은 메시지 생성 단계에서는 항상 제외 (초기 입장 시 /chat/start에서만 사용)
+    # (안전망) 혹시 포함되어 있다면 제거
+    character_prompt = character_prompt.replace("\n\n[첫 인사]\n" + (character.greeting or '안녕하세요.'), "")
     
     # AI 응답 생성 (사용자가 선택한 모델 사용)
+    # continue 모드면 사용자 메시지를 이어쓰기 지시문으로 대체
+    effective_user_message = (
+        "바로 직전의 당신 답변을 이어서 자연스럽게 계속 작성해줘. 새로운 인사말이나 도입부 없이 본문만 이어쓰기."
+        if is_continue else request.content
+    )
+
     ai_response_text = await ai_service.get_ai_chat_response(
         character_prompt=character_prompt,
-        user_message=request.content,
+        user_message=effective_user_message,
         history=history_for_ai,
         preferred_model=current_user.preferred_model,
-        preferred_sub_model=current_user.preferred_sub_model
+        preferred_sub_model=current_user.preferred_sub_model,
+        response_length_pref=getattr(current_user, 'response_length_pref', 'medium')
     )
 
     # 4. AI 응답 메시지 저장
@@ -186,6 +214,36 @@ async def send_message(
     # 5. 캐릭터 채팅 수 증가 (사용자 메시지 기준으로 1회만 증가)
     from app.services import character_service
     await character_service.increment_character_chat_count(db, room.character_id)
+
+    # 6. 필요 시 요약 생성/갱신: 메시지 총 수가 51 이상이 되는 최초 시점에 요약 저장
+    try:
+        new_count = (room.message_count or 0) + 1  # 이번 사용자 메시지 카운트 반영 가정
+        if new_count >= 51 and not getattr(room, 'summary', None):
+            # 최근 50개 이전의 히스토리를 요약(간단 요약)
+            past_texts = []
+            for msg in history[:-recent_limit]:
+                role = '사용자' if msg.sender_type == 'user' else character.name
+                past_texts.append(f"{role}: {msg.content}")
+            past_chunk = "\n".join(past_texts[-500:])  # 안전 길이 제한
+            if past_chunk:
+                summary_prompt = "다음 대화의 핵심 사건과 관계, 맥락을 5줄 이내로 한국어 요약:\n" + past_chunk
+                summary_text = await ai_service.get_ai_chat_response(
+                    character_prompt="",
+                    user_message=summary_prompt,
+                    history=[],
+                    preferred_model=current_user.preferred_model,
+                    preferred_sub_model=current_user.preferred_sub_model
+                )
+                # DB 저장
+                from sqlalchemy import update
+                from app.models.chat import ChatRoom as _ChatRoom
+                await db.execute(
+                    update(_ChatRoom).where(_ChatRoom.id == room.id).set({"summary": summary_text[:4000]})
+                )
+                await db.commit()
+    except Exception:
+        # 요약 실패는 치명적이지 않으므로 무시
+        pass
     
     return SendMessageResponse(
         user_message=user_message,
@@ -308,3 +366,62 @@ async def delete_chat_room(
     await chat_service.delete_chat_room(db, room_id)
     return {"message": "채팅방이 삭제되었습니다."}
 
+
+# ----- 메시지 수정/재생성 -----
+@router.patch("/messages/{message_id}", response_model=ChatMessageResponse)
+async def update_message_content(
+    message_id: uuid.UUID,
+    payload: ChatMessageUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    msg = await chat_service.get_message_by_id(db, message_id)
+    if not msg:
+        raise HTTPException(status_code=404, detail="메시지를 찾을 수 없습니다.")
+    room = await chat_service.get_chat_room_by_id(db, msg.chat_room_id)
+    if not room or room.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="권한이 없습니다.")
+    if msg.sender_type != 'assistant' and msg.sender_type != 'character':
+        raise HTTPException(status_code=400, detail="AI 메시지만 수정할 수 있습니다.")
+    updated = await chat_service.update_message_content(db, message_id, payload.content)
+    return ChatMessageResponse.model_validate(updated)
+
+
+@router.post("/messages/{message_id}/regenerate", response_model=SendMessageResponse)
+async def regenerate_message(
+    message_id: uuid.UUID,
+    payload: RegenerateRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    # 대상 메시지와 룸 확인
+    msg = await chat_service.get_message_by_id(db, message_id)
+    if not msg:
+        raise HTTPException(status_code=404, detail="메시지를 찾을 수 없습니다.")
+    room = await chat_service.get_chat_room_by_id(db, msg.chat_room_id)
+    if not room or room.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="권한이 없습니다.")
+
+    # 재생성 지시사항을 사용자 메시지로 전송 → 기존 send_message 흐름 재사용
+    instruction = payload.instruction or "방금 응답을 같은 맥락으로 다시 생성해줘."
+    req = SendMessageRequest(character_id=room.character_id, content=instruction)
+    return await send_message(req, current_user, db)
+
+
+@router.post("/messages/{message_id}/feedback", response_model=ChatMessageResponse)
+async def message_feedback(
+    message_id: uuid.UUID,
+    payload: MessageFeedback,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    msg = await chat_service.get_message_by_id(db, message_id)
+    if not msg:
+        raise HTTPException(status_code=404, detail="메시지를 찾을 수 없습니다.")
+    room = await chat_service.get_chat_room_by_id(db, msg.chat_room_id)
+    if not room or room.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="권한이 없습니다.")
+    updated = await chat_service.apply_feedback(db, message_id, upvote=(payload.action=='upvote'))
+    return ChatMessageResponse.model_validate(updated)
+
+ 

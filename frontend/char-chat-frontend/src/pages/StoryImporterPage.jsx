@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import AnalyzedCharacterCard from '../components/AnalyzedCharacterCard';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../components/ui/tooltip';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 
 const StoryImporterPage = () => {
   const navigate = useNavigate();
@@ -21,9 +22,13 @@ const StoryImporterPage = () => {
   const [error, setError] = useState('');
   const [analysisResult, setAnalysisResult] = useState(null);
   const [isSaving, setIsSaving] = useState(false); // 저장 로딩 상태 추가
+  const [selectedAiModel, setSelectedAiModel] = useState('gemini');
+  const [chapterFiles, setChapterFiles] = useState([]);
+  const [chaptersPreview, setChaptersPreview] = useState([]);
+  const [mergeLoading, setMergeLoading] = useState(false);
   const MAX_CHARS = 500000; // 최대 글자 수
 
-  // 파일 업로드 핸들러
+  // 파일 업로드 핸들러 (단일 파일)
   const handleFileUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -40,38 +45,42 @@ const StoryImporterPage = () => {
     setError('');
     
     try {
-      const formData = new FormData();
-      formData.append('file', file);
-      
-      // TODO: 백엔드에 파일 업로드 API 구현 필요
-      // const response = await storyImporterAPI.uploadFile(formData);
-      // setStoryText(response.data.content);
-      
-      // 임시로 FileReader로 txt 파일만 읽기
+      // 임시: txt만 로컬에서 읽기
       if (fileExtension === '.txt') {
-        const reader = new FileReader();
-        reader.onload = (event) => {
-          const content = event.target.result;
-          if (content.length > MAX_CHARS) {
-            setError(`파일 내용이 너무 깁니다. (최대 ${MAX_CHARS.toLocaleString()}자)`);
-            setStoryText(content.substring(0, MAX_CHARS));
-          } else {
-            setStoryText(content);
-          }
-          setLoading(false);
-        };
-        reader.onerror = () => {
-          setError('파일 읽기 중 오류가 발생했습니다.');
-          setLoading(false);
-        };
-        reader.readAsText(file, 'utf-8');
+        const text = await file.text();
+        setStoryText(text.length > MAX_CHARS ? text.substring(0, MAX_CHARS) : text);
       } else {
         setError('현재는 .txt 파일만 지원됩니다. 다른 형식은 준비 중입니다.');
-        setLoading(false);
       }
     } catch (err) {
       setError('파일 업로드 중 오류가 발생했습니다.');
+    } finally {
       setLoading(false);
+    }
+  };
+
+  // 회차 모드: 다중 txt 업로드 후 자동 합치기
+  const handleChaptersUpload = async (e) => {
+    const files = Array.from(e.target.files || []).filter(f => f.name.toLowerCase().endsWith('.txt'));
+    if (files.length === 0) return;
+    files.sort((a, b) => a.name.localeCompare(b.name, 'ko'));
+    setMergeLoading(true);
+    setError('');
+    try {
+      const previews = [];
+      let merged = '';
+      for (const f of files) {
+        const text = await f.text();
+        previews.push({ name: f.name, size: f.size, chars: text.length });
+        merged += (merged ? '\n\n' : '') + text;
+      }
+      setChapterFiles(files);
+      setChaptersPreview(previews);
+      setStoryText(merged.slice(0, MAX_CHARS));
+    } catch {
+      setError('회차 파일 처리 중 오류가 발생했습니다.');
+    } finally {
+      setMergeLoading(false);
     }
   };
 
@@ -85,7 +94,7 @@ const StoryImporterPage = () => {
     setAnalysisResult(null);
 
     try {
-      const response = await storyImporterAPI.analyzeStory(storyText);
+      const response = await storyImporterAPI.analyzeStory(storyText, selectedAiModel);
       setAnalysisResult(response.data);
     } catch (err) {
       console.error("분석 중 오류 발생:", err);
@@ -101,38 +110,31 @@ const StoryImporterPage = () => {
     setIsSaving(true);
     setError('');
     try {
-      // API에 보낼 데이터 형식에 맞게 재구성
       const payload = {
         basic_info: {
           name: characterData.name,
           description: characterData.description,
           world_setting: analysisResult?.worldview || '',
         },
-        // 대인관계 성향을 호감도 시스템과 연동하는 로직은 유지
         affinity_system: {
           has_affinity_system: true,
           affinity_rules: `대인관계 성향 점수(${characterData.social_tendency})를 기반으로 함`
         },
-        // 기타 필요한 필드는 여기서 추가하거나 기본값을 사용할 수 있습니다.
-        // 예: personality, speech_style 등
       };
 
       await charactersAPI.createCharacter(payload);
-      
-      // 간단한 alert로 성공 알림 후 프로필 페이지로 이동
       alert(`'${characterData.name}' 캐릭터가 성공적으로 생성되었습니다!`);
       navigate('/profile'); 
 
     } catch (err) {
       console.error("캐릭터 생성 중 오류 발생:", err);
       const errorMessage = err.response?.data?.detail || '캐릭터 생성 중 알 수 없는 오류가 발생했습니다.';
-      setError(errorMessage); // 페이지 내 에러 메시지로 표시
-      alert(errorMessage); // 사용자에게도 alert으로 알림
+      setError(errorMessage);
+      alert(errorMessage);
     } finally {
       setIsSaving(false);
     }
   };
-
 
   return (
     <div className="min-h-screen bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-gray-100 p-4 sm:p-6 lg:p-8">
@@ -155,6 +157,21 @@ const StoryImporterPage = () => {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
+            {/* AI 모델 선택 */}
+            <div>
+              <label className="block text-sm font-medium mb-2">AI 모델 선택</label>
+              <Select value={selectedAiModel} onValueChange={setSelectedAiModel}>
+                <SelectTrigger>
+                  <SelectValue placeholder="AI 모델 선택" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="gemini">Gemini</SelectItem>
+                  <SelectItem value="claude">Claude</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* 단일 파일 업로드 */}
             <div className="flex gap-2 mb-2">
               <input
                 type="file"
@@ -182,6 +199,41 @@ const StoryImporterPage = () => {
                 (.txt, .doc, .docx, .hwp, .hwpx 지원)
               </span>
             </div>
+
+            {/* 회차 모드: 다중 파일 업로드 */}
+            <div className="space-y-3 p-3 rounded-lg border border-gray-700/50 bg-gray-800/30">
+              <div className="flex items-center justify-between">
+                <div className="text-sm text-gray-300">회차 모드(여러 .txt 파일 선택)</div>
+                {(mergeLoading) && <Loader2 className="w-4 h-4 animate-spin text-gray-400" />}
+              </div>
+              <input
+                type="file"
+                id="chaptersUpload"
+                accept=".txt"
+                multiple
+                onChange={handleChaptersUpload}
+                className="hidden"
+                disabled={loading || isSaving || mergeLoading}
+              />
+              <label htmlFor="chaptersUpload">
+                <Button variant="outline" size="sm" disabled={loading || isSaving || mergeLoading} className="cursor-pointer" asChild>
+                  <span><Upload className="mr-2 h-4 w-4" /> 회차(.txt) 여러 개 업로드</span>
+                </Button>
+              </label>
+              {chaptersPreview.length > 0 && (
+                <div className="text-xs text-gray-400 space-y-1">
+                  <div>파일 {chaptersPreview.length}개, 총 글자수 {chaptersPreview.reduce((a,b)=>a+b.chars,0).toLocaleString()}자</div>
+                  <ul className="max-h-28 overflow-auto list-disc pl-4">
+                    {chaptersPreview.map((c) => (
+                      <li key={c.name} className="truncate">{c.name} · {c.chars.toLocaleString()}자</li>
+                    ))}
+                  </ul>
+                  <p className="text-gray-500">파일명 오름차순으로 자동 결합되어 분석 입력에 채워집니다.</p>
+                </div>
+              )}
+            </div>
+
+            {/* 입력 박스 */}
             <div className="space-y-2">
               <Textarea
                 value={storyText}
@@ -192,7 +244,7 @@ const StoryImporterPage = () => {
                 }}
                 placeholder="이곳에 분석할 이야기를 붙여넣으세요..."
                 className="min-h-[300px] text-base"
-                disabled={loading || isSaving} // 저장 중에도 비활성화
+                disabled={loading || isSaving}
                 maxLength={MAX_CHARS}
               />
               <div className="text-sm text-gray-500 text-right">
@@ -250,14 +302,15 @@ const StoryImporterPage = () => {
                 <div>
                   <h3 className="font-semibold text-lg flex items-center mb-2">
                     <Users className="w-5 h-5 mr-2 text-emerald-500"/>
-                    주요 캐릭터
+                    주요 캐릭터 (수정 가능)
                   </h3>
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                     {analysisResult.characters.map((char) => (
                       <AnalyzedCharacterCard
                         key={char.name}
-                        initialCharacter={char} // char -> initialCharacter 로 prop 이름 변경
-                        onSave={handleSaveCharacter} // onStart -> onSave, 핸들러 변경
+                        initialCharacter={char}
+                        onSave={handleSaveCharacter}
+                        buttonText="이 캐릭터 저장하기"
                       />
                     ))}
                   </div>

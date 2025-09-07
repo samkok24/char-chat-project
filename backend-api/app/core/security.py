@@ -58,7 +58,13 @@ def verify_token(token: str, token_type: str = "access") -> Optional[dict]:
     """토큰 검증"""
     try:
         payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
-        if payload.get("type") != token_type:
+        token_claim_type = payload.get("type")
+        # 레거시 토큰( type 클레임 없음 ) 호환: access 검증일 때는 허용
+        if token_claim_type is None:
+            if token_type == "access":
+                return payload
+            return None
+        if token_claim_type != token_type:
             return None
         return payload
     except JWTError:
@@ -147,7 +153,7 @@ def verify_password_reset_token(token: str) -> Optional[str]:
 
 
 async def get_current_user_optional(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(HTTPBearer(auto_error=False)),
     db: AsyncSession = Depends(get_db)
 ) -> Optional[User]:
     """

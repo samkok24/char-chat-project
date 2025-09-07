@@ -13,6 +13,7 @@ import os
 from app.core.config import settings
 from app.core.database import engine, Base
 from app.core.paths import get_upload_dir
+from sqlalchemy import text
 
 # API 라우터 임포트 (우선순위 순서)
 from app.api.chat import router as chat_router          # 🔥 최우선: 채팅 API
@@ -26,6 +27,7 @@ from app.api.stories import router as stories_router    # ⏳ 나중에: 스토�
 from app.api.payment import router as payment_router    # ⏳ 나중에: 결제 API (단순화 예정)
 from app.api.point import router as point_router        # ⏳ 나중에: 포인트 API (단순화 예정)
 from app.api.files import router as files_router
+from app.api.tags import router as tags_router
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -38,10 +40,62 @@ async def lifespan(app: FastAPI):
     logger.info("🚀 AI 캐릭터 챗 플랫폼 시작 (CAVEDUCK 스타일)")
     
     # 데이터베이스 테이블 생성 (개발용)
-    if settings.ENVIRONMENT == "development":
-        async with engine.begin() as conn:
+    async with engine.begin() as conn:
+        if settings.ENVIRONMENT == "development":
             await conn.run_sync(Base.metadata.create_all)
-        logger.info("📊 데이터베이스 테이블 생성 완료")
+            logger.info("📊 데이터베이스 테이블 생성 완료")
+
+        # SQLite 사용 시 누락 컬럼 자동 보정 (idempotent)
+        try:
+            if settings.DATABASE_URL.startswith("sqlite"):
+                # users 테이블 컬럼 확인
+                result = await conn.exec_driver_sql("PRAGMA table_info(users)")
+                cols = {row[1] for row in result.fetchall()}  # row[1] == column name
+                if "avatar_url" not in cols:
+                    await conn.exec_driver_sql("ALTER TABLE users ADD COLUMN avatar_url TEXT")
+                    logger.info("🛠️ users.avatar_url 컬럼 추가")
+                if "bio" not in cols:
+                    await conn.exec_driver_sql("ALTER TABLE users ADD COLUMN bio TEXT")
+                    logger.info("🛠️ users.bio 컬럼 추가")
+                if "response_length_pref" not in cols:
+                    await conn.exec_driver_sql("ALTER TABLE users ADD COLUMN response_length_pref TEXT DEFAULT 'medium'")
+                    logger.info("🛠️ users.response_length_pref 컬럼 추가")
+
+                # chat_rooms 테이블 컬럼 확인 (summary)
+                result = await conn.exec_driver_sql("PRAGMA table_info(chat_rooms)")
+                cols = {row[1] for row in result.fetchall()}
+                if "summary" not in cols:
+                    await conn.exec_driver_sql("ALTER TABLE chat_rooms ADD COLUMN summary TEXT")
+                    logger.info("🛠️ chat_rooms.summary 컬럼 추가")
+
+                # chat_messages 테이블 컬럼 확인 (upvotes/downvotes)
+                result = await conn.exec_driver_sql("PRAGMA table_info(chat_messages)")
+                cols = {row[1] for row in result.fetchall()}
+                if "upvotes" not in cols:
+                    await conn.exec_driver_sql("ALTER TABLE chat_messages ADD COLUMN upvotes INTEGER DEFAULT 0")
+                    logger.info("🛠️ chat_messages.upvotes 컬럼 추가")
+                if "downvotes" not in cols:
+                    await conn.exec_driver_sql("ALTER TABLE chat_messages ADD COLUMN downvotes INTEGER DEFAULT 0")
+                    logger.info("🛠️ chat_messages.downvotes 컬럼 추가")
+
+                # 메시지 수정 이력 테이블 생성 (존재하지 않으면)
+                await conn.exec_driver_sql(
+                    """
+                    CREATE TABLE IF NOT EXISTS chat_message_edits (
+                      id TEXT PRIMARY KEY,
+                      message_id TEXT NOT NULL,
+                      user_id TEXT NOT NULL,
+                      old_content TEXT NOT NULL,
+                      new_content TEXT NOT NULL,
+                      created_at TEXT DEFAULT (datetime('now')),
+                      FOREIGN KEY (message_id) REFERENCES chat_messages(id) ON DELETE CASCADE,
+                      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                    )
+                    """
+                )
+                logger.info("📄 chat_message_edits 테이블 확인/생성 완료")
+        except Exception as e:
+            logger.warning(f"SQLite 컬럼 보정 중 경고: {e}")
     
     yield
     
@@ -61,9 +115,17 @@ app = FastAPI(
 UPLOAD_DIR = get_upload_dir()
 app.mount("/static", StaticFiles(directory=UPLOAD_DIR), name="static")
 # CORS 미들웨어 설정
+# CORS: 개발 환경에선 프론트 도메인을 명시적으로 허용, 그 외 환경에서도 로컬 호스트는 정규식으로 허용
+DEV_ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+ALLOWED_ORIGINS = DEV_ALLOWED_ORIGINS if settings.ENVIRONMENT == "development" else []
+ALLOWED_ORIGIN_REGEX = None if settings.ENVIRONMENT == "development" else r"https?://(localhost|127\.0\.0\.1)(:\\d+)?"
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 개발용 - 프로덕션에서는 특정 도메인만 허용
+    allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=ALLOWED_ORIGIN_REGEX,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -87,6 +149,7 @@ app.include_router(story_importer_router, prefix="/story-importer", tags=["✨ �
 app.include_router(memory_notes_router, prefix="/memory-notes", tags=["✨ 기억노트 (신규)"])
 app.include_router(user_personas_router, prefix="/user-personas", tags=["👤 유저 페르소나 (신규)"])
 app.include_router(files_router, prefix="/files", tags=["🗂️ 파일"])
+app.include_router(tags_router, prefix="/tags", tags=["🏷️ 태그"])
 
 
 # ⏳ Phase 3: 콘텐츠 확장 API (향후 개발)

@@ -6,7 +6,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react'; // useMemo 추가
 import { useNavigate, Link, useParams, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { charactersAPI, filesAPI, API_BASE_URL } from '../lib/api';
+import { charactersAPI, filesAPI, API_BASE_URL, tagsAPI, api } from '../lib/api';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
@@ -41,11 +41,15 @@ import {
   Wand2 // Wand2 아이콘 추가
 } from 'lucide-react';
 import { StoryImporterModal } from '../components/StoryImporterModal'; // StoryImporterModal 컴포넌트 추가
+import AvatarCropModal from '../components/AvatarCropModal';
 
 const CreateCharacterPage = () => {
   const { characterId } = useParams();
   const isEditMode = !!characterId;
   const fileInputRef = useRef(null);
+  const [cropSrc, setCropSrc] = useState('');
+  const [isCropOpen, setIsCropOpen] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -108,6 +112,17 @@ const CreateCharacterPage = () => {
   const [pageTitle, setPageTitle] = useState('새 캐릭터 만들기');
 
   const { isAuthenticated } = useAuth();
+  const [allTags, setAllTags] = useState([]);
+  const [selectedTagSlugs, setSelectedTagSlugs] = useState([]);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await tagsAPI.getTags();
+        setAllTags(res.data || []);
+      } catch (_) {}
+    })();
+  }, []);
 
   // 탭 정보 정의
   const tabs = [
@@ -231,6 +246,12 @@ const CreateCharacterPage = () => {
         }
       }));
       setPageTitle('캐릭터 수정');
+      // 기존 태그 로드
+      try {
+        const tagRes = await api.get(`/characters/${characterId}/tags`);
+        const slugs = (tagRes.data || []).map(t => t.slug);
+        setSelectedTagSlugs(slugs);
+      } catch (_) {}
     } catch (err) {
       console.error('캐릭터 정보 로드 실패:', err);
       setError(err.message || '캐릭터 정보를 불러올 수 없습니다.');
@@ -281,16 +302,25 @@ const CreateCharacterPage = () => {
     updateFormData('example_dialogues', 'dialogues', dialogues);
   };
 
+  const allowedExt = ['jpg','jpeg','png','webp','gif'];
+  const validateExt = (file) => {
+    const ext = (file.name || '').toLowerCase().split('.').pop();
+    return allowedExt.includes(ext);
+  };
+
   const handleImageUpload = (e) => {
     const files = Array.from(e.target.files);
     if (files.length === 0) return;
-    setFormData(prev => ({
-      ...prev,
-      media_settings: {
-        ...prev.media_settings,
-        newly_added_files: [...prev.media_settings.newly_added_files, ...files]
-      }
-    }));
+    if (!validateExt(files[0])) {
+      alert('jpg, jpeg, png, webp, gif 형식만 업로드할 수 있습니다.');
+      e.target.value = '';
+      return;
+    }
+    // 크롭 모달 오픈
+    const objectUrl = URL.createObjectURL(files[0]);
+    setCropSrc(objectUrl);
+    setIsCropOpen(true);
+    e.target.value = '';
   };
 
   // [2단계] 이미지 제거 핸들러 분리
@@ -340,10 +370,17 @@ const CreateCharacterPage = () => {
 
       if (isEditMode) {
         await charactersAPI.updateAdvancedCharacter(characterId, characterData);
+        // 태그 저장
+        await api.put(`/characters/${characterId}/tags`, { tags: selectedTagSlugs });
         navigate(`/characters/${characterId}`, { state: { fromEdit: true } });
       } else {
         const response = await charactersAPI.createAdvancedCharacter(characterData);
-        navigate(`/characters/${response.data.id}`, { state: { fromCreate: true } });
+        const newId = response.data.id;
+        // 태그 저장
+        if (selectedTagSlugs.length) {
+          await api.put(`/characters/${newId}/tags`, { tags: selectedTagSlugs });
+        }
+        navigate(`/characters/${newId}`, { state: { fromCreate: true } });
       }
     } catch (err) {
       console.error(`캐릭터 ${isEditMode ? '수정' : '생성'} 실패:`, err);
@@ -681,7 +718,7 @@ const CreateCharacterPage = () => {
                 ref={fileInputRef}
                 onChange={handleImageUpload}
                 multiple
-                accept="image/*"
+                accept="image/jpeg,image/png,image/webp,image/gif,.jpg,.jpeg,.png,.webp,.gif"
                 className="hidden"
               />
               <Button type="button" variant="outline" onClick={() => fileInputRef.current.click()}>
@@ -980,6 +1017,33 @@ const CreateCharacterPage = () => {
           <li>• 저작권이 있는 캐릭터는 주의해서 사용해주세요</li>
         </ul>
       </div>
+
+      {/* 태그 설정 */}
+      <Separator />
+      <div className="space-y-3">
+        <h3 className="text-lg font-semibold">태그 설정</h3>
+        <div className="flex flex-wrap gap-2">
+          {allTags.map(t => {
+            const active = selectedTagSlugs.includes(t.slug);
+            return (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => setSelectedTagSlugs(prev => active ? prev.filter(s => s !== t.slug) : [...prev, t.slug])}
+                className={`px-3 py-1 rounded-full border ${active ? 'bg-purple-600 text-white border-purple-500' : 'bg-gray-200 text-gray-800 border-gray-300'} inline-flex items-center gap-2`}
+              >
+                <span>{t.emoji || '🏷️'}</span>
+                <span>{t.name}</span>
+              </button>
+            );
+          })}
+        </div>
+        {selectedTagSlugs.length > 0 && (
+          <div className="text-sm text-gray-500">
+            선택됨: {selectedTagSlugs.join(', ')}
+          </div>
+        )}
+      </div>
     </div>
   );
 
@@ -1089,6 +1153,37 @@ const CreateCharacterPage = () => {
           </Card>
         </Tabs>
       </main>
+
+      {/* 크롭 모달 */}
+      <AvatarCropModal
+        isOpen={isCropOpen}
+        src={cropSrc}
+        outputSize={1024}
+        onCancel={() => { try { URL.revokeObjectURL(cropSrc); } catch(_){} setCropSrc(''); setIsCropOpen(false); }}
+        onConfirm={async (croppedFile) => {
+          setIsCropOpen(false);
+          setIsUploading(true);
+          try {
+            const res = await filesAPI.uploadImages([croppedFile]);
+            const uploadedUrl = Array.isArray(res.data) ? res.data[0] : res.data;
+            // 새로 추가할 파일 목록 대신, 업로드 즉시 URL을 갤러리에 반영
+            setFormData(prev => ({
+              ...prev,
+              media_settings: {
+                ...prev.media_settings,
+                image_descriptions: [...prev.media_settings.image_descriptions, { url: uploadedUrl, description: '' }]
+              }
+            }));
+          } catch (err) {
+            console.error('이미지 업로드 실패:', err);
+            alert('이미지 업로드에 실패했습니다.');
+          } finally {
+            setIsUploading(false);
+            try { URL.revokeObjectURL(cropSrc); } catch(_){}
+            setCropSrc('');
+          }
+        }}
+      />
     </div>
   );
 };

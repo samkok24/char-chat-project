@@ -38,6 +38,8 @@ class UserResponse(UserBase):
     id: uuid.UUID
     is_active: bool
     is_verified: bool
+    avatar_url: Optional[str] = None
+    bio: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 

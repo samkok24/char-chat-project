@@ -7,6 +7,7 @@ import {
   DialogTitle 
 } from './ui/dialog';
 import { Button } from './ui/button';
+import { Popover, PopoverTrigger, PopoverContent } from './ui/popover';
 import { Badge } from './ui/badge';
 import { Input } from './ui/input';
 import { Textarea } from './ui/textarea';
@@ -32,6 +33,18 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
     claude: false,
     gpt: false,
     argo: false
+  });
+  const [responseLength, setResponseLength] = useState('medium'); // short|medium|long
+  // P0: 전역 UI 설정(로컬 저장)
+  const [uiFontSize, setUiFontSize] = useState('base'); // sm|base|lg|xl
+  const [uiLetterSpacing, setUiLetterSpacing] = useState('normal'); // tighter|tight|normal|wide|wider
+  const [uiOverlay, setUiOverlay] = useState(60); // 0~100
+  const [uiFontFamily, setUiFontFamily] = useState('sans'); // sans|serif
+  const [uiColors, setUiColors] = useState({
+    charSpeech: '#ffffff',
+    charNarration: '#cfcfcf',
+    userSpeech: '#111111',
+    userNarration: '#333333'
   });
   
   // 기억노트 관련 상태
@@ -60,6 +73,34 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
   useEffect(() => {
     setActiveTab(initialTab);
   }, [initialTab]);
+
+  // 사용자 현재 길이 선호도 불러오기
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const r = await usersAPI.getModelSettings();
+        setResponseLength(r.data.response_length_pref || 'medium');
+      } catch (_) {}
+      // 로컬 UI 설정 로드
+      try {
+        const raw = localStorage.getItem('cc:ui:v1');
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed.fontSize) setUiFontSize(parsed.fontSize);
+          if (parsed.letterSpacing) setUiLetterSpacing(parsed.letterSpacing);
+          if (typeof parsed.overlay === 'number') setUiOverlay(parsed.overlay);
+          if (parsed.fontFamily) setUiFontFamily(parsed.fontFamily);
+          if (parsed.colors) setUiColors({
+            charSpeech: parsed.colors.charSpeech || '#ffffff',
+            charNarration: parsed.colors.charNarration || '#cfcfcf',
+            userSpeech: parsed.colors.userSpeech || '#111111',
+            userNarration: parsed.colors.userNarration || '#333333'
+          });
+        }
+      } catch (_) {}
+    };
+    if (isOpen) load();
+  }, [isOpen]);
 
   // 캐릭터별 기억노트 로드
   useEffect(() => {
@@ -262,10 +303,16 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
 
   const handleSave = async () => {
     try {
-      // 모델 탭인 경우에만 모델 설정 저장
+      // 모델 탭: 모델/서브모델 + 답변 길이 저장
       if (activeTab === 'model') {
-        await usersAPI.updateModelSettings(selectedModel, selectedSubModel);
+        await usersAPI.updateModelSettings(selectedModel, selectedSubModel, responseLength);
         onModelChange(selectedModel, selectedSubModel);
+      } else if (activeTab === 'settings') {
+        // 추가 설정 탭: 답변 길이 + 전역 UI 설정 로컬 저장
+        await usersAPI.updateModelSettings(selectedModel, selectedSubModel, responseLength);
+        const ui = { fontSize: uiFontSize, letterSpacing: uiLetterSpacing, overlay: uiOverlay, fontFamily: uiFontFamily, colors: uiColors };
+        localStorage.setItem('cc:ui:v1', JSON.stringify(ui));
+        window.dispatchEvent(new CustomEvent('ui:settingsChanged', { detail: ui }));
       }
       // 페르소나 탭인 경우 별도 처리 필요 없음 (이미 개별적으로 저장됨)
       
@@ -734,7 +781,105 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
         {activeTab === 'settings' && (
           <div className="space-y-4">
             <h3 className="font-semibold mb-2">추가 설정</h3>
-            <p className="text-sm text-gray-600">추가 설정 옵션들이 여기에 표시됩니다.</p>
+            {/* 답변 길이 라디오 (이 탭으로 이동) */}
+            <div className="mt-2 p-3 rounded-lg border">
+              <div className="text-sm text-gray-700 mb-2">답변 길이</div>
+              <div className="flex items-center gap-4">
+                <label className="inline-flex items-center gap-2 cursor-pointer">
+                  <input type="radio" name="respLen" className="accent-purple-600" checked={responseLength==='short'} onChange={()=>setResponseLength('short')} />
+                  <span className="text-sm">짧게 (-50%)</span>
+                </label>
+                <label className="inline-flex items-center gap-2 cursor-pointer">
+                  <input type="radio" name="respLen" className="accent-purple-600" checked={responseLength==='medium'} onChange={()=>setResponseLength('medium')} />
+                  <span className="text-sm">중간 (기본)</span>
+                </label>
+                <label className="inline-flex items-center gap-2 cursor-pointer">
+                  <input type="radio" name="respLen" className="accent-purple-600" checked={responseLength==='long'} onChange={()=>setResponseLength('long')} />
+                  <span className="text-sm">많이 (+50%)</span>
+                </label>
+              </div>
+            </div>
+
+            {/* 글자 크기 */}
+            <div className="mt-2 p-3 rounded-lg border">
+              <div className="text-sm text-gray-700 mb-2">글자 크기</div>
+              <div className="flex items-center gap-4">
+                {['sm','base','lg','xl'].map(sz => (
+                  <label key={sz} className="inline-flex items-center gap-2 cursor-pointer">
+                    <input type="radio" name="fontSize" className="accent-purple-600" checked={uiFontSize===sz} onChange={()=>setUiFontSize(sz)} />
+                    <span className="text-sm">{sz}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            {/* 자간 */}
+            <div className="mt-2 p-3 rounded-lg border">
+              <div className="text-sm text-gray-700 mb-2">자간</div>
+              <div className="flex items-center gap-4">
+                {['tighter','tight','normal','wide','wider'].map(sp => (
+                  <label key={sp} className="inline-flex items-center gap-2 cursor-pointer">
+                    <input type="radio" name="letterSpacing" className="accent-purple-600" checked={uiLetterSpacing===sp} onChange={()=>setUiLetterSpacing(sp)} />
+                    <span className="text-sm">{sp}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            {/* 배경 오버레이 투명도 */}
+            <div className="mt-2 p-3 rounded-lg border">
+              <div className="text-sm text-gray-700 mb-2">배경 오버레이 투명도: {uiOverlay}%</div>
+              <input type="range" min="0" max="100" value={uiOverlay} onChange={(e)=>setUiOverlay(parseInt(e.target.value)||0)} className="w-full" />
+            </div>
+
+            {/* 폰트 */}
+            <div className="mt-2 p-3 rounded-lg border">
+              <div className="text-sm text-gray-700 mb-2">폰트</div>
+              <div className="flex items-center gap-4">
+                <label className="inline-flex items-center gap-2 cursor-pointer">
+                  <input type="radio" name="fontFam" className="accent-purple-600" checked={uiFontFamily==='sans'} onChange={()=>setUiFontFamily('sans')} />
+                  <span className="text-sm">고딕체 (Pretendard)</span>
+                </label>
+                <label className="inline-flex items-center gap-2 cursor-pointer">
+                  <input type="radio" name="fontFam" className="accent-purple-600" checked={uiFontFamily==='serif'} onChange={()=>setUiFontFamily('serif')} />
+                  <span className="text-sm">바탕체 (Noto Serif)</span>
+                </label>
+              </div>
+            </div>
+
+            {/* 색상: 팔레트 팝오버 */}
+            <div className="mt-2 p-3 rounded-lg border">
+              <div className="text-sm text-gray-700 mb-3">폰트 색상</div>
+              <div className="grid grid-cols-2 gap-4">
+                {[
+                  { key: 'charSpeech', label: '캐릭터 대사' },
+                  { key: 'userSpeech', label: '유저 대사' },
+                  { key: 'charNarration', label: '캐릭터 지문' },
+                  { key: 'userNarration', label: '유저 지문' }
+                ].map((it) => (
+                  <div key={it.key}>
+                    <div className="text-xs text-gray-600 mb-1">{it.label}</div>
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <button className="w-10 h-6 rounded border" style={{ backgroundColor: uiColors[it.key] }} title="색상 선택" />
+                      </PopoverTrigger>
+                      <PopoverContent align="start" className="w-auto p-2">
+                        <div className="grid grid-cols-10 gap-1">
+                          {['#000000','#434343','#666666','#999999','#b7b7b7','#cccccc','#d9d9d9','#efefef','#f3f3f3','#ffffff',
+                            '#980000','#ff0000','#ff9900','#ffff00','#00ff00','#00ffff','#4a86e8','#0000ff','#9900ff','#ff00ff',
+                            '#e6b8af','#f4cccc','#fce5cd','#fff2cc','#d9ead3','#d0e0e3','#c9daf8','#cfe2f3','#d9d2e9','#ead1dc',
+                            '#dd7e6b','#ea9999','#f9cb9c','#ffe599','#b6d7a8','#a2c4c9','#a4c2f4','#9fc5e8','#b4a7d6','#d5a6bd',
+                            '#cc4125','#e06666','#f6b26b','#ffd966','#93c47d','#76a5af','#6d9eeb','#6fa8dc','#8e7cc3','#c27ba0',
+                            '#a61c00','#cc0000','#e69138','#f1c232','#6aa84f','#45818e','#3c78d8','#3d85c6','#674ea7','#a64d79'].map((c) => (
+                              <button key={c} className="w-5 h-5 rounded border" style={{ backgroundColor: c }} onClick={()=>setUiColors({...uiColors, [it.key]: c})} />
+                            ))}
+                        </div>
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
         )}
 

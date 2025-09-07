@@ -130,6 +130,42 @@ async def count_character_comments(
     return result.scalar() or 0
 
 
+# === 사용자 기준 댓글 조회 ===
+async def get_character_comments_by_user(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    skip: int = 0,
+    limit: int = 20
+) -> List[CharacterComment]:
+    """특정 사용자가 작성한 캐릭터 댓글 목록 조회 (최신순)"""
+    result = await db.execute(
+        select(CharacterComment)
+        .options(selectinload(CharacterComment.user))
+        .where(CharacterComment.user_id == user_id)
+        .order_by(CharacterComment.created_at.desc())
+        .offset(skip)
+        .limit(limit)
+    )
+    return result.scalars().all()
+
+
+async def get_story_comments_by_user(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    skip: int = 0,
+    limit: int = 20
+) -> List[StoryComment]:
+    """특정 사용자가 작성한 스토리 댓글 목록 조회 (최신순)"""
+    result = await db.execute(
+        select(StoryComment)
+        .options(selectinload(StoryComment.user))
+        .where(StoryComment.user_id == user_id)
+        .order_by(StoryComment.created_at.desc())
+        .offset(skip)
+        .limit(limit)
+    )
+    return result.scalars().all()
+
 # 스토리 댓글 관련 함수들
 async def create_story_comment(
     db: AsyncSession,

@@ -68,7 +68,7 @@ export const SocketProvider = ({ children }) => {
         newSocket.on('room_left', (data) => {
           console.log('채팅방 나감:', data);
           setCurrentRoom(null);
-          setMessages([]);
+          // 소켓 재연결 중에도 UI가 공백이 되지 않도록 즉시 비우지 않음
           setHasMoreMessages(true); // 상태 초기화
           setCurrentPage(1); // 상태 초기화
         });
@@ -205,12 +205,10 @@ export const SocketProvider = ({ children }) => {
   // 채팅방 입장
   const joinRoom = useCallback((roomId) => {
     if (socket && connected) {
-      // 상태 초기화
-      setMessages([]);
+      // 기존 메시지를 즉시 비우지 않고 히스토리만 새로 요청
       setHasMoreMessages(true);
       setCurrentPage(1);
       setHistoryLoading(true);
-
       socket.emit('join_room', { roomId });
     }
   }, [socket, connected]);
@@ -225,6 +223,10 @@ export const SocketProvider = ({ children }) => {
   // 메시지 전송
   const sendMessage = useCallback((roomId, content, messageType = 'text') => {
     if (socket && connected) {
+      if (messageType === 'continue') {
+        socket.emit('continue', { roomId });
+        return;
+      }
       socket.emit('send_message', {
         roomId,
         content,

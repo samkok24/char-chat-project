@@ -75,6 +75,7 @@ class Character(Base):
     stories = relationship("Story", back_populates="character")
     likes = relationship("CharacterLike", back_populates="character", cascade="all, delete-orphan")
     comments = relationship("CharacterComment", back_populates="character", cascade="all, delete-orphan")
+    tags = relationship("Tag", secondary="character_tags", back_populates="characters")
 
     def __repr__(self):
         try:

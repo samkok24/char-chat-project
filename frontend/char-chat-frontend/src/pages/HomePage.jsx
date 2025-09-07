@@ -3,11 +3,11 @@
  * CAVEDUCK 스타일: API 캐싱으로 성능 최적화
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { useAuth } from '../contexts/AuthContext';
-import { charactersAPI, usersAPI } from '../lib/api';
+import { charactersAPI, usersAPI, tagsAPI } from '../lib/api';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
@@ -19,7 +19,6 @@ import { Skeleton } from '../components/ui/skeleton';
 import { resolveImageUrl } from '../lib/images';
 import { 
   Search, 
-  Plus, 
   MessageCircle, 
   Heart, 
   Users, 
@@ -31,7 +30,8 @@ import {
   LogOut,
   User,
   Gem,
-  Settings
+  Settings,
+  ChevronDown
 } from 'lucide-react';
 import {
   DropdownMenu,
@@ -46,6 +46,7 @@ import { RecentChatCard } from '../components/RecentChatCard';
 import { CharacterCard, CharacterCardSkeleton } from '../components/CharacterCard';
 import AppLayout from '../components/layout/AppLayout';
 import TrendingCharacters from '../components/TrendingCharacters';
+import WebNovelSection from '../components/WebNovelSection';
 
 const HomePage = () => {
   const [searchQuery, setSearchQuery] = useState('');
@@ -53,35 +54,81 @@ const HomePage = () => {
   const navigate = useNavigate();
   const location = useLocation();
 
-  // 🚀 React Query를 사용한 캐릭터 목록 캐싱
-  const { 
-    data: characters = [], 
-    isLoading: loading, 
-    error,
-    refetch 
-  } = useQuery({
-    queryKey: ['characters', searchQuery],
+  // 🚀 무한스크롤: useInfiniteQuery + skip/limit 페이지네이션
+  const LIMIT = 24;
+  const [selectedTags, setSelectedTags] = useState([]); // slug 배열
+  const [showAllTags, setShowAllTags] = useState(false);
+  const { data: allTags = [] } = useQuery({
+    queryKey: ['tags-used-or-all'],
     queryFn: async () => {
+      try {
+        const used = (await tagsAPI.getUsedTags()).data || [];
+        if (Array.isArray(used) && used.length > 0) return used;
+      } catch (_) {}
+      try {
+        const all = (await tagsAPI.getTags()).data || [];
+        return Array.isArray(all) ? all : [];
+      } catch (e) {
+        console.error('태그 목록 로드 실패:', e);
+        return [];
+      }
+    },
+    staleTime: 5 * 60 * 1000,
+  });
+  const {
+    data: characterPages,
+    isLoading: loading,
+    isFetchingNextPage,
+    hasNextPage,
+    fetchNextPage,
+    refetch
+  } = useInfiniteQuery({
+    queryKey: ['characters', 'infinite', searchQuery, selectedTags.join(',')],
+    queryFn: async ({ pageParam = 0 }) => {
       try {
         const response = await charactersAPI.getCharacters({
           search: searchQuery || undefined,
-          limit: 20
+          skip: pageParam,
+          limit: LIMIT,
+          tags: selectedTags.length ? selectedTags.join(',') : undefined,
         });
-        return response.data;
+        const items = response.data || [];
+        return { items, nextSkip: items.length === LIMIT ? pageParam + LIMIT : null };
       } catch (error) {
         console.error('캐릭터 목록 로드 실패:', error);
-        return []; // 실패 시 빈 배열 반환
+        return { items: [], nextSkip: null };
       }
     },
-    staleTime: 30 * 1000, // 30초간 캐시 유지
-    cacheTime: 10 * 60 * 1000, // 10분간 메모리에 보관
-    refetchOnWindowFocus: true, // 창 포커스 시 자동 갱신
+    getNextPageParam: (lastPage) => lastPage.nextSkip,
+    staleTime: 30 * 1000,
+    cacheTime: 10 * 60 * 1000,
+    refetchOnWindowFocus: true,
   });
 
-  // 페이지 진입 시마다 데이터 새로고침
+  const characters = (characterPages?.pages || []).flatMap(p => p.items);
+  const sentinelRef = useRef(null);
+
+  // 페이지 진입/검색 변경 시 첫 페이지 새로고침
   useEffect(() => {
     refetch();
-  }, [location, refetch]);
+  }, [location, searchQuery, selectedTags, refetch]);
+
+  // IntersectionObserver로 리스트 끝에서 다음 페이지 로드
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el) return;
+    if (!hasNextPage || loading) return;
+
+    const observer = new IntersectionObserver((entries) => {
+      const entry = entries[0];
+      if (entry.isIntersecting && hasNextPage && !isFetchingNextPage) {
+        fetchNextPage();
+      }
+    }, { rootMargin: '200px 0px', threshold: 0 });
+
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [hasNextPage, isFetchingNextPage, fetchNextPage, loading, searchQuery]);
 
   const handleSearch = (e) => {
     e.preventDefault();
@@ -124,68 +171,15 @@ const HomePage = () => {
     navigate(`/characters/${characterId}`);
   };
 
+  const visibleTagLimit = 18;
+  const visibleTags = showAllTags ? allTags : allTags.slice(0, visibleTagLimit);
+
+  // 태그 추가 기능 제거 요청에 따라 관련 로직/버튼 제거됨
+
   return (
     <AppLayout>
       <div className="min-h-full bg-gray-900 text-gray-200">
-        {/* 프로필 드롭다운을 우상단에 배치 */}
-        <div className="absolute top-4 right-4 z-50">
-          {isAuthenticated ? (
-            <>
-              {/* 프로필 드롭다운 메뉴 */}
-              <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button variant="ghost" className="relative h-10 w-10 rounded-full">
-                        <Avatar className="h-10 w-10">
-                          <AvatarImage src={resolveImageUrl(user?.avatar_url)} alt={user?.username} />
-                          <AvatarFallback className="bg-gradient-to-r from-purple-600 to-blue-600 text-white">
-                            {user?.username?.charAt(0)?.toUpperCase() || 'U'}
-                          </AvatarFallback>
-                        </Avatar>
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent className="w-56" align="end">
-                      <DropdownMenuLabel className="font-normal">
-                        <div className="flex flex-col space-y-1">
-                          <p className="text-sm font-medium leading-none">{user?.username}</p>
-                          <p className="text-xs leading-none text-muted-foreground">
-                            {user?.email}
-                          </p>
-                        </div>
-                      </DropdownMenuLabel>
-                      <DropdownMenuSeparator />
-                      <DropdownMenuItem onClick={() => navigate('/profile')}>
-                        <User className="mr-2 h-4 w-4" />
-                        <span>마이페이지</span>
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => navigate('/ruby/charge')}>
-                        <Gem className="mr-2 h-4 w-4 text-pink-500" />
-                        <span>루비 충전</span>
-                        <Badge className="ml-auto bg-pink-100 text-pink-800" variant="secondary">
-                          0
-                        </Badge>
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => navigate('/settings')}>
-                        <Settings className="mr-2 h-4 w-4" />
-                        <span>설정</span>
-                      </DropdownMenuItem>
-                      <DropdownMenuSeparator />
-                      <DropdownMenuItem onClick={handleLogout} className="text-red-600">
-                        <LogOut className="mr-2 h-4 w-4" />
-                        <span>로그아웃</span>
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                  </>
-                ) : (
-                  <>
-                    <Link to="/login">
-                      <Button className="bg-purple-600 text-white px-6 py-2 rounded-lg font-medium border-0 transition-none hover:bg-purple-600 hover:text-white active:bg-purple-600 focus:bg-purple-600">
-                        로그인
-                      </Button>
-                    </Link>
-                  </>
-                )}
-            </div>
+        {/* 상단 프로필 드롭다운 제거 */}
 
         {/* 메인 컨텐츠 */}
         <main className="px-8 py-6">
@@ -220,12 +214,15 @@ const HomePage = () => {
           {/* Trending 섹션 */}
           <TrendingCharacters />
 
+          {/* 웹소설 원작 섹션 */}
+          <WebNovelSection />
+
           {/* 최근 대화 섹션 */}
           {isAuthenticated && (
             <>
               {/* 관심 캐릭터(좋아요) 섹션 */}
               {favoriteChars.length > 0 && (
-                <section className="mt-8">
+                <section className="mt-10">
                   <div className="flex items-center justify-between mb-3">
                     <h2 className="text-lg font-bold text-white">관심 캐릭터</h2>
                     <Link to="/favorites" className="text-sm text-gray-400 hover:text-white">더보기</Link>
@@ -235,7 +232,7 @@ const HomePage = () => {
                       <div key={char.id} className="flex-shrink-0">
                         <RecentChatCard
                           character={char}
-                          onClick={() => navigate(`/chat/${char.id}`)}
+                          onClick={() => navigate(`/characters/${char.id}`)}
                         />
                       </div>
                     ))}
@@ -243,7 +240,7 @@ const HomePage = () => {
                 </section>
               )}
 
-              <section className="mb-10">
+              <section className="mt-10 mb-10">
                 <div className="flex items-center justify-between mb-5">
                   <h2 className="text-xl font-normal text-white">최근 대화</h2>
                   <Link to="/history" className="text-sm text-gray-400 hover:text-white">더보기</Link>
@@ -263,7 +260,39 @@ const HomePage = () => {
 
           {/* 탐색 섹션 */}
           <section className="mb-10">
-            <h2 className="text-xl font-normal text-white mb-5">탐색</h2>
+            <h2 className="text-xl font-normal text-white mb-3">탐색</h2>
+
+            {/* 태그 필터 바 (제목 바로 아래) */}
+            <div className="mb-5">
+              <div className="flex flex-wrap gap-2">
+                {visibleTags.map((t) => {
+                  const active = selectedTags.includes(t.slug);
+                  return (
+                    <button
+                      key={t.id}
+                      onClick={() => setSelectedTags(prev => active ? prev.filter(s => s !== t.slug) : [...prev, t.slug])}
+                      className={`px-3 py-1 rounded-full border ${active ? 'bg-yellow-500 text-black border-yellow-400' : 'bg-gray-800 text-gray-200 border-gray-700'} inline-flex items-center gap-2`}
+                    >
+                      <span>{t.emoji || '🏷️'}</span>
+                      <span>{t.name}</span>
+                    </button>
+                  );
+                })}
+                {allTags.length > visibleTagLimit && (
+                  <button
+                    onClick={() => setShowAllTags(v => !v)}
+                    className="px-3 py-1 rounded-full bg-gray-800 text-gray-200 border border-gray-700 inline-flex items-center gap-2"
+                  >
+                    <ChevronDown className={`h-4 w-4 ${showAllTags ? 'rotate-180' : ''}`} />
+                    {showAllTags ? '접기' : '더보기'}
+                  </button>
+                )}
+                <button
+                  onClick={() => setSelectedTags([])}
+                  className="px-3 py-1 rounded-full bg-gray-700 text-white border border-gray-600"
+                >초기화</button>
+              </div>
+            </div>
 
             {loading ? (
               <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
@@ -272,11 +301,22 @@ const HomePage = () => {
                 ))}
               </div>
             ) : characters.length > 0 ? (
-              <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
-                {characters.map((character) => (
-                  <CharacterCard key={character.id} character={character} />
-                ))}
-              </div>
+              <>
+                <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
+                  {characters.map((character) => (
+                    <CharacterCard key={character.id} character={character} />
+                  ))}
+                </div>
+                {/* 무한스크롤 센티넬 */}
+                <div ref={sentinelRef} className="h-10"></div>
+                {isFetchingNextPage && (
+                  <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 mt-3">
+                    {Array.from({ length: 6 }).map((_, i) => (
+                      <CharacterCardSkeleton key={`sk-${i}`} />
+                    ))}
+                  </div>
+                )}
+              </>
             ) : (
               <div className="text-center py-16">
                 <p className="text-gray-400">

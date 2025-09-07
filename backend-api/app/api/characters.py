@@ -58,6 +58,9 @@ from app.services.character_service import (
     get_character_example_dialogues,
     update_character_public_status # 서비스 함수 임포트 추가
 )
+from app.schemas.tag import CharacterTagsUpdate, TagResponse
+from app.models.tag import Tag, CharacterTag
+from sqlalchemy import select, delete, insert
 from app.services.comment_service import (
     create_character_comment,
     get_character_comments,
@@ -213,6 +216,48 @@ async def convert_character_to_detail_response(character: Character, db: AsyncSe
     return character_detail
 
 
+# 🏷️ 캐릭터-태그 관리 API
+@router.get("/{character_id}/tags", response_model=List[TagResponse])
+async def get_character_tags(
+    character_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db)
+):
+    character = await get_character_by_id(db, character_id)
+    if not character:
+        raise HTTPException(status_code=404, detail="캐릭터를 찾을 수 없습니다.")
+    await db.refresh(character)
+    result = await db.execute(select(Tag).join(Tag.characters).where(Tag.characters.any(id=character_id)))
+    return result.scalars().all()
+
+
+@router.put("/{character_id}/tags", response_model=List[TagResponse])
+async def set_character_tags(
+    character_id: uuid.UUID,
+    payload: CharacterTagsUpdate,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    character = await get_character_by_id(db, character_id)
+    if not character:
+        raise HTTPException(status_code=404, detail="캐릭터를 찾을 수 없습니다.")
+    if character.creator_id != current_user.id:
+        raise HTTPException(status_code=403, detail="권한이 없습니다.")
+
+    # 기존 연결 삭제
+    await db.execute(delete(CharacterTag).where(CharacterTag.character_id == character_id))
+
+    # slugs → Tag 조회
+    if payload.tags:
+        tag_rows = (await db.execute(select(Tag).where(Tag.slug.in_(payload.tags)))).scalars().all()
+        # 연결 재생성
+        for t in tag_rows:
+            await db.execute(insert(CharacterTag).values(character_id=character_id, tag_id=t.id))
+    await db.commit()
+
+    result = await db.execute(select(Tag).join(Tag.characters).where(Tag.characters.any(id=character_id)))
+    return result.scalars().all()
+
+
 # 🌍 세계관 관리 API
 
 @router.post("/world-settings", response_model=WorldSettingResponse, status_code=status.HTTP_201_CREATED)
@@ -328,29 +373,49 @@ async def get_characters(
     search: Optional[str] = Query(None, max_length=100),
     creator_id: Optional[uuid.UUID] = Query(None),
     sort: Optional[str] = Query(None, description="정렬: views|likes|recent"),
+    source_type: Optional[str] = Query(None, description="생성 출처: ORIGINAL|IMPORTED"),
+    tags: Optional[str] = Query(None, description="필터 태그 목록(콤마 구분 slug)"),
     db: AsyncSession = Depends(get_db)
 ):
     """캐릭터 목록 조회"""
     if creator_id:
         # 특정 사용자의 캐릭터 조회
         characters = await get_characters_by_creator(
-            db=db, 
-            creator_id=creator_id, 
-            skip=skip, 
+            db=db,
+            creator_id=creator_id,
+            skip=skip,
             limit=limit,
             search=search
         )
     else:
         # 공개 캐릭터 조회
         characters = await get_public_characters(
-            db=db, 
-            skip=skip, 
+            db=db,
+            skip=skip,
             limit=limit,
             search=search,
             sort=sort,
+            source_type=source_type,
+            tags=[s for s in (tags.split(',') if tags else []) if s]
         )
-    
-    return characters
+
+    # 일관된 응답: creator_username 포함하여 매핑
+    return [
+        CharacterListResponse(
+            id=char.id,
+            creator_id=char.creator_id,
+            name=char.name,
+            description=char.description,
+            greeting=char.greeting,
+            avatar_url=char.avatar_url,
+            image_descriptions=getattr(char, 'image_descriptions', []),
+            chat_count=char.chat_count,
+            like_count=char.like_count,
+            is_public=char.is_public,
+            created_at=char.created_at,
+            creator_username=char.creator.username if getattr(char, 'creator', None) else None,
+        ) for char in characters
+    ]
 
 
 @router.get("/my", response_model=List[CharacterListResponse])

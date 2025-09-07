@@ -80,6 +80,8 @@ class SocketController {
 
     // 메시지 전송
     socket.on('send_message', (data) => this.handleSendMessage(socket, io, data));
+    // 계속 진행하기
+    socket.on('continue', (data) => this.handleContinue(socket, io, data));
 
     // 타이핑 상태
     socket.on('typing_start', (data) => this.handleTypingStart(socket, io, data));
@@ -281,6 +283,59 @@ class SocketController {
       logger.error('메시지 전송 처리 오류:', error);
       io.to(data.roomId).emit('ai_typing_stop', { roomId: data.roomId });
       socket.emit('error', { message: '메시지 전송 중 오류가 발생했습니다.' });
+    }
+  }
+
+  /**
+   * 계속 진행하기 처리 (messageType='continue')
+   */
+  async handleContinue(socket, io, data) {
+    try {
+      const { roomId } = data || {};
+      const userId = socket.userId;
+
+      if (!roomId) {
+        return socket.emit('error', { message: '채팅방 ID가 필요합니다.' });
+      }
+
+      const room = this.activeRooms.get(roomId);
+      if (!room || room.userId !== userId) {
+        return socket.emit('error', { message: '유효하지 않은 채팅방이거나 접근 권한이 없습니다.' });
+      }
+
+      io.to(roomId).emit('ai_typing_start', { roomId });
+
+      // 백엔드 REST API의 send_message(레거시)로 “계속” 지시를 보냄
+      try {
+        // 빈 문자열을 보내면 백엔드에서 is_continue 로직으로 처리되어
+        // 사용자 메시지를 저장하지 않고 방금 응답을 이어서 작성함
+        const resp = await axios.post(`${config.BACKEND_API_URL}/chat/messages`, {
+          character_id: room.characterId,
+          content: ''
+        }, {
+          headers: { 'Authorization': `Bearer ${socket.token}` }
+        });
+
+        io.to(roomId).emit('ai_typing_stop', { roomId });
+        const aiMessage = resp.data?.ai_message;
+        if (aiMessage) {
+          io.to(roomId).emit('new_message', {
+            id: aiMessage.id,
+            roomId,
+            senderType: 'character',
+            senderId: room.characterId,
+            senderName: room.characterName || 'AI',
+            content: aiMessage.content,
+            timestamp: aiMessage.created_at || new Date().toISOString()
+          });
+        }
+      } catch (e) {
+        io.to(roomId).emit('ai_typing_stop', { roomId });
+        socket.emit('error', { message: '계속 진행 처리 중 오류가 발생했습니다.' });
+      }
+    } catch (error) {
+      io.to(data?.roomId).emit('ai_typing_stop', { roomId: data?.roomId });
+      socket.emit('error', { message: '계속 진행 처리 중 오류가 발생했습니다.' });
     }
   }
 

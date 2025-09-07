@@ -174,12 +174,22 @@ async def get_ai_chat_response(
     user_message: str, 
     history: list, 
     preferred_model: str = 'gemini',
-    preferred_sub_model: str = 'gemini-2.5-pro'
+    preferred_sub_model: str = 'gemini-2.5-pro',
+    response_length_pref: str = 'medium'
 ) -> str:
     """사용자가 선택한 모델로 AI 응답 생성"""
     
     # 프롬프트와 사용자 메시지 결합
     full_prompt = f"{character_prompt}\n\nUser: {user_message}\nAssistant:"
+
+    # 응답 길이 선호도 → 최대 토큰 비율 조정 (중간 기준 1.0)
+    base_max_tokens = 1024
+    if response_length_pref == 'short':
+        max_tokens = int(base_max_tokens * 0.5)
+    elif response_length_pref == 'long':
+        max_tokens = int(base_max_tokens * 1.5)
+    else:
+        max_tokens = base_max_tokens
     
     # 모델별 처리
     if preferred_model == 'gemini':
@@ -187,7 +197,7 @@ async def get_ai_chat_response(
             model_name = 'gemini-2.5-flash'
         else:  # gemini-2.5-pro
             model_name = 'gemini-2.5-pro'
-        return await get_gemini_completion(full_prompt, model=model_name)
+        return await get_gemini_completion(full_prompt, model=model_name, max_tokens=max_tokens)
         
     elif preferred_model == 'claude':
         # 프론트의 가상 서브모델명을 실제 Anthropic 모델 ID로 매핑
@@ -203,7 +213,7 @@ async def get_ai_chat_response(
         }
 
         model_name = claude_mapping.get(preferred_sub_model, claude_default)
-        return await get_claude_completion(full_prompt, model=model_name)
+        return await get_claude_completion(full_prompt, model=model_name, max_tokens=max_tokens)
         
     elif preferred_model == 'gpt':
         if preferred_sub_model == 'gpt-4.1':
@@ -212,9 +222,9 @@ async def get_ai_chat_response(
             model_name = 'gpt-4.1-mini'
         else:  # gpt-4o
             model_name = 'gpt-4o'
-        return await get_openai_completion(full_prompt, model=model_name)
+        return await get_openai_completion(full_prompt, model=model_name, max_tokens=max_tokens)
         
     else:  # argo (기본값)
         # ARGO 모델은 향후 커스텀 API 구현 예정, 현재는 Gemini로 대체
-        return await get_gemini_completion(full_prompt, model='gemini-2.5-pro')
+        return await get_gemini_completion(full_prompt, model='gemini-2.5-pro', max_tokens=max_tokens)
 

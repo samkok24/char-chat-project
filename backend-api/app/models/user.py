@@ -19,10 +19,15 @@ class User(Base):
     hashed_password = Column(String(255), nullable=False)
     is_active = Column(Boolean, default=True)
     is_verified = Column(Boolean, default=False)
+    # 프로필 이미지 및 소개
+    avatar_url = Column(String(500))
+    bio = Column(String(1000))
     
     # AI 모델 설정
     preferred_model = Column(String(50), default='gemini')  # gemini, claude, gpt, argo
     preferred_sub_model = Column(String(50), default='gemini-2.5-pro')  # 세부 모델 버전
+    # AI 응답 길이 선호도: short|medium|long
+    response_length_pref = Column(String(10), default='medium')
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

@@ -46,6 +46,8 @@ class ChatMessageResponse(ChatMessageBase):
     chat_room_id: uuid.UUID
     sender_type: str
     created_at: datetime
+    upvotes: int | None = 0
+    downvotes: int | None = 0
 
     class Config:
         from_attributes = True
@@ -81,3 +83,14 @@ class SendMessageResponse(BaseModel):
     user_message: ChatMessageResponse
     ai_message: ChatMessageResponse
 
+
+class ChatMessageUpdate(BaseModel):
+    content: str
+
+
+class RegenerateRequest(BaseModel):
+    instruction: str | None = None
+
+
+class MessageFeedback(BaseModel):
+    action: Literal['upvote','downvote']

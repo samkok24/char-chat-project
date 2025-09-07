@@ -23,6 +23,7 @@ from .comment import CharacterComment, StoryComment
 from .bookmark import CharacterBookmark
 from .memory_note import MemoryNote
 from .user_persona import UserPersona
+from .tag import Tag, CharacterTag
 
 __all__ = [
     "User",
@@ -45,5 +46,7 @@ __all__ = [
     "CharacterBookmark",
     "MemoryNote",
     "UserPersona",
+    "Tag",
+    "CharacterTag",
 ]
 

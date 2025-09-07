@@ -1,9 +1,11 @@
 import { MessageCircle, MoreVertical, Heart, Edit, Trash2, Settings, Users, EyeOff } from 'lucide-react';
+import { formatCount } from '../lib/format';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { Switch } from "./ui/switch";
 import { Label } from "./ui/label";
+import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -12,9 +14,8 @@ import {
   DropdownMenuSeparator,
 } from "./ui/dropdown-menu";
 
-const CharacterInfoHeader = ({ character, likeCount, isLiked, handleLike, isOwner, onEdit, onDelete, onSettings, onTogglePublic }) => {
+const CharacterInfoHeader = ({ character, likeCount, isLiked, handleLike, isOwner, onEdit, onDelete, onSettings, onTogglePublic, isWebNovel = false, workId = null, tags = [] }) => {
   const navigate = useNavigate();
-  const tags = ['스토리', '여성', '여자친구', '다수 인물', '연상', '연하', '판타지', '이세계', '마법사', '자캐', '엘프', '공모전 당선작'];
 
   return (
     <div className="space-y-4">
@@ -26,7 +27,7 @@ const CharacterInfoHeader = ({ character, likeCount, isLiked, handleLike, isOwne
           </div>
           <div className="flex items-center space-x-2 text-sm text-gray-400">
             <MessageCircle className="w-4 h-4" />
-            <span>{(character.chat_count || 0).toLocaleString()}k</span>
+            <span>{formatCount(character.chat_count || 0)}</span>
           </div>
         </div>
         {isOwner && (
@@ -72,19 +73,46 @@ const CharacterInfoHeader = ({ character, likeCount, isLiked, handleLike, isOwne
         </Button>
       </div>
 
-      <p className="text-lg text-gray-300">@{character.creator_username || 'Unknown'}</p>
+      {isWebNovel && (
+        <div className="flex items-center gap-2">
+          <Badge className="bg-indigo-600 hover:bg-indigo-600">웹소설</Badge>
+          {workId && (
+            <Button variant="outline" className="border-gray-700 text-gray-200 h-7 px-2" onClick={() => navigate(`/works/${workId}`)}>
+              원작 보기
+            </Button>
+          )}
+        </div>
+      )}
+
+      {character.creator_username && character.creator_id && (
+        <div className="mt-1">
+          <Link
+            to={`/users/${character.creator_id}/creator`}
+            className="inline-flex items-center gap-2 text-lg text-gray-300 hover:text-white"
+          >
+            <Avatar className="w-6 h-6">
+              <AvatarImage src={character.thumbnail_url || character.avatar_url} alt={character.creator_username} />
+              <AvatarFallback className="text-sm">{character.creator_username?.charAt(0)?.toUpperCase() || 'U'}</AvatarFallback>
+            </Avatar>
+            <span className="truncate max-w-[200px]">{character.creator_username}</span>
+          </Link>
+        </div>
+      )}
       
       <p className="text-gray-200">
         여러분은 이세계소환당하면 어떤 삶을 살고 싶으신가요?
       </p>
       
-      <div className="flex flex-wrap gap-2">
-        {tags.map((tag, index) => (
-          <Badge key={index} variant="secondary" className="bg-gray-700 hover:bg-gray-600">
-            {tag}
-          </Badge>
-        ))}
-      </div>
+      {Array.isArray(tags) && tags.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {tags.map((t) => (
+            <Badge key={t.id || t.slug || t.name} variant="secondary" className="bg-gray-700 hover:bg-gray-600 inline-flex items-center gap-1">
+              <span>{t.emoji || '🏷️'}</span>
+              <span>{t.name}</span>
+            </Badge>
+          ))}
+        </div>
+      )}
       
       <div className="text-sm text-gray-500 pt-2">
         <span>공개일 2025-06-20</span> | <span>수정일 2025-06-30</span>

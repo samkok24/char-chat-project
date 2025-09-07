@@ -4,9 +4,12 @@ import { charactersAPI } from '../lib/api';
 import { resolveImageUrl } from '../lib/images';
 import { DEFAULT_SQUARE_URI } from '../lib/placeholder';
 import { MessageCircle, Heart, ChevronLeft, ChevronRight } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
+import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
+import { formatCount } from '../lib/format';
 
 const TrendingItem = ({ character }) => {
+  const navigate = useNavigate();
   const imgSrc = resolveImageUrl(character?.thumbnail_url || character?.avatar_url) || DEFAULT_SQUARE_URI;
   const username = character?.creator_username;
 
@@ -17,28 +20,35 @@ const TrendingItem = ({ character }) => {
           <img
             src={imgSrc}
             alt={character?.name}
-            className="w-full h-full object-cover"
+            className="w-full h-full object-cover object-top"
             onError={(e) => { e.currentTarget.src = DEFAULT_SQUARE_URI; }}
             draggable="false"
             loading="lazy"
           />
           <div className="absolute bottom-1 right-1 py-0.5 px-1.5 rounded bg-black/60 text-xs text-gray-100 flex items-center gap-2">
-            <span className="inline-flex items-center gap-1"><MessageCircle className="w-3 h-3" />{character?.chat_count ?? 0}</span>
-            <span className="inline-flex items-center gap-1"><Heart className="w-3 h-3" />{character?.like_count ?? 0}</span>
+            <span className="inline-flex items-center gap-1"><MessageCircle className="w-3 h-3" />{formatCount(character?.chat_count ?? 0)}</span>
+            <span className="inline-flex items-center gap-1"><Heart className="w-3 h-3" />{formatCount(character?.like_count ?? 0)}</span>
           </div>
         </div>
-        <div className="flex-initial min-w-0 w-[200px]">
+        <div className="flex-initial min-w-0 w-[200px] relative pb-8 min-h-[138px]">
           <div className="flex items-center gap-2">
             <h4 className="text-white text-[15px] font-semibold truncate max-w-full">{character?.name}</h4>
           </div>
-          {username && (
-            <div className="mt-1">
-              <span className="inline-block text-xs bg-gray-800 text-gray-300 rounded-full px-2 py-0.5">@{username}</span>
-            </div>
-          )}
-          <div className="mt-2 text-sm text-gray-400 line-clamp-2 max-w-full max-h-10 overflow-hidden">
+          <div className="mt-2 text-sm text-gray-400 line-clamp-2 max-w-full max-h-10 overflow-hidden pr-1">
             {character?.description || '설명이 없습니다.'}
           </div>
+          {username && character?.creator_id && (
+            <span
+              onClick={(e) => { e.preventDefault(); e.stopPropagation(); navigate(`/users/${character.creator_id}/creator`); }}
+              className="absolute left-0 bottom-0 inline-flex items-center gap-2 text-sm text-gray-300 hover:text-white cursor-pointer"
+            >
+              <Avatar className="w-5 h-5">
+                <AvatarImage src={''} alt={username} />
+                <AvatarFallback className="text-[10px]">{username?.charAt(0)?.toUpperCase() || 'U'}</AvatarFallback>
+              </Avatar>
+              <span className="truncate max-w-[140px]">{username}</span>
+            </span>
+          )}
         </div>
       </Link>
     </li>
@@ -94,7 +104,7 @@ const TrendingCharacters = () => {
   return (
     <section className="mt-8">
       <div className="flex items-center justify-between mb-3">
-        <h2 className="text-lg font-bold text-white">무더위를 강타할 그들이 온다!</h2>
+        <h2 className="text-lg font-bold text-white">인기 대화</h2>
         {hasCarousel && (
           <div className="flex items-center gap-2">
             <button

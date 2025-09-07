@@ -6,7 +6,7 @@ import { Textarea } from './ui/textarea';
 import { Label } from './ui/label';
 import { Save, UserPlus } from 'lucide-react'; // UserPlus 아이콘 추가
 
-const AnalyzedCharacterCard = ({ initialCharacter, onSave, buttonText = "이 캐릭터 저장하기", buttonIcon: ButtonIcon = Save }) => {
+const AnalyzedCharacterCard = ({ initialCharacter, onSave, buttonText = "이 캐릭터 저장하기", buttonIcon: ButtonIcon = Save, readOnly = false }) => {
   const [character, setCharacter] = useState(initialCharacter);
 
   useEffect(() => {
@@ -31,6 +31,7 @@ const AnalyzedCharacterCard = ({ initialCharacter, onSave, buttonText = "이 캐
           name="name" 
           value={character.name} 
           onChange={handleChange} 
+          disabled={readOnly}
           className="text-lg font-bold"
         />
       </CardHeader>
@@ -42,6 +43,7 @@ const AnalyzedCharacterCard = ({ initialCharacter, onSave, buttonText = "이 캐
             name="description" 
             value={character.description} 
             onChange={handleChange} 
+            disabled={readOnly}
             rows={3}
           />
         </div>
@@ -53,18 +55,21 @@ const AnalyzedCharacterCard = ({ initialCharacter, onSave, buttonText = "이 캐
             type="number"
             value={character.social_tendency} 
             onChange={handleChange} 
+            disabled={readOnly}
           />
            <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2.5 mt-2">
             <div className="bg-blue-600 h-2.5 rounded-full" style={{ width: `${character.social_tendency}%` }}></div>
           </div>
         </div>
       </CardContent>
-      <div className="p-4 pt-0">
-        <Button className="w-full" onClick={handleSave}>
-          <ButtonIcon className="w-4 h-4 mr-2" />
-          {buttonText}
-        </Button>
-      </div>
+      {!readOnly && (
+        <div className="p-4 pt-0">
+          <Button className="w-full" onClick={handleSave}>
+            <ButtonIcon className="w-4 h-4 mr-2" />
+            {buttonText}
+          </Button>
+        </div>
+      )}
     </Card>
   );
 };

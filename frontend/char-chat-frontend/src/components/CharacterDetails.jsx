@@ -28,7 +28,7 @@ const timeAgo = (dateString) => {
 
 
 
-const CharacterDetails = ({ character, comments, commentText, setCommentText, handleCommentSubmit, handleDeleteComment, submittingComment, user }) => {
+const CharacterDetails = ({ character, comments, commentText, setCommentText, handleCommentSubmit, handleDeleteComment, submittingComment, user, tags = [] }) => {
   return (
     <Accordion type="single" collapsible className="w-full" defaultValue="item-1">
       <AccordionItem value="item-1" className="border-b-0">
@@ -37,16 +37,31 @@ const CharacterDetails = ({ character, comments, commentText, setCommentText, ha
         </AccordionTrigger>
         <AccordionContent>
           <Tabs defaultValue="settings" className="w-full">
-            <TabsList className="grid w-full grid-cols-3 bg-gray-800">
+            <TabsList className="grid w-full grid-cols-4 bg-gray-800">
               <TabsTrigger value="settings">캐릭터 설정</TabsTrigger>
               <TabsTrigger value="worldview">세계관</TabsTrigger>
               <TabsTrigger value="comments">댓글 ({comments.length})</TabsTrigger>
+              <TabsTrigger value="tags">태그</TabsTrigger>
             </TabsList>
             <TabsContent value="settings" className="p-4 bg-gray-800 rounded-b-lg">
               <p>{character.description || '아직 캐릭터 설정이 없습니다.'}</p>
             </TabsContent>
             <TabsContent value="worldview" className="p-4 bg-gray-800 rounded-b-lg">
               <p>{character.world_setting || '아직 세계관 설정이 없습니다.'}</p>
+            </TabsContent>
+            <TabsContent value="tags" className="p-4 bg-gray-800 rounded-b-lg">
+              {tags.length === 0 ? (
+                <p className="text-gray-400">등록된 태그가 없습니다.</p>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  {tags.map(t => (
+                    <span key={t.id} className="px-3 py-1 rounded-full bg-gray-700 text-gray-100 border border-gray-600 inline-flex items-center gap-2">
+                      <span>{t.emoji || '🏷️'}</span>
+                      <span>{t.name}</span>
+                    </span>
+                  ))}
+                </div>
+              )}
             </TabsContent>
             <TabsContent value="comments" className="p-4 bg-gray-800 rounded-b-lg">
               <form onSubmit={handleCommentSubmit} className="flex space-x-2 mb-4">

@@ -1,11 +1,13 @@
 import React from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { LazyLoadImage } from 'react-lazy-load-image-component';
 import 'react-lazy-load-image-component/src/effects/blur.css';
 import { Skeleton } from './ui/skeleton';
 import { resolveImageUrl } from '../lib/images';
 import { DEFAULT_SQUARE_URI } from '../lib/placeholder';
 import { MessageCircle, Heart } from 'lucide-react';
+import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
+import { formatCount } from '../lib/format';
 
 export const CharacterCard = ({ character, onCardClick, onButtonClick, footerContent }) => {
   const navigate = useNavigate();
@@ -38,32 +40,41 @@ export const CharacterCard = ({ character, onCardClick, onButtonClick, footerCon
           alt={character.name}
           src={resolveImageUrl(character.thumbnail_url || character.avatar_url) || DEFAULT_SQUARE_URI}
           effect="blur"
-          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+          className="w-full h-full object-cover object-top group-hover:scale-105 transition-transform duration-300"
           wrapperClassName="w-full h-full"
         />
+        {/* 채팅수/좋아요 바: 이미지 우하단 오버레이 */}
+        <div className="absolute bottom-1 right-1 py-0.5 px-1.5 rounded bg-black/60 text-xs text-gray-100 flex items-center gap-2">
+          <span className="inline-flex items-center gap-0.5"><MessageCircle className="w-3 h-3" />{formatCount(character.chat_count || 0)}</span>
+          <span className="inline-flex items-center gap-0.5"><Heart className="w-3 h-3" />{formatCount(character.like_count || 0)}</span>
+        </div>
       </div>
       
       {/* 캐릭터 정보 */}
-      <div className="p-4">
+      <div className="p-4 relative pb-6 h-[120px] overflow-hidden">
         <h3 className="font-medium text-white truncate">{character.name}</h3>
-        <p className="text-sm text-gray-400 truncate">{character.creator_username || 'Unknown'}</p>
-        
         {/* 설명 */}
-        <p className="text-sm text-gray-500 mt-1 line-clamp-2">
+        <p className="text-sm text-gray-500 mt-1 line-clamp-2 pr-1">
           {character.description || '설명이 없습니다.'}
         </p>
         
-        {/* 상태 정보 */}
-        <div className="flex items-center gap-3 mt-3 text-xs text-gray-500">
-          <span className="flex items-center">
-            <MessageCircle className="w-3 h-3 mr-1" />
-            {(character.chat_count || 0).toLocaleString()}
-          </span>
-          <span className="flex items-center">
-            <Heart className="w-3 h-3 mr-1" />
-            {character.like_count || 0}
-          </span>
-        </div>
+        {/* 상태 정보 제거: 이미지 영역으로 이동 */}
+
+        {character.creator_username && character.creator_id && (
+          <Link
+            to={`/users/${character.creator_id}/creator`}
+            onClick={(e) => e.stopPropagation()}
+            className="absolute left-1 bottom-1 py-0.5 px-1.5 rounded bg-black/60 text-xs text-gray-100 inline-flex items-center gap-2 hover:text-white truncate"
+          >
+            <Avatar className="w-4 h-4">
+              <AvatarImage src={''} alt={character.creator_username} />
+              <AvatarFallback className="text-[10px]">
+                {character.creator_username?.charAt(0)?.toUpperCase() || 'U'}
+              </AvatarFallback>
+            </Avatar>
+            <span className="truncate max-w-[120px]">{character.creator_username}</span>
+          </Link>
+        )}
       </div>
     </div>
   );

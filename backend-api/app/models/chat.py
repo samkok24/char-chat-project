@@ -2,7 +2,7 @@
 채팅 모델
 """
 
-from sqlalchemy import Column, String, Text, DateTime, ForeignKey, Integer, func
+from sqlalchemy import Column, String, Text, DateTime, ForeignKey, Integer, func, Boolean
 from sqlalchemy.orm import relationship
 import uuid
 
@@ -18,6 +18,7 @@ class ChatRoom(Base):
     character_id = Column(UUID(), ForeignKey("characters.id"), nullable=False, index=True)
     title = Column(String(200))
     message_count = Column(Integer, default=0)
+    summary = Column(Text)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -41,9 +42,25 @@ class ChatMessage(Base):
     message_metadata = Column(JSON)  # 추가 정보 (모델, 토큰 수 등)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
+    # 피드백 (추천/비추천)
+    upvotes = Column(Integer, default=0)
+    downvotes = Column(Integer, default=0)
+
     # 관계 설정
     chat_room = relationship("ChatRoom", back_populates="messages")
 
     def __repr__(self):
         return f"<ChatMessage(id={self.id}, chat_room_id={self.chat_room_id}, sender_type={self.sender_type})>"
+
+
+class ChatMessageEdit(Base):
+    """메시지 수정 이력"""
+    __tablename__ = "chat_message_edits"
+
+    id = Column(UUID(), primary_key=True, default=uuid.uuid4, index=True)
+    message_id = Column(UUID(), ForeignKey("chat_messages.id"), index=True, nullable=False)
+    user_id = Column(UUID(), ForeignKey("users.id"), index=True, nullable=False)
+    old_content = Column(Text, nullable=False)
+    new_content = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 

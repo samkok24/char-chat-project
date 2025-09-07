@@ -122,6 +122,13 @@ export const usersAPI = {
   // 사용자 프로필 수정
   updateUserProfile: (userId, data) =>
     api.put(`/users/${userId}`, data),
+
+  // 사용자 댓글 조회
+  getUserCharacterComments: (userId, params = {}) =>
+    api.get(`/users/${userId}/comments/characters`, { params }),
+  // 사용자 스토리 댓글 조회
+  getUserStoryComments: (userId, params = {}) =>
+    api.get(`/users/${userId}/comments/stories`, { params }),
   
   // 사용자가 생성한 캐릭터 목록
   getUserCharacters: (userId, params = {}) =>
@@ -142,10 +149,20 @@ export const usersAPI = {
   getModelSettings: () =>
     api.get('/me/model-settings'),
     
-  updateModelSettings: (model, subModel) =>
+  updateModelSettings: (model, subModel, responseLength) =>
     api.put('/me/model-settings', null, { 
-      params: { model, sub_model: subModel } 
+      params: { model, sub_model: subModel, response_length: responseLength } 
     }),
+
+  // 통계: 개요
+  getCreatorStatsOverview: (userId, params = {}) =>
+    api.get(`/users/${userId}/stats/overview`, { params }),
+  // 통계: 시계열(예: chats 최근 7일)
+  getCreatorTimeseries: (userId, params = {}) =>
+    api.get(`/users/${userId}/stats/timeseries`, { params }),
+  // 통계: 상위 캐릭터
+  getCreatorTopCharacters: (userId, params = {}) =>
+    api.get(`/users/${userId}/stats/top-characters`, { params }),
 };
 
 // 🎭 캐릭터 관련 API
@@ -205,6 +222,11 @@ export const charactersAPI = {
   // 댓글 관련 API
   getComments: (characterId, params = {}) =>
     api.get(`/characters/${characterId}/comments`, { params }),
+  // 태그 관련(캐릭터별 연결)
+  getCharacterTags: (characterId) =>
+    api.get(`/characters/${characterId}/tags`),
+  setCharacterTags: (characterId, tags) =>
+    api.put(`/characters/${characterId}/tags`, { tags }),
   
   createComment: (characterId, data) =>
     api.post(`/characters/${characterId}/comments`, data),
@@ -228,6 +250,13 @@ export const charactersAPI = {
   
   getCustomModules: (params = {}) =>
     api.get('/characters/custom-modules', { params }),
+};
+
+// 🏷️ 태그 관련 API
+export const tagsAPI = {
+  getTags: () => api.get('/tags'),
+  getUsedTags: () => api.get('/tags/used'),
+  createTag: (data) => api.post('/tags', data),
 };
 
 // 💬 채팅 관련 API
@@ -267,6 +296,13 @@ export const chatAPI = {
     
   deleteChatRoom: (roomId) =>
     api.delete(`/chat/rooms/${roomId}`),
+  // 메시지 수정/재생성
+  updateMessage: (messageId, content) =>
+    api.patch(`/chat/messages/${messageId}`, { content }),
+  regenerateMessage: (messageId, instruction) =>
+    api.post(`/chat/messages/${messageId}/regenerate`, { instruction }),
+  feedbackMessage: (messageId, action) =>
+    api.post(`/chat/messages/${messageId}/feedback`, { action }),
 };
 
 // 📖 스토리 관련 API
@@ -313,6 +349,37 @@ export const storiesAPI = {
   
   deleteComment: (commentId) =>
     api.delete(`/stories/comments/${commentId}`),
+};
+
+// 📚 웹소설 원작(MVP 더미용)
+export const worksAPI = {
+  // 더미: 작품/회차 데이터 (MVP 시연용)
+  getWork: async (workId) => {
+    // 임시 더미 데이터
+    return {
+      data: {
+        id: workId,
+        title: '달빛 아래의 서사',
+        author: 'Miru',
+        cover_url: null,
+        total_chapters: 3,
+        main_characters: [
+          { id: 'c1', name: '루나', avatar_url: null },
+          { id: 'c2', name: '에단', avatar_url: null },
+          { id: 'c3', name: '세라', avatar_url: null },
+        ],
+      }
+    };
+  },
+  getChapter: async (workId, chapterNumber) => {
+    const chapters = [
+      { no: 1, title: '1화. 초대장', content: '달빛이 비추는 밤, 낡은 서가 사이로 초대장이 떨어졌다...' },
+      { no: 2, title: '2화. 비밀 서고', content: '서고 깊은 곳, 봉인된 문이 미세한 빛을 내뿜었다...' },
+      { no: 3, title: '3화. 달의 계승자', content: '루나는 자신의 운명을 받아들이기로 한다...' },
+    ];
+    const chap = chapters.find(c => c.no === Number(chapterNumber)) || chapters[0];
+    return { data: { id: `${workId}-${chap.no}`, work_id: workId, number: chap.no, ...chap } };
+  },
 };
 
 // ✨ 스토리 임포터 관련 API

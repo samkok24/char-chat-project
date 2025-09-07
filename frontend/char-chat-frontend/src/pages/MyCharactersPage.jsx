@@ -28,6 +28,7 @@ import {
   Loader2,
   AlertCircle
 } from 'lucide-react';
+import { formatCount } from '../lib/format';
 import AppLayout from '../components/layout/AppLayout';
 import { CharacterCard as SharedCharacterCard, CharacterCardSkeleton as SharedCharacterCardSkeleton } from '../components/CharacterCard';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../components/ui/tabs';
@@ -158,7 +159,7 @@ const MyCharactersPage = () => {
           <div className="flex items-center space-x-4 text-sm text-gray-500 mb-4">
             <div className="flex items-center space-x-1">
               <MessageCircle className="w-4 h-4" />
-              <span>{(character.chat_count || 0).toLocaleString()} 대화</span>
+              <span>{formatCount(character.chat_count || 0)} 대화</span>
             </div>
             <div className="flex items-center space-x-1">
               <Heart className="w-4 h-4" />
@@ -268,7 +269,7 @@ const MyCharactersPage = () => {
           <div className="flex items-center gap-3">
             <Button
               variant="ghost"
-              onClick={() => navigate(-1)}
+              onClick={() => navigate('/')}
               className="p-2 rounded-full text-gray-300 hover:text-white hover:bg-gray-800"
             >
               <ArrowLeft className="w-5 h-5" />

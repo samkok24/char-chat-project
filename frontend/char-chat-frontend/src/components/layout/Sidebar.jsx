@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { Link, NavLink, useNavigate } from 'react-router-dom';
-import { chatAPI } from '../../lib/api';
+import { chatAPI, charactersAPI } from '../../lib/api';
 import { useAuth } from '../../contexts/AuthContext';
 import { Avatar, AvatarFallback, AvatarImage } from '../ui/avatar';
-import { resolveImageUrl } from '../../lib/images';
+import { resolveImageUrl, getCharacterPrimaryImage } from '../../lib/images';
 import { Button } from '../ui/button';
-import { MessageSquare, Plus, Home, Star, User, History, UserCog, LogOut, Settings, Gem } from 'lucide-react';
+import { MessageSquare, Plus, Home, Star, User, History, UserCog, LogOut, Settings, Gem, BookOpen } from 'lucide-react';
 import { Skeleton } from '../ui/skeleton';
 import { Badge } from '../ui/badge';
 import {
@@ -21,6 +21,7 @@ import UserPersonaModal from '../UserPersonaModal';
 const Sidebar = () => {
   const [chatRooms, setChatRooms] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [characterImageById, setCharacterImageById] = useState({});
   const [showPersonaModal, setShowPersonaModal] = useState(false);
   const { user, logout } = useAuth();
   const navigate = useNavigate();
@@ -30,19 +31,43 @@ const Sidebar = () => {
     navigate('/');
   };
 
-  useEffect(() => {
-    const fetchChatRooms = async () => {
-      try {
-        setLoading(true);
-        const response = await chatAPI.getChatRooms();
-        setChatRooms(response.data);
-      } catch (error) {
-        console.error('채팅방 목록을 불러오는데 실패했습니다.', error);
-      } finally {
-        setLoading(false);
+  const loadRooms = async () => {
+    try {
+      setLoading(true);
+      const response = await chatAPI.getChatRooms();
+      const rooms = response.data || [];
+      setChatRooms(rooms);
+
+      const ids = Array.from(new Set(rooms.map(r => r?.character?.id).filter(Boolean)));
+      if (ids.length) {
+        const entries = await Promise.all(ids.map(async (id) => {
+          try {
+            const res = await charactersAPI.getCharacter(id);
+            const url = getCharacterPrimaryImage(res.data);
+            return [id, url];
+          } catch (_) {
+            return [id, ''];
+          }
+        }));
+        setCharacterImageById(Object.fromEntries(entries));
       }
+    } catch (error) {
+      console.error('채팅방 목록을 불러오는데 실패했습니다.', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadRooms();
+  }, []);
+
+  useEffect(() => {
+    const handler = () => loadRooms();
+    try { window.addEventListener('chat:roomsChanged', handler); } catch (_) {}
+    return () => {
+      try { window.removeEventListener('chat:roomsChanged', handler); } catch (_) {}
     };
-    fetchChatRooms();
   }, []);
 
   const NavItem = ({ to, icon: Icon, children }) => (
@@ -72,13 +97,22 @@ const Sidebar = () => {
       </div>
 
       {/* Create 버튼 */}
-      <div className="px-4 pb-4 pt-2">
+      <div className="px-4 pb-2 pt-2">
         <Link
           to="/characters/create"
           className="flex items-center justify-center w-full px-4 py-2.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors font-medium text-sm shadow-lg"
         >
           <Plus className="w-5 h-5 mr-2" />
           캐릭터 생성
+        </Link>
+      </div>
+      <div className="px-4 pb-4">
+        <Link
+          to="/story-importer"
+          className="flex items-center justify-center w-full px-4 py-2.5 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors font-medium text-sm"
+        >
+          <BookOpen className="w-5 h-5 mr-2" />
+          소설로 생성
         </Link>
       </div>
 
@@ -101,7 +135,7 @@ const Sidebar = () => {
             {loading ? (
               Array.from({ length: 3 }).map((_, i) => (
                 <div key={i} className="flex items-center space-x-3 px-4 py-2">
-                  <Skeleton className="h-8 w-8 rounded-full" />
+                  <Skeleton className="h-8 w-8 rounded-md" />
                   <Skeleton className="h-4 w-32" />
                 </div>
               ))
@@ -118,9 +152,9 @@ const Sidebar = () => {
                     }`
                   }
                 >
-                  <Avatar className="w-8 h-8 mr-3">
-                    <AvatarImage src={resolveImageUrl(room.character.avatar_url)} />
-                    <AvatarFallback className="bg-purple-600 text-white text-xs">
+                  <Avatar className="w-8 h-8 mr-3 rounded-md">
+                    <AvatarImage className="object-cover object-top" src={characterImageById[room.character.id] || getCharacterPrimaryImage(room.character)} />
+                    <AvatarFallback className="bg-purple-600 text-white text-xs rounded-md">
                       {room.character.name.charAt(0)}
                     </AvatarFallback>
                   </Avatar>

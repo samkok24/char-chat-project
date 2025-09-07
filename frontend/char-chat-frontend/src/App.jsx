@@ -38,6 +38,9 @@ const MyCharactersPage = React.lazy(() => import('./pages/MyCharactersPage'));
 const StoryImporterPage = React.lazy(() => import('./pages/StoryImporterPage'));
 const ChatHistoryPage = React.lazy(() => import('./pages/ChatHistoryPage'));
 const FavoritesPage = React.lazy(() => import('./pages/FavoritesPage'));
+const WorkDetailPage = React.lazy(() => import('./pages/WorkDetailPage'));
+const ChapterReaderPage = React.lazy(() => import('./pages/ChapterReaderPage'));
+const CreatorInfoPage = React.lazy(() => import('./pages/CreatorInfoPage'));
 
 // 로딩 컴포넌트 (CAVEDUCK 스타일 - 심플)
 const PageLoader = () => (
@@ -183,9 +186,17 @@ const AppRouter = () => {
             }
           />
 
+          {/* 📚 웹소설 원작 MVP */}
+          <Route path="/works/:workId" element={<WorkDetailPage />} />
+          <Route path="/works/:workId/chapters/:chapterNumber" element={<ChapterReaderPage />} />
+
           <Route
             path="/users/:userId"
             element={<ProfilePage />}
+          />
+          <Route
+            path="/users/:userId/creator"
+            element={<CreatorInfoPage />}
           />
 
           <Route

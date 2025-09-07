@@ -3,7 +3,7 @@
 """
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, and_, or_, func
+from sqlalchemy import select, update, and_, or_, func, Integer
 from typing import Optional, Union, Dict, List
 import uuid
 from sqlalchemy import func
@@ -16,6 +16,7 @@ from app.schemas.user import UserProfileResponse
 
 from app.models.user import User
 from app.models.chat import ChatRoom, ChatMessage
+from app.schemas import StatsOverview, TimeSeriesResponse, TimeSeriesPoint, TopCharacterItem
 
 
 async def get_user_by_id(db: AsyncSession, user_id: Union[str, uuid.UUID]) -> Optional[User]:
@@ -67,7 +68,9 @@ async def update_user_profile(
     db: AsyncSession,
     user_id: Union[str, uuid.UUID],
     username: Optional[str] = None,
-    password_hash: Optional[str] = None
+    password_hash: Optional[str] = None,
+    avatar_url: Optional[str] = None,
+    bio: Optional[str] = None
 ) -> Optional[User]:
     """사용자 프로필 업데이트"""
     update_data = {}
@@ -75,6 +78,10 @@ async def update_user_profile(
         update_data["username"] = username
     if password_hash is not None:
         update_data["hashed_password"] = password_hash
+    if avatar_url is not None:
+        update_data["avatar_url"] = avatar_url
+    if bio is not None:
+        update_data["bio"] = bio
     
     if update_data:
         await db.execute(
@@ -129,6 +136,8 @@ async def get_user_profile(db: AsyncSession, user_id: str) -> UserProfileRespons
         id=user.id,
         email=user.email,
         username=user.username,
+        avatar_url=getattr(user, 'avatar_url', None),
+        bio=getattr(user, 'bio', None),
         is_active=user.is_active,
         is_verified=user.is_verified,
         created_at=user.created_at,
@@ -233,3 +242,158 @@ async def update_user_model_settings(
     )
     await db.commit()
     return result.rowcount > 0
+
+
+async def update_user_response_length_pref(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    response_length_pref: str
+) -> bool:
+    if response_length_pref not in {"short", "medium", "long"}:
+        return False
+    result = await db.execute(
+        update(User)
+        .where(User.id == user_id)
+        .values(response_length_pref=response_length_pref)
+    )
+    await db.commit()
+    return result.rowcount > 0
+
+
+# ----- 통계 서비스 (경량) -----
+async def get_stats_overview(db: AsyncSession, user_id: uuid.UUID) -> StatsOverview:
+    # 캐릭터 수/공개 수/누적 대화/좋아요
+    char_counts = await db.execute(
+        select(
+            func.count(Character.id),
+            func.sum(func.case((Character.is_public == True, 1), else_=0)),
+            func.coalesce(func.sum(Character.chat_count), 0),
+            func.coalesce(func.sum(Character.like_count), 0),
+        ).where(Character.creator_id == user_id)
+    )
+    total, public, chats_total, likes_total = char_counts.first()
+
+    # 최근 30일 유니크 유저: 메시지 발신자가 user이고, 해당 캐릭터 생성자가 user_id
+    # ChatRoom.character_id -> Character.creator_id == user_id
+    sub = (
+        select(ChatMessage.sender_type, ChatMessage.created_at, ChatRoom.character_id, ChatRoom.user_id)
+        .join(ChatRoom, ChatMessage.chat_room_id == ChatRoom.id)
+        .subquery()
+    )
+    uniq_q = await db.execute(
+        select(func.count(func.distinct(ChatRoom.user_id)))
+        .join(ChatMessage, ChatMessage.chat_room_id == ChatRoom.id)
+        .join(Character, Character.id == ChatRoom.character_id)
+        .where(
+            Character.creator_id == user_id,
+            ChatMessage.sender_type == 'user',
+            ChatMessage.created_at >= func.now() - func.cast(30, Integer) * func.interval('1 day')
+        )
+    )
+    # 일부 DB에서 위 표현이 제한될 수 있어, 실패 시 0 유지
+    try:
+        unique_users_30d = uniq_q.scalar() or 0
+    except Exception:
+        unique_users_30d = 0
+
+    return StatsOverview(
+        character_total=int(total or 0),
+        character_public=int(public or 0),
+        chats_total=int(chats_total or 0),
+        unique_users_30d=int(unique_users_30d or 0),
+        likes_total=int(likes_total or 0),
+    )
+
+
+async def get_stats_timeseries(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    metric: str = 'chats',
+    range_str: str = '7d',
+) -> TimeSeriesResponse:
+    # 24h(시간별) 또는 Nd(일별)
+    use_hour = False
+    count = 7
+    if range_str.endswith('h'):
+        use_hour = True
+        try:
+            count = int(range_str[:-1])
+        except Exception:
+            count = 24
+    elif range_str.endswith('d'):
+        try:
+            count = int(range_str[:-1])
+        except Exception:
+            count = 7
+
+    trunc_unit = 'hour' if use_hour else 'day'
+    interval_unit = '1 hour' if use_hour else '1 day'
+
+    result = await db.execute(
+        select(
+            func.date_trunc(trunc_unit, ChatMessage.created_at).label('t'),
+            func.count(ChatMessage.id)
+        )
+        .join(ChatRoom, ChatMessage.chat_room_id == ChatRoom.id)
+        .join(Character, Character.id == ChatRoom.character_id)
+        .where(
+            Character.creator_id == user_id,
+            ChatMessage.created_at >= func.now() - func.cast(count, Integer) * func.interval(interval_unit)
+        )
+        .group_by(func.date_trunc(trunc_unit, ChatMessage.created_at))
+        .order_by(func.date_trunc(trunc_unit, ChatMessage.created_at))
+    )
+    rows = result.all()
+
+    from datetime import datetime, timedelta
+    series_map = {}
+    if use_hour:
+        series_map = {r[0].replace(minute=0, second=0, microsecond=0).isoformat(): int(r[1]) for r in rows}
+        now = datetime.utcnow().replace(minute=0, second=0, microsecond=0)
+        points = []
+        for i in range(count-1, -1, -1):
+            ts = (now - timedelta(hours=i)).isoformat()
+            points.append(TimeSeriesPoint(date=ts, value=series_map.get(ts, 0)))
+    else:
+        series_map = {r[0].date().isoformat(): int(r[1]) for r in rows}
+        today = datetime.utcnow().date()
+        points = []
+        for i in range(count-1, -1, -1):
+            d = (today - timedelta(days=i)).isoformat()
+            points.append(TimeSeriesPoint(date=d, value=series_map.get(d, 0)))
+
+    return TimeSeriesResponse(metric=metric, range=range_str, series=points)
+
+
+async def get_stats_top_characters(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    metric: str = 'chats',
+    range_str: str = '7d',
+    limit: int = 5,
+) -> list[TopCharacterItem]:
+    days = 7
+    if range_str.endswith('d'):
+        try:
+            days = int(range_str[:-1])
+        except Exception:
+            days = 7
+
+    # 캐릭터별 최근 N일 메시지 수
+    res = await db.execute(
+        select(Character.id, Character.name, Character.avatar_url, func.count(ChatMessage.id).label('cnt'))
+        .join(ChatRoom, ChatRoom.character_id == Character.id)
+        .join(ChatMessage, ChatMessage.chat_room_id == ChatRoom.id)
+        .where(
+            Character.creator_id == user_id,
+            ChatMessage.created_at >= func.now() - func.cast(days, Integer) * func.interval('1 day')
+        )
+        .group_by(Character.id, Character.name, Character.avatar_url)
+        .order_by(func.count(ChatMessage.id).desc())
+        .limit(limit)
+    )
+    rows = res.all()
+    items = []
+    for cid, name, avatar, cnt in rows:
+        items.append(TopCharacterItem(id=str(cid), name=name, avatar_url=avatar, value_7d=int(cnt)))
+    return items
