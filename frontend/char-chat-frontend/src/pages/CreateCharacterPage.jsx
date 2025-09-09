@@ -15,7 +15,7 @@ import { Switch } from '../components/ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Alert, AlertDescription } from '../components/ui/alert';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
+// 탭 컴포넌트 제거(롱폼 전환)
 import { Badge } from '../components/ui/badge';
 import { Separator } from '../components/ui/separator';
 import { 
@@ -54,8 +54,7 @@ const CreateCharacterPage = () => {
   const navigate = useNavigate();
   const location = useLocation();
 
-  // 🔥 CAVEDUCK 스타일 5단계 데이터 구조
-  const [activeTab, setActiveTab] = useState('basic');
+  // 🔥 롱폼 전환: 탭 상태 제거
   const [isStoryImporterOpen, setIsStoryImporterOpen] = useState(false); // 모달 상태 추가
 
   const [formData, setFormData] = useState({
@@ -111,6 +110,8 @@ const CreateCharacterPage = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [pageTitle, setPageTitle] = useState('새 캐릭터 만들기');
+  const [isAutoSaving, setIsAutoSaving] = useState(false);
+  const [lastSavedAt, setLastSavedAt] = useState(null);
 
   const { isAuthenticated } = useAuth();
   const [allTags, setAllTags] = useState([]);
@@ -126,63 +127,54 @@ const CreateCharacterPage = () => {
     })();
   }, []);
 
-  // 탭 정보 정의
-  const tabs = [
-    {
-      id: 'basic',
-      label: '기본 정보',
-      icon: Sparkles,
-      description: '캐릭터의 기본 설정',
-      emoji: '🔥'
-    },
-    {
-      id: 'media',
-      label: '미디어',
-      icon: Palette,
-      description: '이미지와 음성 설정',
-      emoji: '🎨'
-    },
-    {
-      id: 'dialogues',
-      label: '예시 대화',
-      icon: MessageCircle,
-      description: 'AI 응답 품질 향상',
-      emoji: '💬'
-    },
-    {
-      id: 'affinity',
-      label: '호감도',
-      icon: Heart,
-      description: '관계 시스템 설정',
-      emoji: '❤️'
-    },
-    {
-      id: 'publish',
-      label: '공개 설정',
-      icon: Globe,
-      description: '공개 및 고급 설정',
-      emoji: '🚀'
+  // 자동저장(로컬 초안)
+  useEffect(() => {
+    const key = `cc_draft_${isEditMode ? characterId : 'new'}`;
+    // 초기 로드 시 기존 초안 복원
+    if (!isEditMode && location.state?.restored !== true) {
+      try {
+        const raw = localStorage.getItem(key);
+        if (raw) {
+          const draft = JSON.parse(raw);
+          setFormData(prev => ({ ...prev, ...draft }));
+        }
+      } catch (_) {}
     }
-  ];
+    // 디바운스 저장
+    const t = setTimeout(() => {
+      try {
+        setIsAutoSaving(true);
+        localStorage.setItem(key, JSON.stringify(formData));
+        setLastSavedAt(Date.now());
+      } catch (_) {}
+      setIsAutoSaving(false);
+    }, 1500);
+    return () => clearTimeout(t);
+  }, [formData, isEditMode, characterId, location.state]);
+
+  const handleManualDraftSave = () => {
+    try {
+      const key = `cc_draft_${isEditMode ? characterId : 'new'}`;
+      localStorage.setItem(key, JSON.stringify(formData));
+      setLastSavedAt(Date.now());
+    } catch (_) {}
+  };
+
+  // 탭 정보 제거(롱폼)
 
   useEffect(() => {
     const prefilledData = location.state?.prefilledData;
     if (prefilledData) {
-      // prefilledData의 키 중에서 basic_info에 존재하는 키만 골라 업데이트합니다.
       const updatedBasicInfo = { ...formData.basic_info };
       Object.keys(prefilledData).forEach(key => {
         if (key in updatedBasicInfo) {
           updatedBasicInfo[key] = prefilledData[key];
         }
       });
-
       setFormData(prev => ({
         ...prev,
         basic_info: updatedBasicInfo,
       }));
-      
-      // 사용자가 내용을 바로 확인할 수 있도록 기본 정보 탭으로 이동
-      setActiveTab('basic');
     }
   }, [location.state]);
 
@@ -451,7 +443,7 @@ const CreateCharacterPage = () => {
 
 
   const renderBasicInfoTab = () => (
-    <CardContent className="p-6 space-y-8">
+    <div className="p-6 space-y-8">
       {/* AI 스토리 임포터 기능 소개 섹션 */}
       {!isEditMode && (
         <Card className="bg-purple-50 dark:bg-purple-900/20 border-purple-200 dark:border-purple-700/50 shadow-md hover:shadow-lg transition-shadow">
@@ -681,7 +673,7 @@ const CreateCharacterPage = () => {
           </Card>
         ))}
       </div>
-    </CardContent>
+    </div>
   );
 
   const renderMediaTab = () => {
@@ -823,7 +815,7 @@ const CreateCharacterPage = () => {
   };
 
   const renderDialoguesTab = () => (
-    <div className="space-y-6">
+    <div className="space-y-6 p-6">
       <div>
         <h3 className="text-lg font-semibold mb-2">예시 대화 데이터</h3>
         <p className="text-sm text-gray-600 mb-4">
@@ -886,7 +878,7 @@ const CreateCharacterPage = () => {
   );
 
   const renderAffinityTab = () => (
-    <div className="space-y-6">
+    <div className="space-y-6 p-6">
       <div className="flex items-center space-x-2">
         <Switch
           id="has_affinity_system"
@@ -959,7 +951,7 @@ const CreateCharacterPage = () => {
   );
 
   const renderPublishTab = () => (
-    <div className="space-y-6">
+    <div className="space-y-6 p-6">
       <div className="space-y-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center space-x-2">
@@ -1069,9 +1061,16 @@ const CreateCharacterPage = () => {
               </Link>
             </div>
             <div className="flex items-center space-x-3">
-              <Button variant="outline" onClick={() => navigate(-1)}>
-                <ArrowLeft className="w-4 h-4 mr-2" />
-                임포트
+              <div className="text-xs text-gray-500 mr-2 hidden sm:block">
+                {isAutoSaving ? '자동저장 중…' : lastSavedAt ? `자동저장됨 • ${new Date(lastSavedAt).toLocaleTimeString()}` : ''}
+              </div>
+              <Button variant="outline" onClick={() => setIsStoryImporterOpen(true)}>
+                <Wand2 className="w-4 h-4 mr-2" />
+                AI 임포트
+              </Button>
+              <Button variant="outline" onClick={handleManualDraftSave}>
+                <Save className="w-4 h-4 mr-2" />
+                임시저장
               </Button>
               <Button 
                 onClick={handleSubmit}
@@ -1103,55 +1102,62 @@ const CreateCharacterPage = () => {
           </Alert>
         )}
 
-        <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-          {/* 탭 네비게이션 */}
-          <TabsList className="grid w-full grid-cols-5 h-auto p-1">
-            {tabs.map((tab) => {
-              const Icon = tab.icon;
-              return (
-                <TabsTrigger
-                  key={tab.id}
-                  value={tab.id}
-                  className="flex flex-col items-center p-3 data-[state=active]:bg-white data-[state=active]:shadow-sm"
-                >
-                  <div className="flex items-center space-x-2">
-                    <span className="text-lg">{tab.emoji}</span>
-                    <Icon className="w-4 h-4" />
-                  </div>
-                  <span className="text-sm font-medium">{tab.label}</span>
-                  <span className="text-xs text-gray-500 mt-1 hidden sm:block">
-                    {tab.description}
-                  </span>
-                </TabsTrigger>
-              );
-            })}
-          </TabsList>
+        <div className="grid grid-cols-1 lg:grid-cols-[1fr_220px] gap-6">
+          <div>
+        {/* 롱폼 섹션: 탭 제거 후 순차 배치 */}
+        <Card id="section-basic" className="shadow-lg mb-8">
+          <CardHeader>
+            <CardTitle className="text-lg">기본 정보</CardTitle>
+          </CardHeader>
+          {renderBasicInfoTab()}
+        </Card>
 
-          {/* 탭 콘텐츠 */}
-          <Card className="shadow-lg">
-            <CardContent className="p-6">
-              <TabsContent value="basic" className="mt-0">
-                {renderBasicInfoTab()}
-              </TabsContent>
+        <Card id="section-media" className="shadow-lg mb-8">
+          <CardHeader>
+            <CardTitle className="text-lg">미디어</CardTitle>
+          </CardHeader>
+          <CardContent className="p-6">{renderMediaTab()}</CardContent>
+        </Card>
 
-              <TabsContent value="media" className="mt-0">
-                {renderMediaTab()}
-              </TabsContent>
+        <Card id="section-dialogues" className="shadow-lg mb-8">
+          <CardHeader>
+            <CardTitle className="text-lg">예시 대화</CardTitle>
+          </CardHeader>
+          {renderDialoguesTab()}
+        </Card>
 
-              <TabsContent value="dialogues" className="mt-0">
-                {renderDialoguesTab()}
-              </TabsContent>
+        <Card id="section-affinity" className="shadow-lg mb-8">
+          <CardHeader>
+            <CardTitle className="text-lg">호감도</CardTitle>
+          </CardHeader>
+          {renderAffinityTab()}
+        </Card>
 
-              <TabsContent value="affinity" className="mt-0">
-                {renderAffinityTab()}
-              </TabsContent>
+        <Card id="section-publish" className="shadow-lg">
+          <CardHeader>
+            <CardTitle className="text-lg">공개/고급 설정 & 태그</CardTitle>
+          </CardHeader>
+          {renderPublishTab()}
+        </Card>
+          </div>
 
-              <TabsContent value="publish" className="mt-0">
-                {renderPublishTab()}
-              </TabsContent>
-            </CardContent>
-          </Card>
-        </Tabs>
+          {/* 우측 앵커 네비게이션 */}
+          <aside className="hidden lg:block sticky top-20 h-fit">
+            <div className="bg-gray-800 border border-gray-700 rounded-lg p-3 text-sm text-gray-200">
+              <div className="font-semibold mb-2">빠른 이동</div>
+              <ul className="space-y-2">
+                <li><a href="#section-basic" className="hover:underline">기본 정보</a></li>
+                <li><a href="#section-media" className="hover:underline">미디어</a></li>
+                <li><a href="#section-dialogues" className="hover:underline">예시 대화</a></li>
+                <li><a href="#section-affinity" className="hover:underline">호감도</a></li>
+                <li><a href="#section-publish" className="hover:underline">공개/태그</a></li>
+              </ul>
+              <div className="mt-3 text-xs text-gray-400">
+                {isAutoSaving ? '자동저장 중…' : lastSavedAt ? `자동저장됨: ${new Date(lastSavedAt).toLocaleTimeString()}` : ''}
+              </div>
+            </div>
+          </aside>
+        </div>
       </main>
 
       {/* 크롭 모달 */}
