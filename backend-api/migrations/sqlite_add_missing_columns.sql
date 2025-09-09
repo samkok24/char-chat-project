@@ -34,7 +34,8 @@ CREATE TABLE IF NOT EXISTS character_tags (
   FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
 );
 
--- users 테이블에 프로필 이미지/소개 컬럼이 없다면 추가
+-- users 테이블에 누락된 컬럼 추가
+ALTER TABLE users ADD COLUMN gender TEXT DEFAULT 'male';
 ALTER TABLE users ADD COLUMN avatar_url TEXT;
 ALTER TABLE users ADD COLUMN bio TEXT;
 -- 응답 길이 선호도(짧게/중간/많이)

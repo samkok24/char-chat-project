@@ -3,7 +3,7 @@
 """
 
 from pydantic import BaseModel, EmailStr, Field, ConfigDict
-from typing import Optional
+from typing import Optional, Literal
 from datetime import datetime
 import uuid
 
@@ -12,6 +12,7 @@ class UserBase(BaseModel):
     """사용자 기본 스키마"""
     email: EmailStr
     username: str = Field(..., min_length=2, max_length=100)
+    gender: Literal['male','female']
 
 
 class UserCreate(UserBase):
@@ -23,6 +24,7 @@ class UserUpdate(BaseModel):
     """사용자 업데이트 스키마"""
     username: Optional[str] = Field(None, min_length=2, max_length=100)
     password: Optional[str] = Field(None, min_length=8, max_length=100)
+    gender: Optional[Literal['male','female']] = None
 
 
 class UserLogin(BaseModel):

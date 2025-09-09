@@ -3,8 +3,8 @@
  * CAVEDUCK 스타일: 간단하고 직관적인 인증
  */
 
-import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useState, useEffect } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -12,7 +12,7 @@ import { Label } from '../components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
-import { Loader2, Mail, Lock, User, MessageCircle } from 'lucide-react';
+import { Loader2, Mail, Lock, User, MessageCircle, Check, Wand2 } from 'lucide-react';
 
 const LoginPage = () => {
   const [activeTab, setActiveTab] = useState('login');
@@ -25,12 +25,24 @@ const LoginPage = () => {
     username: '',
     password: '',
     confirmPassword: '',
+    gender: 'male',
   });
+  const [usernameCheck, setUsernameCheck] = useState({ checked: false, available: null, message: '' });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
   const { login, register } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+
+  // 쿼리 파라미터로 탭 제어 (?tab=login|register)
+  useEffect(() => {
+    const params = new URLSearchParams(location.search || '');
+    const tab = params.get('tab');
+    if (tab === 'register' || tab === 'login') {
+      setActiveTab(tab);
+    }
+  }, [location.search]);
 
   const handleLoginChange = (e) => {
     setLoginData({
@@ -44,6 +56,9 @@ const LoginPage = () => {
       ...registerData,
       [e.target.name]: e.target.value,
     });
+    if (e.target.name === 'username') {
+      setUsernameCheck({ checked: false, available: null, message: '' });
+    }
   };
 
   const handleLoginSubmit = async (e) => {
@@ -67,29 +82,69 @@ const LoginPage = () => {
     setLoading(true);
     setError('');
 
-    // 비밀번호 확인
-    if (registerData.password !== registerData.confirmPassword) {
-      setError('비밀번호가 일치하지 않습니다.');
+    try {
+      // 비밀번호 확인
+      if (registerData.password !== registerData.confirmPassword) {
+        setError('비밀번호가 일치하지 않습니다.');
+        return;
+      }
+
+      // 비밀번호 길이 확인
+      if (registerData.password.length < 8) {
+        setError('비밀번호는 8자 이상이어야 합니다.');
+        return;
+      }
+
+      // 닉네임 중복 체크 권장
+      if (!usernameCheck.checked) {
+        try {
+          const { data } = await import('../lib/api').then(m => m.authAPI.checkUsername(registerData.username));
+          if (!data.available) {
+            setError('이미 사용 중인 사용자명입니다.');
+            return;
+          }
+        } catch (_) {
+          // API 실패 시에도 계속 진행 가능 (서버에서 최종 검증)
+        }
+      }
+
+      const result = await register(registerData.email, registerData.username, registerData.password, registerData.gender);
+
+      if (result.success) {
+        navigate('/verify', { state: { email: registerData.email } });
+      } else {
+        setError(result.error);
+      }
+    } finally {
       setLoading(false);
-      return;
     }
+  };
 
-    // 비밀번호 길이 확인
-    if (registerData.password.length < 8) {
-      setError('비밀번호는 8자 이상이어야 합니다.');
+  const handleCheckUsername = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const { data } = await import('../lib/api').then(m => m.authAPI.checkUsername(registerData.username));
+      setUsernameCheck({ checked: true, available: data.available, message: data.available ? '사용 가능한 이름입니다.' : '이미 사용 중입니다.' });
+    } catch (err) {
+      setUsernameCheck({ checked: true, available: null, message: '확인에 실패했습니다.' });
+    } finally {
       setLoading(false);
-      return;
     }
+  };
 
-    const result = await register(registerData.email, registerData.username, registerData.password);
-
-    if (result.success) {
-      navigate('/');
-    } else {
-      setError(result.error);
+  const handleGenerateUsername = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const { data } = await import('../lib/api').then(m => m.authAPI.generateUsername());
+      setRegisterData(prev => ({ ...prev, username: data.username }));
+      setUsernameCheck({ checked: false, available: null, message: '' });
+    } catch (err) {
+      setError('자동 생성에 실패했습니다.');
+    } finally {
+      setLoading(false);
     }
-
-    setLoading(false);
   };
 
   const handleTabChange = (value) => {
@@ -229,6 +284,17 @@ const LoginPage = () => {
                         minLength={2}
                         maxLength={100}
                       />
+                      <div className="flex items-center gap-2 mt-2">
+                        <Button type="button" variant="secondary" className="h-9" onClick={handleCheckUsername} disabled={loading || !registerData.username}>
+                          <Check className="h-4 w-4 mr-1" /> 중복확인
+                        </Button>
+                        <Button type="button" variant="secondary" className="h-9" onClick={handleGenerateUsername} disabled={loading}>
+                          <Wand2 className="h-4 w-4 mr-1" /> 자동생성
+                        </Button>
+                        {usernameCheck.checked && (
+                          <span className={`text-sm ${usernameCheck.available ? 'text-green-600' : 'text-red-600'}`}>{usernameCheck.message}</span>
+                        )}
+                      </div>
                     </div>
                   </div>
 
@@ -247,6 +313,20 @@ const LoginPage = () => {
                         required
                         minLength={8}
                       />
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label>성별</Label>
+                    <div className="flex items-center gap-4">
+                      <label className="flex items-center gap-2">
+                        <input type="radio" name="gender" value="male" checked={registerData.gender === 'male'} onChange={handleRegisterChange} required />
+                        <span>남성</span>
+                      </label>
+                      <label className="flex items-center gap-2">
+                        <input type="radio" name="gender" value="female" checked={registerData.gender === 'female'} onChange={handleRegisterChange} required />
+                        <span>여성</span>
+                      </label>
                     </div>
                   </div>
 

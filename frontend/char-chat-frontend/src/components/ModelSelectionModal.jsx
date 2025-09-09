@@ -46,6 +46,8 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
     userSpeech: '#111111',
     userNarration: '#333333'
   });
+  const [uiTheme, setUiTheme] = useState('system'); // system|dark|light
+  const [typingSpeed, setTypingSpeed] = useState(40); // 10~80 cps
   
   // 기억노트 관련 상태
   const [memories, setMemories] = useState([]);
@@ -96,6 +98,8 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
             userSpeech: parsed.colors.userSpeech || '#111111',
             userNarration: parsed.colors.userNarration || '#333333'
           });
+          if (parsed.theme) setUiTheme(parsed.theme);
+          if (typeof parsed.typingSpeed === 'number') setTypingSpeed(parsed.typingSpeed);
         }
       } catch (_) {}
     };
@@ -310,7 +314,7 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
       } else if (activeTab === 'settings') {
         // 추가 설정 탭: 답변 길이 + 전역 UI 설정 로컬 저장
         await usersAPI.updateModelSettings(selectedModel, selectedSubModel, responseLength);
-        const ui = { fontSize: uiFontSize, letterSpacing: uiLetterSpacing, overlay: uiOverlay, fontFamily: uiFontFamily, colors: uiColors };
+        const ui = { fontSize: uiFontSize, letterSpacing: uiLetterSpacing, overlay: uiOverlay, fontFamily: uiFontFamily, colors: uiColors, theme: uiTheme, typingSpeed };
         localStorage.setItem('cc:ui:v1', JSON.stringify(ui));
         window.dispatchEvent(new CustomEvent('ui:settingsChanged', { detail: ui }));
       }
@@ -781,6 +785,24 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
         {activeTab === 'settings' && (
           <div className="space-y-4">
             <h3 className="font-semibold mb-2">추가 설정</h3>
+            {/* 테마 */}
+            <div className="mt-2 p-3 rounded-lg border">
+              <div className="text-sm text-gray-700 mb-2">색상 테마</div>
+              <div className="flex items-center gap-4">
+                {['system','dark','light'].map(t => (
+                  <label key={t} className="inline-flex items-center gap-2 cursor-pointer">
+                    <input type="radio" name="theme" className="accent-purple-600" checked={uiTheme===t} onChange={()=>setUiTheme(t)} />
+                    <span className="text-sm">{t==='system'?'시스템':t==='dark'?'다크':'라이트'}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            {/* 출력 속도 */}
+            <div className="mt-2 p-3 rounded-lg border">
+              <div className="text-sm text-gray-700 mb-2">대화 출력 속도: {typingSpeed} chars/s</div>
+              <input type="range" min="10" max="80" value={typingSpeed} onChange={(e)=>setTypingSpeed(parseInt(e.target.value)||40)} className="w-full" />
+            </div>
             {/* 답변 길이 라디오 (이 탭으로 이동) */}
             <div className="mt-2 p-3 rounded-lg border">
               <div className="text-sm text-gray-700 mb-2">답변 길이</div>

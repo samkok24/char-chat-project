@@ -21,8 +21,28 @@ const api = axios.create({
 api.interceptors.request.use(
   (config) => {
     const token = localStorage.getItem('access_token');
-    if (token) {
+    const isGet = (config.method || 'get').toLowerCase() === 'get';
+    const rawUrl = config.url || '';
+    // 정규화된 path 계산 (절대/상대 URL 모두 지원, 쿼리 제거, 선행 슬래시 보장)
+    let path = rawUrl;
+    try {
+      if (/^https?:\/\//i.test(rawUrl)) {
+        path = new URL(rawUrl).pathname;
+      }
+    } catch (_) {}
+    if (!path.startsWith('/')) path = `/${path}`;
+    path = path.split('?')[0];
+    const isPublicCharacters = path === '/characters' || /^\/characters\/\d+$/.test(path);
+    const isPublicStories = path === '/stories' || /^\/stories\/\d+$/.test(path);
+    const isPublicTags = path.startsWith('/tags');
+    const isPublicGet = isGet && (isPublicCharacters || isPublicStories || isPublicTags);
+    if (token && !isPublicGet) {
       config.headers.Authorization = `Bearer ${token}`;
+    } else {
+      // 공개 GET 요청은 Authorization 제거 (백엔드에서 500 방지)
+      if (config.headers && config.headers.Authorization) {
+        delete config.headers.Authorization;
+      }
     }
     return config;
   },
@@ -94,8 +114,8 @@ export const authAPI = {
   login: (email, password) =>
     api.post('/auth/login', { email, password }),
   
-  register: (email, username, password) =>
-    api.post('/auth/register', { email, username, password }),
+  register: (email, username, password, gender) =>
+    api.post('/auth/register', { email, username, password, gender }),
   
   logout: () =>
     api.post('/auth/logout'),
@@ -111,6 +131,11 @@ export const authAPI = {
   
   sendVerificationEmail: () =>
     api.post('/auth/send-verification-email'),
+  checkEmail: (email) => api.get(`/auth/check-email`, { params: { email } }),
+  checkUsername: (username) => api.get(`/auth/check-username`, { params: { username } }),
+  generateUsername: () => api.get('/auth/generate-username'),
+  updatePassword: (current_password, new_password) =>
+    api.post('/auth/update-password', { current_password, new_password }),
 };
 
 // 👤 사용자 관련 API
@@ -254,7 +279,7 @@ export const charactersAPI = {
 
 // 🏷️ 태그 관련 API
 export const tagsAPI = {
-  getTags: () => api.get('/tags'),
+  getTags: () => api.get('/tags/'),
   getUsedTags: () => api.get('/tags/used'),
   createTag: (data) => api.post('/tags', data),
 };

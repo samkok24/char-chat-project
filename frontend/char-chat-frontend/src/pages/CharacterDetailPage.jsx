@@ -47,6 +47,8 @@ const CharacterDetailPage = () => {
   const [activeImage, setActiveImage] = useState('');
   const [galleryImages, setGalleryImages] = useState([]);
   const [isLiked, setIsLiked] = useState(false);
+  // 첫 번째 이미지의 가로세로 비율을 기억하여 메인 프리뷰의 사이즈를 고정
+  const [baseRatio, setBaseRatio] = useState(1); // height/width
   const [likeCount, setLikeCount] = useState(0);
 
   const [comments, setComments] = useState([]);
@@ -88,7 +90,18 @@ const CharacterDetailPage = () => {
         const uniqueImages = [...new Set(allImages)];
 
         setGalleryImages(uniqueImages);
-        setActiveImage(uniqueImages[0] || DEFAULT_SQUARE_URI); // 기본 이미지
+        const first = uniqueImages[0] || DEFAULT_SQUARE_URI;
+        setActiveImage(first); // 기본 이미지
+        // 첫 이미지의 비율을 측정해 고정
+        try {
+          const probe = new Image();
+          probe.onload = () => {
+            const w = probe.naturalWidth || 1;
+            const h = probe.naturalHeight || 1;
+            setBaseRatio(h / w);
+          };
+          probe.src = resolveImageUrl(first) || first;
+        } catch (_) {}
         
         // 좋아요 상태 확인
         if (isAuthenticated) {
@@ -268,23 +281,33 @@ const CharacterDetailPage = () => {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           {/* Left: 이미지 갤러리 */}
           <div className="lg:col-span-1">
-            <div className="aspect-w-1 aspect-h-1 mb-4">
-              <img 
-                src={resolveImageUrl(activeImage) || activeImage} 
-                alt={character.name} 
-                className="w-full h-full object-cover rounded-lg" 
+            {/* 메인 프리뷰: 첫 이미지 비율에 맞춰 컨테이너 고정 */}
+            <div className="relative w-full mb-3" style={{ paddingTop: `${Math.max(0.1, baseRatio) * 100}%` }}>
+              <img
+                src={resolveImageUrl(activeImage) || activeImage}
+                alt={character.name}
+                className="absolute inset-0 w-full h-full object-cover rounded-lg"
               />
             </div>
-            <div className="grid grid-cols-4 gap-2">
-              {galleryImages.slice(0, 16).map((imgUrl, index) => (
-                <button key={index} onClick={() => setActiveImage(imgUrl)} className="aspect-w-1 aspect-h-1">
-                  <img 
-                    src={resolveImageUrl(imgUrl) || imgUrl} 
-                    alt={`${character.name} thumbnail ${index + 1}`} 
-                    className="w-full h-full object-cover rounded-md" 
-                  />
-                </button>
-              ))}
+            {/* 미니 갤러리: 가로 스크롤 */}
+            <div id="detail-thumbnail-gallery" className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
+              {galleryImages.map((imgUrl, index) => {
+                const isActive = activeImage === imgUrl;
+                return (
+                  <button
+                    key={index}
+                    onClick={() => setActiveImage(imgUrl)}
+                    className={`relative flex-shrink-0 ${isActive ? 'ring-2 ring-purple-500 ring-offset-1 ring-offset-gray-900' : 'opacity-80 hover:opacity-100'}`}
+                    aria-label={`썸네일 ${index + 1}`}
+                  >
+                    <img
+                      src={resolveImageUrl(imgUrl) || imgUrl}
+                      alt={`${character.name} thumbnail ${index + 1}`}
+                      className={`w-16 h-16 object-cover rounded-md ${isActive ? 'brightness-100' : 'brightness-90'}`}
+                    />
+                  </button>
+                );
+              })}
             </div>
           </div>
 

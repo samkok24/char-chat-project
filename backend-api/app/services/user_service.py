@@ -35,13 +35,15 @@ async def create_user(
     db: AsyncSession, 
     email: str, 
     username: str, 
-    password_hash: str
+    password_hash: str,
+    gender: str,
 ) -> User:
     """사용자 생성"""
     user = User(
         email=email,
         username=username,
-        hashed_password=password_hash
+        hashed_password=password_hash,
+        gender=gender
     )
     db.add(user)
     await db.commit()
@@ -136,6 +138,7 @@ async def get_user_profile(db: AsyncSession, user_id: str) -> UserProfileRespons
         id=user.id,
         email=user.email,
         username=user.username,
+        gender=user.gender,
         avatar_url=getattr(user, 'avatar_url', None),
         bio=getattr(user, 'bio', None),
         is_active=user.is_active,

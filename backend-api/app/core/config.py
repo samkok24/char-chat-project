@@ -28,6 +28,17 @@ class Settings(BaseSettings):
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     
+    # 이메일/SMTP
+    SMTP_HOST: str | None = None
+    SMTP_PORT: int = 587
+    SMTP_USERNAME: str | None = None
+    SMTP_PASSWORD: str | None = None
+    SMTP_USE_TLS: bool = True
+    SMTP_USE_SSL: bool = False
+    EMAIL_FROM_ADDRESS: str = "no-reply@char-chat.local"
+    EMAIL_FROM_NAME: str = "AI 캐릭터 챗"
+    FRONTEND_BASE_URL: str = "http://localhost:5173"
+    
     class Config:
         env_file = ".env"
         env_file_encoding = 'utf-8'

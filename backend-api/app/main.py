@@ -28,6 +28,7 @@ from app.api.payment import router as payment_router    # ⏳ 나중에: 결제 
 from app.api.point import router as point_router        # ⏳ 나중에: 포인트 API (단순화 예정)
 from app.api.files import router as files_router
 from app.api.tags import router as tags_router
+from app.models.tag import Tag
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -94,6 +95,38 @@ async def lifespan(app: FastAPI):
                     """
                 )
                 logger.info("📄 chat_message_edits 테이블 확인/생성 완료")
+            
+            # 전역 태그 시드
+            try:
+                seed_tags = [
+                    # 기본
+                    '남성','여성','시뮬레이터','스토리','어시스턴트','관계',
+                    # 관계
+                    '남자친구','여자친구','연인','플러팅','친구','첫사랑','짝사랑','동거','연상','연하','애증','소꿉친구','가족','육성','순애','구원','후회','복수','소유욕','참교육','중년',
+                    # 장르
+                    '로맨스','판타지','현대판타지','이세계','느와르','코미디','힐링','액션','공포','모험','조난','재난','방탈출','던전','역사','신화','SF','무협','동양풍','서양풍','TS물','BL','백합','정치물','일상','현대','변신','고스','미스터리',
+                    # 설정
+                    '다수 인물','아카데미','학원물','일진','기사','황제','마법사','귀족','탐정','괴물','오피스','메이드','집사','밀리터리','버튜버','근육','빙의','비밀','스포츠','수영복','LGBTQ+','톰보이','마피아','헌터','베어','제복','경영','배틀','속박',
+                    # 성향/성격
+                    '성향','츤데레','쿨데레','얀데레','다정','순정','능글','히어로/히로인','빌런','음침','소심','햇살','까칠','무뚝뚝',
+                    # 메타/출처
+                    '메타','자캐','게임','애니메이션','영화 & 티비','책','유명인','코스프레','동화',
+                    # 종족
+                    '종족','천사','악마','요정','귀신','엘프','오크','몬무스','뱀파이어','외계인','로봇','동물',
+                ]
+
+                for name in seed_tags:
+                    try:
+                        # slug는 한국어 그대로 사용 (Unique)
+                        await conn.exec_driver_sql(
+                            "INSERT INTO tags (name, slug) SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM tags WHERE slug = ?)",
+                            (name, name, name)
+                        )
+                    except Exception as e:
+                        logger.debug(f"태그 시드 중복/오류 무시: {name} ({e})")
+                logger.info("🏷️ 전역 태그 시드 완료")
+            except Exception as e:
+                logger.warning(f"태그 시드 중 경고: {e}")
         except Exception as e:
             logger.warning(f"SQLite 컬럼 보정 중 경고: {e}")
     

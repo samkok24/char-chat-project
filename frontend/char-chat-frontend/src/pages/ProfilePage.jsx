@@ -8,6 +8,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { usersAPI, filesAPI } from '../lib/api'; 
 import AppLayout from '../components/layout/AppLayout';
 import AvatarCropModal from '../components/AvatarCropModal';
+import ProfileEditModal from '../components/ProfileEditModal';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
@@ -51,11 +52,10 @@ const ProfilePage = () => {
   
   // [추가] URL 파라미터와 현재 로그인 유저 정보를 가져옵니다.
   const { userId: paramUserId } = useParams();
-  const { user: currentUser, isAuthenticated } = useAuth();
+  const { user: currentUser, isAuthenticated, loading: authLoading } = useAuth();
   const navigate = useNavigate();
 
-  // [추가] 표시할 프로필의 최종 userId를 결정합니다.
-  const userIdToLoad = paramUserId || currentUser?.id;
+  // 표시할 프로필의 최종 userId는 이펙트에서 계산 (auth 로딩 완료 후)
 
   // [추가] API 데이터를 담을 상태들을 선언합니다.
   const [profile, setProfile] = useState(null);
@@ -72,18 +72,25 @@ const ProfilePage = () => {
   const [series, setSeries] = useState([]);
   const [seriesRange, setSeriesRange] = useState('24h'); // '24h' | '7d'
   const [topChars, setTopChars] = useState([]);
+  const [showEdit, setShowEdit] = useState(false);
 
   // [추가] API를 호출하여 데이터를 가져오는 useEffect 로직입니다.
   useEffect(() => {
-    if (!userIdToLoad) {
-      if (!isAuthenticated) navigate('/login');
+    if (authLoading) return; // 인증 상태 로딩 중이면 대기
+    const uid = paramUserId || currentUser?.id;
+    if (!uid) {
+      if (!isAuthenticated) {
+        navigate('/login');
+      } else {
+        setError('프로필 정보를 불러올 수 없습니다.');
+      }
       setLoading(false);
       return;
     }
     const loadProfile = async () => {
       setLoading(true);
       try {
-        const response = await usersAPI.getUserProfile(userIdToLoad);
+        const response = await usersAPI.getUserProfile(uid);
         setProfile(response.data);
       } catch (err) {
         setError('프로필 정보를 불러올 수 없습니다.');
@@ -92,7 +99,7 @@ const ProfilePage = () => {
       }
     };
     loadProfile();
-  }, [userIdToLoad, isAuthenticated, navigate]);
+  }, [paramUserId, currentUser, isAuthenticated, authLoading, navigate]);
 
   // 통계 로드 (profile이 준비된 후 실행)
   useEffect(() => {
@@ -150,7 +157,7 @@ const ProfilePage = () => {
   );
 
   // [추가] 로딩 및 에러 상태에 대한 UI 처리입니다.
-  if (loading) {
+  if (loading || authLoading) {
     return <PageLoader />;
   }
 
@@ -312,7 +319,7 @@ const ProfilePage = () => {
               <div className="flex items-center justify-center sm:justify-start space-x-4 mb-1">
                 <h1 className="text-2xl font-bold text-white">{profile.username}</h1>
                 {isOwnProfile && ( // [수정] 내 프로필일 때만 '프로필 수정' 버튼 표시
-                  <Button onClick={() => navigate('/profile/edit')} variant="outline" size="sm">
+                  <Button onClick={() => setShowEdit(true)} variant="outline" size="sm">
                     프로필 수정
                   </Button>
                 )}
@@ -400,6 +407,15 @@ const ProfilePage = () => {
 
         {/* 탭 제거: 대시보드 단일 화면 */}
       </div>
+
+      {/* 프로필 수정 모달 */}
+      <ProfileEditModal
+        isOpen={showEdit}
+        onClose={(reason)=>{ setShowEdit(false); if (reason==='saved') { // 저장 후 최신 프로필 재로딩
+          (async()=>{ try{ const r=await usersAPI.getUserProfile(profile.id); setProfile(r.data);}catch(_){}})();
+        }}}
+        profile={profile}
+      />
     </AppLayout>
   );
 };

@@ -44,8 +44,10 @@ TABLES_TO_CREATE = {
 # (테이블 이름, 컬럼 이름, 컬럼 타입 및 제약조건)
 COLUMNS_TO_ADD = {
     "users": [
+        ("gender", "VARCHAR(10) DEFAULT 'male'"),
         ("bio", "VARCHAR(500)"),
-        ("avatar_url", "VARCHAR(500)")
+        ("avatar_url", "VARCHAR(500)"),
+        ("response_length_pref", "VARCHAR(10) DEFAULT 'medium'"),
     ],
     "characters": [
         ("comment_count", "INTEGER DEFAULT 0"),
@@ -74,14 +76,37 @@ COLUMNS_TO_ADD = {
     ]
 }
 
+def _resolve_db_path():
+    """환경에 맞는 SQLite 경로를 탐지합니다."""
+    # 1) 환경변수 우선
+    env_path = os.environ.get("DB_PATH")
+    candidates = [
+        env_path,
+        "/app/data/test.db",  # 컨테이너 경로
+        os.path.join(os.path.dirname(__file__), "data", "test.db"),
+        os.path.join(os.path.dirname(__file__), "..", "data", "test.db"),
+        os.path.join(os.getcwd(), "data", "test.db"),
+    ]
+    for p in candidates:
+        if p and os.path.exists(p):
+            return p
+    # 마지막 후보를 기본 경로로 반환(존재 여부 무관)하여 에러 메시지에 나열
+    return candidates[1]  # 기본적으로 컨테이너 경로
+
+
 def run_precise_migration():
     """
     기존 DB는 유지한 채, 누락된 컬럼만 안전하게 추가합니다.
     """
-    db_path = "/app/data/test.db"
-    
+    db_path = _resolve_db_path()
     if not os.path.exists(db_path):
-        print(f"❌ 데이터베이스 파일을 찾을 수 없습니다: {db_path}")
+        print("❌ 데이터베이스 파일을 찾을 수 없습니다.")
+        print("  - 확인한 경로 후보:")
+        print(f"    1) 환경변수 DB_PATH: {os.environ.get('DB_PATH')}")
+        print("    2) /app/data/test.db (컨테이너)")
+        print(f"    3) {os.path.join(os.path.dirname(__file__), 'data', 'test.db')}")
+        print(f"    4) {os.path.join(os.path.dirname(__file__), '..', 'data', 'test.db')}")
+        print(f"    5) {os.path.join(os.getcwd(), 'data', 'test.db')}")
         return
 
     try:
@@ -133,10 +158,9 @@ def run_precise_migration():
 
 def get_all_table_schemas():
     """DB에 있는 모든 테이블의 스키마를 출력합니다."""
-    db_path = "/app/data/test.db"
-    
+    db_path = _resolve_db_path()
     if not os.path.exists(db_path):
-        print(f"❌ 데이터베이스 파일을 찾을 수 없습니다: {db_path}")
+        print("❌ 데이터베이스 파일을 찾을 수 없습니다. 위의 경로 후보를 참고해 주세요.")
         return
 
     try:

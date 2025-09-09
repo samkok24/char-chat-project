@@ -29,6 +29,7 @@ const HomePage = React.lazy(() => import('./pages/HomePage'));
 const ChatPage = React.lazy(() => import('./pages/ChatPage'));
 const CharacterDetailPage = React.lazy(() => import('./pages/CharacterDetailPage'));
 const ChatRedirectPage = React.lazy(() => import('./pages/ChatRedirectPage')); // 새로 추가
+const VerifyPage = React.lazy(() => import('./pages/VerifyPage'));
 
 // ⏳ 나중에 필요한 페이지들 (지연 로딩)
 const ProfilePage = React.lazy(() => import('./pages/ProfilePage'));
@@ -98,6 +99,8 @@ const AppRouter = () => {
               </PublicRoute>
             }
           />
+
+          <Route path="/verify" element={<VerifyPage />} />
 
           <Route
             path="/characters/:characterId"

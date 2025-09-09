@@ -105,6 +105,8 @@ const ChatPage = () => {
     userSpeech: '#111111',
     userNarration: '#333333'
   });
+  const [uiTheme, setUiTheme] = useState('system');
+  const [typingSpeed, setTypingSpeed] = useState(40);
   
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
@@ -186,6 +188,8 @@ const ChatPage = () => {
           userSpeech: parsed.colors.userSpeech || '#111111',
           userNarration: parsed.colors.userNarration || '#333333'
         });
+        if (parsed.theme) setUiTheme(parsed.theme);
+        if (typeof parsed.typingSpeed === 'number') setTypingSpeed(parsed.typingSpeed);
       }
     } catch (_) {}
 
@@ -203,6 +207,8 @@ const ChatPage = () => {
           userSpeech: d.colors.userSpeech || '#111111',
           userNarration: d.colors.userNarration || '#333333'
         });
+        if (d.theme) setUiTheme(d.theme);
+        if (typeof d.typingSpeed === 'number') setTypingSpeed(d.typingSpeed);
       } catch (_) {}
     };
     window.addEventListener('ui:settingsChanged', onUiChanged);
@@ -216,6 +222,18 @@ const ChatPage = () => {
       window.removeEventListener('ui:settingsChanged', onUiChanged);
     };
   }, [characterId, leaveRoom]); // chatRoomId 제거
+
+  // 테마 적용: documentElement에 data-theme 설정
+  useEffect(() => {
+    const resolveTheme = () => {
+      if (uiTheme === 'system') {
+        try { return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; } catch (_) { return 'dark'; }
+      }
+      return uiTheme;
+    };
+    const t = resolveTheme();
+    try { document.documentElement.setAttribute('data-theme', t); } catch (_) {}
+  }, [uiTheme]);
 
   useEffect(() => {
     // 소켓 연결 및 채팅방 정보 로드 완료 후 채팅방 입장
@@ -427,7 +445,7 @@ const ChatPage = () => {
     const bubbleRef = isLast ? messagesEndRef : null;
 
     return (
-      <div ref={bubbleRef} className={`mt-4 mb-1 ${isUser ? 'flex flex-col items-end' : 'flex flex-col'} select-none`}>
+      <div ref={bubbleRef} className={`mt-4 mb-1 ${isUser ? 'flex flex-col items-end' : 'flex flex-col'}`}>
         <div className={`flex items-center gap-2 ${isUser ? 'justify-end' : ''} mt-0 mb-1`}>
           {!isUser && (
             <>
@@ -453,42 +471,46 @@ const ChatPage = () => {
             </div>
           ) : (
             <>
-              <p className={`whitespace-pre-wrap ${isUser && (message.isNarration || message.messageType==='narration' || message.content?.startsWith('*')) ? 'italic' : ''}`}>
+              <p className={`whitespace-pre-wrap select-text ${isUser && (message.isNarration || message.messageType==='narration' || message.content?.startsWith('*')) ? 'italic' : ''}`}>
                 {isUser ? (message.isNarration ? `* ${message.content}` : message.content) : sanitizeAiText(message.content)}
             {message.isStreaming && <span className="streaming-cursor"></span>}
           </p>
               <p className={`text-xs mt-1 text-right ${isUser ? 'text-gray-500' : 'text-gray-400'}`}>
             {new Date(message.created_at || message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
           </p>
-              {!isUser && (
-                <div className="mt-2 flex items-center gap-2 text-gray-300">
-                  <Tooltip><TooltipTrigger asChild>
-                    <button onClick={()=>handleCopy(message.content)} className="p-1.5 rounded hover:bg-white/10 text-white"><Copy className="w-4 h-4"/></button>
-                  </TooltipTrigger><TooltipContent>복사</TooltipContent></Tooltip>
-                  <Tooltip><TooltipTrigger asChild>
-                    <button onClick={()=>handleFeedback(message,'up')} className="p-1.5 rounded hover:bg-white/10 text-white"><ThumbsUp className="w-4 h-4"/></button>
-                  </TooltipTrigger><TooltipContent>추천</TooltipContent></Tooltip>
-                  <Tooltip><TooltipTrigger asChild>
-                    <button onClick={()=>handleFeedback(message,'down')} className="p-1.5 rounded hover:bg-white/10 text-white"><ThumbsDown className="w-4 h-4"/></button>
-                  </TooltipTrigger><TooltipContent>비추천</TooltipContent></Tooltip>
-                  <Tooltip><TooltipTrigger asChild>
-                    <button onClick={()=>startEdit(message)} className="p-1.5 rounded hover:bg-white/10 text-white"><Pencil className="w-4 h-4"/></button>
-                  </TooltipTrigger><TooltipContent>수정</TooltipContent></Tooltip>
-                  {isLast && (
-                    <>
-                      <Tooltip><TooltipTrigger asChild>
-                        <button onClick={()=>openRegenerate(message)} className="p-1.5 rounded hover:bg-white/10 text-white"><RefreshCcw className="w-4 h-4"/></button>
-                      </TooltipTrigger><TooltipContent>재생성</TooltipContent></Tooltip>
-                      <Tooltip><TooltipTrigger asChild>
-                        <button onClick={()=>sendSocketMessage(chatRoomId,'','continue')} className="p-1.5 rounded hover:bg-white/10 text-white"><FastForward className="w-4 h-4"/></button>
-                      </TooltipTrigger><TooltipContent>계속</TooltipContent></Tooltip>
-                    </>
-                  )}
-                </div>
-              )}
+              {/* 툴바는 말풍선 바깥으로 이동 (아래에서 렌더) */}
             </>
           )}
         </div>
+        {/* 말풍선 바깥 하단 툴바 (AI 메시지 전용) */}
+        {!isUser && (
+          <div className="mt-1 max-w-full sm:max-w-[85%]">
+            <div className="flex items-center gap-2 text-[var(--app-fg)]">
+              <Tooltip><TooltipTrigger asChild>
+                <button onClick={()=>handleCopy(message.content)} className="p-1.5 rounded hover:bg-[var(--hover-bg)] text-[var(--app-fg)]"><Copy className="w-4 h-4"/></button>
+              </TooltipTrigger><TooltipContent>복사</TooltipContent></Tooltip>
+              <Tooltip><TooltipTrigger asChild>
+                <button onClick={()=>handleFeedback(message,'up')} className="p-1.5 rounded hover:bg-[var(--hover-bg)] text-[var(--app-fg)]"><ThumbsUp className="w-4 h-4"/></button>
+              </TooltipTrigger><TooltipContent>추천</TooltipContent></Tooltip>
+              <Tooltip><TooltipTrigger asChild>
+                <button onClick={()=>handleFeedback(message,'down')} className="p-1.5 rounded hover:bg-[var(--hover-bg)] text-[var(--app-fg)]"><ThumbsDown className="w-4 h-4"/></button>
+              </TooltipTrigger><TooltipContent>비추천</TooltipContent></Tooltip>
+              <Tooltip><TooltipTrigger asChild>
+                <button onClick={()=>startEdit(message)} className="p-1.5 rounded hover:bg-[var(--hover-bg)] text-[var(--app-fg)]"><Pencil className="w-4 h-4"/></button>
+              </TooltipTrigger><TooltipContent>수정</TooltipContent></Tooltip>
+              {isLast && (
+                <>
+                  <Tooltip><TooltipTrigger asChild>
+                    <button onClick={()=>openRegenerate(message)} className="p-1.5 rounded hover:bg-[var(--hover-bg)] text-[var(--app-fg)]"><RefreshCcw className="w-4 h-4"/></button>
+                  </TooltipTrigger><TooltipContent>재생성</TooltipContent></Tooltip>
+                  <Tooltip><TooltipTrigger asChild>
+                    <button onClick={()=>sendSocketMessage(chatRoomId,'','continue')} className="p-1.5 rounded hover:bg-[var(--hover-bg)] text-[var(--app-fg)]"><FastForward className="w-4 h-4"/></button>
+                  </TooltipTrigger><TooltipContent>계속</TooltipContent></Tooltip>
+                </>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     );
   };
@@ -520,9 +542,9 @@ const ChatPage = () => {
   }
 
   return (
-    <div className="h-screen bg-black text-white flex flex-col">
+    <div className="h-screen bg-[var(--app-bg)] text-[var(--app-fg)] flex flex-col">
       {/* 헤더 */}
-      <header className="bg-black shadow-sm border-b border-gray-800 z-10">
+      <header className="bg-[var(--header-bg)] text-[var(--app-fg)] shadow-sm border-b border-gray-800 z-10">
         <div className="w-full">
           <div className="flex items-center justify-between h-16 px-4 sm:px-6 lg:px-8 lg:max-w-[1200px] lg:mx-auto">
             <div className="flex items-center space-x-2">
@@ -530,7 +552,7 @@ const ChatPage = () => {
                 variant="ghost"
                 size="icon"
                 onClick={() => navigate('/')}
-                className="rounded-full text-white hover:bg-white/10"
+                className="rounded-full text-[var(--app-fg)] hover:bg-[var(--hover-bg)]"
               >
                 <ArrowLeft className="w-5 h-5" />
               </Button>
@@ -543,7 +565,7 @@ const ChatPage = () => {
                 </Avatar>
                 <div className="leading-tight">
                   <div className="flex items-baseline gap-2">
-                    <h1 className="text-md font-bold text-white">{character?.name}</h1>
+                    <h1 className="text-md font-bold text-[var(--app-fg)]">{character?.name}</h1>
                     <span className="text-xs text-gray-400">{aiTyping ? '입력 중...' : '온라인'}</span>
                   </div>
                 </div>
@@ -551,7 +573,7 @@ const ChatPage = () => {
             </div>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="icon" className="rounded-full text-white hover:bg-white/10">
+                <Button variant="ghost" size="icon" className="rounded-full text-[var(--app-fg)] hover:bg-[var(--hover-bg)]">
                   <MoreVertical className="w-5 h-5" />
                 </Button>
               </DropdownMenuTrigger>
@@ -576,6 +598,13 @@ const ChatPage = () => {
                 }}>
                   <Book className="w-4 h-4 mr-2" />
                   기억노트
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => {
+                  setModalInitialTab('settings');
+                  setShowModelModal(true);
+                }}>
+                  <Settings className="w-4 h-4 mr-2" />
+                  추가 설정
                 </DropdownMenuItem>
                 <AlertDialog>
                   <AlertDialogTrigger asChild>
@@ -606,7 +635,7 @@ const ChatPage = () => {
       </header>
 
       {/* 본문: 데스크톱 좌측 이미지 패널, 모바일은 배경 이미지 */}
-      <div className="flex-1 overflow-hidden">
+      <div className="flex-1 overflow-hidden bg-[var(--app-bg)] text-[var(--app-fg)]">
         <div className="grid grid-cols-1 lg:grid-cols-[480px_auto] lg:justify-center h-[calc(100vh-4rem)]">
           <aside className="hidden lg:block border-r bg-black/10 relative">
             <div className="sticky top-16 h-[calc(100vh-4rem)] relative">
@@ -638,7 +667,7 @@ const ChatPage = () => {
           <main
             ref={chatContainerRef}
             onScroll={handleScroll}
-            className="relative overflow-y-auto p-4 md:p-6 lg:px-8 pt-24 lg:pt-28 bg-black scrollbar-dark"
+            className="relative overflow-y-auto p-4 md:p-6 lg:px-8 pt-24 lg:pt-28 bg-[var(--app-bg)] scrollbar-dark"
             style={{}}
           >
             <div className={`relative z-10 w-full lg:max-w-[560px] mx-auto space-y-6 mt-2 ${textSizeClass} ${
@@ -701,7 +730,7 @@ const ChatPage = () => {
       </div>
 
       {/* 입력 폼 */}
-      <footer className="bg-black border-t border-gray-800 md:p-1">
+      <footer className="bg-[var(--footer-bg)] text-[var(--app-fg)] border-t border-gray-800 md:p-1">
         <div className="hidden lg:flex lg:w-[1040px] lg:mx-auto lg:items-center">
           {/* 왼쪽: 미니 갤러리 (이미지 아래) */}
           <div className="w-[480px] pr-4 items-center">
@@ -774,14 +803,15 @@ const ChatPage = () => {
             </Button>
 
             {/* 입력 컨테이너 */}
-            <div className="bg-gray-900 border border-gray-700 relative flex min-h-[44px] w-full lg:w-[70%] items-center rounded-2xl py-1 shadow-md">
+            <div className="relative flex min-h-[44px] w-full lg:w-[70%] items-center rounded-2xl py-1 shadow-md"
+                 style={{ backgroundColor: 'var(--input-bg)', border: '1px solid var(--input-border)' }}>
             <Textarea
               ref={inputRef}
               value={newMessage}
               onChange={(e) => setNewMessage(e.target.value)}
               onKeyDown={handleKeyDown}
                 placeholder="대사를 입력하세요. 예) 반가워!"
-                className="w-full bg-transparent border-0 focus:border-0 focus:ring-0 outline-none text-sm p-0 pl-3 text-white placeholder:text-gray-500 resize-none"
+                className="w-full bg-transparent border-0 focus:border-0 focus:ring-0 outline-none text-sm p-0 pl-3 placeholder:text-gray-500 resize-none"
                 style={{ minHeight: 36 }}
               rows={1}
             />
@@ -825,14 +855,15 @@ const ChatPage = () => {
             </Button>
 
             {/* 입력 컨테이너 */}
-            <div className="bg-gray-900 border border-gray-700 relative flex min-h-[44px] w-full items-center rounded-2xl py-1 shadow-md">
+            <div className="relative flex min-h-[44px] w-full items-center rounded-2xl py-1 shadow-md"
+                 style={{ backgroundColor: 'var(--input-bg)', border: '1px solid var(--input-border)' }}>
               <Textarea
                 ref={inputRef}
                 value={newMessage}
                 onChange={(e) => setNewMessage(e.target.value)}
                 onKeyDown={handleKeyDown}
                 placeholder="대사를 입력하세요. 예) 반가워!"
-                className="w-full bg-transparent border-0 focus:border-0 focus:ring-0 outline-none text-sm p-0 pl-3 text-white placeholder:text-gray-500 resize-none"
+                className="w-full bg-transparent border-0 focus:border-0 focus:ring-0 outline-none text-sm p-0 pl-3 placeholder:text-gray-500 resize-none"
                 style={{ minHeight: 36 }}
                 rows={1}
               />

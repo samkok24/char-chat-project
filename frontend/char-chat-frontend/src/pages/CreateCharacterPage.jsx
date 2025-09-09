@@ -42,6 +42,7 @@ import {
 } from 'lucide-react';
 import { StoryImporterModal } from '../components/StoryImporterModal'; // StoryImporterModal 컴포넌트 추가
 import AvatarCropModal from '../components/AvatarCropModal';
+import TagSelectModal from '../components/TagSelectModal';
 
 const CreateCharacterPage = () => {
   const { characterId } = useParams();
@@ -114,6 +115,7 @@ const CreateCharacterPage = () => {
   const { isAuthenticated } = useAuth();
   const [allTags, setAllTags] = useState([]);
   const [selectedTagSlugs, setSelectedTagSlugs] = useState([]);
+  const [isTagModalOpen, setIsTagModalOpen] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -1023,20 +1025,18 @@ const CreateCharacterPage = () => {
       <div className="space-y-3">
         <h3 className="text-lg font-semibold">태그 설정</h3>
         <div className="flex flex-wrap gap-2">
-          {allTags.map(t => {
-            const active = selectedTagSlugs.includes(t.slug);
+          {selectedTagSlugs.length === 0 && (
+            <span className="text-sm text-gray-500">선택된 태그가 없습니다.</span>
+          )}
+          {selectedTagSlugs.map(slug => {
+            const t = allTags.find(x => x.slug === slug);
             return (
-              <button
-                key={t.id}
-                type="button"
-                onClick={() => setSelectedTagSlugs(prev => active ? prev.filter(s => s !== t.slug) : [...prev, t.slug])}
-                className={`px-3 py-1 rounded-full border ${active ? 'bg-purple-600 text-white border-purple-500' : 'bg-gray-200 text-gray-800 border-gray-300'} inline-flex items-center gap-2`}
-              >
-                <span>{t.emoji || '🏷️'}</span>
-                <span>{t.name}</span>
-              </button>
+              <Badge key={slug} className="bg-purple-600 hover:bg-purple-600">{t?.emoji || '🏷️'} {t?.name || slug}</Badge>
             );
           })}
+        </div>
+        <div>
+          <Button type="button" variant="outline" onClick={() => setIsTagModalOpen(true)}>태그 선택</Button>
         </div>
         {selectedTagSlugs.length > 0 && (
           <div className="text-sm text-gray-500">
@@ -1183,6 +1183,14 @@ const CreateCharacterPage = () => {
             setCropSrc('');
           }
         }}
+      />
+      {/* 태그 선택 모달 */}
+      <TagSelectModal
+        isOpen={isTagModalOpen}
+        onClose={() => setIsTagModalOpen(false)}
+        allTags={allTags}
+        selectedSlugs={selectedTagSlugs}
+        onSave={(slugs) => setSelectedTagSlugs(slugs)}
       />
     </div>
   );

@@ -74,13 +74,12 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
-  const register = async (email, username, password) => {
+  const register = async (email, username, password, gender) => {
     try {
-      const response = await authAPI.register(email, username, password);
+      const response = await authAPI.register(email, username, password, gender);
       
-      // 회원가입 후 자동 로그인
-      const loginResult = await login(email, password);
-      return loginResult;
+      // 회원가입 완료 → 인증 안내 페이지로 이동하도록 신호 반환
+      return { success: true };
     } catch (error) {
       console.error('회원가입 실패:', error);
       return {

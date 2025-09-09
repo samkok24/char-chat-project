@@ -2,7 +2,7 @@
 인증 관련 Pydantic 스키마
 """
 
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
 from typing import Optional
 import uuid
 
@@ -17,6 +17,15 @@ class Token(BaseModel):
 class TokenData(BaseModel):
     """토큰 데이터 스키마"""
     user_id: Optional[uuid.UUID] = None
+
+
+class EmailOnly(BaseModel):
+    email: EmailStr
+
+
+class PasswordUpdateRequest(BaseModel):
+    current_password: str
+    new_password: str
 
 
 class RefreshTokenRequest(BaseModel):

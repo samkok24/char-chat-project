@@ -225,8 +225,13 @@ async def get_character_tags(
     character = await get_character_by_id(db, character_id)
     if not character:
         raise HTTPException(status_code=404, detail="캐릭터를 찾을 수 없습니다.")
+    # 관계 프리로드 후 단순 반환 (정렬은 이름순)
     await db.refresh(character)
-    result = await db.execute(select(Tag).join(Tag.characters).where(Tag.characters.any(id=character_id)))
+    result = await db.execute(
+        select(Tag).join(CharacterTag, CharacterTag.tag_id == Tag.id)
+        .where(CharacterTag.character_id == character_id)
+        .order_by(Tag.name)
+    )
     return result.scalars().all()
 
 
@@ -248,8 +253,21 @@ async def set_character_tags(
 
     # slugs → Tag 조회
     if payload.tags:
+        # 1) 기존 태그 조회
         tag_rows = (await db.execute(select(Tag).where(Tag.slug.in_(payload.tags)))).scalars().all()
-        # 연결 재생성
+        existing_slugs = {t.slug for t in tag_rows}
+        # 2) 누락된 슬러그는 자동 생성해 전역 태그 테이블에 등록
+        missing_slugs = [s for s in payload.tags if s not in existing_slugs]
+        for slug in missing_slugs:
+            try:
+                new_tag = Tag(name=slug, slug=slug)
+                db.add(new_tag)
+                await db.flush()
+                tag_rows.append(new_tag)
+            except Exception:
+                # 유니크 충돌 등은 무시하고 넘어감 (동시 생성 방지)
+                pass
+        # 3) 연결 재생성
         for t in tag_rows:
             await db.execute(insert(CharacterTag).values(character_id=character_id, tag_id=t.id))
     await db.commit()

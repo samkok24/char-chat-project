@@ -3,15 +3,29 @@ import { useQuery } from '@tanstack/react-query';
 import { charactersAPI } from '../lib/api';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { useAuth } from '../contexts/AuthContext';
+import LoginRequiredModal from './LoginRequiredModal';
 import { HistoryChatCard, HistoryChatCardSkeleton } from './HistoryChatCard';
 
 const WebNovelSection = () => {
   const navigate = useNavigate();
+  const { isAuthenticated } = useAuth();
+  const [showLoginRequired, setShowLoginRequired] = React.useState(false);
   const { data = [], isLoading, isError } = useQuery({
     queryKey: ['webnovel-characters'],
     queryFn: async () => {
-      const res = await charactersAPI.getCharacters({ sort: 'views', source_type: 'IMPORTED', limit: 36 });
-      return res.data || [];
+      try {
+        const res = await charactersAPI.getCharacters({ sort: 'views', source_type: 'IMPORTED', limit: 36 });
+        return res.data || [];
+      } catch (err) {
+        // 호환성 폴백: 필터가 실패하면 전체 인기 캐릭터로 대체
+        try {
+          const res = await charactersAPI.getCharacters({ sort: 'views', limit: 36 });
+          return res.data || [];
+        } catch (_) {
+          return [];
+        }
+      }
     },
     staleTime: 5 * 60 * 1000,
   });
@@ -62,10 +76,22 @@ const WebNovelSection = () => {
           <HistoryChatCard
             key={c.id}
             character={c}
-            onClick={() => navigate(`/ws/chat/${c.id}`)}
+            onClick={() => {
+              if (!isAuthenticated) {
+                setShowLoginRequired(true);
+                return;
+              }
+              navigate(`/ws/chat/${c.id}`);
+            }}
           />
         ))}
       </div>
+      <LoginRequiredModal
+        isOpen={showLoginRequired}
+        onClose={() => setShowLoginRequired(false)}
+        onLogin={() => { setShowLoginRequired(false); navigate('/login?tab=login'); }}
+        onRegister={() => { setShowLoginRequired(false); navigate('/login?tab=register'); }}
+      />
     </section>
   );
 };

@@ -47,12 +47,15 @@ import { CharacterCard, CharacterCardSkeleton } from '../components/CharacterCar
 import AppLayout from '../components/layout/AppLayout';
 import TrendingCharacters from '../components/TrendingCharacters';
 import WebNovelSection from '../components/WebNovelSection';
+import LoginRequiredModal from '../components/LoginRequiredModal';
 
 const HomePage = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const { user, isAuthenticated, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  const [showLoginRequired, setShowLoginRequired] = useState(false);
+  const [sourceFilter, setSourceFilter] = useState(null); // null | 'IMPORTED' | 'ORIGINAL'
 
   // 🚀 무한스크롤: useInfiniteQuery + skip/limit 페이지네이션
   const LIMIT = 24;
@@ -75,6 +78,20 @@ const HomePage = () => {
     },
     staleTime: 5 * 60 * 1000,
   });
+
+  // 사용량 Top5 별도 조회 (정렬에 활용)
+  const { data: topUsedTags = [] } = useQuery({
+    queryKey: ['tags-top5'],
+    queryFn: async () => {
+      try {
+        const res = await tagsAPI.getUsedTags();
+        return res.data || [];
+      } catch (_) {
+        return [];
+      }
+    },
+    staleTime: 5 * 60 * 1000,
+  });
   const {
     data: characterPages,
     isLoading: loading,
@@ -83,7 +100,7 @@ const HomePage = () => {
     fetchNextPage,
     refetch
   } = useInfiniteQuery({
-    queryKey: ['characters', 'infinite', searchQuery, selectedTags.join(',')],
+    queryKey: ['characters', 'infinite', searchQuery, selectedTags.join(','), sourceFilter],
     queryFn: async ({ pageParam = 0 }) => {
       try {
         const response = await charactersAPI.getCharacters({
@@ -91,6 +108,7 @@ const HomePage = () => {
           skip: pageParam,
           limit: LIMIT,
           tags: selectedTags.length ? selectedTags.join(',') : undefined,
+          source_type: sourceFilter || undefined,
         });
         const items = response.data || [];
         return { items, nextSkip: items.length === LIMIT ? pageParam + LIMIT : null };
@@ -111,7 +129,7 @@ const HomePage = () => {
   // 페이지 진입/검색 변경 시 첫 페이지 새로고침
   useEffect(() => {
     refetch();
-  }, [location, searchQuery, selectedTags, refetch]);
+  }, [location, searchQuery, selectedTags, sourceFilter, refetch]);
 
   // IntersectionObserver로 리스트 끝에서 다음 페이지 로드
   useEffect(() => {
@@ -164,6 +182,10 @@ const HomePage = () => {
   });
 
   const createCharacter = () => {
+    if (!isAuthenticated) {
+      setShowLoginRequired(true);
+      return;
+    }
     navigate('/characters/create');
   };
 
@@ -172,25 +194,40 @@ const HomePage = () => {
   };
 
   const visibleTagLimit = 18;
-  const visibleTags = showAllTags ? allTags : allTags.slice(0, visibleTagLimit);
+  // 홈 탐색 태그 정렬: 전체 태그 + 마지막 5개에 사용량 Top5(뒤에서 5번째가 최다)
+  const arrangedTags = React.useMemo(() => {
+    const top = (topUsedTags || []).slice(0, 5);
+    const topSlugs = new Set(top.map(t => t.slug));
+    const base = (allTags || []).filter(t => !topSlugs.has(t.slug));
+    return [...base, ...[...top].reverse()];
+  }, [allTags, topUsedTags]);
+  const visibleTags = showAllTags ? arrangedTags : arrangedTags.slice(0, visibleTagLimit);
 
   // 태그 추가 기능 제거 요청에 따라 관련 로직/버튼 제거됨
 
   return (
     <AppLayout>
       <div className="min-h-full bg-gray-900 text-gray-200">
-        {/* 상단 프로필 드롭다운 제거 */}
-
         {/* 메인 컨텐츠 */}
         <main className="px-8 py-6">
-          {/* Welcome 섹션 */}
-          <div className="mb-8">
-            <h1 className="text-2xl font-normal text-gray-300">
-              {isAuthenticated ? 'Welcome back,' : 'Welcome,'}
-            </h1>
-            <div className="flex items-center gap-2 mt-1">
-              <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-              <h2 className="text-2xl font-normal text-white">{user?.username || 'Guest'}</h2>
+          {/* 상단 필터 바 */}
+          <div className="mb-6">
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setSourceFilter(prev => prev === 'IMPORTED' ? null : 'IMPORTED')}
+                className={`px-3 py-1 rounded-full border ${sourceFilter === 'IMPORTED' ? 'bg-yellow-500 text-black border-yellow-400' : 'bg-gray-800 text-gray-200 border-gray-700'}`}
+              >웹소설</button>
+              <button
+                onClick={() => setSourceFilter(prev => prev === 'ORIGINAL' ? null : 'ORIGINAL')}
+                className={`px-3 py-1 rounded-full border ${sourceFilter === 'ORIGINAL' ? 'bg-yellow-500 text-black border-yellow-400' : 'bg-gray-800 text-gray-200 border-gray-700'}`}
+              >오리지널</button>
+              <button
+                onClick={() => setShowAllTags(v => !v)}
+                className={`px-3 py-1 rounded-full border bg-gray-800 text-gray-200 border-gray-700 inline-flex items-center gap-2`}
+              >
+                <span>카테고리</span>
+                <ChevronDown className={`h-4 w-4 ${showAllTags ? 'rotate-180' : ''}`} />
+              </button>
             </div>
           </div>
 
@@ -211,34 +248,17 @@ const HomePage = () => {
             </form>
           </div>
 
-          {/* Trending 섹션 */}
-          <TrendingCharacters />
+          {/* Trending 섹션 숨김 */}
+          {/* <TrendingCharacters /> */}
 
-          {/* 웹소설 원작 섹션 */}
-          <WebNovelSection />
+          {/* 웹소설 원작 섹션 (최근 대화 아래로 이동) */}
+          {/* 이동됨 */}
 
-          {/* 최근 대화 섹션 */}
+          {/* 최근 대화 섹션 - 관심 캐릭터 영역 임시 비노출 */}
           {isAuthenticated && (
             <>
-              {/* 관심 캐릭터(좋아요) 섹션 */}
-              {favoriteChars.length > 0 && (
-                <section className="mt-10">
-                  <div className="flex items-center justify-between mb-3">
-                    <h2 className="text-lg font-bold text-white">관심 캐릭터</h2>
-                    <Link to="/favorites" className="text-sm text-gray-400 hover:text-white">더보기</Link>
-                  </div>
-                  <div className="flex overflow-x-auto gap-3 pb-2 scrollbar-hide">
-                    {favoriteChars.map((char) => (
-                      <div key={char.id} className="flex-shrink-0">
-                        <RecentChatCard
-                          character={char}
-                          onClick={() => navigate(`/characters/${char.id}`)}
-                        />
-                      </div>
-                    ))}
-                  </div>
-                </section>
-              )}
+              {/* 관심 캐릭터 섹션 숨김 */}
+              {/* <section className="mt-10 hidden" aria-hidden="true"></section> */}
 
               <section className="mt-10 mb-10">
                 <div className="flex items-center justify-between mb-5">
@@ -249,6 +269,9 @@ const HomePage = () => {
               </section>
             </>
           )}
+
+          {/* 웹소설 원작 섹션: 최근 대화 아래 */}
+          <WebNovelSection />
 
           {/* Scenes 섹션 (나중에 구현) */}
           {/* <section className="mb-10">
@@ -273,7 +296,6 @@ const HomePage = () => {
                       onClick={() => setSelectedTags(prev => active ? prev.filter(s => s !== t.slug) : [...prev, t.slug])}
                       className={`px-3 py-1 rounded-full border ${active ? 'bg-yellow-500 text-black border-yellow-400' : 'bg-gray-800 text-gray-200 border-gray-700'} inline-flex items-center gap-2`}
                     >
-                      <span>{t.emoji || '🏷️'}</span>
                       <span>{t.name}</span>
                     </button>
                   );
@@ -327,6 +349,13 @@ const HomePage = () => {
           </section>
       </main>
       </div>
+      {/* 로그인 유도 모달 */}
+      <LoginRequiredModal
+        isOpen={showLoginRequired}
+        onClose={() => setShowLoginRequired(false)}
+        onLogin={() => { setShowLoginRequired(false); navigate('/login?tab=login'); }}
+        onRegister={() => { setShowLoginRequired(false); navigate('/login?tab=register'); }}
+      />
     </AppLayout>
   );
 };
