@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { charactersAPI } from '../lib/api';
+import { Badge } from './ui/badge';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
@@ -73,17 +74,21 @@ const WebNovelSection = () => {
           <HistoryChatCardSkeleton key={idx} />
         ))}
         {!isLoading && !isError && visibleItems.map((c) => (
-          <HistoryChatCard
-            key={c.id}
-            character={c}
-            onClick={() => {
-              if (!isAuthenticated) {
-                setShowLoginRequired(true);
-                return;
-              }
-              navigate(`/ws/chat/${c.id}`);
-            }}
-          />
+          <div key={c.id} className="relative border border-blue-500/40 rounded-2xl overflow-hidden">
+            <HistoryChatCard
+              character={c}
+              onClick={() => {
+                if (!isAuthenticated) {
+                  setShowLoginRequired(true);
+                  return;
+                }
+                navigate(`/ws/chat/${c.id}`);
+              }}
+            />
+            <div className="absolute top-1 left-1 z-10">
+              <Badge className="bg-blue-600 text-white hover:bg-blue-600">웹소설</Badge>
+            </div>
+          </div>
         ))}
       </div>
       <LoginRequiredModal

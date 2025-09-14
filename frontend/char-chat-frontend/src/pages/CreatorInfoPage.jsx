@@ -8,6 +8,7 @@ import { Card, CardContent } from '../components/ui/card';
 import { Avatar, AvatarFallback, AvatarImage } from '../components/ui/avatar';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../components/ui/tabs';
 import { CharacterCard as SharedCharacterCard, CharacterCardSkeleton as SharedCharacterCardSkeleton } from '../components/CharacterCard';
+import StoryExploreCard from '../components/StoryExploreCard';
 import { resolveImageUrl } from '../lib/images';
 import { Loader2, ArrowLeft } from 'lucide-react';
 
@@ -35,20 +36,41 @@ const CreatorInfoPage = () => {
         sort: sortParam,
         limit: 60,
       });
-      return res.data || [];
+      const list = res.data || [];
+      // 공개 캐릭터만 노출
+      return Array.isArray(list) ? list.filter(c => c?.is_public !== false) : [];
     },
     enabled: !!userId,
     staleTime: 5 * 60 * 1000,
   });
 
-  // 자리표시자: backend가 creator_id 필터를 지원하면 storiesAPI.getStories({ creator_id: userId })로 전환
-  const { isLoading: storiesLoading } = useQuery({
-    queryKey: ['creator-stories', userId],
+  // 스토리: 전체 목록에서 정렬해 받아와 클라이언트에서 creator_id로 필터
+  const { data: stories = [], isLoading: storiesLoading } = useQuery({
+    queryKey: ['creator-stories', userId, sortParam],
     queryFn: async () => {
-      const res = await storiesAPI.getStories({ limit: 1 });
-      return res.data;
+      const extract = (res) => (Array.isArray(res.data?.stories) ? res.data.stories : (Array.isArray(res.data) ? res.data : []));
+      try {
+        const res = await storiesAPI.getStories({ sort: sortParam, limit: 100, skip: 0 });
+        const list = extract(res);
+        return list.filter(s => String(s.creator_id) === String(userId) && (s?.is_public !== false));
+      } catch (e1) {
+        try {
+          const res = await storiesAPI.getStories({ sort: sortParam, limit: 50, skip: 0 });
+          const list = extract(res);
+          return list.filter(s => String(s.creator_id) === String(userId) && (s?.is_public !== false));
+        } catch (e2) {
+          try {
+            const res = await storiesAPI.getStories({ sort: sortParam });
+            const list = extract(res);
+            return list.filter(s => String(s.creator_id) === String(userId) && (s?.is_public !== false));
+          } catch (_) {
+            return [];
+          }
+        }
+      }
     },
-    enabled: false,
+    enabled: !!userId,
+    staleTime: 5 * 60 * 1000,
   });
 
   return (
@@ -107,6 +129,7 @@ const CreatorInfoPage = () => {
             </CardContent>
           </Card>
 
+          {/* 공지/댓글 탭 유지 */}
           <Card className="bg-gray-800 border-gray-700 mb-8">
             <CardContent className="p-6">
               <Tabs defaultValue="notice">
@@ -144,39 +167,48 @@ const CreatorInfoPage = () => {
             </div>
           </div>
 
-          <Tabs defaultValue="characters" className="mt-2">
-            <TabsList className="bg-gray-800 border border-gray-700">
-              <TabsTrigger value="characters">캐릭터</TabsTrigger>
-              <TabsTrigger value="stories">웹소설</TabsTrigger>
-            </TabsList>
-
-            <TabsContent value="characters">
-              {charsLoading ? (
-                <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 mt-4">
-                  {Array.from({ length: 12 }).map((_, i) => (
-                    <SharedCharacterCardSkeleton key={i} />
-                  ))}
-                </div>
-              ) : characters.length > 0 ? (
-                <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 mt-4">
-                  {characters.map((c) => (
-                    <SharedCharacterCard key={c.id} character={c} />
-                  ))}
-                </div>
-              ) : (
-                <div className="text-center py-16 text-gray-400">
-                  <Loader2 className="w-6 h-6 animate-spin mx-auto mb-3" />
-                  아직 만든 캐릭터가 없습니다.
-                </div>
-              )}
-            </TabsContent>
-
-            <TabsContent value="stories">
-              <div className="text-center py-16 text-gray-400">
-                크리에이터의 웹소설 목록은 준비 중입니다.
+          {/* 혼합 그리드: 캐릭터 + 웹소설 함께 */}
+          <div className="mt-2">
+            {(charsLoading || storiesLoading) ? (
+              <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 mt-4">
+                {Array.from({ length: 12 }).map((_, i) => (
+                  <SharedCharacterCardSkeleton key={i} />
+                ))}
               </div>
-            </TabsContent>
-          </Tabs>
+            ) : (
+              (() => {
+                const charItems = (Array.isArray(characters) ? characters : []).map((c) => ({
+                  type: 'character',
+                  id: c.id,
+                  data: c,
+                }));
+                const storyItems = (Array.isArray(stories) ? stories : []).map((s) => ({
+                  type: 'story',
+                  id: s.id,
+                  data: s,
+                }));
+                const mixed = [...charItems, ...storyItems];
+                if (mixed.length === 0) {
+                  return (
+                    <div className="text-center py-16 text-gray-400">
+                      등록된 작품이 없습니다.
+                    </div>
+                  );
+                }
+                return (
+                  <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 mt-4">
+                    {mixed.map((item) => (
+                      item.type === 'story' ? (
+                        <StoryExploreCard key={`s-${item.id}`} story={item.data} />
+                      ) : (
+                        <SharedCharacterCard key={`c-${item.id}`} character={item.data} />
+                      )
+                    ))}
+                  </div>
+                );
+              })()
+            )}
+          </div>
         </div>
       </div>
     </AppLayout>

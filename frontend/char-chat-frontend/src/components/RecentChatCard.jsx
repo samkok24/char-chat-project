@@ -28,7 +28,7 @@ export const RecentChatCard = ({ character, onClick }) => {
       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } }}
     >
       <div>
-        <div className="group/card h-[146px] bg-[#1f2327] hover:cursor-pointer hover:bg-[#252a2f] rounded-2xl relative transition-colors duration-200 border border-[#2a2f35] hover:border-[#3a4047]" style={{ width: '312px' }}>
+        <div className={`group/card h-[146px] bg-[#1f2327] hover:cursor-pointer hover:bg-[#252a2f] rounded-2xl relative transition-colors duration-200 border ${character?.source_type === 'IMPORTED' ? 'border-blue-500/40' : 'border-purple-500/40'}`} style={{ width: '312px' }}>
           <div className="w-full h-full p-4 flex flex-col gap-2">
             <div className="flex flex-row h-full space-x-3 w-full">
               {/* 캐릭터 이미지 */}

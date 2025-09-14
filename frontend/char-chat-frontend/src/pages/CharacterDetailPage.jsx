@@ -288,6 +288,9 @@ const CharacterDetailPage = () => {
                 alt={character.name}
                 className="absolute inset-0 w-full h-full object-cover rounded-lg"
               />
+              <div className="absolute top-2 left-2">
+                <Badge className="bg-purple-600 text-white hover:bg-purple-600">캐릭터</Badge>
+              </div>
             </div>
             {/* 미니 갤러리: 가로 스크롤 */}
             <div id="detail-thumbnail-gallery" className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
@@ -337,7 +340,7 @@ const CharacterDetailPage = () => {
                   이어보기{progress > 0 ? ` (${continueChapter}화)` : ''}
                 </Button>
                 <Button variant="secondary" className="bg-pink-600 hover:bg-pink-700" onClick={() => navigate(`/works/${workId}/chapters/${continueChapter}?chat=1`)}>
-                  대화하기
+                  원작챗 시작
                 </Button>
               </div>
             )}
@@ -356,7 +359,7 @@ const CharacterDetailPage = () => {
               </div>
             )}
 
-            <ChatInteraction onStartChat={startChat} />
+            <ChatInteraction onStartChat={startChat} characterId={characterId} isAuthenticated={isAuthenticated} />
             <CharacterDetails 
               character={character}
               comments={comments}

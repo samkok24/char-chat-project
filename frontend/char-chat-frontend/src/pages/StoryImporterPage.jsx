@@ -1,8 +1,8 @@
 /**
  * 스토리 분석 기반 캐릭터 생성을 위한 페이지
  */
-import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useMemo, useState } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { storyImporterAPI, charactersAPI } from '../lib/api'; // charactersAPI 추가
 import { Button } from '../components/ui/button';
 import { Textarea } from '../components/ui/textarea';
@@ -17,6 +17,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 
 const StoryImporterPage = () => {
   const navigate = useNavigate();
+  const location = useLocation();
+  const searchParams = useMemo(() => new URLSearchParams(location.search || ''), [location.search]);
+  const targetStoryId = searchParams.get('storyId');
   const [storyText, setStoryText] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -26,6 +29,7 @@ const StoryImporterPage = () => {
   const [chapterFiles, setChapterFiles] = useState([]);
   const [chaptersPreview, setChaptersPreview] = useState([]);
   const [mergeLoading, setMergeLoading] = useState(false);
+  const [parsedChapters, setParsedChapters] = useState([]);
   const MAX_CHARS = 500000; // 최대 글자 수
 
   // 파일 업로드 핸들러 (단일 파일)
@@ -81,6 +85,58 @@ const StoryImporterPage = () => {
       setError('회차 파일 처리 중 오류가 발생했습니다.');
     } finally {
       setMergeLoading(false);
+    }
+  };
+
+  const splitIntoChapters = (text) => {
+    if (!text) return [];
+    const lines = text.split(/\r?\n/);
+    const chapters = [];
+    let current = { no: null, title: '', content: [] };
+    const headingRegex = /^(\s*)(?:제\s*)?(\d{1,4})(?:\s*)(화|장)\b\s*(.*)$|^(프롤로그|에필로그)\b\s*(.*)$|^(?:Chapter|CHAPTER)\s+(\d{1,4})\b\s*(.*)$/;
+    const pushCurrent = () => {
+      if (current.content.length > 0 || current.title) {
+        const content = current.content.join('\n').trim();
+        const title = (current.title || '').trim() || (current.no ? `${current.no}화` : '');
+        chapters.push({ no: current.no, title, content, created_at: new Date().toISOString() });
+      }
+    };
+    lines.forEach((raw) => {
+      const line = raw.replace(/\uFEFF/g, '');
+      const m = line.match(headingRegex);
+      if (m) {
+        // 새 챕터 시작
+        pushCurrent();
+        const no = m[2] || m[7] || (m[5] === '프롤로그' ? 0 : (m[5] === '에필로그' ? 9999 : null));
+        const tail = m[4] || m[6] || m[8] || '';
+        const title = m[5] ? `${m[5]} ${tail}`.trim() : (tail || `${no}화`).trim();
+        current = { no: no ? Number(no) : null, title, content: [] };
+      } else {
+        current.content.push(raw);
+      }
+    });
+    pushCurrent();
+    // 정렬: 프롤로그(0) 먼저, 숫자 오름차순, 에필로그(9999) 마지막
+    return chapters
+      .map((c, idx) => ({ ...c, no: (c.no === null ? idx + 1 : c.no) }))
+      .sort((a, b) => (a.no || 0) - (b.no || 0));
+  };
+
+  const handleExtractChapters = () => {
+    const arr = splitIntoChapters(storyText);
+    setParsedChapters(arr);
+    if (arr.length === 0) setError('회차 형식을 찾지 못했습니다. 제목 패턴(예: 1화, 제1장)을 확인하세요.');
+  };
+
+  const handleSaveChapters = () => {
+    if (!targetStoryId) { setError('storyId가 없습니다. 상세 페이지에서 회차등록 버튼으로 진입하세요.'); return; }
+    try {
+      const key = `cc:chapters:${targetStoryId}`;
+      const payload = { updatedAt: new Date().toISOString(), episodes: parsedChapters };
+      localStorage.setItem(key, JSON.stringify(payload));
+      navigate(`/stories/${targetStoryId}`);
+    } catch {
+      setError('회차 저장에 실패했습니다.');
     }
   };
 
@@ -140,7 +196,7 @@ const StoryImporterPage = () => {
     <div className="min-h-screen bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-gray-100 p-4 sm:p-6 lg:p-8">
       <div className="max-w-4xl mx-auto">
         <header className="mb-6">
-          <Button variant="ghost" onClick={() => navigate('/')}>
+          <Button variant="ghost" onClick={() => navigate(-1)}>
             <ArrowLeft className="w-5 h-5 mr-2" />
             홈으로 돌아가기
           </Button>
@@ -150,26 +206,12 @@ const StoryImporterPage = () => {
           <CardHeader>
             <CardTitle className="text-2xl flex items-center">
               <Wand2 className="w-6 h-6 mr-3 text-purple-500" />
-              스토리로 캐릭터 생성하기
+              회차등록
             </CardTitle>
-            <CardDescription>
-              웹소설, 시나리오, 혹은 직접 작성한 이야기를 붙여넣으세요. AI가 세계관과 캐릭터를 분석하여 생명을 불어넣어 줍니다.
-            </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             {/* AI 모델 선택 */}
-            <div>
-              <label className="block text-sm font-medium mb-2">AI 모델 선택</label>
-              <Select value={selectedAiModel} onValueChange={setSelectedAiModel}>
-                <SelectTrigger>
-                  <SelectValue placeholder="AI 모델 선택" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="gemini">Gemini</SelectItem>
-                  <SelectItem value="claude">Claude</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+            <div className="hidden" aria-hidden="true"></div>
 
             {/* 단일 파일 업로드 */}
             <div className="flex gap-2 mb-2">
@@ -191,12 +233,12 @@ const StoryImporterPage = () => {
                 >
                   <span>
                     <Upload className="mr-2 h-4 w-4" />
-                    파일 업로드
+                    회차 파일 업로드
                   </span>
                 </Button>
               </label>
               <span className="text-sm text-gray-500 flex items-center">
-                (.txt, .doc, .docx, .hwp, .hwpx 지원)
+                (.txt, .doc, .docx, .hwp, .hwpx)
               </span>
             </div>
 
@@ -251,6 +293,27 @@ const StoryImporterPage = () => {
                 {storyText.length.toLocaleString()} / {MAX_CHARS.toLocaleString()} 글자
               </div>
             </div>
+            <div className="flex items-center gap-2">
+              <Button variant="outline" onClick={handleExtractChapters} disabled={!storyText.trim() || loading || isSaving}>회차 추출</Button>
+              {targetStoryId && (
+                <Button onClick={handleSaveChapters} disabled={parsedChapters.length === 0 || loading || isSaving}>회차목록 저장</Button>
+              )}
+            </div>
+            {parsedChapters.length > 0 && (
+              <div className="mt-4">
+                <div className="text-sm text-gray-400 mb-2">추출된 회차 {parsedChapters.length}개</div>
+                <ul className="divide-y divide-gray-800 rounded-md border border-gray-700 overflow-hidden">
+                  {parsedChapters.map((ch) => (
+                    <li key={`${ch.no}-${ch.title}`} className="px-3 py-2 bg-gray-800/30">
+                      <div className="text-sm text-gray-200 truncate">
+                        <span className="text-gray-400 mr-2">{ch.no ? `${ch.no}화` : '회차'}</span>
+                        <span>{ch.title}</span>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
             {error && (
               <Alert variant="destructive">
                 <AlertCircle className="h-4 w-4" />

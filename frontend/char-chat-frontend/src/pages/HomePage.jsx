@@ -7,7 +7,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { useAuth } from '../contexts/AuthContext';
-import { charactersAPI, usersAPI, tagsAPI } from '../lib/api';
+import { charactersAPI, usersAPI, tagsAPI, storiesAPI } from '../lib/api';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
@@ -44,8 +44,12 @@ import {
 import { RecentCharactersList } from '../components/RecentCharactersList';
 import { RecentChatCard } from '../components/RecentChatCard';
 import { CharacterCard, CharacterCardSkeleton } from '../components/CharacterCard';
+import StoryExploreCard from '../components/StoryExploreCard';
 import AppLayout from '../components/layout/AppLayout';
+import ErrorBoundary from '../components/ErrorBoundary';
 import TrendingCharacters from '../components/TrendingCharacters';
+import TopStories from '../components/TopStories';
+import TopOrigChat from '../components/TopOrigChat';
 import WebNovelSection from '../components/WebNovelSection';
 import LoginRequiredModal from '../components/LoginRequiredModal';
 
@@ -124,7 +128,45 @@ const HomePage = () => {
   });
 
   const characters = (characterPages?.pages || []).flatMap(p => p.items);
+
+  // 웹소설(스토리) 탐색: 공개 스토리 일부 노출
+  const { data: exploreStories = [], isLoading: storiesLoading } = useQuery({
+    queryKey: ['explore-stories'],
+    queryFn: async () => {
+      try {
+        const res = await storiesAPI.getStories({ limit: 12 });
+        const list = Array.isArray(res.data?.stories) ? res.data.stories : [];
+        // 공개 스토리만 노출
+        return list.filter(s => s?.is_public !== false);
+      } catch (_) { return []; }
+    },
+    staleTime: 60 * 1000,
+  });
   const sentinelRef = useRef(null);
+
+  // 캐릭터 + 스토리를 한 그리드에 섞어서 노출
+  const mixedItems = React.useMemo(() => {
+    const result = [];
+    const interval = 5; // 캐릭터 5개마다 스토리 1개 삽입
+    const canInjectStories = sourceFilter !== 'ORIGINAL';
+    const storyQueue = canInjectStories ? [...(exploreStories || [])] : [];
+
+    characters.forEach((ch, idx) => {
+      result.push({ kind: 'character', data: ch });
+      if ((idx + 1) % interval === 0 && storyQueue.length > 0) {
+        result.push({ kind: 'story', data: storyQueue.shift() });
+      }
+    });
+
+    // 캐릭터가 적을 때는 남은 스토리 일부를 뒤에 보충
+    if (result.length < 12 && storyQueue.length > 0) {
+      const need = 12 - result.length;
+      for (let i = 0; i < need && storyQueue.length > 0; i++) {
+        result.push({ kind: 'story', data: storyQueue.shift() });
+      }
+    }
+    return result;
+  }, [characters, exploreStories, sourceFilter]);
 
   // 페이지 진입/검색 변경 시 첫 페이지 새로고침
   useEffect(() => {
@@ -210,6 +252,15 @@ const HomePage = () => {
       <div className="min-h-full bg-gray-900 text-gray-200">
         {/* 메인 컨텐츠 */}
         <main className="px-8 py-6">
+          {/* 상단 탭 (Agent와 동일 스타일) */}
+          <div className="mb-6 grid grid-cols-3 items-center">
+            <div />
+            <div className="flex items-center gap-2 justify-center">
+              <span className="px-3 py-1 rounded-full bg-gradient-to-r from-purple-600 to-fuchsia-600 text-white shadow-md border border-transparent">메인</span>
+              <Link to="/agent" className="px-3 py-1 rounded-full border border-purple-500/60 text-purple-300 bg-transparent hover:bg-purple-700/20 transition-colors">스토리 에이전트</Link>
+            </div>
+            <div className="justify-self-end" />
+          </div>
           {/* 상단 필터 바 */}
           <div className="mb-6">
             <div className="flex items-center gap-2">
@@ -248,8 +299,20 @@ const HomePage = () => {
             </form>
           </div>
 
-          {/* Trending 섹션 숨김 */}
-          {/* <TrendingCharacters /> */}
+          {/* 인기 캐릭터 TOP (4x2) */}
+          <ErrorBoundary>
+            <TrendingCharacters />
+          </ErrorBoundary>
+
+          {/* 원작챗 TOP10 (주황) - 캐릭터 TOP 바로 아래 */}
+          <ErrorBoundary>
+            <TopOrigChat />
+          </ErrorBoundary>
+
+          {/* 웹소설 TOP10 (블루) */}
+          <ErrorBoundary>
+            <TopStories />
+          </ErrorBoundary>
 
           {/* 웹소설 원작 섹션 (최근 대화 아래로 이동) */}
           {/* 이동됨 */}
@@ -270,8 +333,10 @@ const HomePage = () => {
             </>
           )}
 
-          {/* 웹소설 원작 섹션: 최근 대화 아래 */}
-          <WebNovelSection />
+          {/* 웹소설 원작 섹션: 비노출 처리 */}
+          {/* <ErrorBoundary>
+            <WebNovelSection />
+          </ErrorBoundary> */}
 
           {/* Scenes 섹션 (나중에 구현) */}
           {/* <section className="mb-10">
@@ -324,11 +389,17 @@ const HomePage = () => {
               </div>
             ) : characters.length > 0 ? (
               <>
-                <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
-                  {characters.map((character) => (
-                    <CharacterCard key={character.id} character={character} />
-                  ))}
-                </div>
+                <ErrorBoundary>
+                  <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
+                    {(mixedItems.length ? mixedItems : characters.map(c => ({ kind: 'character', data: c })) ).map((item) => (
+                      item.kind === 'story' ? (
+                        <StoryExploreCard key={`story-${item.data.id}`} story={item.data} />
+                      ) : (
+                        <CharacterCard key={`char-${item.data.id}`} character={item.data} />
+                      )
+                    ))}
+                  </div>
+                </ErrorBoundary>
                 {/* 무한스크롤 센티넬 */}
                 <div ref={sentinelRef} className="h-10"></div>
                 {isFetchingNextPage && (

@@ -3,7 +3,8 @@ import { useNavigate, useParams } from 'react-router-dom';
 import AppLayout from '../components/layout/AppLayout';
 import { Button } from '../components/ui/button';
 import { useQuery } from '@tanstack/react-query';
-import { worksAPI } from '../lib/api';
+// worksAPI는 제거됨. 남아있는 레거시 라우트는 스토리 상세로 대체하거나 제거 필요.
+// 본 파일은 더 이상 사용하지 않거나, storiesAPI로 전환해야 합니다.
 import { Avatar, AvatarFallback, AvatarImage } from '../components/ui/avatar';
 import { resolveImageUrl } from '../lib/images';
 import { getReadingProgress } from '../lib/reading';
@@ -44,7 +45,7 @@ const WorkDetailPage = () => {
                   이어보기{progress > 0 ? ` (${continueChapter}화)` : ''}
                 </Button>
                 <Button variant="secondary" className="bg-pink-600 hover:bg-pink-700" onClick={() => navigate(`/works/${workId}/chapters/${continueChapter}?chat=1`)}>
-                  대화하기
+                  원작챗 시작
                 </Button>
               </div>
             </div>

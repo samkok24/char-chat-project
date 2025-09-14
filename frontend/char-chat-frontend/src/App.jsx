@@ -6,6 +6,8 @@
 import React, { Suspense } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { persistQueryClient } from '@tanstack/react-query-persist-client';
+import { createSyncStoragePersister } from '@tanstack/query-sync-storage-persister';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { SocketProvider } from './contexts/SocketContext';
 import { Loader2 } from 'lucide-react';
@@ -15,17 +17,30 @@ import './App.css';
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      staleTime: 5 * 60 * 1000, // 5분간 캐시 유지
-      cacheTime: 10 * 60 * 1000, // 10분간 메모리에 보관
-      retry: 1, // 실패 시 1번만 재시도
-      refetchOnWindowFocus: false, // 윈도우 포커스 시 재요청 방지
+      staleTime: 5 * 60 * 1000,
+      gcTime: 10 * 60 * 1000,
+      retry: 1,
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: false,
+      refetchOnMount: false,
     },
   },
 });
 
+// React Query 캐시 영속화(localStorage)
+try {
+  const persister = createSyncStoragePersister({ storage: window.localStorage });
+  persistQueryClient({
+    queryClient,
+    persister,
+    maxAge: 24 * 60 * 60 * 1000, // 24시간 유지
+  });
+} catch (_) {}
+
 // 🚀 성능 최적화: 코드 스플리팅 (페이지별 동적 로딩)
 const LoginPage = React.lazy(() => import('./pages/LoginPage'));
 const HomePage = React.lazy(() => import('./pages/HomePage'));
+const AgentPage = React.lazy(() => import('./pages/AgentPage'));
 const ChatPage = React.lazy(() => import('./pages/ChatPage'));
 const CharacterDetailPage = React.lazy(() => import('./pages/CharacterDetailPage'));
 const ChatRedirectPage = React.lazy(() => import('./pages/ChatRedirectPage')); // 새로 추가
@@ -39,7 +54,11 @@ const MyCharactersPage = React.lazy(() => import('./pages/MyCharactersPage'));
 const StoryImporterPage = React.lazy(() => import('./pages/StoryImporterPage'));
 const ChatHistoryPage = React.lazy(() => import('./pages/ChatHistoryPage'));
 const FavoritesPage = React.lazy(() => import('./pages/FavoritesPage'));
-const WorkDetailPage = React.lazy(() => import('./pages/WorkDetailPage'));
+// 레거시 works 상세 페이지는 사용하지 않음 (stories로 이동)
+// const WorkDetailPage = React.lazy(() => import('./pages/WorkDetailPage'));
+const WorkCreatePage = React.lazy(() => import('./pages/WorkCreatePage'));
+const StoryDetailPage = React.lazy(() => import('./pages/StoryDetailPage'));
+const StoryEditPage = React.lazy(() => import('./pages/StoryEditPage'));
 const ChapterReaderPage = React.lazy(() => import('./pages/ChapterReaderPage'));
 const CreatorInfoPage = React.lazy(() => import('./pages/CreatorInfoPage'));
 
@@ -82,14 +101,11 @@ const AppRouter = () => {
       <Suspense fallback={<PageLoader />}>
         <Routes>
           {/* 🔥 CAVEDUCK 핵심 페이지 (우선 로딩) */}
-          <Route
-            path="/"
-            element={
-              <SocketProvider>
-                <HomePage />
-              </SocketProvider>
-            }
-          />
+          {/* 초기 진입은 에이전트 탭으로 */}
+          <Route path="/" element={<Navigate to="/agent" replace />} />
+          <Route path="/agent" element={<AgentPage />} />
+          {/* 대시보드 별도 경로 */}
+          <Route path="/dashboard" element={<HomePage />} />
 
           <Route
             path="/login"
@@ -114,16 +130,7 @@ const AppRouter = () => {
           />
           
           {/* 실제 웹소켓 채팅이 이루어지는 페이지 */}
-          <Route
-            path="/ws/chat/:characterId"
-            element={
-              <ProtectedRoute>
-                <SocketProvider>
-                  <ChatPage />
-                </SocketProvider>
-              </ProtectedRoute>
-            }
-          />
+          <Route path="/ws/chat/:characterId" element={<ProtectedRoute><ChatPage /></ProtectedRoute>} />
 
           {/* ⏳ 나중에 필요한 페이지들 (지연 로딩) */}
           <Route
@@ -189,9 +196,27 @@ const AppRouter = () => {
             }
           />
 
-          {/* 📚 웹소설 원작 MVP */}
-          <Route path="/works/:workId" element={<WorkDetailPage />} />
-          <Route path="/works/:workId/chapters/:chapterNumber" element={<ChapterReaderPage />} />
+          {/* 📚 레거시 works 라우트 → 스토리 상세로 리다이렉트 */}
+          <Route path="/works/:workId" element={<Navigate to="/stories/:workId" replace />} />
+          <Route path="/works/:workId/chapters/:chapterNumber" element={<Navigate to="/stories/:workId/chapters/:chapterNumber" replace />} />
+          <Route
+            path="/works/create"
+            element={
+              <ProtectedRoute>
+                <WorkCreatePage />
+              </ProtectedRoute>
+            }
+          />
+          <Route path="/stories/:storyId" element={<StoryDetailPage />} />
+          <Route path="/stories/:storyId/chapters/:chapterNumber" element={<ChapterReaderPage />} />
+          <Route
+            path="/stories/:storyId/edit"
+            element={
+              <ProtectedRoute>
+                <StoryEditPage />
+              </ProtectedRoute>
+            }
+          />
 
           <Route
             path="/users/:userId"
@@ -212,7 +237,7 @@ const AppRouter = () => {
           />
 
           {/* 기본 리다이렉트 */}
-          <Route path="*" element={<Navigate to="/" replace />} />
+          <Route path="*" element={<Navigate to="/agent" replace />} />
         </Routes>
       </Suspense>
     </Router>
@@ -224,9 +249,11 @@ function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
-        <div className="App">
-          <AppRouter />
-        </div>
+        <SocketProvider>
+          <div className="App">
+            <AppRouter />
+          </div>
+        </SocketProvider>
       </AuthProvider>
     </QueryClientProvider>
   );

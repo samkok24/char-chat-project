@@ -7,10 +7,14 @@ import { resolveImageUrl } from '../lib/images';
 import { DEFAULT_SQUARE_URI } from '../lib/placeholder';
 import { MessageCircle, Heart } from 'lucide-react';
 import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
+import { Badge } from './ui/badge';
 import { formatCount } from '../lib/format';
 
 export const CharacterCard = ({ character, onCardClick, onButtonClick, footerContent }) => {
   const navigate = useNavigate();
+  const isWebNovel = character?.source_type === 'IMPORTED';
+  const borderClass = isWebNovel ? 'border-blue-500/40' : 'border-purple-500/40';
+  const hoverBorderClass = isWebNovel ? 'hover:border-blue-500' : 'hover:border-purple-500';
 
   const handleCardClick = () => {
     if (onCardClick) {
@@ -31,7 +35,7 @@ export const CharacterCard = ({ character, onCardClick, onButtonClick, footerCon
 
   return (
     <div 
-      className="bg-gray-800 rounded-xl overflow-hidden hover:bg-gray-700 transition-all duration-200 cursor-pointer group border border-gray-700 hover:border-purple-500"
+      className={`bg-gray-800 rounded-xl overflow-hidden hover:bg-gray-700 transition-all duration-200 cursor-pointer group border ${borderClass} ${hoverBorderClass}`}
       onClick={handleCardClick}
     >
       {/* 캐릭터 이미지 */}
@@ -43,6 +47,13 @@ export const CharacterCard = ({ character, onCardClick, onButtonClick, footerCon
           className="w-full h-full object-cover object-top group-hover:scale-105 transition-transform duration-300"
           wrapperClassName="w-full h-full"
         />
+        <div className="absolute top-1 left-1">
+          {character?.source_type === 'IMPORTED' ? (
+            <Badge className="bg-blue-600 text-white hover:bg-blue-600">웹소설</Badge>
+          ) : (
+            <Badge className="bg-purple-600 text-white hover:bg-purple-600">캐릭터</Badge>
+          )}
+        </div>
         {/* 채팅수/좋아요 바: 이미지 우하단 오버레이 */}
         <div className="absolute bottom-1 right-1 py-0.5 px-1.5 rounded bg-black/60 text-xs text-gray-100 flex items-center gap-2">
           <span className="inline-flex items-center gap-0.5"><MessageCircle className="w-3 h-3" />{formatCount(character.chat_count || 0)}</span>

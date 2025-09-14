@@ -292,6 +292,9 @@ export const chatAPI = {
 
   sendMessage: (data) =>
     api.post('/chat/message', data),
+  // 에이전트 탭용 간단 시뮬레이터(캐릭터 없이)
+  agentSimulate: (data) =>
+    api.post('/chat/agent/simulate', data),
   
   getChatHistory: (sessionId) =>
     api.get(`/chat/history/${sessionId}`),
@@ -330,6 +333,21 @@ export const chatAPI = {
     api.post(`/chat/messages/${messageId}/feedback`, { action }),
 };
 
+// 💬 원작챗 API (MVP 스텁 연동)
+export const origChatAPI = {
+  // 컨텍스트 팩
+  getContextPack: (storyId, { anchor, characterId, mode = 'alt_pov', rangeFrom, rangeTo } = {}) =>
+    api.get(`/stories/${storyId}/context-pack`, { params: { anchor, characterId, mode, rangeFrom, rangeTo } }),
+
+  // 세션 시작(기존 채팅방 구조 재사용)
+  start: ({ story_id, character_id, chapter_anchor, timeline_mode = 'fixed', range_from = null, range_to = null }) =>
+    api.post('/chat/origchat/start', { story_id, character_id, chapter_anchor, timeline_mode, range_from, range_to }),
+
+  // 턴 진행(스텁 응답)
+  turn: ({ room_id, user_text = null, choice_id = null }) =>
+    api.post('/chat/origchat/turn', { room_id, user_text, choice_id }),
+};
+
 // 📖 스토리 관련 API
 export const storiesAPI = {
   getStories: (params = {}) =>
@@ -340,9 +358,15 @@ export const storiesAPI = {
   
   getStory: (id) =>
     api.get(`/stories/${id}`),
+  getExtractedCharacters: (storyId) =>
+    api.get(`/stories/${storyId}/extracted-characters`),
+  rebuildExtractedCharacters: (storyId) =>
+    api.post(`/stories/${storyId}/extracted-characters/rebuild`),
+  deleteExtractedCharacters: (storyId) =>
+    api.delete(`/stories/${storyId}/extracted-characters`),
   
   createStory: (data) =>
-    api.post('/stories', data),
+    api.post('/stories/', data),
   
   updateStory: (id, data) =>
     api.put(`/stories/${id}`, data),
@@ -352,6 +376,70 @@ export const storiesAPI = {
   
   generateStory: (data) =>
     api.post('/stories/generate', data),
+
+  // Experimental streaming API (SSE events)
+  generateStoryStream: async (data, { onMeta, onPreview, onProgress, onEpisode, onFinal, onWarn } = {}) => {
+    const endpoint = '/stories/generate/stream';
+    const token = localStorage.getItem('access_token');
+    const headers = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    const controller = new AbortController();
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+    let result = { ok: false };
+    try {
+      const res = await fetch(`${API_BASE_URL}${endpoint}`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(data),
+        signal: controller.signal,
+      });
+      if (!res.ok || !res.body) throw new Error(`stream error ${res.status}`);
+      const reader = res.body.getReader();
+      let done, value;
+      while (({ done, value } = await reader.read()) && !done) {
+        buffer += decoder.decode(value, { stream: true });
+        // Parse SSE frames
+        let idx;
+        while ((idx = buffer.indexOf('\n\n')) !== -1) {
+          const frame = buffer.slice(0, idx).trimEnd();
+          buffer = buffer.slice(idx + 2);
+          // Expect lines: event: X\n data: Y
+          let event = null; let dataJson = null;
+          const lines = frame.split('\n');
+          for (const line of lines) {
+            if (line.startsWith('event:')) event = line.slice(6).trim();
+            else if (line.startsWith('data:')) dataJson = line.slice(5).trim();
+          }
+          if (!event || !dataJson) continue;
+          let payload = null;
+          try { payload = JSON.parse(dataJson); } catch { payload = null; }
+          if (!payload) continue;
+          switch (event) {
+            case 'meta': if (onMeta) onMeta(payload); break;
+            case 'preview': if (onPreview) onPreview(payload.text || ''); break;
+            case 'progress': if (onProgress) onProgress(Math.max(0, Math.min(100, payload.percent || 0))); break;
+            case 'episode': if (onEpisode) onEpisode(payload); break;
+            case 'final': if (onFinal) onFinal(payload); result = { ok: true, data: payload }; break;
+            case 'warn': if (onWarn) onWarn(payload); break;
+            case 'ping': break; // ignore
+            case 'error': throw new Error(payload?.message || 'stream error');
+            default: break;
+          }
+        }
+      }
+      if (!result.ok && onFinal) onFinal({ content: '' });
+      return result.ok ? result : { ok: false, data: result.data };
+    } catch (e) {
+      try { controller.abort(); } catch (_) {}
+      return { ok: false, error: e };
+    }
+  },
+
+  // Queue: cancel / status / patch
+  cancelGenerateJob: (jobId) => api.delete(`/stories/generate/stream/${jobId}`),
+  getGenerateJobStatus: (jobId) => api.get(`/stories/generate/stream/${jobId}/status`),
+  patchGenerateJob: (jobId, patch) => api.patch(`/stories/generate/stream/${jobId}`, patch),
   
   likeStory: (id) =>
     api.post(`/stories/${id}/like`),
@@ -376,36 +464,17 @@ export const storiesAPI = {
     api.delete(`/stories/comments/${commentId}`),
 };
 
-// 📚 웹소설 원작(MVP 더미용)
-export const worksAPI = {
-  // 더미: 작품/회차 데이터 (MVP 시연용)
-  getWork: async (workId) => {
-    // 임시 더미 데이터
-    return {
-      data: {
-        id: workId,
-        title: '달빛 아래의 서사',
-        author: 'Miru',
-        cover_url: null,
-        total_chapters: 3,
-        main_characters: [
-          { id: 'c1', name: '루나', avatar_url: null },
-          { id: 'c2', name: '에단', avatar_url: null },
-          { id: 'c3', name: '세라', avatar_url: null },
-        ],
-      }
-    };
-  },
-  getChapter: async (workId, chapterNumber) => {
-    const chapters = [
-      { no: 1, title: '1화. 초대장', content: '달빛이 비추는 밤, 낡은 서가 사이로 초대장이 떨어졌다...' },
-      { no: 2, title: '2화. 비밀 서고', content: '서고 깊은 곳, 봉인된 문이 미세한 빛을 내뿜었다...' },
-      { no: 3, title: '3화. 달의 계승자', content: '루나는 자신의 운명을 받아들이기로 한다...' },
-    ];
-    const chap = chapters.find(c => c.no === Number(chapterNumber)) || chapters[0];
-    return { data: { id: `${workId}-${chap.no}`, work_id: workId, number: chap.no, ...chap } };
-  },
+// 📖 회차(Chapters) API
+export const chaptersAPI = {
+  getByStory: (storyId, order = 'asc') => api.get(`/chapters/by-story/${storyId}`, { params: { order } }),
+  create: (data) => api.post('/chapters/', data),
+  getOne: (chapterId) => api.get(`/chapters/${chapterId}`),
+  update: (chapterId, data) => api.put(`/chapters/${chapterId}`, data),
+  delete: (chapterId) => api.delete(`/chapters/${chapterId}`),
 };
+
+// 📚 웹소설 원작(MVP 더미용)
+// worksAPI 더미 제거됨
 
 // ✨ 스토리 임포터 관련 API
 export const storyImporterAPI = {
@@ -452,7 +521,7 @@ export const paymentAPI = {
 
 // 📁 파일 관련 API
 export const filesAPI = {
-  uploadImages: (files) => {
+  uploadImages: (files, onProgress) => {
     const formData = new FormData();
     files.forEach(file => {
       formData.append('files', file);
@@ -461,6 +530,13 @@ export const filesAPI = {
       headers: {
         'Content-Type': 'multipart/form-data',
       },
+      onUploadProgress: (evt) => {
+        if (!onProgress) return;
+        const total = evt.total || 0;
+        const loaded = evt.loaded || 0;
+        const percent = total ? Math.round((loaded / total) * 100) : 0;
+        try { onProgress(percent); } catch (_) {}
+      }
     });
   },
 };

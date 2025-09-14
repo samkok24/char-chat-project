@@ -6,6 +6,7 @@ import { DEFAULT_SQUARE_URI } from '../lib/placeholder';
 import { MessageCircle, Heart, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
+import { Badge } from './ui/badge';
 import { formatCount } from '../lib/format';
 
 const TrendingItem = ({ character }) => {
@@ -16,7 +17,7 @@ const TrendingItem = ({ character }) => {
   return (
     <li>
       <Link to={`/characters/${character?.id}`} className="flex gap-3 items-start">
-        <div className="relative rounded-xl overflow-hidden flex-shrink-0" style={{ width: 89, height: 138 }}>
+        <div className={`relative rounded-xl overflow-hidden flex-shrink-0 border ${character?.source_type === 'IMPORTED' ? 'border-blue-500/40' : 'border-purple-500/40'}`} style={{ width: 89, height: 138 }}>
           <img
             src={imgSrc}
             alt={character?.name}
@@ -25,6 +26,13 @@ const TrendingItem = ({ character }) => {
             draggable="false"
             loading="lazy"
           />
+          <div className="absolute top-1 left-1">
+            {(character?.source_type === 'IMPORTED') ? (
+              <Badge className="bg-blue-600 text-white hover:bg-blue-600">웹소설</Badge>
+            ) : (
+              <Badge className="bg-purple-600 text-white hover:bg-purple-600">캐릭터</Badge>
+            )}
+          </div>
           <div className="absolute bottom-1 right-1 py-0.5 px-1.5 rounded bg-black/60 text-xs text-gray-100 flex items-center gap-2">
             <span className="inline-flex items-center gap-1"><MessageCircle className="w-3 h-3" />{formatCount(character?.chat_count ?? 0)}</span>
             <span className="inline-flex items-center gap-1"><Heart className="w-3 h-3" />{formatCount(character?.like_count ?? 0)}</span>
@@ -78,7 +86,7 @@ const TrendingCharacters = () => {
     staleTime: 5 * 60 * 1000,
   });
 
-  const pageSize = 9;
+  const pageSize = 8;
   const [page, setPage] = useState(0);
   const items = data || [];
   const pageCount = Math.max(1, Math.ceil(items.length / pageSize));
@@ -104,7 +112,7 @@ const TrendingCharacters = () => {
   return (
     <section className="mt-8">
       <div className="flex items-center justify-between mb-3">
-        <h2 className="text-lg font-bold text-white">인기 대화</h2>
+        <h2 className="text-lg font-bold text-white">인기 캐릭터 TOP</h2>
         {hasCarousel && (
           <div className="flex items-center gap-2">
             <button
@@ -126,8 +134,8 @@ const TrendingCharacters = () => {
           </div>
         )}
       </div>
-      <ul className="grid grid-cols-3 gap-6">
-        {isLoading && Array.from({ length: 9 }).map((_, idx) => (
+      <ul className="grid grid-cols-4 gap-6">
+        {isLoading && Array.from({ length: 8 }).map((_, idx) => (
           <TrendingSkeleton key={idx} />
         ))}
         {!isLoading && !isError && visibleItems.map((c) => (

@@ -3,10 +3,11 @@
  */
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import ErrorBoundary from '../components/ErrorBoundary';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useSocket } from '../contexts/SocketContext';
-import { charactersAPI, chatAPI, usersAPI } from '../lib/api'; // usersAPI 추가
+import { charactersAPI, chatAPI, usersAPI, origChatAPI } from '../lib/api'; // usersAPI 추가
 import { resolveImageUrl, getCharacterPrimaryImage, buildPortraitSrcSet } from '../lib/images';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -59,6 +60,7 @@ import ModelSelectionModal from '../components/ModelSelectionModal';
 
 const ChatPage = () => {
   const { characterId } = useParams();
+  const location = useLocation();
   const navigate = useNavigate();
   const { user } = useAuth();
   const { 
@@ -107,6 +109,18 @@ const ChatPage = () => {
   });
   const [uiTheme, setUiTheme] = useState('system');
   const [typingSpeed, setTypingSpeed] = useState(40);
+  // 원작챗 상태
+  const [isOrigChat, setIsOrigChat] = useState(false);
+  const [origAnchor, setOrigAnchor] = useState(null);
+  const [origStoryId, setOrigStoryId] = useState(null);
+  const [origTotalChapters, setOrigTotalChapters] = useState(null);
+  const [origRangeFrom, setOrigRangeFrom] = useState(null);
+  const [origRangeTo, setOrigRangeTo] = useState(null);
+  const [relTrust, setRelTrust] = useState(50);
+  const [relAffinity, setRelAffinity] = useState(50);
+  const [relTension, setRelTension] = useState(50);
+  const [pendingChoices, setPendingChoices] = useState([]);
+  const [rangeWarning, setRangeWarning] = useState('');
   
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
@@ -158,11 +172,59 @@ const ChatPage = () => {
           // ignore image collection failure
         }
 
-        // 2. 🔥 채팅방 정보 가져오기 또는 생성 (CAVEDUCK 스타일)
-        const roomResponse = await chatAPI.startChat(characterId);
-        const roomId = roomResponse.data.id;
+        // 2. 🔥 채팅방 정보 가져오기 또는 생성
+        const params = new URLSearchParams(location.search || '');
+        const explicitRoom = params.get('room');
+        const forceNew = params.get('new') === '1';
+        const source = params.get('source');
+        const anchorParam = params.get('anchor');
+        const storyIdParam = params.get('storyId');
+        const rangeFromParam = params.get('rangeFrom');
+        const rangeToParam = params.get('rangeTo');
+        let roomId = explicitRoom || null;
+
+        if (!roomId) {
+          if (forceNew) {
+            const roomResponse = await chatAPI.startChat(characterId);
+            roomId = roomResponse.data.id;
+          } else {
+            // 최근 대화 방 시도: 서버 세션 목록에서 검색
+            try {
+              const sessionsRes = await chatAPI.getChatSessions();
+              const latest = (Array.isArray(sessionsRes.data) ? sessionsRes.data : []).find(s => String(s.character_id) === String(characterId));
+              if (latest) roomId = latest.id;
+            } catch (_) {}
+            if (!roomId) {
+              const roomResponse = await chatAPI.startChat(characterId);
+              roomId = roomResponse.data.id;
+            }
+          }
+        }
         
         setChatRoomId(roomId);
+
+        // 원작챗 컨텍스트 프리페치
+        if (source === 'origchat' && storyIdParam) {
+          try {
+            setIsOrigChat(true);
+            const a = Number(anchorParam) || 1;
+            setOrigAnchor(a);
+            setOrigStoryId(storyIdParam);
+            const rf = rangeFromParam ? Number(rangeFromParam) : null;
+            const rt = rangeToParam ? Number(rangeToParam) : null;
+            if (rf) setOrigRangeFrom(rf);
+            if (rt) setOrigRangeTo(rt);
+            const ctxRes = await origChatAPI.getContextPack(storyIdParam, { anchor: a, characterId });
+            const actor = ctxRes.data?.actor_context || {};
+            const director = ctxRes.data?.director_context || {};
+            if (typeof actor.trust === 'number') setRelTrust(actor.trust);
+            if (typeof actor.affinity === 'number') setRelAffinity(actor.affinity);
+            if (typeof actor.tension === 'number') setRelTension(actor.tension);
+            if (typeof director.total_chapters === 'number') setOrigTotalChapters(director.total_chapters);
+          } catch (_) {
+            // 실패해도 일반 챗은 진행 가능
+          }
+        }
 
       } catch (err) {
         console.error('채팅 초기화 실패:', err);
@@ -221,7 +283,7 @@ const ChatPage = () => {
       // 페이지 이동 시 메시지를 보존하기 위해 초기화하지 않음
       window.removeEventListener('ui:settingsChanged', onUiChanged);
     };
-  }, [characterId, leaveRoom]); // chatRoomId 제거
+  }, [characterId, leaveRoom, location.search]); // chatRoomId 제거
 
   // 테마 적용: documentElement에 data-theme 설정
   useEffect(() => {
@@ -314,12 +376,83 @@ const ChatPage = () => {
     };
     setMessages(prev => [...prev, tempUserMessage]);
     
-    // Send message via socket
-    sendSocketMessage(chatRoomId, messageContent, messageType);
-    setNewMessage('');
-    // 메시지 전송 후 textarea 높이 초기화
-    if (inputRef.current) {
-      inputRef.current.style.height = 'auto';
+    // 원작챗이면 HTTP 턴 호출, 아니면 소켓 전송
+    if (isOrigChat && origStoryId) {
+      try {
+        const resp = await origChatAPI.turn({ room_id: chatRoomId, user_text: messageContent });
+        const assistantText = resp.data?.assistant || '';
+        const meta = resp.data?.meta || {};
+        const aiMessage = {
+          id: `temp-ai-${Date.now()}`,
+          roomId: chatRoomId,
+          senderType: 'assistant',
+          content: assistantText,
+          created_at: new Date().toISOString()
+        };
+        setMessages(prev => [...prev, aiMessage]);
+        // 관계 미터 업데이트(클램핑)
+        const clamp = (v) => Math.max(0, Math.min(100, v));
+        const d = meta.deltas || {};
+        if (typeof d.trust === 'number') setRelTrust(prev => clamp((prev ?? 50) + d.trust));
+        if (typeof d.affinity === 'number') setRelAffinity(prev => clamp((prev ?? 50) + d.affinity));
+        if (typeof d.tension === 'number') setRelTension(prev => clamp((prev ?? 50) + d.tension));
+        setPendingChoices(Array.isArray(meta.choices) ? meta.choices : []);
+        // 경고 문구 처리
+        const warn = meta.warning;
+        setRangeWarning(typeof warn === 'string' ? warn : '');
+      } catch (err) {
+        console.error('원작챗 턴 실패', err);
+      }
+      setNewMessage('');
+      if (inputRef.current) { inputRef.current.style.height = 'auto'; }
+      return;
+    } else {
+      // Send message via socket
+      sendSocketMessage(chatRoomId, messageContent, messageType);
+      setNewMessage('');
+      if (inputRef.current) {
+        inputRef.current.style.height = 'auto';
+      }
+    }
+  };
+
+  const handleSelectChoice = async (choice) => {
+    if (!chatRoomId) return;
+    // 사용자 선택을 즉시 UI에 표시
+    const tempUser = {
+      id: `temp-user-choice-${Date.now()}`,
+      roomId: chatRoomId,
+      senderType: 'user',
+      content: choice.label,
+      isNarration: false,
+      created_at: new Date().toISOString()
+    };
+    setMessages(prev => [...prev, tempUser]);
+    setPendingChoices([]);
+    try {
+      const resp = await origChatAPI.turn({ room_id: chatRoomId, choice_id: choice.id, user_text: choice.label });
+      const assistantText = resp.data?.assistant || '';
+      const meta = resp.data?.meta || {};
+      // 요구사항: 선택 문장에 이어서 말풍선으로 나오기 → 선택 문장 + AI 답변 결합
+      const combined = `${choice.label}\n\n${assistantText}`;
+      const aiMessage = {
+        id: `temp-ai-${Date.now()}`,
+        roomId: chatRoomId,
+        senderType: 'assistant',
+        content: combined,
+        created_at: new Date().toISOString()
+      };
+      setMessages(prev => [...prev, aiMessage]);
+      const clamp = (v) => Math.max(0, Math.min(100, v));
+      const d = meta.deltas || {};
+      if (typeof d.trust === 'number') setRelTrust(prev => clamp((prev ?? 50) + d.trust));
+      if (typeof d.affinity === 'number') setRelAffinity(prev => clamp((prev ?? 50) + d.affinity));
+      if (typeof d.tension === 'number') setRelTension(prev => clamp((prev ?? 50) + d.tension));
+      setPendingChoices(Array.isArray(meta.choices) ? meta.choices : []);
+      const warn = meta.warning;
+      setRangeWarning(typeof warn === 'string' ? warn : '');
+    } catch (e) {
+      console.error('선택 처리 실패', e);
     }
   };
   
@@ -568,68 +701,88 @@ const ChatPage = () => {
                     <h1 className="text-md font-bold text-[var(--app-fg)]">{character?.name}</h1>
                     <span className="text-xs text-gray-400">{aiTyping ? '입력 중...' : '온라인'}</span>
                   </div>
+                  {isOrigChat && (
+                    <div className="flex items-center gap-2 mt-1">
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-orange-400 text-black">원작챗</span>
+                      {origAnchor && (
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-gray-700 text-gray-200">앵커 {origAnchor}화</span>
+                      )}
+                      {(origRangeFrom && origRangeTo) && (
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-gray-700 text-gray-200">범위 {origRangeFrom}~{origRangeTo}화</span>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="icon" className="rounded-full text-[var(--app-fg)] hover:bg-[var(--hover-bg)]">
-                  <MoreVertical className="w-5 h-5" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={() => {
-                  setModalInitialTab('model');
-                  setShowModelModal(true);
-                }}>
-                  <Settings className="w-4 h-4 mr-2" />
-                  모델 설정
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => {
-                  setModalInitialTab('profile');
-                  setShowModelModal(true);
-                }}>
-                  <UserCog className="w-4 h-4 mr-2" />
-                  유저 페르소나
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => {
-                  setModalInitialTab('notes');
-                  setShowModelModal(true);
-                }}>
-                  <Book className="w-4 h-4 mr-2" />
-                  기억노트
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => {
-                  setModalInitialTab('settings');
-                  setShowModelModal(true);
-                }}>
-                  <Settings className="w-4 h-4 mr-2" />
-                  추가 설정
-                </DropdownMenuItem>
-                <AlertDialog>
-                  <AlertDialogTrigger asChild>
-                    <DropdownMenuItem onSelect={(e) => e.preventDefault()}>
-                      <Trash2 className="w-4 h-4 mr-2" />
-                      대화 내용 초기화
-                    </DropdownMenuItem>
-                  </AlertDialogTrigger>
-                  <AlertDialogContent>
-                    <AlertDialogHeader>
-                      <AlertDialogTitle>대화 내용을 초기화하시겠습니까?</AlertDialogTitle>
-                      <AlertDialogDescription>
-                        이 작업은 되돌릴 수 없습니다. 모든 대화 내용이 삭제됩니다.
-                      </AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                      <AlertDialogCancel>취소</AlertDialogCancel>
-                      <AlertDialogAction onClick={handleClearChat}>
-                        초기화
-                      </AlertDialogAction>
-                    </AlertDialogFooter>
-                  </AlertDialogContent>
-                </AlertDialog>
-              </DropdownMenuContent>
-            </DropdownMenu>
+            <div className="flex items-center gap-3">
+              {isOrigChat && (
+                <div className="hidden md:flex items-center gap-2 text-xs">
+                  <div className="flex items-center gap-1"><span className="text-gray-400">신뢰</span><div className="w-16 h-2 bg-gray-700 rounded"><div className="h-2 bg-green-500 rounded" style={{ width: `${relTrust}%` }} /></div></div>
+                  <div className="flex items-center gap-1"><span className="text-gray-400">호감</span><div className="w-16 h-2 bg-gray-700 rounded"><div className="h-2 bg-pink-500 rounded" style={{ width: `${relAffinity}%` }} /></div></div>
+                  <div className="flex items-center gap-1"><span className="text-gray-400">긴장</span><div className="w-16 h-2 bg-gray-700 rounded"><div className="h-2 bg-yellow-400 rounded" style={{ width: `${relTension}%` }} /></div></div>
+                </div>
+              )}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="icon" className="rounded-full text-[var(--app-fg)] hover:bg-[var(--hover-bg)]">
+                    <MoreVertical className="w-5 h-5" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={() => {
+                    setModalInitialTab('model');
+                    setShowModelModal(true);
+                  }}>
+                    <Settings className="w-4 h-4 mr-2" />
+                    모델 설정
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => {
+                    setModalInitialTab('profile');
+                    setShowModelModal(true);
+                  }}>
+                    <UserCog className="w-4 h-4 mr-2" />
+                    유저 페르소나
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => {
+                    setModalInitialTab('notes');
+                    setShowModelModal(true);
+                  }}>
+                    <Book className="w-4 h-4 mr-2" />
+                    기억노트
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => {
+                    setModalInitialTab('settings');
+                    setShowModelModal(true);
+                  }}>
+                    <Settings className="w-4 h-4 mr-2" />
+                    추가 설정
+                  </DropdownMenuItem>
+                  <AlertDialog>
+                    <AlertDialogTrigger asChild>
+                      <DropdownMenuItem onSelect={(e) => e.preventDefault()}>
+                        <Trash2 className="w-4 h-4 mr-2" />
+                        대화 내용 초기화
+                      </DropdownMenuItem>
+                    </AlertDialogTrigger>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>대화 내용을 초기화하시겠습니까?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                          이 작업은 되돌릴 수 없습니다. 모든 대화 내용이 삭제됩니다.
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel>취소</AlertDialogCancel>
+                        <AlertDialogAction onClick={handleClearChat}>
+                          초기화
+                        </AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
           </div>
         </div>
       </header>
@@ -696,7 +849,7 @@ const ChatPage = () => {
               </p>
             </div>
           ) : (
-            <>
+            <ErrorBoundary>
               {messages.map((message, index) => (
                 <MessageBubble 
                   key={message.id || `msg-${index}`} 
@@ -704,6 +857,28 @@ const ChatPage = () => {
                   isLast={index === messages.length - 1 && !aiTyping} 
                 />
               ))}
+              {/* 범위 가드 경고 문구 */}
+              {isOrigChat && rangeWarning && (
+                <div className="mt-2 ml-12 max-w-full sm:max-w-[85%]">
+                  <div className="text-xs text-red-400">{rangeWarning}</div>
+                </div>
+              )}
+              {/* 선택지: 채팅창 안에 표시 */}
+              {isOrigChat && pendingChoices && pendingChoices.length > 0 && (
+                <div className="mt-3 ml-12 max-w-full sm:max-w-[85%]">
+                  <div className="space-y-2">
+                    {pendingChoices.map((c) => (
+                      <button
+                        key={c.id}
+                        onClick={() => handleSelectChoice(c)}
+                        className="w-full text-left px-4 py-2 rounded-xl bg-white/10 text-white border border-gray-700 hover:bg-white/15"
+                      >
+                        {c.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
               {aiTyping && (
                 <div className="flex items-start space-x-3">
                   <Avatar className="w-8 h-8 flex-shrink-0">
@@ -721,7 +896,7 @@ const ChatPage = () => {
                   </div>
                 </div>
               )}
-            </>
+            </ErrorBoundary>
           )}
           <div ref={messagesEndRef} />
         </div>
@@ -731,6 +906,7 @@ const ChatPage = () => {
 
       {/* 입력 폼 */}
       <footer className="bg-[var(--footer-bg)] text-[var(--app-fg)] border-t border-gray-800 md:p-1">
+        <ErrorBoundary>
         <div className="hidden lg:flex lg:w-[1040px] lg:mx-auto lg:items-center">
           {/* 왼쪽: 미니 갤러리 (이미지 아래) */}
           <div className="w-[480px] pr-4 items-center">
@@ -792,6 +968,7 @@ const ChatPage = () => {
           
           {/* 오른쪽: 채팅 입력 컨테이너 (채팅 메시지 영역 아래) */}
           <div className="w-[560px]">
+          <ErrorBoundary>
           <form onSubmit={handleSendMessage} className="flex w-full items-center gap-2">
             {/* 모델 선택 버튼 */}
             <Button
@@ -839,11 +1016,14 @@ const ChatPage = () => {
               <Send className="w-5 h-5" />
             </Button>
           </form>
+          </ErrorBoundary>
           </div>
         </div>
+        </ErrorBoundary>
         
         {/* 모바일용 입력 컨테이너 */}
         <div className="lg:hidden w-full">
+          <ErrorBoundary>
           <form onSubmit={handleSendMessage} className="flex w-full items-center gap-2">
             {/* 모델 선택 버튼 */}
             <Button
@@ -891,10 +1071,12 @@ const ChatPage = () => {
               <Send className="w-5 h-5" />
             </Button>
           </form>
+          </ErrorBoundary>
         </div>
       </footer>
 
       {/* 모델 선택 모달 */}
+      <ErrorBoundary>
       <ModelSelectionModal
         isOpen={showModelModal}
         onClose={() => setShowModelModal(false)}
@@ -905,8 +1087,10 @@ const ChatPage = () => {
         characterName={character?.name}
         characterId={character?.id}
       />
+      </ErrorBoundary>
 
       {/* 재생성 모달 */}
+      <ErrorBoundary>
       <AlertDialog open={regenOpen} onOpenChange={setRegenOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -920,6 +1104,7 @@ const ChatPage = () => {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      </ErrorBoundary>
     </div>
   );
 };

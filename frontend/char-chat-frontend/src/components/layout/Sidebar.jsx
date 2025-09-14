@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { Link, NavLink, useNavigate } from 'react-router-dom';
-import { chatAPI, charactersAPI } from '../../lib/api';
+import { chatAPI, charactersAPI, storiesAPI } from '../../lib/api';
 import { useAuth } from '../../contexts/AuthContext';
 import { Avatar, AvatarFallback, AvatarImage } from '../ui/avatar';
 import { resolveImageUrl, getCharacterPrimaryImage } from '../../lib/images';
+import { getReadingProgress, getReadingProgressAt } from '../../lib/reading';
 import { Button } from '../ui/button';
 import { MessageSquare, Plus, Home, Star, User, History, UserCog, LogOut, Settings, Gem, BookOpen, LogIn, UserPlus } from 'lucide-react';
 import { Skeleton } from '../ui/skeleton';
@@ -24,6 +25,7 @@ const Sidebar = () => {
   const [chatRooms, setChatRooms] = useState([]);
   const [loading, setLoading] = useState(true);
   const [characterImageById, setCharacterImageById] = useState({});
+  const [recentStories, setRecentStories] = useState([]);
   const [showPersonaModal, setShowPersonaModal] = useState(false);
   const { user, logout, isAuthenticated } = useAuth();
   const navigate = useNavigate();
@@ -72,6 +74,30 @@ const Sidebar = () => {
         }));
         setCharacterImageById(Object.fromEntries(entries));
       }
+      // 최근 본 웹소설: localStorage 키 스캔 후 존재하는 스토리만 로드
+      try {
+        const keys = Object.keys(localStorage || {}).filter(k => k.startsWith('reader_progress:'));
+        const pairs = keys.map(k => {
+          const id = k.replace('reader_progress:', '');
+          return { id, lastNo: getReadingProgress(id), at: getReadingProgressAt(id) };
+        });
+        // 최근 시각 순으로 정렬 후 최대 8개
+        const ids = pairs.sort((a,b) => (b.at||0) - (a.at||0)).slice(0, 8).map(p => p.id);
+        const stories = await Promise.all(ids.map(async (id) => {
+          try {
+            const res = await storiesAPI.getStory(id);
+            return res.data;
+          } catch(_) { return null; }
+        }));
+        const list = stories.filter(Boolean).map(s => ({
+          id: s.id,
+          title: s.title,
+          cover_url: s.cover_url,
+          last_no: getReadingProgress(s.id),
+          at: getReadingProgressAt(s.id)
+        }));
+        setRecentStories(list);
+      } catch(_) { setRecentStories([]); }
     } catch (error) {
       console.error('채팅방 목록을 불러오는데 실패했습니다.', error);
     } finally {
@@ -147,7 +173,7 @@ const Sidebar = () => {
       </div>
       <div className="px-4 pb-4">
         <Link
-          to="/story-importer"
+          to="/works/create"
           onClick={(e) => {
             if (!isAuthenticated) {
               e.preventDefault();
@@ -157,7 +183,7 @@ const Sidebar = () => {
           className="flex items-center justify-center w-full px-4 py-2.5 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors font-medium text-sm"
         >
           <BookOpen className="w-5 h-5 mr-2" />
-          소설로 생성
+          작품 쓰기
         </Link>
       </div>
 
@@ -187,37 +213,54 @@ const Sidebar = () => {
                   <Skeleton className="h-4 w-32" />
                 </div>
               ))
-            ) : chatRooms.length > 0 ? (
-              chatRooms.map(room => (
-                <NavLink
-                  key={room.id}
-                  to={`/ws/chat/${room.character.id}`}
-                  className={({ isActive }) =>
-                    `flex items-center px-4 py-2 text-sm transition-colors rounded-lg ${
-                      isActive
-                        ? 'bg-purple-600 text-white'
-                        : 'text-gray-300 hover:bg-gray-700 hover:text-white'
-                    }`
-                  }
-                >
-                  <Avatar className="w-8 h-8 mr-3 rounded-md">
-                    <AvatarImage className="object-cover object-top" src={characterImageById[room.character.id] || getCharacterPrimaryImage(room.character)} />
-                    <AvatarFallback className="bg-purple-600 text-white text-xs rounded-md">
-                      {room.character.name.charAt(0)}
-                    </AvatarFallback>
-                  </Avatar>
-                  <div className="flex-1 min-w-0 flex items-center justify-between gap-2">
-                    <span className="truncate">{room.character.name}</span>
-                    {(room.last_message_time || room.updated_at || room.created_at) && (
-                      <span className="text-xs text-gray-400 flex-shrink-0">
-                        {formatRelativeTime(room.last_message_time || room.updated_at || room.created_at)}
-                      </span>
-                    )}
-                  </div>
-                </NavLink>
-              ))
             ) : (
-              <p className="px-4 text-sm text-gray-500">대화 내역이 없습니다</p>
+              (() => {
+                // 채팅방(캐릭터) + 최근 웹소설을 하나의 리스트로 섞어서 최근성 기준 정렬
+                const chatItems = (chatRooms || []).map((room) => ({
+                  kind: 'chat',
+                  id: room.id,
+                  title: room.character?.name || '캐릭터',
+                  thumb: characterImageById[room.character?.id] || getCharacterPrimaryImage(room.character || {}),
+                  at: new Date(room.last_message_time || room.updated_at || room.created_at || 0).getTime() || 0,
+                  href: `/ws/chat/${room.character?.id}`,
+                  is_origchat: !!room.is_origchat,
+                }));
+                const storyItems = (recentStories || []).map((s) => ({
+                  kind: 'story',
+                  id: s.id,
+                  title: s.title,
+                  thumb: resolveImageUrl(s.cover_url),
+                  at: s.at || 0,
+                  href: `/stories/${s.id}/chapters/${Math.max(1, Number(s.last_no) || 1)}`,
+                  badge: `${Math.max(1, Number(s.last_no) || 1)}화`,
+                }));
+                const mixed = [...chatItems, ...storyItems].sort((a,b) => (b.at||0) - (a.at||0));
+                if (mixed.length === 0) {
+                  return <p className="px-4 text-sm text-gray-500">최근 항목이 없습니다</p>;
+                }
+                return mixed.map((item) => (
+                  <NavLink
+                    key={`${item.kind}-${item.id}`}
+                    to={item.href}
+                    className={({ isActive }) =>
+                      `flex items-center px-4 py-2 text-sm transition-colors rounded-lg ${
+                        isActive ? 'bg-purple-600 text-white' : 'text-gray-300 hover:bg-gray-700 hover:text-white'
+                      }`
+                    }
+                  >
+                    <Avatar className="w-8 h-8 mr-3 rounded-md">
+                      <AvatarImage className="object-cover object-top" src={item.thumb} />
+                      <AvatarFallback className={`${item.kind==='story' ? 'bg-blue-600' : (item.is_origchat ? 'bg-orange-500' : 'bg-purple-600')} text-white text-xs rounded-md`}>
+                        {item.kind==='story' ? '웹' : (item.is_origchat ? '원' : (item.title?.charAt(0) || 'C'))}
+                      </AvatarFallback>
+                    </Avatar>
+                    <div className="flex-1 min-w-0 flex items-center justify-between gap-2">
+                      <span className="truncate">{item.title}</span>
+                      <span className="text-xs text-gray-400 flex-shrink-0">{item.kind==='story' ? item.badge : formatRelativeTime(item.at)}</span>
+                    </div>
+                  </NavLink>
+                ));
+              })()
             )}
           </div>
         </div>

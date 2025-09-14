@@ -4,9 +4,9 @@
 
 import React, { useState, useEffect } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../contexts/AuthContext';
-import { charactersAPI, usersAPI } from '../lib/api';
+import { charactersAPI, usersAPI, storiesAPI } from '../lib/api';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
@@ -31,6 +31,7 @@ import {
 import { formatCount } from '../lib/format';
 import AppLayout from '../components/layout/AppLayout';
 import { CharacterCard as SharedCharacterCard, CharacterCardSkeleton as SharedCharacterCardSkeleton } from '../components/CharacterCard';
+import StoryExploreCard from '../components/StoryExploreCard';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../components/ui/tabs';
 
 // 좋아요한 캐릭터 탭 컴포넌트
@@ -285,10 +286,11 @@ const MyCharactersPage = () => {
           </Button>
         </div>
 
-        <Tabs defaultValue={location.hash === '#favorites' ? 'favorites' : 'mine'} className="mt-2">
+        <Tabs defaultValue={location.hash === '#favorites' ? 'favorites' : (location.hash === '#stories' ? 'stories' : 'mine')} className="mt-2">
           <TabsList className="bg-gray-800 border border-gray-700">
-            <TabsTrigger value="mine">내가 만든 캐릭터</TabsTrigger>
-            <TabsTrigger value="favorites">내가 좋아하는 캐릭터</TabsTrigger>
+            <TabsTrigger value="mine" className="text-gray-200 data-[state=active]:bg-yellow-500 data-[state=active]:text-black">내가 만든 캐릭터</TabsTrigger>
+            <TabsTrigger value="stories" className="text-gray-200 data-[state=active]:bg-yellow-500 data-[state=active]:text-black">내가 쓴 작품</TabsTrigger>
+            <TabsTrigger value="favorites" className="text-gray-200 data-[state=active]:bg-yellow-500 data-[state=active]:text-black">내가 좋아하는 캐릭터</TabsTrigger>
           </TabsList>
           {/* 내가 만든 캐릭터 탭 */}
           <TabsContent value="mine">
@@ -296,7 +298,25 @@ const MyCharactersPage = () => {
             {characters.length > 0 ? (
               <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 mt-4">
                 {characters.map((character) => (
-                  <SharedCharacterCard key={character.id} character={character} />
+                  <div key={character.id} className="relative group" onClick={() => navigate(`/characters/${character.id}`, { state: { fromMyGrid: true } })}>
+                    <SharedCharacterCard character={character} />
+                    <div className="absolute top-1 right-1 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button
+                        title="수정"
+                        className="w-7 h-7 rounded bg-black/70 text-white hover:bg-black/90 flex items-center justify-center"
+                        onClick={(e)=>{ e.stopPropagation(); navigate(`/characters/${character.id}/edit`); }}
+                      >
+                        <Edit className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        title="삭제"
+                        className="w-7 h-7 rounded bg-black/70 text-white hover:bg-black/90 flex items-center justify-center"
+                        onClick={(e)=>{ e.stopPropagation(); deleteCharacter(character.id); }}
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
                 ))}
               </div>
             ) : (
@@ -315,6 +335,11 @@ const MyCharactersPage = () => {
             )}
           </TabsContent>
 
+          {/* 내가 쓴 작품 탭 */}
+          <TabsContent value="stories">
+            <MyStoriesTab />
+          </TabsContent>
+
           {/* 내가 좋아하는 캐릭터 탭 */}
           <TabsContent value="favorites">
             <FavoritesTab />
@@ -323,6 +348,74 @@ const MyCharactersPage = () => {
       </main>
     </div>
     </AppLayout>
+  );
+};
+
+// 내가 쓴 작품 탭 컴포넌트
+const MyStoriesTab = () => {
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const { data, isLoading, isError, refetch } = useQuery({
+    queryKey: ['my-stories'],
+    queryFn: async () => {
+      const res = await storiesAPI.getMyStories({ limit: 100 });
+      const items = Array.isArray(res.data?.stories) ? res.data.stories : [];
+      return items;
+    }
+  });
+
+  const handleDelete = async (id) => {
+    if (!window.confirm('작품을 삭제하시겠습니까?')) return;
+    try {
+      await storiesAPI.deleteStory(id);
+      // 내 리스트 즉시 갱신
+      refetch();
+      // 홈 화면 섹션들 강제 갱신
+      queryClient.invalidateQueries({ queryKey: ['top-stories-views'] });
+      queryClient.invalidateQueries({ queryKey: ['explore-stories'] });
+    } catch (_) {}
+  };
+
+  if (isLoading) {
+    return (
+      <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 mt-4">
+        {Array.from({ length: 12 }).map((_, i) => (
+          <div key={i} className="bg-gray-800 rounded-xl h-[280px] border border-gray-700" />
+        ))}
+      </div>
+    );
+  }
+  if (isError) {
+    return <div className="text-red-400 mt-4">내가 쓴 작품을 불러오지 못했습니다.</div>;
+  }
+  if (!data || data.length === 0) {
+    return <div className="text-gray-400 mt-4">아직 작성한 작품이 없습니다.</div>;
+  }
+
+  return (
+    <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 mt-4">
+      {data.map(story => (
+        <div key={story.id} className="relative group" onClick={()=>navigate(`/stories/${story.id}`, { state: { fromMyGrid: true } })}>
+          <StoryExploreCard story={story} />
+          <div className="absolute top-1 right-1 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+            <button
+              title="수정"
+              className="w-7 h-7 rounded bg-black/70 text-white hover:bg-black/90 flex items-center justify-center"
+              onClick={(e)=>{ e.stopPropagation(); navigate(`/stories/${story.id}/edit`); }}
+            >
+              <Edit className="w-3.5 h-3.5" />
+            </button>
+            <button
+              title="삭제"
+              className="w-7 h-7 rounded bg-black/70 text-white hover:bg-black/90 flex items-center justify-center"
+              onClick={(e)=>{ e.stopPropagation(); handleDelete(story.id); }}
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+      ))}
+    </div>
   );
 };
 

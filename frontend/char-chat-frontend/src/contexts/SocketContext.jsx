@@ -35,10 +35,12 @@ export const SocketProvider = ({ children }) => {
       const token = localStorage.getItem('access_token');
       if (token) {
         const newSocket = io(SOCKET_URL, {
-          auth: {
-            token: token,
-          },
+          auth: { token },
           transports: ['websocket', 'polling'],
+          reconnection: true,
+          reconnectionAttempts: 8,
+          reconnectionDelay: 500,
+          reconnectionDelayMax: 5000,
         });
 
         newSocket.on('connect', () => {
@@ -47,7 +49,9 @@ export const SocketProvider = ({ children }) => {
         });
 
         newSocket.on('disconnect', (reason) => {
-          console.log('Socket 연결 해제:', reason);
+          if (reason !== 'io client disconnect') {
+            console.log('Socket 연결 해제:', reason);
+          }
           setConnected(false);
         });
 

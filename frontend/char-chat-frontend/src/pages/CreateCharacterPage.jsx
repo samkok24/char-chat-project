@@ -3,10 +3,11 @@
  * 5단계 탭 시스템: 기본정보 → 미디어 → 예시대화 → 호감도 → 공개설정
  */
 
-import React, { useState, useEffect, useRef, useMemo } from 'react'; // useMemo 추가
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'; // useMemo 추가
 import { useNavigate, Link, useParams, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { charactersAPI, filesAPI, API_BASE_URL, tagsAPI, api } from '../lib/api';
+import { replacePromptTokens } from '../lib/prompt';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
@@ -38,11 +39,17 @@ import {
   Mic,
   Palette,
   X,
-  Wand2 // Wand2 아이콘 추가
+  Wand2, // Wand2 아이콘 추가
+  Eye
 } from 'lucide-react';
 import { StoryImporterModal } from '../components/StoryImporterModal'; // StoryImporterModal 컴포넌트 추가
 import AvatarCropModal from '../components/AvatarCropModal';
 import TagSelectModal from '../components/TagSelectModal';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../components/ui/dialog';
+import { CharacterCard } from '../components/CharacterCard';
+import DropzoneGallery from '../components/DropzoneGallery';
+import ErrorBoundary from '../components/ErrorBoundary';
+import { z } from 'zod';
 
 const CreateCharacterPage = () => {
   const { characterId } = useParams();
@@ -112,6 +119,112 @@ const CreateCharacterPage = () => {
   const [pageTitle, setPageTitle] = useState('새 캐릭터 만들기');
   const [isAutoSaving, setIsAutoSaving] = useState(false);
   const [lastSavedAt, setLastSavedAt] = useState(null);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const [isPreviewOpen, setIsPreviewOpen] = useState(false);
+  const [activeSection, setActiveSection] = useState('section-basic');
+  const activeSectionRef = useRef('section-basic');
+  const [fieldErrors, setFieldErrors] = useState({}); // zod 인라인 오류 맵
+  const [draftRestored, setDraftRestored] = useState(false);
+
+  // 토큰 정의
+  const TOKEN_ASSISTANT = '{{assistant}}';
+  const TOKEN_USER = '{{user}}';
+  const ALLOWED_TOKENS = [TOKEN_ASSISTANT, TOKEN_USER];
+  const HEADER_OFFSET = 72;
+
+  // Zod 스키마 정의
+  const validationSchema = useMemo(() => {
+    const tokenRegex = /\{\{[^}]+\}\}/g;
+    const allowedTokens = [TOKEN_ASSISTANT, TOKEN_USER];
+    const noIllegalTokens = (val) => !val || [...(val.matchAll(tokenRegex) || [])].every(m => allowedTokens.includes(m[0]));
+
+    const introductionSceneSchema = z.object({
+      title: z.string().optional(),
+      content: z.string().optional().refine(noIllegalTokens, '허용되지 않은 토큰이 포함됨'),
+      secret: z.string().optional().refine(noIllegalTokens, '허용되지 않은 토큰이 포함됨'),
+    });
+
+    const dialogueSchema = z.object({
+      user_message: z.string().min(1, '사용자 메시지를 입력하세요').refine(noIllegalTokens, '허용되지 않은 토큰이 포함됨'),
+      character_response: z.string().min(1, '캐릭터 응답을 입력하세요').refine(noIllegalTokens, '허용되지 않은 토큰이 포함됨'),
+      order_index: z.number().optional(),
+    });
+
+    return z.object({
+      basic_info: z.object({
+        name: z.string().min(1, '캐릭터 이름을 입력하세요'),
+        description: z.string().min(1, '캐릭터 설명을 입력하세요').refine(noIllegalTokens, '허용되지 않은 토큰이 포함됨'),
+        personality: z.string().optional().refine(noIllegalTokens, '허용되지 않은 토큰이 포함됨'),
+        speech_style: z.string().optional().refine(noIllegalTokens, '허용되지 않은 토큰이 포함됨'),
+        greeting: z.string().optional().refine(noIllegalTokens, '허용되지 않은 토큰이 포함됨'),
+        world_setting: z.string().optional().refine(noIllegalTokens, '허용되지 않은 토큰이 포함됨'),
+        user_display_description: z.string().optional().refine(noIllegalTokens, '허용되지 않은 토큰이 포함됨'),
+        use_custom_description: z.boolean(),
+        character_type: z.string(),
+        base_language: z.string(),
+        introduction_scenes: z.array(introductionSceneSchema),
+      }),
+      media_settings: z.object({
+        avatar_url: z.string().optional(),
+        image_descriptions: z.array(z.object({ url: z.string(), description: z.string().optional() })).optional(),
+        newly_added_files: z.array(z.any()).optional(),
+        voice_settings: z.object({
+          voice_id: z.any().nullable().optional(),
+          voice_style: z.any().nullable().optional(),
+          enabled: z.boolean(),
+        })
+      }),
+      example_dialogues: z.object({
+        dialogues: z.array(dialogueSchema).min(1, '예시 대화를 최소 1개 이상 작성하세요'),
+      }),
+      affinity_system: z.object({
+        has_affinity_system: z.boolean(),
+        affinity_rules: z.string().optional(),
+        affinity_stages: z.array(z.object({
+          min_value: z.number(),
+          max_value: z.number().nullable(),
+          description: z.string(),
+        }))
+      }).superRefine((val, ctx) => {
+        if (val.has_affinity_system && !val.affinity_rules?.trim()) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: '호감도 규칙을 입력하세요',
+            path: ['affinity_rules']
+          });
+        }
+      }),
+      publish_settings: z.object({
+        is_public: z.boolean(),
+        custom_module_id: z.any().nullable().optional(),
+        use_translation: z.boolean(),
+      }),
+    });
+  }, []);
+
+  const validateForm = useCallback(() => {
+    const result = validationSchema.safeParse(formData);
+    if (result.success) {
+      setFieldErrors({});
+      return result;
+    }
+    const issues = result.error.issues || [];
+    const map = {};
+    for (const issue of issues) {
+      const key = issue.path.join('.');
+      if (!map[key]) map[key] = issue.message;
+    }
+    setFieldErrors(map);
+    return result;
+  }, [formData, validationSchema]);
+
+  // 입력 디바운스 검증
+  useEffect(() => {
+    const t = setTimeout(() => {
+      try { validateForm(); } catch (_) {}
+    }, 300);
+    return () => clearTimeout(t);
+  }, [formData, validateForm]);
 
   const { isAuthenticated } = useAuth();
   const [allTags, setAllTags] = useState([]);
@@ -131,12 +244,13 @@ const CreateCharacterPage = () => {
   useEffect(() => {
     const key = `cc_draft_${isEditMode ? characterId : 'new'}`;
     // 초기 로드 시 기존 초안 복원
-    if (!isEditMode && location.state?.restored !== true) {
+    if (!isEditMode && !draftRestored) {
       try {
         const raw = localStorage.getItem(key);
         if (raw) {
           const draft = JSON.parse(raw);
           setFormData(prev => ({ ...prev, ...draft }));
+          setDraftRestored(true);
         }
       } catch (_) {}
     }
@@ -146,18 +260,193 @@ const CreateCharacterPage = () => {
         setIsAutoSaving(true);
         localStorage.setItem(key, JSON.stringify(formData));
         setLastSavedAt(Date.now());
+        setHasUnsavedChanges(false);
       } catch (_) {}
       setIsAutoSaving(false);
     }, 1500);
     return () => clearTimeout(t);
-  }, [formData, isEditMode, characterId, location.state]);
+  }, [formData, isEditMode, characterId, draftRestored]);
 
   const handleManualDraftSave = () => {
     try {
       const key = `cc_draft_${isEditMode ? characterId : 'new'}`;
       localStorage.setItem(key, JSON.stringify(formData));
       setLastSavedAt(Date.now());
+      setHasUnsavedChanges(false);
     } catch (_) {}
+  };
+
+  // 폼 변경 시 이탈 경고 플래그 설정
+  useEffect(() => {
+    setHasUnsavedChanges(true);
+  }, [formData]);
+
+  // 브라우저 이탈 경고
+  useEffect(() => {
+    const handler = (e) => {
+      if (hasUnsavedChanges) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [hasUnsavedChanges]);
+
+  // 섹션별 검증(필수값/토큰/리스트 유효성)
+  const sectionErrors = useMemo(() => {
+    const errors = {
+      basic: 0,
+      media: 0,
+      dialogues: 0,
+      affinity: 0,
+      publish: 0,
+      total: 0,
+    };
+    // 기본 정보 필수값
+    if (!formData.basic_info.name?.trim()) errors.basic += 1;
+    if (!formData.basic_info.description?.trim()) errors.basic += 1;
+
+    // 허용되지 않은 토큰 사용 검사
+    const tokenFields = [
+      formData.basic_info.description,
+      formData.basic_info.personality,
+      formData.basic_info.speech_style,
+      formData.basic_info.greeting,
+      formData.basic_info.world_setting,
+      formData.basic_info.user_display_description,
+      ...(formData.basic_info.introduction_scenes || []).flatMap(s => [s.content, s.secret]),
+      ...(formData.example_dialogues.dialogues || []).flatMap(d => [d.user_message, d.character_response]),
+    ];
+    const invalidTokenCount = tokenFields.reduce((acc, text) => {
+      if (!text) return acc;
+      const matches = [...(text.matchAll(/\{\{[^}]+\}\}/g) || [])].map(m => m[0]);
+      const invalid = matches.filter(tok => !ALLOWED_TOKENS.includes(tok));
+      return acc + invalid.length;
+    }, 0);
+    if (invalidTokenCount > 0) {
+      errors.basic += invalidTokenCount; // 기본 섹션에 합산해 총 오류 배지에 반영
+    }
+
+    // 예시 대화: 최소 1개, 각 항목은 양쪽 메시지 필요
+    const ds = formData.example_dialogues.dialogues || [];
+    if (ds.length === 0) {
+      errors.dialogues += 1;
+    } else {
+      const incomplete = ds.filter(d => !d.user_message?.trim() || !d.character_response?.trim()).length;
+      errors.dialogues += incomplete;
+    }
+
+    // 호감도: 활성화 시 규칙 필수 + 구간 겹침/순서 검사
+    if (formData.affinity_system.has_affinity_system) {
+      if (!formData.affinity_system.affinity_rules?.trim()) errors.affinity += 1;
+      const stages = formData.affinity_system.affinity_stages || [];
+      for (let i = 0; i < stages.length; i += 1) {
+        const a = stages[i];
+        const minA = Number(a.min_value) || 0;
+        const maxA = a.max_value == null ? Number.POSITIVE_INFINITY : Number(a.max_value);
+        if (maxA < minA) { errors.affinity += 1; break; }
+        for (let j = i+1; j < stages.length; j += 1) {
+          const b = stages[j];
+          const minB = Number(b.min_value) || 0;
+          const maxB = b.max_value == null ? Number.POSITIVE_INFINITY : Number(b.max_value);
+          const overlap = Math.max(minA, minB) <= Math.min(maxA, maxB);
+          if (overlap) { errors.affinity += 1; i = stages.length; break; }
+        }
+      }
+    }
+
+    errors.total = errors.basic + errors.media + errors.dialogues + errors.affinity + errors.publish;
+    return errors;
+  }, [formData]);
+
+  // 스크롤 스파이: 현재 섹션 추적
+  useEffect(() => {
+    const ids = ['section-basic','section-dialogues','section-affinity','section-publish'];
+    const elements = ids.map(id => document.getElementById(id)).filter(Boolean);
+    if (elements.length === 0) return;
+    const observer = new IntersectionObserver((entries) => {
+      const visible = entries
+        .filter(e => e.isIntersecting)
+        .sort((a,b) => b.intersectionRatio - a.intersectionRatio);
+      if (visible[0]?.target?.id) {
+        const nextId = visible[0].target.id;
+        if (nextId !== activeSectionRef.current) {
+          activeSectionRef.current = nextId;
+          setActiveSection(nextId);
+        }
+      }
+    }, { root: null, rootMargin: '-40% 0px -55% 0px', threshold: [0, 0.25, 0.5, 0.75, 1] });
+    elements.forEach(el => observer.observe(el));
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => { activeSectionRef.current = activeSection; }, [activeSection]);
+
+  // 미리보기용 캐릭터 객체 생성
+  const previewCharacter = useMemo(() => {
+    const firstImage = formData.media_settings.image_descriptions?.[0]?.url || '';
+    const avatar = formData.media_settings.avatar_url || firstImage;
+    const replaceTokens = (text) => (text || '')
+      .replaceAll(TOKEN_ASSISTANT, formData.basic_info.name || '캐릭터')
+      .replaceAll(TOKEN_USER, '나');
+    return {
+      id: 'preview',
+      name: formData.basic_info.name || '제목 미정',
+      description: replaceTokens(formData.basic_info.user_display_description?.trim() || formData.basic_info.description || '설명이 없습니다.'),
+      avatar_url: avatar,
+      thumbnail_url: avatar,
+      chat_count: 0,
+      like_count: 0,
+    };
+  }, [formData]);
+
+  // 토큰 삽입 유틸리티(커서 위치 삽입)
+  const insertAtCursor = (el, value, token) => {
+    try {
+      if (!el || typeof el.selectionStart !== 'number' || typeof el.selectionEnd !== 'number') {
+        return { next: `${value || ''}${token}`, caret: null };
+      }
+      const start = el.selectionStart;
+      const end = el.selectionEnd;
+      const before = (value || '').slice(0, start);
+      const after = (value || '').slice(end);
+      return { next: `${before}${token}${after}`, caret: start + token.length };
+    } catch (_) {
+      return { next: `${value || ''}${token}`, caret: null };
+    }
+  };
+
+  const insertBasicToken = (field, elementId, token) => {
+    const el = typeof document !== 'undefined' ? document.getElementById(elementId) : null;
+    const current = formData.basic_info[field] || '';
+    const { next, caret } = insertAtCursor(el, current, token);
+    updateFormData('basic_info', field, next);
+    if (el && caret !== null) {
+      setTimeout(() => { try { el.focus(); el.setSelectionRange(caret, caret); } catch(_){} }, 0);
+    }
+  };
+
+  const insertIntroToken = (index, subfield, token) => {
+    const elementId = subfield === 'content' ? `intro_content_${index}` : `intro_secret_${index}`;
+    const el = typeof document !== 'undefined' ? document.getElementById(elementId) : null;
+    const current = formData.basic_info.introduction_scenes[index]?.[subfield] || '';
+    const { next, caret } = insertAtCursor(el, current, token);
+    updateIntroductionScene(index, subfield, next);
+    if (el && caret !== null) {
+      setTimeout(() => { try { el.focus(); el.setSelectionRange(caret, caret); } catch(_){} }, 0);
+    }
+  };
+
+  const insertDialogueToken = (index, subfield, token) => {
+    const elementId = subfield === 'user_message' ? `dlg_user_${index}` : `dlg_char_${index}`;
+    const el = typeof document !== 'undefined' ? document.getElementById(elementId) : null;
+    const current = formData.example_dialogues.dialogues[index]?.[subfield] || '';
+    const { next, caret } = insertAtCursor(el, current, token);
+    updateExampleDialogue(index, subfield, next);
+    if (el && caret !== null) {
+      setTimeout(() => { try { el.focus(); el.setSelectionRange(caret, caret); } catch(_){} }, 0);
+    }
   };
 
   // 탭 정보 제거(롱폼)
@@ -345,6 +634,23 @@ const CreateCharacterPage = () => {
     setError('');
 
     try {
+      // Zod 검증
+      const result = validateForm();
+      if (!result.success) {
+        setLoading(false);
+        // 앵커 이동: 첫 오류 섹션으로 스크롤 이동
+        const firstKey = Object.keys(fieldErrors)[0] || '';
+        const sectionId = firstKey.startsWith('basic_info') ? 'section-basic' :
+                          firstKey.startsWith('example_dialogues') ? 'section-dialogues' :
+                          firstKey.startsWith('affinity_system') ? 'section-affinity' :
+                          firstKey.startsWith('publish_settings') ? 'section-publish' : 'section-basic';
+        const el = document.getElementById(sectionId);
+        if (el) {
+          const y = el.getBoundingClientRect().top + window.pageYOffset - HEADER_OFFSET;
+          window.scrollTo({ top: y, behavior: 'smooth' });
+        }
+        return;
+      }
       let uploadedImageUrls = [];
       if (formData.media_settings.newly_added_files.length > 0) {
         const uploadResponse = await filesAPI.uploadImages(formData.media_settings.newly_added_files);
@@ -354,8 +660,23 @@ const CreateCharacterPage = () => {
       const existingImageUrls = formData.media_settings.image_descriptions.map(img => img.url);
       const finalImageUrls = [...existingImageUrls, ...uploadedImageUrls];
 
+      // 요청 직전 단일 치환 레이어
+      const safeDescription = replacePromptTokens(
+        formData.basic_info.description,
+        { assistantName: formData.basic_info.name || '캐릭터', userName: '나' }
+      );
+      const safeUserDisplay = replacePromptTokens(
+        formData.basic_info.user_display_description,
+        { assistantName: formData.basic_info.name || '캐릭터', userName: '나' }
+      );
+
       const characterData = {
         ...formData,
+        basic_info: {
+          ...formData.basic_info,
+          description: safeDescription,
+          user_display_description: safeUserDisplay,
+        },
         media_settings: {
           ...formData.media_settings,
           image_descriptions: finalImageUrls.map(url => ({ description: '', url }))
@@ -473,10 +794,64 @@ const CreateCharacterPage = () => {
 
       {/* 기존 기본 정보 입력 필드 */}
       <div className="space-y-4">
+        {/* 캐릭터 이미지 (AI 자동완성 아래) */}
+        <Card className="p-4 bg-white text-black border border-gray-200">
+          <h3 className="text-lg font-semibold flex items-center mb-3 text-black">
+            <Image className="w-5 h-5 mr-2" />
+            캐릭터 이미지
+          </h3>
+          <ErrorBoundary>
+          <DropzoneGallery
+            existingImages={formData.media_settings.image_descriptions.map(img => ({ url: `${API_BASE_URL}${img.url}`, description: img.description }))}
+            newFiles={formData.media_settings.newly_added_files}
+            onAddFiles={(files) => setFormData(prev => ({
+              ...prev,
+              media_settings: { ...prev.media_settings, newly_added_files: [...prev.media_settings.newly_added_files, ...files] }
+            }))}
+            onRemoveExisting={(index) => handleRemoveExistingImage(index)}
+            onRemoveNew={(index) => handleRemoveNewFile(index)}
+            onReorder={({ from, to, isNew }) => {
+              if (isNew) {
+                setFormData(prev => {
+                  const arr = [...prev.media_settings.newly_added_files];
+                  const item = arr.splice(from, 1)[0];
+                  arr.splice(Math.min(arr.length, Math.max(0, to)), 0, item);
+                  return { ...prev, media_settings: { ...prev.media_settings, newly_added_files: arr } };
+                });
+              } else {
+                setFormData(prev => {
+                  const arr = [...prev.media_settings.image_descriptions];
+                  const item = arr.splice(from, 1)[0];
+                  arr.splice(Math.min(arr.length, Math.max(0, to)), 0, item);
+                  return { ...prev, media_settings: { ...prev.media_settings, image_descriptions: arr } };
+                });
+              }
+            }}
+            onUpload={async (files, onProgress) => {
+              const res = await filesAPI.uploadImages(files, onProgress);
+              const urls = Array.isArray(res.data) ? res.data : [res.data];
+              setFormData(prev => ({
+                ...prev,
+                media_settings: {
+                  ...prev.media_settings,
+                  image_descriptions: [
+                    ...prev.media_settings.image_descriptions,
+                    ...urls.map(u => ({ url: u, description: '' })),
+                  ],
+                  newly_added_files: [],
+                }
+              }));
+              return urls;
+            }}
+          />
+          </ErrorBoundary>
+        </Card>
+
         <div>
           <Label htmlFor="name">캐릭터 이름 *</Label>
           <Input
             id="name"
+            className="mt-4"
             value={formData.basic_info.name}
             onChange={(e) => updateFormData('basic_info', 'name', e.target.value)}
             placeholder="캐릭터 이름을 입력하세요"
@@ -494,7 +869,7 @@ const CreateCharacterPage = () => {
             value={formData.basic_info.character_type} 
             onValueChange={(value) => updateFormData('basic_info', 'character_type', value)}
           >
-            <SelectTrigger>
+            <SelectTrigger className="mt-4">
               <SelectValue placeholder="캐릭터 유형 선택" />
             </SelectTrigger>
             <SelectContent>
@@ -510,7 +885,7 @@ const CreateCharacterPage = () => {
             value={formData.basic_info.base_language} 
             onValueChange={(value) => updateFormData('basic_info', 'base_language', value)}
           >
-            <SelectTrigger>
+            <SelectTrigger className="mt-4">
               <SelectValue placeholder="언어 선택" />
             </SelectTrigger>
             <SelectContent>
@@ -526,6 +901,7 @@ const CreateCharacterPage = () => {
           <Label htmlFor="description">캐릭터 설명 *</Label>
           <Textarea
             id="description"
+            className="mt-4"
             value={formData.basic_info.description}
             onChange={(e) => updateFormData('basic_info', 'description', e.target.value)}
             placeholder="캐릭터에 대한 설명입니다 (캐릭터 설명은 다른 사용자에게도 공개 됩니다)"
@@ -533,42 +909,77 @@ const CreateCharacterPage = () => {
             required
             maxLength={1000}
           />
+          {fieldErrors['basic_info.description'] && (
+            <p className="text-xs text-red-500">{fieldErrors['basic_info.description']}</p>
+          )}
+          <div className="flex items-center gap-2 mt-2">
+            <span className="text-xs text-gray-500">토큰 삽입:</span>
+            <Button type="button" variant="secondary" size="sm" title="{{assistant}} 삽입" onClick={() => insertBasicToken('description','description', TOKEN_ASSISTANT)}>캐릭터</Button>
+            <Button type="button" variant="secondary" size="sm" title="{{user}} 삽입" onClick={() => insertBasicToken('description','description', TOKEN_USER)}>유저</Button>
+          </div>
         </div>
 
         <div>
           <Label htmlFor="personality">성격 및 특징</Label>
           <Textarea
             id="personality"
+            className="mt-4"
             value={formData.basic_info.personality}
             onChange={(e) => updateFormData('basic_info', 'personality', e.target.value)}
             placeholder="캐릭터의 성격과 특징을 자세히 설명해주세요"
             rows={4}
             maxLength={2000}
           />
+          {fieldErrors['basic_info.personality'] && (
+            <p className="text-xs text-red-500">{fieldErrors['basic_info.personality']}</p>
+          )}
+          <div className="flex items-center gap-2 mt-2">
+            <span className="text-xs text-gray-500">토큰 삽입:</span>
+            <Button type="button" variant="secondary" size="sm" title="{{assistant}} 삽입" onClick={() => insertBasicToken('personality','personality', TOKEN_ASSISTANT)}>캐릭터</Button>
+            <Button type="button" variant="secondary" size="sm" title="{{user}} 삽입" onClick={() => insertBasicToken('personality','personality', TOKEN_USER)}>유저</Button>
+          </div>
         </div>
 
         <div>
           <Label htmlFor="speech_style">말투</Label>
           <Textarea
             id="speech_style"
+            className="mt-4"
             value={formData.basic_info.speech_style}
             onChange={(e) => updateFormData('basic_info', 'speech_style', e.target.value)}
             placeholder="캐릭터의 말투를 구체적으로 설명해주세요"
             rows={2}
             maxLength={1000}
           />
+          {fieldErrors['basic_info.speech_style'] && (
+            <p className="text-xs text-red-500">{fieldErrors['basic_info.speech_style']}</p>
+          )}
+          <div className="flex items-center gap-2 mt-2">
+            <span className="text-xs text-gray-500">토큰 삽입:</span>
+            <Button type="button" variant="secondary" size="sm" title="{{assistant}} 삽입" onClick={() => insertBasicToken('speech_style','speech_style', TOKEN_ASSISTANT)}>캐릭터</Button>
+            <Button type="button" variant="secondary" size="sm" title="{{user}} 삽입" onClick={() => insertBasicToken('speech_style','speech_style', TOKEN_USER)}>유저</Button>
+          </div>
         </div>
 
         <div>
           <Label htmlFor="greeting">인사말</Label>
           <Textarea
             id="greeting"
+            className="mt-4"
             value={formData.basic_info.greeting}
             onChange={(e) => updateFormData('basic_info', 'greeting', e.target.value)}
             placeholder="채팅을 시작할 때 캐릭터가 건네는 첫마디"
             rows={2}
             maxLength={500}
           />
+          {fieldErrors['basic_info.greeting'] && (
+            <p className="text-xs text-red-500">{fieldErrors['basic_info.greeting']}</p>
+          )}
+          <div className="flex items-center gap-2 mt-4">
+            <span className="text-xs text-gray-500">토큰 삽입:</span>
+            <Button type="button" variant="secondary" size="sm" title="{{assistant}} 삽입" onClick={() => insertBasicToken('greeting','greeting', TOKEN_ASSISTANT)}>캐릭터</Button>
+            <Button type="button" variant="secondary" size="sm" title="{{user}} 삽입" onClick={() => insertBasicToken('greeting','greeting', TOKEN_USER)}>유저</Button>
+          </div>
         </div>
       </div>
 
@@ -580,12 +991,21 @@ const CreateCharacterPage = () => {
           <Label htmlFor="world_setting">세계관 설정</Label>
           <Textarea
             id="world_setting"
+            className="mt-2"
             value={formData.basic_info.world_setting}
             onChange={(e) => updateFormData('basic_info', 'world_setting', e.target.value)}
             placeholder="이야기의 배경에 대해서 설명해주세요"
             rows={4}
             maxLength={3000}
           />
+          {fieldErrors['basic_info.world_setting'] && (
+            <p className="text-xs text-red-500">{fieldErrors['basic_info.world_setting']}</p>
+          )}
+          <div className="flex items-center gap-2 mt-2">
+            <span className="text-xs text-gray-500">토큰 삽입:</span>
+            <Button type="button" variant="secondary" size="sm" title="{{assistant}} 삽입" onClick={() => insertBasicToken('world_setting','world_setting', TOKEN_ASSISTANT)}>캐릭터</Button>
+            <Button type="button" variant="secondary" size="sm" title="{{user}} 삽입" onClick={() => insertBasicToken('world_setting','world_setting', TOKEN_USER)}>유저</Button>
+          </div>
         </div>
 
         <div className="flex items-center space-x-2">
@@ -596,18 +1016,27 @@ const CreateCharacterPage = () => {
           />
           <Label htmlFor="use_custom_description">사용자에게 보여줄 설명을 별도로 작성할게요</Label>
         </div>
+        {fieldErrors['basic_info.description'] && (
+          <p className="text-xs text-red-500">{fieldErrors['basic_info.description']}</p>
+        )}
 
         {formData.basic_info.use_custom_description && (
           <div>
             <Label htmlFor="user_display_description">사용자용 설명</Label>
             <Textarea
               id="user_display_description"
+              className="mt-2"
               value={formData.basic_info.user_display_description}
               onChange={(e) => updateFormData('basic_info', 'user_display_description', e.target.value)}
               placeholder="사용자에게 보여질 별도의 설명을 작성하세요"
               rows={3}
               maxLength={2000}
             />
+            <div className="flex items-center gap-2 mt-2">
+              <span className="text-xs text-gray-500">토큰 삽입:</span>
+              <Button type="button" variant="secondary" size="sm" title="{{assistant}} 삽입" onClick={() => insertBasicToken('user_display_description','user_display_description', TOKEN_ASSISTANT)}>캐릭터</Button>
+              <Button type="button" variant="secondary" size="sm" title="{{user}} 삽입" onClick={() => insertBasicToken('user_display_description','user_display_description', TOKEN_USER)}>유저</Button>
+            </div>
           </div>
         )}
       </div>
@@ -629,7 +1058,7 @@ const CreateCharacterPage = () => {
         </div>
         
         {formData.basic_info.introduction_scenes.map((scene, index) => (
-          <Card key={index} className="p-4">
+          <Card key={index} className="p-4 bg-white text-black border border-gray-200">
             <div className="flex items-center justify-between mb-3">
               <h4 className="font-medium">#{index + 1} {scene.title || '도입부'}</h4>
               {formData.basic_info.introduction_scenes.length > 1 && (
@@ -646,28 +1075,68 @@ const CreateCharacterPage = () => {
             
             <div className="space-y-3">
               <div>
-                <Label>시작하는 상황을 입력해주세요</Label>
+                <div className="flex items-center justify-between">
+                  <Label className="!text-black">시작하는 상황을 입력해주세요</Label>
+                  <div className="flex gap-1">
+                    <Button type="button" variant="secondary" size="sm" onClick={() => {
+                      setFormData(prev => {
+                        const arr = [...prev.basic_info.introduction_scenes];
+                        if (index === 0) return prev;
+                        const item = arr.splice(index, 1)[0];
+                        arr.splice(index-1, 0, item);
+                        return { ...prev, basic_info: { ...prev.basic_info, introduction_scenes: arr } };
+                      });
+                    }}>위로</Button>
+                    <Button type="button" variant="secondary" size="sm" onClick={() => {
+                      setFormData(prev => {
+                        const arr = [...prev.basic_info.introduction_scenes];
+                        if (index >= arr.length-1) return prev;
+                        const item = arr.splice(index, 1)[0];
+                        arr.splice(index+1, 0, item);
+                        return { ...prev, basic_info: { ...prev.basic_info, introduction_scenes: arr } };
+                      });
+                    }}>아래로</Button>
+                  </div>
+                </div>
                 <Textarea
+                  id={`intro_content_${index}`}
+                  className="mt-4 bg-white text-black placeholder-gray-500 border-gray-300"
                   value={scene.content}
                   onChange={(e) => updateIntroductionScene(index, 'content', e.target.value)}
                   placeholder="시작 할 때 나오는 대사를 입력해주세요."
                   rows={3}
                   maxLength={2000}
                 />
+                {fieldErrors[`basic_info.introduction_scenes.${index}.content`] && (
+                  <p className="text-xs text-red-500">{fieldErrors[`basic_info.introduction_scenes.${index}.content`]}</p>
+                )}
+                <div className="flex items-center gap-2 mt-2">
+                  <span className="text-xs text-gray-500">토큰 삽입:</span>
+                  <Button type="button" variant="secondary" size="sm" title="{{assistant}} 삽입" onClick={() => insertIntroToken(index, 'content', TOKEN_ASSISTANT)}>캐릭터</Button>
+                  <Button type="button" variant="secondary" size="sm" title="{{user}} 삽입" onClick={() => insertIntroToken(index, 'content', TOKEN_USER)}>유저</Button>
+                </div>
               </div>
               
               <div>
-                <Label>비밀 정보 (선택)</Label>
+                <Label className="!text-black">비밀 정보 (선택)</Label>
                 <Textarea
+                  id={`intro_secret_${index}`}
+                  className="mt-4 bg-white text-black placeholder-gray-500 border-gray-300"
                   value={scene.secret}
                   onChange={(e) => updateIntroductionScene(index, 'secret', e.target.value)}
                   placeholder="대화중인 유저에게는 노출되지 않는 정보로, 프롬프트 생성기에 전달 됩니다."
                   rows={2}
                   maxLength={1000}
                 />
-                <p className="text-sm text-gray-500 mt-1">
-                  사용자에게 보여지지 않는 비밀 정보입니다.
-                </p>
+                <p className="text-sm text-gray-600 mt-1">사용자에게 보여지지 않는 비밀 정보입니다.</p>
+                {fieldErrors[`basic_info.introduction_scenes.${index}.secret`] && (
+                  <p className="text-xs text-red-500">{fieldErrors[`basic_info.introduction_scenes.${index}.secret`]}</p>
+                )}
+                <div className="flex items-center gap-2 mt-2">
+                  <span className="text-xs text-gray-600">토큰 삽입:</span>
+                  <Button type="button" variant="secondary" size="sm" title="{{assistant}} 삽입" onClick={() => insertIntroToken(index, 'secret', TOKEN_ASSISTANT)}>캐릭터</Button>
+                  <Button type="button" variant="secondary" size="sm" title="{{user}} 삽입" onClick={() => insertIntroToken(index, 'secret', TOKEN_USER)}>유저</Button>
+                </div>
               </div>
             </div>
           </Card>
@@ -704,111 +1173,52 @@ const CreateCharacterPage = () => {
             이미지 갤러리
           </h3>
           
-          {/* 이미지 업로드 UI */}
           <Card className="p-4">
-            <div className="flex items-center space-x-4">
-              <input
-                type="file"
-                ref={fileInputRef}
-                onChange={handleImageUpload}
-                multiple
-                accept="image/jpeg,image/png,image/webp,image/gif,.jpg,.jpeg,.png,.webp,.gif"
-                className="hidden"
-              />
-              <Button type="button" variant="outline" onClick={() => fileInputRef.current.click()}>
-                <Upload className="w-4 h-4 mr-2" />
-                이미지 업로드
-              </Button>
-              <p className="text-sm text-gray-500">
-                캐릭터와 관련된 이미지를 업로드하세요. 갤러리에 표시됩니다.
-              </p>
-            </div>
-
-            {/* 이미지 미리보기 영역 */}
-            {allImages.length > 0 && (
-              <div className="mt-4 grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-3">
-                {allImages.map((image, index) => {
-                  const imageUrl = image.isNew ? image.url : `${API_BASE_URL}${image.url}`;
-                  return (
-                    <div key={image.url} className="relative aspect-square group">
-                      <img
-                        src={imageUrl}
-                        alt={`미리보기 ${index + 1}`}
-                        className="w-full h-full object-cover rounded-md"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => image.isNew ? handleRemoveNewFile(index - existingImages.length) : handleRemoveExistingImage(index)}
-                        className="absolute top-1 right-1 bg-black/50 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity"
-                      >
-                        <X className="w-3 h-3" />
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
+            <DropzoneGallery
+              existingImages={formData.media_settings.image_descriptions.map(img => ({ url: `${API_BASE_URL}${img.url}`, description: img.description }))}
+              newFiles={formData.media_settings.newly_added_files}
+              onAddFiles={(files) => setFormData(prev => ({
+                ...prev,
+                media_settings: { ...prev.media_settings, newly_added_files: [...prev.media_settings.newly_added_files, ...files] }
+              }))}
+              onRemoveExisting={(index) => handleRemoveExistingImage(index)}
+              onRemoveNew={(index) => handleRemoveNewFile(index)}
+              onReorder={({ from, to, isNew }) => {
+                if (isNew) {
+                  setFormData(prev => {
+                    const arr = [...prev.media_settings.newly_added_files];
+                    const item = arr.splice(from, 1)[0];
+                    arr.splice(Math.min(arr.length, Math.max(0, to)), 0, item);
+                    return { ...prev, media_settings: { ...prev.media_settings, newly_added_files: arr } };
+                  });
+                } else {
+                  setFormData(prev => {
+                    const arr = [...prev.media_settings.image_descriptions];
+                    const item = arr.splice(from, 1)[0];
+                    arr.splice(Math.min(arr.length, Math.max(0, to)), 0, item);
+                    return { ...prev, media_settings: { ...prev.media_settings, image_descriptions: arr } };
+                  });
+                }
+              }}
+              onUpload={async (files, onProgress) => {
+                const res = await filesAPI.uploadImages(files, onProgress);
+                const urls = Array.isArray(res.data) ? res.data : [res.data];
+                // 업로드 성공 시: 신규 파일 비우고, 기존 이미지 배열에 추가
+                setFormData(prev => ({
+                  ...prev,
+                  media_settings: {
+                    ...prev.media_settings,
+                    image_descriptions: [
+                      ...prev.media_settings.image_descriptions,
+                      ...urls.map(u => ({ url: u, description: '' })),
+                    ],
+                    newly_added_files: [],
+                  }
+                }));
+                return urls;
+              }}
+            />
           </Card>
-
-          <div>
-            <Label htmlFor="avatar_url">아바타 이미지 URL (선택 사항)</Label>
-            <Input
-              id="avatar_url"
-              type="url"
-              value={formData.media_settings.avatar_url}
-              onChange={(e) => updateFormData('media_settings', 'avatar_url', e.target.value)}
-              placeholder="https://example.com/avatar.jpg"
-              maxLength={500}
-            />
-             <p className="text-sm text-gray-500 mt-1">
-              업로드 대신 이미지 주소를 직접 입력하여 대표 아바타를 설정할 수도 있습니다.
-            </p>
-          </div>
-        </div>
-
-        <Separator />
-
-        <div className="space-y-4">
-          <h3 className="text-lg font-semibold flex items-center">
-            <Volume2 className="w-5 h-5 mr-2" />
-            슈퍼보이스 설정
-          </h3>
-          
-          <div className="flex items-center space-x-2">
-            <Switch
-              id="voice_enabled"
-              checked={formData.media_settings.voice_settings.enabled}
-              onCheckedChange={(checked) => updateFormData('media_settings', 'voice_settings', {
-                ...formData.media_settings.voice_settings,
-                enabled: checked
-              })}
-            />
-            <Label htmlFor="voice_enabled">음성 기능 사용</Label>
-          </div>
-
-          {formData.media_settings.voice_settings.enabled && (
-            <div className="space-y-3">
-              <div>
-                <Label>음성 ID</Label>
-                <Select 
-                  value={formData.media_settings.voice_settings.voice_id || ''} 
-                  onValueChange={(value) => updateFormData('media_settings', 'voice_settings', {
-                    ...formData.media_settings.voice_settings,
-                    voice_id: value
-                  })}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="음성을 선택하세요" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="voice1">여성 음성 1</SelectItem>
-                    <SelectItem value="voice2">남성 음성 1</SelectItem>
-                    <SelectItem value="voice3">중성 음성 1</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-          )}
         </div>
       </div>
     );
@@ -816,18 +1226,11 @@ const CreateCharacterPage = () => {
 
   const renderDialoguesTab = () => (
     <div className="space-y-6 p-6">
-      <div>
-        <h3 className="text-lg font-semibold mb-2">예시 대화 데이터</h3>
-        <p className="text-sm text-gray-600 mb-4">
-          적절한 대화 예시는 캐릭터의 성격이나, 말투, 지식을 표현하는데 참고사항이 됩니다.
-        </p>
-      </div>
-
       <div className="space-y-4">
         {formData.example_dialogues.dialogues.map((dialogue, index) => (
-          <Card key={index} className="p-4">
+          <Card key={index} className="p-4 bg-white text-black border border-gray-200">
             <div className="flex items-center justify-between mb-3">
-              <h4 className="font-medium">예시 대화 #{index + 1}</h4>
+              <h4 className="font-medium !text-black">예시 #{index + 1}</h4>
               <Button
                 type="button"
                 variant="ghost"
@@ -840,25 +1243,61 @@ const CreateCharacterPage = () => {
             
             <div className="space-y-3">
               <div>
-                <Label>사용자 메시지</Label>
+                <div className="flex items-center justify-between">
+                  <Label className="!text-black">사용자 메시지</Label>
+                  <div className="flex gap-1">
+                    <Button type="button" variant="secondary" size="sm" onClick={() => {
+                      setFormData(prev => {
+                        const arr = [...prev.example_dialogues.dialogues];
+                        if (index === 0) return prev;
+                        const item = arr.splice(index, 1)[0];
+                        arr.splice(index-1, 0, item);
+                        return { ...prev, example_dialogues: { ...prev.example_dialogues, dialogues: arr } };
+                      });
+                    }}>위로</Button>
+                    <Button type="button" variant="secondary" size="sm" onClick={() => {
+                      setFormData(prev => {
+                        const arr = [...prev.example_dialogues.dialogues];
+                        if (index >= arr.length-1) return prev;
+                        const item = arr.splice(index, 1)[0];
+                        arr.splice(index+1, 0, item);
+                        return { ...prev, example_dialogues: { ...prev.example_dialogues, dialogues: arr } };
+                      });
+                    }}>아래로</Button>
+                  </div>
+                </div>
                 <Textarea
+                  id={`dlg_user_${index}`}
+                  className="mt-4 bg-white text-black placeholder-gray-500 border-gray-300"
                   value={dialogue.user_message}
                   onChange={(e) => updateExampleDialogue(index, 'user_message', e.target.value)}
                   placeholder="사용자가 입력할 만한 메시지를 작성하세요"
                   rows={2}
                   maxLength={500}
                 />
+                <div className="flex items-center gap-2 mt-2">
+                  <span className="text-xs text-gray-600">토큰 삽입:</span>
+                  <Button type="button" variant="secondary" size="sm" title="{{assistant}} 삽입" onClick={() => insertDialogueToken(index, 'user_message', TOKEN_ASSISTANT)}>캐릭터</Button>
+                  <Button type="button" variant="secondary" size="sm" title="{{user}} 삽입" onClick={() => insertDialogueToken(index, 'user_message', TOKEN_USER)}>유저</Button>
+                </div>
               </div>
               
               <div>
-                <Label>캐릭터 응답</Label>
+                <Label className="!text-black">캐릭터 응답</Label>
                 <Textarea
+                  id={`dlg_char_${index}`}
+                  className="mt-4 bg-white text-black placeholder-gray-500 border-gray-300"
                   value={dialogue.character_response}
                   onChange={(e) => updateExampleDialogue(index, 'character_response', e.target.value)}
                   placeholder="캐릭터가 응답할 내용을 작성하세요"
                   rows={3}
                   maxLength={1000}
                 />
+                <div className="flex items-center gap-2 mt-2">
+                  <span className="text-xs text-gray-600">토큰 삽입:</span>
+                  <Button type="button" variant="secondary" size="sm" title="{{assistant}} 삽입" onClick={() => insertDialogueToken(index, 'character_response', TOKEN_ASSISTANT)}>캐릭터</Button>
+                  <Button type="button" variant="secondary" size="sm" title="{{user}} 삽입" onClick={() => insertDialogueToken(index, 'character_response', TOKEN_USER)}>유저</Button>
+                </div>
               </div>
             </div>
           </Card>
@@ -871,7 +1310,7 @@ const CreateCharacterPage = () => {
           className="w-full"
         >
           <Plus className="w-4 h-4 mr-2" />
-          예시 대화 추가 (ALT+N)
+          예시 추가 (ALT+N)
         </Button>
       </div>
     </div>
@@ -897,6 +1336,7 @@ const CreateCharacterPage = () => {
             <Label htmlFor="affinity_rules">호감도 정의 및 증감 규칙</Label>
             <Textarea
               id="affinity_rules"
+              className="mt-4"
               value={formData.affinity_system.affinity_rules}
               onChange={(e) => updateFormData('affinity_system', 'affinity_rules', e.target.value)}
               placeholder="값의 변화를 결정하는 논리를 입력합니다."
@@ -914,7 +1354,7 @@ const CreateCharacterPage = () => {
                     <Input
                       type="number"
                       value={stage.min_value}
-                      className="w-20"
+                      className="w-20 mt-4"
                       readOnly
                     />
                     <span>~</span>
@@ -922,7 +1362,7 @@ const CreateCharacterPage = () => {
                       type="number"
                       value={stage.max_value || ''}
                       placeholder="∞"
-                      className="w-20"
+                      className="w-20 mt-4"
                       readOnly
                     />
                   </div>
@@ -930,7 +1370,7 @@ const CreateCharacterPage = () => {
                     value={stage.description}
                     placeholder="호감도에 따라 캐릭터에게 줄 변화를 입력해보세요"
                     rows={1}
-                    className="flex-1"
+                    className="flex-1 mt-4"
                     maxLength={500}
                     readOnly
                   />
@@ -1040,7 +1480,7 @@ const CreateCharacterPage = () => {
   );
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
+    <div className="min-h-screen bg-gray-900 text-white">
       {isStoryImporterOpen && (
         <StoryImporterModal 
           isOpen={isStoryImporterOpen}
@@ -1049,7 +1489,7 @@ const CreateCharacterPage = () => {
         />
       )}
       {/* 헤더 */}
-      <header className="bg-white/80 backdrop-blur-sm shadow-sm border-b sticky top-0 z-50">
+      <header className="bg-gray-900/80 backdrop-blur-sm shadow-sm border-b border-gray-800 sticky top-0 z-50">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between h-16">
             <div className="flex items-center space-x-4">
@@ -1057,16 +1497,16 @@ const CreateCharacterPage = () => {
                 <div className="w-8 h-8 bg-gradient-to-r from-purple-600 to-blue-600 rounded-lg flex items-center justify-center">
                   <MessageCircle className="w-5 h-5 text-white" />
                 </div>
-                <h1 className="text-xl font-bold text-gray-900">캐릭터 만들기</h1>
+                <h1 className="text-xl font-bold text-white">캐릭터 만들기</h1>
               </Link>
             </div>
             <div className="flex items-center space-x-3">
               <div className="text-xs text-gray-500 mr-2 hidden sm:block">
                 {isAutoSaving ? '자동저장 중…' : lastSavedAt ? `자동저장됨 • ${new Date(lastSavedAt).toLocaleTimeString()}` : ''}
               </div>
-              <Button variant="outline" onClick={() => setIsStoryImporterOpen(true)}>
-                <Wand2 className="w-4 h-4 mr-2" />
-                AI 임포트
+              <Button variant="outline" onClick={() => setIsPreviewOpen(true)}>
+                <Eye className="w-4 h-4 mr-2" />
+                미리보기
               </Button>
               <Button variant="outline" onClick={handleManualDraftSave}>
                 <Save className="w-4 h-4 mr-2" />
@@ -1105,40 +1545,35 @@ const CreateCharacterPage = () => {
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_220px] gap-6">
           <div>
         {/* 롱폼 섹션: 탭 제거 후 순차 배치 */}
-        <Card id="section-basic" className="shadow-lg mb-8">
+        <Card id="section-basic" className="shadow-lg mb-8 bg-gray-800 text-white border border-gray-700">
           <CardHeader>
-            <CardTitle className="text-lg">기본 정보</CardTitle>
+            <CardTitle className="text-lg text-white">기본 정보</CardTitle>
           </CardHeader>
-          {renderBasicInfoTab()}
+                {renderBasicInfoTab()}
         </Card>
 
-        <Card id="section-media" className="shadow-lg mb-8">
+        {/* 미디어 섹션 제거: 상단 기본 정보 섹션 내 갤러리로 대체 */}
+
+        <Card id="section-dialogues" className="shadow-lg mb-8 bg-gray-800 text-white border border-gray-700">
           <CardHeader>
-            <CardTitle className="text-lg">미디어</CardTitle>
+            <CardTitle className="text-lg text-white">예시 대화</CardTitle>
           </CardHeader>
-          <CardContent className="p-6">{renderMediaTab()}</CardContent>
+                {renderDialoguesTab()}
         </Card>
 
-        <Card id="section-dialogues" className="shadow-lg mb-8">
+        <Card id="section-affinity" className="shadow-lg mb-8 bg-gray-800 text-white border border-gray-700">
           <CardHeader>
-            <CardTitle className="text-lg">예시 대화</CardTitle>
+            <CardTitle className="text-lg text-white">호감도</CardTitle>
           </CardHeader>
-          {renderDialoguesTab()}
+                {renderAffinityTab()}
         </Card>
 
-        <Card id="section-affinity" className="shadow-lg mb-8">
+        <Card id="section-publish" className="shadow-lg bg-gray-800 text-white border border-gray-700">
           <CardHeader>
-            <CardTitle className="text-lg">호감도</CardTitle>
+            <CardTitle className="text-lg text-white">공개/고급 설정 & 태그</CardTitle>
           </CardHeader>
-          {renderAffinityTab()}
-        </Card>
-
-        <Card id="section-publish" className="shadow-lg">
-          <CardHeader>
-            <CardTitle className="text-lg">공개/고급 설정 & 태그</CardTitle>
-          </CardHeader>
-          {renderPublishTab()}
-        </Card>
+                {renderPublishTab()}
+          </Card>
           </div>
 
           {/* 우측 앵커 네비게이션 */}
@@ -1146,19 +1581,56 @@ const CreateCharacterPage = () => {
             <div className="bg-gray-800 border border-gray-700 rounded-lg p-3 text-sm text-gray-200">
               <div className="font-semibold mb-2">빠른 이동</div>
               <ul className="space-y-2">
-                <li><a href="#section-basic" className="hover:underline">기본 정보</a></li>
-                <li><a href="#section-media" className="hover:underline">미디어</a></li>
-                <li><a href="#section-dialogues" className="hover:underline">예시 대화</a></li>
-                <li><a href="#section-affinity" className="hover:underline">호감도</a></li>
-                <li><a href="#section-publish" className="hover:underline">공개/태그</a></li>
+                <li>
+                  <a onClick={(e)=>{e.preventDefault(); const el=document.getElementById('section-basic'); if(el){const y=el.getBoundingClientRect().top+window.pageYOffset-HEADER_OFFSET; window.scrollTo({top:y,behavior:'smooth'});} }} href="#section-basic" className={`flex items-center justify-between hover:underline ${activeSection === 'section-basic' ? 'text-purple-300' : ''}`}>
+                    <span>기본 정보</span>
+                    {sectionErrors.basic > 0 && <Badge variant="destructive" className="ml-2">{sectionErrors.basic}</Badge>}
+                  </a>
+                </li>
+                {/* 미디어 앵커 제거 */}
+                <li>
+                  <a onClick={(e)=>{e.preventDefault(); const el=document.getElementById('section-dialogues'); if(el){const y=el.getBoundingClientRect().top+window.pageYOffset-HEADER_OFFSET; window.scrollTo({top:y,behavior:'smooth'});} }} href="#section-dialogues" className={`flex items-center justify-between hover:underline ${activeSection === 'section-dialogues' ? 'text-purple-300' : ''}`}>
+                    <span>예시 대화</span>
+                    {sectionErrors.dialogues > 0 && <Badge variant="destructive" className="ml-2">{sectionErrors.dialogues}</Badge>}
+                  </a>
+                </li>
+                <li>
+                  <a onClick={(e)=>{e.preventDefault(); const el=document.getElementById('section-affinity'); if(el){const y=el.getBoundingClientRect().top+window.pageYOffset-HEADER_OFFSET; window.scrollTo({top:y,behavior:'smooth'});} }} href="#section-affinity" className={`flex items-center justify-between hover:underline ${activeSection === 'section-affinity' ? 'text-purple-300' : ''}`}>
+                    <span>호감도</span>
+                    {sectionErrors.affinity > 0 && <Badge variant="destructive" className="ml-2">{sectionErrors.affinity}</Badge>}
+                  </a>
+                </li>
+                <li>
+                  <a onClick={(e)=>{e.preventDefault(); const el=document.getElementById('section-publish'); if(el){const y=el.getBoundingClientRect().top+window.pageYOffset-HEADER_OFFSET; window.scrollTo({top:y,behavior:'smooth'});} }} href="#section-publish" className={`flex items-center justify-between hover:underline ${activeSection === 'section-publish' ? 'text-purple-300' : ''}`}>
+                    <span>공개/태그</span>
+                    {sectionErrors.publish > 0 && <Badge variant="destructive" className="ml-2">{sectionErrors.publish}</Badge>}
+                  </a>
+                </li>
               </ul>
-              <div className="mt-3 text-xs text-gray-400">
-                {isAutoSaving ? '자동저장 중…' : lastSavedAt ? `자동저장됨: ${new Date(lastSavedAt).toLocaleTimeString()}` : ''}
-              </div>
             </div>
           </aside>
         </div>
       </main>
+
+      {/* 미리보기 모달 */}
+      <Dialog open={isPreviewOpen} onOpenChange={setIsPreviewOpen}>
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>캐릭터 미리보기</DialogTitle>
+          </DialogHeader>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <CharacterCard character={previewCharacter} onCardClick={() => {}} />
+            </div>
+            <div className="text-sm text-gray-600 space-y-2">
+              <div><span className="font-medium">이름:</span> {formData.basic_info.name || '—'}</div>
+              <div><span className="font-medium">설명:</span> {(formData.basic_info.user_display_description || formData.basic_info.description || '').slice(0, 200) || '—'}</div>
+              <div><span className="font-medium">공개 설정:</span> {formData.publish_settings.is_public ? '공개' : '비공개'}</div>
+              <div className="text-xs text-gray-400">실제 저장 후 웹 전체 카드와 동일한 레이아웃으로 표시됩니다.</div>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* 크롭 모달 */}
       <AvatarCropModal

@@ -7,6 +7,7 @@ import {useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { usersAPI, filesAPI } from '../lib/api'; 
 import AppLayout from '../components/layout/AppLayout';
+import ErrorBoundary from '../components/ErrorBoundary';
 import AvatarCropModal from '../components/AvatarCropModal';
 import ProfileEditModal from '../components/ProfileEditModal';
 import { Button } from '../components/ui/button';
@@ -332,6 +333,7 @@ const ProfilePage = () => {
         </Card>
 
         {/* KPI 카드 */}
+        <ErrorBoundary>
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
           <StatCard
             title="캐릭터 수"
@@ -350,6 +352,7 @@ const ProfilePage = () => {
           />
           <StatCard title="최근 30일 유저수" value={overview?.unique_users_30d ?? 0} icon={User} />
         </div>
+        </ErrorBoundary>
 
         {/* 시계열 범위 선택 */}
         <div className="flex items-center justify-end mb-2 gap-3">
@@ -365,6 +368,7 @@ const ProfilePage = () => {
         </div>
 
         {/* 최근 X 범위 대화 추이 */}
+        <ErrorBoundary>
         <Card className="mb-8 overflow-hidden bg-gray-800 border border-gray-700">
           <CardHeader className="pb-2">
             <CardTitle className="text-white text-base">최근 {seriesRange==='24h'?'24시간':'7일'} 대화 추이</CardTitle>
@@ -373,8 +377,10 @@ const ProfilePage = () => {
             <div className="p-3"><Sparkline data={series} width={480} height={64} /></div>
           </CardContent>
         </Card>
+        </ErrorBoundary>
 
         {/* Top 5 캐릭터 */}
+        <ErrorBoundary>
         <Card className="mb-2 overflow-hidden bg-gray-800 border border-gray-700">
           <CardHeader className="pb-2">
             <CardTitle className="text-white text-base">최근 7일 Top 5 캐릭터</CardTitle>
@@ -404,6 +410,7 @@ const ProfilePage = () => {
             </ul>
           </CardContent>
         </Card>
+        </ErrorBoundary>
 
         {/* 탭 제거: 대시보드 단일 화면 */}
       </div>

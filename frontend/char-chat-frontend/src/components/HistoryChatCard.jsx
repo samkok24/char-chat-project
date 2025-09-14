@@ -8,6 +8,7 @@ import { DEFAULT_AVATAR_URI } from '../lib/placeholder';
 import { MessageCircle, MoreVertical, Heart, Pin, Trash2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
+import { Badge } from './ui/badge';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -93,6 +94,9 @@ export const HistoryChatCard = ({ character, onClick, onPin, onDelete }) => {
                   e.target.src = defaultAvatar;
                 }}
               />
+              <div className="absolute top-1 left-1">
+                <Badge className="bg-purple-600 text-white hover:bg-purple-600">캐릭터</Badge>
+              </div>
               {/* 채팅 수 & 좋아요 수 표시 */}
               <div className="absolute bottom-2.5 right-1 py-0.5 px-1.5 rounded bg-black bg-opacity-60 cursor-zoom-in" title="클릭하여 캐릭터 정보 보기">
                 <div className="flex items-center gap-x-2 text-gray-300">
