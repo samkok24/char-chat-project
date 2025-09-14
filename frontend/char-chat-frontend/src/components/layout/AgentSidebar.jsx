@@ -16,7 +16,7 @@ import {
 import LoginModal from '../LoginModal';
 import { resolveImageUrl } from '../../lib/images';
 
-const AgentSidebar = () => {
+const AgentSidebar = ({ onCreateSession, activeSessionId, onSessionSelect }) => {
   const { user, isAuthenticated, logout } = useAuth();
   const navigate = useNavigate();
   const [showLoginModal, setShowLoginModal] = useState(false);
@@ -74,18 +74,12 @@ const AgentSidebar = () => {
       <nav className="flex-1 p-3 space-y-1">
         {/* 새 대화 버튼을 히스토리 영역 위로 이동 */}
         <div className="mb-2">
-          <Button className="w-full border border-blue-600/60 bg-transparent text-blue-400 hover:bg-blue-700/20" onClick={() => {
-            try {
-              const id = crypto.randomUUID();
-              const now = new Date().toISOString();
-              const session = { id, title: '새 대화', type: 'story', createdAt: now, updatedAt: now };
-              const raw = localStorage.getItem('agent:sessions') || '[]';
-              const arr = JSON.parse(raw) || [];
-              localStorage.setItem('agent:sessions', JSON.stringify([session, ...arr]));
-              try { window.dispatchEvent(new Event('agent:sessionsChanged')); } catch {}
-              navigate(`/agent#session=${id}`);
-            } catch { navigate('/agent'); }
-          }}>+ 새 대화</Button>
+          <Button 
+            className="w-full border border-blue-600/60 bg-transparent text-blue-400 hover:bg-blue-700/20" 
+            onClick={onCreateSession}
+          >
+            + 새 대화
+          </Button>
         </div>
         <div className="text-xs text-gray-400 px-2 mb-2">히스토리</div>
         <div className="flex items-center justify-between px-3 py-2 rounded-lg text-gray-300 bg-gray-900 border border-gray-700">
@@ -100,8 +94,8 @@ const AgentSidebar = () => {
             {sessionList.map(s => (
               <div key={s.id} className="flex items-center gap-2">
                 <button
-                  onClick={() => navigate(`/agent#session=${s.id}`)}
-                  className="group relative flex-1 text-left px-3 py-2 rounded-lg bg-gray-900 border border-gray-800 hover:bg-gray-800 transition-colors"
+                  onClick={() => onSessionSelect(s.id)}
+                  className={`group relative flex-1 text-left px-3 py-2 rounded-lg border transition-colors min-w-0 ${activeSessionId === s.id ? 'bg-gray-700/80 border-purple-500/50' : 'bg-gray-900 border-gray-800 hover:bg-gray-800'}`}
                   title={s.title || '새 대화'}
                 >
                   <div className="text-sm text-gray-200 truncate">{s.title || '새 대화'}</div>
@@ -114,7 +108,7 @@ const AgentSidebar = () => {
                 </button>
                 <button
                   onClick={(e) => { e.stopPropagation(); handleDeleteSession(s.id); }}
-                  className="p-2 rounded-lg bg-gray-900 border border-gray-800 hover:bg-red-700/20 text-gray-400 hover:text-red-400"
+                  className="p-2 rounded-lg bg-gray-900 border border-gray-800 hover:bg-red-700/20 text-gray-400 hover:text-red-400 flex-shrink-0"
                   title="세션 삭제"
                 >
                   <Trash2 className="w-4 h-4" />

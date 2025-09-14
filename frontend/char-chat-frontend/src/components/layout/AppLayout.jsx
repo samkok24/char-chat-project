@@ -2,22 +2,22 @@ import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import Sidebar from './Sidebar';
 
-const AppLayout = ({ children, SidebarComponent = Sidebar }) => {
+const AppLayout = ({ children, SidebarComponent = Sidebar, sidebarProps }) => {
   const location = useLocation();
   const onAgentPage = location.pathname === '/agent';
   const onDashboard = location.pathname === '/dashboard' || location.pathname === '/';
   return (
     <div className="flex h-screen bg-gray-900">
       {/* 사이드바 - 페이지별 커스텀 가능 */}
-      {SidebarComponent ? <SidebarComponent /> : null}
+      {SidebarComponent ? <SidebarComponent {...sidebarProps} /> : null}
       
       {/* 메인 콘텐츠 영역 */}
-      <main className="flex-1 overflow-y-auto relative">
+      <main className="flex-1 flex flex-col relative overflow-hidden">
         {children}
         {/* PIP 스타일 플로팅 썸네일 */}
         <Link
           to={onAgentPage ? '/dashboard' : '/agent'}
-          className="fixed right-5 bottom-5 z-40 block w-80 h-48 rounded-lg overflow-hidden group"
+          className="fixed right-8 bottom-5 z-40 block w-80 h-48 rounded-lg overflow-hidden group"
           title={onAgentPage ? '메인으로' : '스토리 에이전트'}
         >
           <img
