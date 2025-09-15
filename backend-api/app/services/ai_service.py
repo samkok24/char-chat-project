@@ -5,7 +5,7 @@ AI 모델과의 상호작용을 담당하는 서비스
 """
 import google.generativeai as genai
 import anthropic  # Claude API 라이브러리
-from typing import Literal
+from typing import Literal, Optional, AsyncGenerator
 from app.core.config import settings
 
 # --- Gemini AI 설정 ---
@@ -82,6 +82,26 @@ async def get_gemini_completion(prompt: str, temperature: float = 0.7, max_token
         # 별도의 예외를 발생시켜 API 레벨에서 처리하도록 할 수 있습니다.
         raise ValueError(f"AI 모델 호출에 실패했습니다: {str(e)}")
 
+async def get_gemini_completion_stream(prompt: str, temperature: float = 0.7, max_tokens: int = 1024, model: str = 'gemini-1.5-pro'):
+    """Gemini 모델의 스트리밍 응답을 비동기 제너레이터로 반환합니다."""
+    try:
+        gemini_model = genai.GenerativeModel(model)
+        generation_config = genai.types.GenerationConfig(
+            temperature=temperature,
+            max_output_tokens=max_tokens
+        )
+        response_stream = await gemini_model.generate_content_async(
+            prompt,
+            generation_config=generation_config,
+            stream=True
+        )
+        async for chunk in response_stream:
+            if chunk.text:
+                yield chunk.text
+    except Exception as e:
+        print(f"Gemini Stream API 호출 중 오류 발생: {e}")
+        yield f"오류: Gemini 모델 호출에 실패했습니다 - {str(e)}"
+
 async def get_claude_completion(
     prompt: str,
     temperature: float = 0.7,
@@ -124,6 +144,21 @@ async def get_claude_completion(
         print(f"Claude API 호출 중 오류 발생: {e}")
         raise ValueError(f"Claude API 호출에 실패했습니다: {e}")
 
+async def get_claude_completion_stream(prompt: str, temperature: float = 0.7, max_tokens: int = 1024, model: str = "claude-3-5-sonnet-20240620"):
+    """Claude 모델의 스트리밍 응답을 비동기 제너레이터로 반환합니다."""
+    try:
+        async with claude_client.messages.stream(
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            messages=[{"role": "user", "content": prompt}],
+        ) as stream:
+            async for text in stream.text_stream:
+                yield text
+    except Exception as e:
+        print(f"Claude Stream API 호출 중 오류 발생: {e}")
+        yield f"오류: Claude 모델 호출에 실패했습니다 - {str(e)}"
+
 async def get_openai_completion(
     prompt: str,
     temperature: float = 0.7,
@@ -148,12 +183,33 @@ async def get_openai_completion(
         print(f"OpenAI API 호출 중 오류 발생: {e}")
         raise ValueError(f"OpenAI API 호출에 실패했습니다: {e}")
 
+async def get_openai_completion_stream(prompt: str, temperature: float = 0.7, max_tokens: int = 1024, model: str = "gpt-4o"):
+    """OpenAI 모델의 스트리밍 응답을 비동기 제너레이터로 반환합니다."""
+    try:
+        from openai import AsyncOpenAI
+        client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+        
+        stream = await client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stream=True
+        )
+        async for chunk in stream:
+            if chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
+    except Exception as e:
+        print(f"OpenAI Stream API 호출 중 오류 발생: {e}")
+        yield f"오류: OpenAI 모델 호출에 실패했습니다 - {str(e)}"
+
 # --- 통합 AI 응답 함수 ---
-AIModel = Literal["gemini", "claude"]
+AIModel = Literal["gemini", "claude", "gpt"]
 
 async def get_ai_completion(
     prompt: str,
     model: AIModel = "gemini",
+    sub_model: Optional[str] = None,
     temperature: float = 0.7,
     max_tokens: int = 2048
 ) -> str:
@@ -161,9 +217,38 @@ async def get_ai_completion(
     지정된 AI 모델을 호출하여 응답을 반환하는 통합 함수입니다.
     """
     if model == "gemini":
-        return await get_gemini_completion(prompt, temperature, max_tokens)
+        model_name = sub_model or 'gemini-2.5-pro'
+        return await get_gemini_completion(prompt, temperature, max_tokens, model=model_name)
     elif model == "claude":
-        return await get_claude_completion(prompt, temperature, max_tokens)
+        model_name = sub_model or 'claude-3-5-sonnet-20241022'
+        return await get_claude_completion(prompt, temperature, max_tokens, model=model_name)
+    elif model == "gpt":
+        model_name = sub_model or 'gpt-4o'
+        return await get_openai_completion(prompt, temperature, max_tokens, model=model_name)
+    else:
+        raise ValueError(f"지원하지 않는 모델입니다: {model}")
+
+# --- 통합 AI 응답 스트림 함수 ---
+async def get_ai_completion_stream(
+    prompt: str,
+    model: AIModel = "gemini",
+    sub_model: Optional[str] = None,
+    temperature: float = 0.7,
+    max_tokens: int = 2048
+) -> AsyncGenerator[str, None]:
+    """지정된 AI 모델의 스트리밍 응답을 반환하는 통합 함수입니다."""
+    if model == "gemini":
+        model_name = sub_model or 'gemini-1.5-pro'
+        async for chunk in get_gemini_completion_stream(prompt, temperature, max_tokens, model=model_name):
+            yield chunk
+    elif model == "claude":
+        model_name = sub_model or 'claude-3-5-sonnet-20240620'
+        async for chunk in get_claude_completion_stream(prompt, temperature, max_tokens, model=model_name):
+            yield chunk
+    elif model == "gpt":
+        model_name = sub_model or 'gpt-4o'
+        async for chunk in get_openai_completion_stream(prompt, temperature, max_tokens, model=model_name):
+            yield chunk
     else:
         raise ValueError(f"지원하지 않는 모델입니다: {model}")
 

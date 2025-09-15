@@ -85,3 +85,14 @@ class StoryGenerationResponse(BaseModel):
     genre: Optional[str]
     estimated_reading_time: int  # 예상 읽기 시간 (분)
 
+
+class StoryStreamRequest(BaseModel):
+    """스토리 스트림 요청 스키마"""
+    prompt: str = Field(..., min_length=100, max_length=5000)
+    keywords: List[str] = Field(..., min_items=1, max_items=10)
+    model_name: str = Field(..., max_length=100)
+    max_tokens: int = Field(..., ge=10, le=10000)
+    temperature: float = Field(..., ge=0.0, le=1.0)
+    top_p: float = Field(..., ge=0.0, le=1.0)
+    n: int = Field(..., ge=1, le=10)
+    stream: bool = True

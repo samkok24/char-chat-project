@@ -10,7 +10,7 @@ from typing import List
 import uuid
 
 from app.core.database import get_db
-from app.core.security import get_current_user
+from app.core.security import get_current_user, get_current_user_optional
 from app.models.user import User
 from app.models.character import CharacterSetting, CharacterExampleDialogue
 
@@ -30,6 +30,52 @@ from app.schemas.chat import (
 )
 
 router = APIRouter()
+
+# --- Agent simulator (no character, optional auth) ---
+@router.post("/agent/simulate")
+async def agent_simulate(
+    payload: dict,
+    current_user = Depends(get_current_user_optional),
+):
+    """간단한 에이전트 시뮬레이터: 프론트의 모델 선택을 매핑하여 AI 응답을 생성합니다.
+    요청 예시: { content, history?, model?, sub_model? }
+    응답: { assistant: string }
+    """
+    try:
+        content = (payload.get("content") or "").strip()
+        history = payload.get("history") or []
+        ui_model = (payload.get("model") or "").lower()
+        ui_sub = (payload.get("sub_model") or ui_model or "").lower()
+
+        # UI 모델명을 ai_service 기대 형식으로 매핑
+        if "claude" in ui_model or "claude" in ui_sub:
+            preferred_model = "claude"
+            preferred_sub_model = "claude-3-5-sonnet-20241022"
+        elif "gpt-4.1" in ui_model or "gpt-4.1" in ui_sub:
+            preferred_model = "gpt"
+            preferred_sub_model = "gpt-4.1"
+        elif "gpt-4o" in ui_model or "gpt-4o" in ui_sub or "gpt" in ui_model:
+            preferred_model = "gpt"
+            preferred_sub_model = "gpt-4o"
+        elif "gemini-2.5-flash" in ui_model or "flash" in ui_sub:
+            preferred_model = "gemini"
+            preferred_sub_model = "gemini-2.5-flash"
+        else:
+            preferred_model = "gemini"
+            preferred_sub_model = "gemini-2.5-pro"
+
+        text = await ai_service.get_ai_chat_response(
+            character_prompt="",
+            user_message=content,
+            history=history,
+            preferred_model=preferred_model,
+            preferred_sub_model=preferred_sub_model,
+            response_length_pref="medium",
+        )
+        return {"assistant": text}
+    except Exception as e:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=f"agent simulate failed: {e}")
 
 # 🔥 CAVEDUCK 스타일 핵심 채팅 API (4개)
 

@@ -10,13 +10,14 @@ import uuid
 import asyncio
 import json
 from datetime import datetime
+from typing import AsyncGenerator
 
 from app.models.story import Story
 from app.models.user import User
 from app.models.character import Character
 from app.models.like import StoryLike
 from app.schemas.story import StoryCreate, StoryUpdate, StoryGenerationRequest
-from app.services.ai_service import get_ai_completion,AIModel
+from app.services.ai_service import get_ai_completion, AIModel, get_ai_completion_stream
 
 
 class StoryGenerationService:
@@ -105,7 +106,8 @@ class StoryGenerationService:
         genre: Optional[str] = None,
         length: str = "medium",
         tone: str = "neutral",
-        ai_model: AIModel = "gemini"  # AI 모델 선택 파라미터 추가
+        ai_model: AIModel = "gemini",
+        ai_sub_model: Optional[str] = None
     ) -> Dict[str, Any]:
         """스토리 생성 메인 함수"""
         
@@ -117,10 +119,10 @@ class StoryGenerationService:
             if tone != "neutral":
                 concept_input += f"\n톤: {tone}"
                 
-            concept = await self._call_ai("concept_refiner", concept_input, model=ai_model)
+            concept = await self._call_ai("concept_refiner", concept_input, model=ai_model, sub_model=ai_sub_model)
             
             # 2. 세계관 설계
-            world = await self._call_ai("world_builder", concept, model=ai_model)
+            world = await self._call_ai("world_builder", concept, model=ai_model, sub_model=ai_sub_model)
             
             # 3. 캐릭터 설계 (기존 캐릭터가 있으면 활용)
             character_info = ""
@@ -129,7 +131,7 @@ class StoryGenerationService:
                 character_info = f"\n\n기존 캐릭터 정보를 활용하여 설계하세요."
             
             character_prompt = f"{concept}\n\n{world}{character_info}"
-            characters = await self._call_ai("character_designer", character_prompt,ai_model)
+            characters = await self._call_ai("character_designer", character_prompt, model=ai_model, sub_model=ai_sub_model)
             
             # 4. 스토리 작성
             story_prompt = f"""
@@ -143,10 +145,10 @@ class StoryGenerationService:
 키워드: {', '.join(keywords)}
 """
             
-            story_content = await self._call_ai("story_writer", story_prompt,model=ai_model)
+            story_content = await self._call_ai("story_writer", story_prompt, model=ai_model, sub_model=ai_sub_model)
             
             # 5. 제목 생성
-            title = await self._generate_title(keywords, story_content,model=ai_model)
+            title = await self._generate_title(keywords, story_content, model=ai_model, sub_model=ai_sub_model)
             
             # 6. 예상 읽기 시간 계산 (한국어 기준 분당 300자)
             reading_time = max(1, len(story_content) // 300)
@@ -169,7 +171,7 @@ class StoryGenerationService:
         except Exception as e:
             raise Exception(f"스토리 생성 중 오류 발생: {str(e)}")
 
-    async def _call_ai(self, role: str, content: str, model: AIModel) -> str:
+    async def _call_ai(self, role: str, content: str, model: AIModel, sub_model: Optional[str] = None) -> str:
         system_prompt = self.role_prompts.get(role, "")
         temperature = self.temperatures.get(role, 0.7)
         max_tokens = 3000 if role == "story_writer" else 1500 # 토큰 수 조정
@@ -181,12 +183,96 @@ class StoryGenerationService:
         response = await get_ai_completion(
             prompt=full_prompt,
             model=model,
+            sub_model=sub_model,
             temperature=temperature,
             max_tokens=max_tokens
         )
         
         return response
-    async def _generate_title(self, keywords: List[str], content: str, model: AIModel) -> str:
+
+    async def _call_ai_stream(self, role: str, content: str, model: AIModel, sub_model: Optional[str] = None) -> AsyncGenerator[str, None]:
+        """AI 모델을 스트리밍 방식으로 호출합니다."""
+        system_prompt = self.role_prompts.get(role, "")
+        temperature = self.temperatures.get(role, 0.7)
+        max_tokens = 4000 if role == "story_writer" else 1500
+        
+        full_prompt = f"{system_prompt}\n\n---\n\n{content}"
+        
+        async for chunk in get_ai_completion_stream(
+            prompt=full_prompt,
+            model=model,
+            sub_model=sub_model,
+            temperature=temperature,
+            max_tokens=max_tokens
+        ):
+            yield chunk
+
+    async def generate_story_stream(
+        self,
+        keywords: List[str],
+        genre: Optional[str] = None,
+        length: str = "medium",
+        tone: str = "neutral",
+        ai_model: AIModel = "gemini",
+        ai_sub_model: Optional[str] = None
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """스토리 생성 전체 과정을 스트리밍합니다."""
+        try:
+            # 1. 컨셉 정리 (스트리밍)
+            yield {"event": "stage_start", "data": {"name": "concept_refining", "label": "컨셉 정리 중..."}}
+            concept_input = f"키워드: {', '.join(keywords)}"
+            if genre: concept_input += f"\n장르: {genre}"
+            if tone != "neutral": concept_input += f"\n톤: {tone}"
+            
+            concept = ""
+            async for chunk in self._call_ai_stream("concept_refiner", concept_input, model=ai_model, sub_model=ai_sub_model):
+                concept += chunk
+                yield {"event": "stage_progress", "data": {"name": "concept_refining", "delta": chunk}}
+            yield {"event": "stage_end", "data": {"name": "concept_refining", "result": concept}}
+
+            # 2. 세계관 설계 (스트리밍)
+            yield {"event": "stage_start", "data": {"name": "world_building", "label": "세계관 설계 중..."}}
+            world = ""
+            async for chunk in self._call_ai_stream("world_builder", concept, model=ai_model, sub_model=ai_sub_model):
+                world += chunk
+                yield {"event": "stage_progress", "data": {"name": "world_building", "delta": chunk}}
+            yield {"event": "stage_end", "data": {"name": "world_building", "result": world}}
+
+            # 3. 캐릭터 설계 (스트리밍)
+            yield {"event": "stage_start", "data": {"name": "character_designing", "label": "캐릭터 설계 중..."}}
+            character_prompt = f"{concept}\n\n{world}"
+            characters = ""
+            async for chunk in self._call_ai_stream("character_designer", character_prompt, model=ai_model, sub_model=ai_sub_model):
+                characters += chunk
+                yield {"event": "stage_progress", "data": {"name": "character_designing", "delta": chunk}}
+            yield {"event": "stage_end", "data": {"name": "character_designing", "result": characters}}
+
+            # 4. 스토리 본문 작성 (스트리밍)
+            yield {"event": "stage_start", "data": {"name": "story_writing", "label": "스토리 생성 중..."}}
+            story_prompt = f"컨셉: {concept}\n\n세계관: {world}\n\n캐릭터: {characters}\n\n위 설정을 바탕으로 {length} 길이의 스토리를 작성해주세요."
+            story_content = ""
+            async for chunk in self._call_ai_stream("story_writer", story_prompt, model=ai_model, sub_model=ai_sub_model):
+                story_content += chunk
+                yield {"event": "story_delta", "data": {"delta": chunk}}
+            
+            # 5. 제목 생성 (단일 호출)
+            yield {"event": "stage_start", "data": {"name": "title_generation", "label": "제목 생성 중..."}}
+            title = await self._generate_title(keywords, story_content, model=ai_model, sub_model=ai_sub_model)
+            yield {"event": "stage_end", "data": {"name": "title_generation", "result": title}}
+            
+            yield {"event": "final", "data": {
+                "title": title,
+                "content": story_content,
+                "keywords": keywords,
+                "genre": genre,
+                "estimated_reading_time": max(1, len(story_content) // 300),
+                "metadata": { "concept": concept, "world": world, "characters": characters }
+            }}
+
+        except Exception as e:
+            yield {"event": "error", "data": {"message": f"스트리밍 생성 중 오류: {str(e)}"}}
+
+    async def _generate_title(self, keywords: List[str], content: str, model: AIModel, sub_model: Optional[str] = None) -> str:
         """스토리 제목 생성"""
         title_prompt = f"""
 키워드: {', '.join(keywords)}
@@ -200,7 +286,7 @@ class StoryGenerationService:
 - 키워드의 핵심을 반영
 """
         
-        title = await self._call_ai("concept_refiner", title_prompt,model=model)
+        title = await self._call_ai("concept_refiner", title_prompt,model=model, sub_model=sub_model)
         return title.strip().replace('"', '').replace("'", "")[:20]
 
 

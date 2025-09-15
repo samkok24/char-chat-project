@@ -16,7 +16,7 @@ import {
 import LoginModal from '../LoginModal';
 import { resolveImageUrl } from '../../lib/images';
 
-const AgentSidebar = ({ onCreateSession, activeSessionId, onSessionSelect }) => {
+const AgentSidebar = ({ onCreateSession, activeSessionId, onSessionSelect, onDeleteSession }) => {
   const { user, isAuthenticated, logout } = useAuth();
   const navigate = useNavigate();
   const [showLoginModal, setShowLoginModal] = useState(false);
@@ -52,6 +52,10 @@ const AgentSidebar = ({ onCreateSession, activeSessionId, onSessionSelect }) => 
   };
 
   const handleDeleteSession = (id) => {
+    if (onDeleteSession) {
+      onDeleteSession(id);
+      return;
+    }
     try {
       const raw = localStorage.getItem('agent:sessions') || '[]';
       const arr = JSON.parse(raw) || [];
@@ -65,7 +69,7 @@ const AgentSidebar = ({ onCreateSession, activeSessionId, onSessionSelect }) => 
   return (
     <aside className="w-64 bg-gray-800 border-r border-gray-700 flex flex-col">
       <div className="p-4 border-b border-gray-700">
-        <Link to="/agent" className="flex items-center space-x-2">
+        <Link to="/agent?start=new" className="flex items-center space-x-2">
           <Brain className="w-8 h-8 text-yellow-400" />
           <h1 className="text-xl font-bold text-white">Agent</h1>
         </Link>

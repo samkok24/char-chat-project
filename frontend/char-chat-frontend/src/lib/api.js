@@ -378,7 +378,7 @@ export const storiesAPI = {
     api.post('/stories/generate', data),
 
   // Experimental streaming API (SSE events)
-  generateStoryStream: async (data, { onMeta, onPreview, onProgress, onEpisode, onFinal, onWarn } = {}) => {
+  generateStoryStream: async (data, { onMeta, onPreview, onEpisode, onFinal, onError, onStageStart, onStageEnd } = {}) => {
     const endpoint = '/stories/generate/stream';
     const token = localStorage.getItem('access_token');
     const headers = { 'Content-Type': 'application/json' };
@@ -418,12 +418,14 @@ export const storiesAPI = {
           switch (event) {
             case 'meta': if (onMeta) onMeta(payload); break;
             case 'preview': if (onPreview) onPreview(payload.text || ''); break;
-            case 'progress': if (onProgress) onProgress(Math.max(0, Math.min(100, payload.percent || 0))); break;
             case 'episode': if (onEpisode) onEpisode(payload); break;
             case 'final': if (onFinal) onFinal(payload); result = { ok: true, data: payload }; break;
-            case 'warn': if (onWarn) onWarn(payload); break;
-            case 'ping': break; // ignore
-            case 'error': throw new Error(payload?.message || 'stream error');
+            case 'error': 
+              if (onError) onError(payload);
+              throw new Error(payload?.message || 'stream error');
+            case 'stage_start': if (onStageStart) onStageStart(payload); break;
+            case 'stage_end': if (onStageEnd) onStageEnd(payload); break;
+            // stage_progress is ignored for now to reduce re-renders
             default: break;
           }
         }

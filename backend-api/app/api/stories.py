@@ -2,18 +2,21 @@
 스토리 관련 API 라우터
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, status
+from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, status, Request
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional
 import uuid
+import json
+import asyncio
 
 from app.core.database import get_db
-from app.core.security import get_current_user
+from app.core.security import get_current_user, get_current_user_optional
 from app.models.user import User
 from app.models.story import Story
 from app.schemas.story import (
     StoryCreate, StoryUpdate, StoryResponse, StoryListResponse,
-    StoryGenerationRequest, StoryGenerationResponse, StoryWithDetails
+    StoryGenerationRequest, StoryGenerationResponse, StoryWithDetails, StoryStreamRequest
 )
 from app.schemas.comment import (
     CommentCreate, CommentUpdate, StoryCommentResponse, StoryCommentWithUser
@@ -72,6 +75,94 @@ async def generate_story(
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"스토리 생성 실패: {str(e)}")
+
+
+@router.post("/generate/stream")
+async def generate_story_stream(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional)
+):
+    """SSE stream using the new real-time AI generation pipeline."""
+    body = await request.json()
+
+    async def event_generator(request_body):
+        job_id = str(uuid.uuid4())
+        yield f'event: meta\n'
+        yield f'data: {{"job_id": "{job_id}", "queue_position": 0}}\n\n'
+
+        try:
+            keywords = request_body.get("keywords") or []
+            model_str = (request_body.get("model") or "").lower()
+            
+            if "claude" in model_str:
+                ai_model = "claude"
+            elif "gpt" in model_str:
+                ai_model = "gpt"
+            else:
+                ai_model = "gemini"
+
+            full_content = ""
+            preview_sent = False
+            
+            async for event_data in story_generation_service.generate_story_stream(
+                keywords=keywords,
+                genre=request_body.get("genre"),
+                length=request_body.get("length", "medium"),
+                tone=request_body.get("tone", "neutral"),
+                ai_model=ai_model,
+                ai_sub_model=model_str
+            ):
+                event_name = event_data.get("event")
+                data_payload = event_data.get("data", {})
+                
+                if event_name == "story_delta":
+                    full_content += data_payload.get("delta", "")
+                    # 500자 프리뷰 전송 (한 번만)
+                    if not preview_sent and len(full_content) >= 500:
+                        yield f'event: preview\n'
+                        yield f'data: {{"text": {json.dumps(full_content[:500])}}}\n\n'
+                        preview_sent = True
+                    
+                    # 이후 본문 조각 전송
+                    if preview_sent:
+                        yield f'event: episode\n'
+                        yield f'data: {{"delta": {json.dumps(data_payload.get("delta", ""))}}}\n\n'
+                
+                elif event_name == "final":
+                    # 최종본 전송 전, 프리뷰가 전송되지 않았다면 지금 전송
+                    if not preview_sent:
+                        yield f'event: preview\n'
+                        yield f'data: {{"text": {json.dumps(full_content[:500])}}}\n\n'
+                        preview_sent = True
+                        # 남은 조각도 전송
+                        if len(full_content) > 500:
+                             yield f'event: episode\n'
+                             yield f'data: {{"delta": {json.dumps(full_content[500:])}}}\n\n'
+
+                    final_data = data_payload.copy()
+                    final_data["id"] = str(uuid.uuid4())
+                    final_data["model"] = model_str
+                    yield f'event: final\n'
+                    yield f'data: {json.dumps(final_data)}\n\n'
+                
+                else: # stage_start, stage_end, stage_progress, error
+                    yield f'event: {event_name}\n'
+                    yield f'data: {json.dumps(data_payload)}\n\n'
+
+        except Exception as e:
+            yield f'event: error\n'
+            yield f'data: {{"message": {json.dumps(str(e))} }}\n\n'
+
+    return StreamingResponse(
+        event_generator(body),
+        media_type="text/event-stream; charset=utf-8",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
 
 
 @router.post("/", response_model=StoryResponse)
