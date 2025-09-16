@@ -16,7 +16,7 @@ import {
 import LoginModal from '../LoginModal';
 import { resolveImageUrl } from '../../lib/images';
 
-const AgentSidebar = ({ onCreateSession, activeSessionId, onSessionSelect, onDeleteSession }) => {
+const AgentSidebar = ({ onCreateSession, activeSessionId, onSessionSelect, onDeleteSession, isGuest, isNewChatButtonDisabled }) => {
   const { user, isAuthenticated, logout } = useAuth();
   const navigate = useNavigate();
   const [showLoginModal, setShowLoginModal] = useState(false);
@@ -69,95 +69,109 @@ const AgentSidebar = ({ onCreateSession, activeSessionId, onSessionSelect, onDel
   return (
     <aside className="w-64 bg-gray-800 border-r border-gray-700 flex flex-col">
       <div className="p-4 border-b border-gray-700">
-        <Link to="/agent?start=new" className="flex items-center space-x-2">
+        <button onClick={onCreateSession} className="flex items-center space-x-2">
           <Brain className="w-8 h-8 text-yellow-400" />
           <h1 className="text-xl font-bold text-white">Agent</h1>
-        </Link>
+        </button>
       </div>
 
       <nav className="flex-1 p-3 space-y-1">
         {/* 새 대화 버튼을 히스토리 영역 위로 이동 */}
         <div className="mb-2">
           <Button 
-            className="w-full border border-blue-600/60 bg-transparent text-blue-400 hover:bg-blue-700/20" 
+            className="w-full border border-blue-600/60 bg-transparent text-blue-400 hover:bg-blue-700/20 disabled:opacity-50 disabled:cursor-not-allowed" 
             onClick={onCreateSession}
+            disabled={isNewChatButtonDisabled}
+            title={isNewChatButtonDisabled ? (isGuest ? "로그인 후 새 대화를 시작할 수 있습니다." : "현재 세션에서 첫 메시지를 보낸 후 새 대화를 시작할 수 있습니다.") : ""}
           >
             + 새 대화
           </Button>
         </div>
-        <div className="text-xs text-gray-400 px-2 mb-2">히스토리</div>
-        <div className="flex items-center justify-between px-3 py-2 rounded-lg text-gray-300 bg-gray-900 border border-gray-700">
-          <div className="inline-flex items-center">
-            <MessageSquarePlus className="w-4 h-4 mr-2" /> 최근 세션
-          </div>
-          <span className="text-xs text-gray-400">{sessionCount}개</span>
-        </div>
-
-        {sessionList.length > 0 && (
-          <div className="mt-2 space-y-1">
-            {sessionList.map(s => (
-              <div key={s.id} className="flex items-center gap-2">
-                <button
-                  onClick={() => onSessionSelect(s.id)}
-                  className={`group relative flex-1 text-left px-3 py-2 rounded-lg border transition-colors min-w-0 ${activeSessionId === s.id ? 'bg-gray-700/80 border-purple-500/50' : 'bg-gray-900 border-gray-800 hover:bg-gray-800'}`}
-                  title={s.title || '새 대화'}
-                >
-                  <div className="text-sm text-gray-200 truncate">{s.title || '새 대화'}</div>
-                  <div className="text-xs text-gray-500 truncate">{s.snippet || new Date(s.updatedAt||s.createdAt).toLocaleString()}</div>
-                  {/* hover 팝오버 */}
-                  <div className="hidden group-hover:block absolute left-full top-0 ml-2 z-20 w-64 p-3 rounded-lg bg-gray-900 border border-gray-700 shadow-xl">
-                    <div className="text-xs text-gray-400 mb-1">{new Date(s.updatedAt||s.createdAt).toLocaleString()}</div>
-                    <div className="text-sm text-gray-200 whitespace-pre-wrap">{s.snippet || '메시지 없음'}</div>
-                  </div>
-                </button>
-                <button
-                  onClick={(e) => { e.stopPropagation(); handleDeleteSession(s.id); }}
-                  className="p-2 rounded-lg bg-gray-900 border border-gray-800 hover:bg-red-700/20 text-gray-400 hover:text-red-400 flex-shrink-0"
-                  title="세션 삭제"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
+        
+        {!isGuest ? (
+          <>
+            <div className="text-xs text-gray-400 px-2 mb-2">히스토리</div>
+            <div className="flex items-center justify-between px-3 py-2 rounded-lg text-gray-300 bg-gray-900 border border-gray-700">
+              <div className="inline-flex items-center">
+                <MessageSquarePlus className="w-4 h-4 mr-2" /> 최근 세션
               </div>
-            ))}
+              <span className="text-xs text-gray-400">{sessionCount}개</span>
+            </div>
+
+            {sessionList.length > 0 && (
+              <div className="mt-2 space-y-1">
+                {sessionList.map(s => (
+                  <div key={s.id} className="flex items-center gap-2">
+                    <button
+                      onClick={() => onSessionSelect(s.id)}
+                      className={`group relative flex-1 text-left px-3 py-2 rounded-lg border transition-colors min-w-0 ${activeSessionId === s.id ? 'bg-gray-700/80 border-purple-500/50' : 'bg-gray-900 border-gray-800 hover:bg-gray-800'}`}
+                      title={s.title || '새 대화'}
+                    >
+                      <div className="text-sm text-gray-200 truncate">{s.title || '새 대화'}</div>
+                      <div className="text-xs text-gray-500 truncate">{s.snippet || new Date(s.updatedAt||s.createdAt).toLocaleString()}</div>
+                      {/* hover 팝오버 */}
+                      <div className="hidden group-hover:block absolute left-full top-0 ml-2 z-20 w-64 p-3 rounded-lg bg-gray-900 border border-gray-700 shadow-xl">
+                        <div className="text-xs text-gray-400 mb-1">{new Date(s.updatedAt||s.createdAt).toLocaleString()}</div>
+                        <div className="text-sm text-gray-200 whitespace-pre-wrap">{s.snippet || '메시지 없음'}</div>
+                      </div>
+                    </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); handleDeleteSession(s.id); }}
+                      className="p-2 rounded-lg bg-gray-900 border border-gray-800 hover:bg-red-700/20 text-gray-400 hover:text-red-400 flex-shrink-0"
+                      title="세션 삭제"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* 아이콘 랙: 이미지/스토리/캐릭터 - hover 시 팝업 */}
+            <div className="mt-4 grid grid-cols-3 gap-2">
+              <div className="group relative flex items-center justify-center h-10 rounded-lg bg-gray-900 border border-gray-700 text-gray-300">
+                <ImageIcon className="w-4 h-4" />
+                <div className="hidden group-hover:block absolute left-full top-0 ml-2 z-20 w-64 p-3 rounded-lg bg-gray-900 border border-gray-700 shadow-xl">
+                  <div className="text-sm text-white mb-2">이미지 보관함</div>
+                  <div className="grid grid-cols-3 gap-2">
+                    {(JSON.parse(localStorage.getItem('agent:images')||'[]')||[]).slice(0,6).map(img => (
+                      <img key={img.id} src={img.url} alt="img" className="w-full h-12 object-cover rounded cursor-pointer" onClick={() => { try { const sid = (JSON.parse(localStorage.getItem('agent:sessions')||'[]')||[])[0]?.id; if (sid) { window.location.href=`/agent#session=${sid}`; } else { window.location.href='/agent'; } } catch { window.location.href='/agent'; } }} />
+                    ))}
+                  </div>
+                </div>
+              </div>
+              <div className="group relative flex items-center justify-center h-10 rounded-lg bg-gray-900 border border-gray-700 text-gray-300">
+                <NotebookText className="w-4 h-4" />
+                <div className="hidden group-hover:block absolute left-full top-0 ml-2 z-20 w-64 p-3 rounded-lg bg-gray-900 border border-gray-700 shadow-xl">
+                  <div className="text-sm text-white mb-2">생성된 스토리</div>
+                  <div className="space-y-2 max-h-56 overflow-auto pr-1">
+                    {(JSON.parse(localStorage.getItem('agent:stories')||'[]')||[]).slice(0,8).map(s => (
+                      <button key={s.id} className="block w-full text-left text-xs text-gray-300 truncate hover:text-white" onClick={() => { try { if (s.sessionId) { window.location.href=`/agent#session=${s.sessionId}`; } else { window.location.href='/agent'; } } catch { window.location.href='/agent'; } }}>{s.title}</button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              <div className="group relative flex items-center justify-center h-10 rounded-lg bg-gray-900 border border-gray-700 text-gray-300">
+                <User className="w-4 h-4" />
+                <div className="hidden group-hover:block absolute left-full top-0 ml-2 z-20 w-64 p-3 rounded-lg bg-gray-900 border border-gray-700 shadow-xl">
+                  <div className="text-sm text-white mb-2">생성된 캐릭터</div>
+                  <div className="space-y-2 max-h-56 overflow-auto pr-1">
+                    {(JSON.parse(localStorage.getItem('agent:characters')||'[]')||[]).slice(0,8).map(c => (
+                      <button key={c.id} className="block w-full text-left text-xs text-gray-300 truncate hover:text-white" onClick={() => { try { window.location.href=`/characters/${c.id}`; } catch { window.location.href='/agent'; } }}>{c.name||'캐릭터'}</button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </>
+        ) : (
+          <div className="mt-4 p-3 rounded-lg bg-gray-900 border border-gray-700 text-center">
+            <p className="text-sm text-gray-300 mb-3">로그인하여 히스토리를 저장하고 더 많은 기능을 이용해보세요.</p>
+            <Button className="w-full bg-gradient-to-r from-purple-600 via-fuchsia-600 to-pink-600 hover:brightness-105 text-white shadow-md" onClick={() => setShowLoginModal(true)}>
+              <LogIn className="w-4 h-4 mr-2" /> 로그인/가입
+            </Button>
           </div>
         )}
-
-        {/* 아이콘 랙: 이미지/스토리/캐릭터 - hover 시 팝업 */}
-        <div className="mt-4 grid grid-cols-3 gap-2">
-          <div className="group relative flex items-center justify-center h-10 rounded-lg bg-gray-900 border border-gray-700 text-gray-300">
-            <ImageIcon className="w-4 h-4" />
-            <div className="hidden group-hover:block absolute left-full top-0 ml-2 z-20 w-64 p-3 rounded-lg bg-gray-900 border border-gray-700 shadow-xl">
-              <div className="text-sm text-white mb-2">이미지 보관함</div>
-              <div className="grid grid-cols-3 gap-2">
-                {(JSON.parse(localStorage.getItem('agent:images')||'[]')||[]).slice(0,6).map(img => (
-                  <img key={img.id} src={img.url} alt="img" className="w-full h-12 object-cover rounded cursor-pointer" onClick={() => { try { const sid = (JSON.parse(localStorage.getItem('agent:sessions')||'[]')||[])[0]?.id; if (sid) { window.location.href=`/agent#session=${sid}`; } else { window.location.href='/agent'; } } catch { window.location.href='/agent'; } }} />
-                ))}
-              </div>
-            </div>
-          </div>
-          <div className="group relative flex items-center justify-center h-10 rounded-lg bg-gray-900 border border-gray-700 text-gray-300">
-            <NotebookText className="w-4 h-4" />
-            <div className="hidden group-hover:block absolute left-full top-0 ml-2 z-20 w-64 p-3 rounded-lg bg-gray-900 border border-gray-700 shadow-xl">
-              <div className="text-sm text-white mb-2">생성된 스토리</div>
-              <div className="space-y-2 max-h-56 overflow-auto pr-1">
-                {(JSON.parse(localStorage.getItem('agent:stories')||'[]')||[]).slice(0,8).map(s => (
-                  <button key={s.id} className="block w-full text-left text-xs text-gray-300 truncate hover:text-white" onClick={() => { try { if (s.sessionId) { window.location.href=`/agent#session=${s.sessionId}`; } else { window.location.href='/agent'; } } catch { window.location.href='/agent'; } }}>{s.title}</button>
-                ))}
-              </div>
-            </div>
-          </div>
-          <div className="group relative flex items-center justify-center h-10 rounded-lg bg-gray-900 border border-gray-700 text-gray-300">
-            <User className="w-4 h-4" />
-            <div className="hidden group-hover:block absolute left-full top-0 ml-2 z-20 w-64 p-3 rounded-lg bg-gray-900 border border-gray-700 shadow-xl">
-              <div className="text-sm text-white mb-2">생성된 캐릭터</div>
-              <div className="space-y-2 max-h-56 overflow-auto pr-1">
-                {(JSON.parse(localStorage.getItem('agent:characters')||'[]')||[]).slice(0,8).map(c => (
-                  <button key={c.id} className="block w-full text-left text-xs text-gray-300 truncate hover:text-white" onClick={() => { try { window.location.href=`/characters/${c.id}`; } catch { window.location.href='/agent'; } }}>{c.name||'캐릭터'}</button>
-                ))}
-              </div>
-            </div>
-          </div>
-        </div>
       </nav>
 
       <div className="p-3 border-t border-gray-700">

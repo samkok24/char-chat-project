@@ -14,11 +14,14 @@ services:
       DATABASE_URL: "sqlite+aiosqlite:////app/data/test.db"
       ENVIRONMENT: "development"
       DEBUG: "true"
+      REDIS_URL: "redis://redis:6379/0"
     ports:
       - "8000:8000"
     volumes:
       # 데이터베이스 파일 유지를 위해 폴더를 마운트
       - ./backend-api:/app
+    depends_on:
+      - redis
     networks:
       - char_chat_network
 

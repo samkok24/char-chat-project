@@ -27,6 +27,7 @@ from app.services.comment_service import (
     create_story_comment, get_story_comments, get_story_comment_by_id,
     update_story_comment, delete_story_comment
 )
+from app.services.job_service import JobService, get_job_service
 
 router = APIRouter()
 
@@ -80,89 +81,186 @@ async def generate_story(
 @router.post("/generate/stream")
 async def generate_story_stream(
     request: Request,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
-    current_user: Optional[User] = Depends(get_current_user_optional)
+    current_user: Optional[User] = Depends(get_current_user_optional),
+    job_service: JobService = Depends(get_job_service)
 ):
     """SSE stream using the new real-time AI generation pipeline."""
     body = await request.json()
+    job_id = str(uuid.uuid4())
 
-    async def event_generator(request_body):
-        job_id = str(uuid.uuid4())
-        yield f'event: meta\n'
-        yield f'data: {{"job_id": "{job_id}", "queue_position": 0}}\n\n'
-
+    async def run_generation_in_background():
         try:
-            keywords = request_body.get("keywords") or []
-            model_str = (request_body.get("model") or "").lower()
+            initial_data = {
+                "status": "queued",
+                "stage": "start",
+                "content_so_far": "",
+                "preview_sent": False,
+                "title": "생성 중...",
+                "final_result": None,
+                "error_message": None,
+                "cancelled": False,
+            }
+            await job_service.create_job(job_id, initial_data)
+        
+            # 실제 생성 로직
+            await job_service.update_job(job_id, {"status": "running"})
             
-            if "claude" in model_str:
-                ai_model = "claude"
-            elif "gpt" in model_str:
-                ai_model = "gpt"
-            else:
-                ai_model = "gemini"
+            keywords = body.get("keywords") or []
+            model_str = (body.get("model") or "").lower()
+            
+            if "claude" in model_str: ai_model = "claude"
+            elif "gpt" in model_str: ai_model = "gpt"
+            else: ai_model = "gemini"
 
             full_content = ""
-            preview_sent = False
             
+            # keywords가 비어도 최소 프롬프트 기반으로 생성되도록 처리
             async for event_data in story_generation_service.generate_story_stream(
                 keywords=keywords,
-                genre=request_body.get("genre"),
-                length=request_body.get("length", "medium"),
-                tone=request_body.get("tone", "neutral"),
+                genre=body.get("genre"),
+                length=body.get("length", "medium"),
+                tone=body.get("tone", "neutral"),
                 ai_model=ai_model,
                 ai_sub_model=model_str
             ):
+                # Check cancellation
+                state = await job_service.get_job(job_id)
+                if state and state.get("cancelled"):
+                    await job_service.update_job(job_id, {"status": "cancelled"})
+                    break
                 event_name = event_data.get("event")
                 data_payload = event_data.get("data", {})
                 
                 if event_name == "story_delta":
                     full_content += data_payload.get("delta", "")
-                    # 500자 프리뷰 전송 (한 번만)
-                    if not preview_sent and len(full_content) >= 500:
-                        yield f'event: preview\n'
-                        yield f'data: {{"text": {json.dumps(full_content[:500])}}}\n\n'
-                        preview_sent = True
-                    
-                    # 이후 본문 조각 전송
-                    if preview_sent:
-                        yield f'event: episode\n'
-                        yield f'data: {{"delta": {json.dumps(data_payload.get("delta", ""))}}}\n\n'
-                
-                elif event_name == "final":
-                    # 최종본 전송 전, 프리뷰가 전송되지 않았다면 지금 전송
-                    if not preview_sent:
-                        yield f'event: preview\n'
-                        yield f'data: {{"text": {json.dumps(full_content[:500])}}}\n\n'
-                        preview_sent = True
-                        # 남은 조각도 전송
-                        if len(full_content) > 500:
-                             yield f'event: episode\n'
-                             yield f'data: {{"delta": {json.dumps(full_content[500:])}}}\n\n'
+                    updates = {"content_so_far": full_content}
+                    # preview_sent 플래그는 job_service 내부에서 관리되므로 직접 참조 대신 get_job 사용
+                    current_job_state = await job_service.get_job(job_id)
+                    # 프리뷰는 '최대 500자'이므로, 너무 늦게 나오지 않도록 임계값을 낮춰 조기 전송
+                    if current_job_state and not current_job_state.get("preview_sent") and len(full_content) >= 200:
+                        updates["preview_sent"] = True
+                    await job_service.update_job(job_id, updates)
 
-                    final_data = data_payload.copy()
-                    final_data["id"] = str(uuid.uuid4())
-                    final_data["model"] = model_str
-                    yield f'event: final\n'
-                    yield f'data: {json.dumps(final_data)}\n\n'
+                elif event_name == "stage_start":
+                    await job_service.update_job(job_id, {"stage": data_payload.get("label", "진행 중...")})
+
+                elif event_name == "stage_end" and data_payload.get("name") == "title_generation":
+                    await job_service.update_job(job_id, {"title": data_payload.get("result", "무제")})
+
+                elif event_name == "final":
+                    await job_service.update_job(job_id, {"status": "done", "final_result": data_payload})
                 
-                else: # stage_start, stage_end, stage_progress, error
-                    yield f'event: {event_name}\n'
-                    yield f'data: {json.dumps(data_payload)}\n\n'
+                elif event_name == "error":
+                    raise Exception(data_payload.get("message", "Unknown generation error"))
 
         except Exception as e:
-            yield f'event: error\n'
-            yield f'data: {{"message": {json.dumps(str(e))} }}\n\n'
+            # 백그라운드 작업에서 발생하는 모든 예외를 잡아서 Redis에 기록
+            error_message = f"배경 생성 작업 실패: {str(e)}"
+            try:
+                await job_service.update_job(job_id, {"status": "error", "error_message": error_message})
+            except:
+                # Redis 업데이트조차 실패하는 경우 (연결 문제 등)
+                # 이 경우는 어쩔 수 없이 클라이언트가 타임아웃 처리해야 함
+                pass
+
+    # 중요: StreamingResponse에서 BackgroundTasks는 응답 종료 후 실행되므로
+    # 여기서는 즉시 비동기 작업을 시작해야 함
+    asyncio.create_task(run_generation_in_background())
+
+    async def event_generator():
+        yield f'event: meta\n'
+        yield f'data: {{"job_id": "{job_id}", "queue_position": 0}}\n\n'
+        
+        last_content_len = 0
+        last_stage = None
+        last_title = None
+        preview_emitted = False
+
+        try:
+            while True:
+                job_state = await job_service.get_job(job_id)
+                if not job_state:
+                    # Job이 생성되기 전이거나 알 수 없는 이유로 사라짐
+                    await asyncio.sleep(0.5)
+                    continue
+                
+                if job_state.get("status") in ["done", "error", "cancelled"]:
+                    if job_state.get("status") == "error" and job_state.get("error_message"):
+                         yield f'event: error\n'
+                         yield f'data: {{"message": {json.dumps(job_state.get("error_message"))} }}\n\n'
+                    elif job_state.get("status") == "cancelled":
+                        yield f'event: error\n'
+                        yield f'data: {{"message": "cancelled"}}\n\n'
+                    elif job_state.get("final_result"):
+                        yield f'event: final\n'
+                        yield f'data: {json.dumps(job_state.get("final_result"))}\n\n'
+                    break
+
+                # Stage 변경 감지
+                current_stage = job_state.get("stage")
+                if current_stage is not None and current_stage != last_stage:
+                    last_stage = current_stage
+                    yield f'event: stage_start\n'
+                    yield f'data: {json.dumps({"label": last_stage})}\n\n'
+
+                # 제목 변경 감지
+                current_title = job_state.get("title")
+                if current_title is not None and current_title != last_title:
+                    last_title = current_title
+                    yield f'event: stage_end\n'
+                    yield f'data: {json.dumps({"name": "title_generation", "result": last_title})}\n\n'
+                
+                # 프리뷰 1회 전송
+                content = job_state.get("content_so_far", "")
+                if (not preview_emitted) and job_state.get("preview_sent"):
+                    # 500자보다 짧게 생성되더라도 preview_sent가 True이면 일단 보냄
+                    preview_content = content[:500]
+                    yield f'event: preview\n'
+                    yield f'data: {{"text": {json.dumps(preview_content)}}}\n\n'
+                    preview_emitted = True
+                    last_content_len = len(preview_content)
+
+                # 컨텐츠 델타 전송 (프리뷰 전/후 상관없이 즉시 스트리밍)
+                if len(content) > last_content_len:
+                    delta = content[last_content_len:]
+                    yield f'event: episode\n'
+                    yield f'data: {json.dumps({"delta": delta})}\n\n'
+                    last_content_len = len(content)
+                
+                await asyncio.sleep(0.2) # 폴링 간격 단축
+        except asyncio.CancelledError:
+            # Client disconnected
+            pass
+        except Exception as e:
+            # 폴링 루프 자체의 예외
+            try:
+                error_payload = json.dumps({"message": f"Stream polling failed on the server: {str(e)}"})
+                yield f'event: error\n'
+                yield f'data: {error_payload}\n\n'
+            except:
+                pass
 
     return StreamingResponse(
-        event_generator(body),
+        event_generator(),
         media_type="text/event-stream; charset=utf-8",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"
-        }
+        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
     )
+
+@router.get("/generate/stream/{job_id}/status")
+async def get_job_status(job_id: str, job_service: JobService = Depends(get_job_service)):
+    job = await job_service.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+@router.delete("/generate/stream/{job_id}")
+async def cancel_job(job_id: str, job_service: JobService = Depends(get_job_service)):
+    state = await job_service.cancel_job(job_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {"message": "cancelled"}
 
 
 @router.post("/", response_model=StoryResponse)

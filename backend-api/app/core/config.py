@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     IMAGEN_API_KEY: Optional[str] = None
     
     DATABASE_URL: str = "sqlite:///./data/test.db"  # 기본값 추가
-    REDIS_URL: str = "redis://localhost:6379"  # 이 줄 추가!
+    REDIS_URL: str = "redis://localhost:6379/0"
     
     # JWT
     JWT_SECRET_KEY: str = "your-super-secret-jwt-key-change-this-in-production"  # 기본값 추가
@@ -39,6 +39,8 @@ class Settings(BaseSettings):
     EMAIL_FROM_NAME: str = "AI 캐릭터 챗"
     FRONTEND_BASE_URL: str = "http://localhost:5173"
     
+    JOB_EXPIRATION_SECONDS: int = 3600 # 1 hour
+
     class Config:
         env_file = ".env"
         env_file_encoding = 'utf-8'

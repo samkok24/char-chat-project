@@ -378,12 +378,13 @@ export const storiesAPI = {
     api.post('/stories/generate', data),
 
   // Experimental streaming API (SSE events)
-  generateStoryStream: async (data, { onMeta, onPreview, onEpisode, onFinal, onError, onStageStart, onStageEnd } = {}) => {
+  generateStoryStream: async (data, { onMeta, onPreview, onEpisode, onFinal, onError, onStageStart, onStageEnd, onStart } = {}) => {
     const endpoint = '/stories/generate/stream';
     const token = localStorage.getItem('access_token');
     const headers = { 'Content-Type': 'application/json' };
     if (token) headers['Authorization'] = `Bearer ${token}`;
     const controller = new AbortController();
+    try { if (onStart) onStart({ controller, abort: () => controller.abort() }); } catch (_) {}
     const decoder = new TextDecoder('utf-8');
     let buffer = '';
     let result = { ok: false };
@@ -431,10 +432,12 @@ export const storiesAPI = {
         }
       }
       if (!result.ok && onFinal) onFinal({ content: '' });
-      return result.ok ? result : { ok: false, data: result.data };
+      return result.ok ? { ...result, controller, abort: () => controller.abort() } : { ok: false, data: result.data, controller, abort: () => controller.abort() };
     } catch (e) {
+      const msg = (e && e.message) ? String(e.message) : '';
+      const aborted = (e && e.name === 'AbortError') || msg.toLowerCase().includes('aborted');
       try { controller.abort(); } catch (_) {}
-      return { ok: false, error: e };
+      return { ok: false, error: e, aborted, controller, abort: () => controller.abort() };
     }
   },
 

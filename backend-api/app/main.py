@@ -19,6 +19,7 @@ from sqlalchemy import text
 from app.api.chat import router as chat_router          # 🔥 최우선: 채팅 API
 from app.api.auth import router as auth_router          # ✅ 필수: 인증 API  
 from app.api.characters import router as characters_router  # ✅ 필수: 캐릭터 API
+# from app.api.generation import router as generation_router # ✨ 신규: 생성 API (임시 비활성화)
 from app.api.users import router as users_router
 from app.api.story_importer import router as story_importer_router # ✨ 신규: 스토리 임포터 API
 from app.api.memory_notes import router as memory_notes_router
@@ -178,6 +179,7 @@ app.include_router(chat_router, prefix="/chat", tags=["🔥 채팅 (최우선)"]
 app.include_router(auth_router, prefix="/auth", tags=["✅ 인증 (필수)"])
 app.include_router(characters_router, prefix="/characters", tags=["✅ 캐릭터 (필수)"])
 app.include_router(users_router, prefix="", tags=["✅ 유저 (필수)"])  # prefix 없음 - /users/{id} 형태
+# app.include_router(generation_router, prefix="/generate", tags=["✨ 생성 (신규)"])  # 임시 비활성화
 app.include_router(story_importer_router, prefix="/story-importer", tags=["✨ 스토리 임포터 (신규)"])
 app.include_router(memory_notes_router, prefix="/memory-notes", tags=["✨ 기억노트 (신규)"])
 app.include_router(user_personas_router, prefix="/user-personas", tags=["👤 유저 페르소나 (신규)"])

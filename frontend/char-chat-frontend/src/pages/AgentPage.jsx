@@ -27,6 +27,7 @@ import { RadioGroup, RadioGroupItem } from '../components/ui/radio-group';
 import { useNavigate, Link, useLocation } from 'react-router-dom';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { storiesAPI, charactersAPI, chatAPI } from '../lib/api';
+// import { generationAPI } from '../lib/generationAPI'; // removed: use existing backend flow
 import { Switch } from '../components/ui/switch';
 import { DEFAULT_SQUARE_URI } from '../lib/placeholder';
 import { Loader2, Plus, Send, Sparkles, Image as ImageIcon, Trash2, ChevronLeft, ChevronRight, X, CornerDownLeft, Copy as CopyIcon, RotateCcw } from 'lucide-react';
@@ -38,6 +39,17 @@ const LS_MESSAGES_PREFIX = 'agent:messages:'; // + sessionId
 const LS_STORIES = 'agent:stories';
 const LS_IMAGES = 'agent:images';
 const LS_CHARACTERS = 'agent:characters';
+
+// --- Generation States as per Spec ---
+const GEN_STATE = {
+  IDLE: 'IDLE',
+  PREVIEW_STREAMING: 'PREVIEW_STREAMING',
+  AWAITING_CANVAS: 'AWAITING_CANVAS',
+  CANVAS_STREAMING: 'CANVAS_STREAMING',
+  COMPLETED: 'COMPLETED',
+  STOPPED: 'STOPPED',
+  FAILED: 'FAILED',
+};
 
 const nowIso = () => new Date().toISOString();
 
@@ -209,6 +221,10 @@ const isGuest = !user;
 const { sessions, createSession, updateSession, removeSession } = useAgentSessions(!isGuest === true);
 const [activeSessionId, setActiveSessionId] = useState((!isGuest ? (sessions[0]?.id || null) : null));
 const { messages, setMessages } = useSessionMessages(activeSessionId || '', !isGuest === true);
+const activeSessionIdRef = useRef(activeSessionId);
+useEffect(() => { activeSessionIdRef.current = activeSessionId; }, [activeSessionId]);
+// 게스트 모드용 세션별 메시지 임시 저장소(메모리)
+const sessionLocalMessagesRef = useRef(new Map()); // sid -> messages[]
 const queryClient = useQueryClient();
 const messagesContainerRef = useRef(null);
 const stableMessages = useMemo(() => messages, [messages]);
@@ -237,7 +253,51 @@ const [storyModel, setStoryModel] = useState(STORY_MODELS[0].value);
 const [imageModel, setImageModel] = useState(IMAGE_MODELS[0].value);
 const [isPublic, setIsPublic] = useState(false);
 const [w5, setW5] = useState(DEFAULT_W5);
-const [generating, setGenerating] = useState(false);
+// +++ New State Management +++
+// 세션별 스트리밍 상태/컨트롤러/메시지ID 맵
+const genBySessionRef = useRef(new Map()); // sid -> { status, jobId, controller, assistantId }
+const jobToSessionRef = useRef(new Map()); // jobId -> sid
+const sessionVersionRef = useRef(new Map()); // sid -> version (int)
+
+// 현재 세션 UI에 표시할 상태만 별도 보유(衝突 방지)
+const [generationStatus, setGenerationStatus] = useState(GEN_STATE.IDLE);
+// job 관리(취소/복구용) - 현재 세션의 jobId만 저장
+const [storyJobId, setStoryJobId] = useState(null);
+
+const getGenState = useCallback((sid) => {
+  return genBySessionRef.current.get(sid) || { status: GEN_STATE.IDLE, jobId: null, controller: null, assistantId: null };
+}, []);
+
+const setGenState = useCallback((sid, partial) => {
+  const prev = getGenState(sid);
+  const next = { ...prev, ...partial };
+  genBySessionRef.current.set(sid, next);
+  if (sid === activeSessionId) {
+    setGenerationStatus(next.status || GEN_STATE.IDLE);
+    setStoryJobId(next.jobId || null);
+  }
+  return next;
+}, [activeSessionId, getGenState]);
+
+const getSessionVersion = useCallback((sid) => {
+  return sessionVersionRef.current.get(sid) || 0;
+}, []);
+
+const bumpSessionVersion = useCallback((sid) => {
+  const next = (sessionVersionRef.current.get(sid) || 0) + 1;
+  sessionVersionRef.current.set(sid, next);
+  return next;
+}, []);
+
+const applyIfCurrent = useCallback((sid, expectedVersion, fn) => {
+  const cur = getSessionVersion(sid);
+  if (cur !== expectedVersion) return false;
+  try { fn(); } catch {}
+  return true;
+}, [getSessionVersion]);
+
+// (moved) headlessWatchersRef/startHeadlessWatcher 아래로 이동: updateMessageForSession 선언 이후에 초기화되도록 함
+
 const [images, setImages] = useState(() => loadJson(LS_IMAGES, []));
 const [imageResults, setImageResults] = useState([]);
 const [showChatPanel, setShowChatPanel] = useState(false);
@@ -261,25 +321,17 @@ const [publishAvatarUrl, setPublishAvatarUrl] = useState('');
 const [publishing, setPublishing] = useState(false);
 const [includeNewImages, setIncludeNewImages] = useState(true);
 const [includeLibraryImages, setIncludeLibraryImages] = useState(false);
-// Story preview (fake streaming while generating full 5 episodes)
+// Story preview
 const [storyPreview, setStoryPreview] = useState('');
 const [storyPreviewProgress, setStoryPreviewProgress] = useState(0);
-const [storyGenerating, setStoryGenerating] = useState(false);
-const [storyFullBuffer, setStoryFullBuffer] = useState('');
-const previewTimerRef = useRef(null);
-const [genError, setGenError] = useState('');
-const [imgError, setImgError] = useState('');
-// SSE job 관리
-const [storyJobId, setStoryJobId] = useState(null);
-const [storyQueuePos, setStoryQueuePos] = useState(null);
-const [storyCancelling, setStoryCancelling] = useState(false);
-// 실시간 생성 단계 표시용
-const [currentStage, setCurrentStage] = useState('');
 // 스토리 뷰어(캔버스)용 Sheet 상태
 const [showStoryViewerSheet, setShowStoryViewerSheet] = useState(false);
 const [storyForViewer, setStoryForViewer] = useState({ title: '', content: '' });
-// 스토리 스트리밍 말풍선 업데이트용
-// const storyAssistantIdRef = useRef(null); // This ref is removed as it caused issues with concurrent jobs.
+// 새 세션 생성 대기 플래그: 첫 생성 요청 시 세션 생성
+const [isNewSessionPending, setIsNewSessionPending] = useState(false);
+// 스토리 스트리밍 말풍선 업데이트용 메시지 ID
+const assistantMessageIdRef = useRef(null);
+
 // 빠른 문장 템플릿 순환(넷플릭스/영화/드라마 → W5 복귀)
 const QUICK_TEMPLATES = [
   '넷플릭스 영화, <K-POP 데몬 헌터스>에서 내가 그룹 HUNTRIX의 4번째 멤버가 된다면?',
@@ -345,6 +397,7 @@ try {
     setPrompt('');
     setW5(DEFAULT_W5);
     setQuickIdx(-1);
+    setIsNewSessionPending(false);
     // URL 정리
     const url = new URL(window.location.href);
     url.searchParams.delete('start');
@@ -357,19 +410,20 @@ useEffect(() => {
 saveJson('agent:ui', { mode, storyModel, imageModel, isPublic, w5, imageSize, imageAspect, imageCount, publishPublic, includeNewImages, includeLibraryImages });
 }, [mode, storyModel, imageModel, isPublic, w5, imageSize, imageAspect, imageCount, publishPublic, includeNewImages, includeLibraryImages]);
 
-// 항상 하나의 세션을 보장: 세션이 없으면 자동 생성
+// "최고 결정권자" useEffect: 세션 상태 변화를 감시하고 UI를 동기화
 useEffect(() => {
-  if (!sessions || sessions.length === 0) {
-    const s = createSession({ title: '새 대화', type: 'story' });
-    setActiveSessionId(s.id);
-    setShowChatPanel(false);
-    setPrompt('');
-    setW5(DEFAULT_W5);
-    setQuickIdx(-1);
-    return;
-  }
-if (!activeSessionId && sessions.length > 0) setActiveSessionId(sessions[0].id);
-}, [sessions.length]); // activeSessionId를 dependency에서 제거하여 무한 루프 방지
+    const activeSessionExists = sessions.some(s => s.id === activeSessionId);
+
+    if (sessions.length > 0 && !activeSessionExists) {
+        // 활성 세션이 삭제된 경우, 첫 번째 세션을 활성화
+        setActiveSessionId(sessions[0].id);
+    } else if (sessions.length === 0 && !isGuest) {
+        // 세션이 하나도 없는 경우(로그인 사용자), 새 세션을 만들고 활성화
+        const newSession = createSession({ title: '새 대화' });
+        setActiveSessionId(newSession.id);
+        setShowChatPanel(false); // 육하원칙 화면 표시
+    }
+}, [sessions, activeSessionId, isGuest, createSession]);
 
 // Hash-based activation from AgentSidebar
 useEffect(() => {
@@ -389,10 +443,20 @@ window.addEventListener('hashchange', tryActivateFromHash);
 return () => window.removeEventListener('hashchange', tryActivateFromHash);
 }, [sessions]);
 
-// Auto open panel when a session is active (GPT-like resume)
+// 세션 전환 시 메시지 유무로 패널 표시 결정 (빈 채팅방 금지)
 useEffect(() => {
-if (activeSessionId && messages.length > 0) setShowChatPanel(true);
+  setShowChatPanel((messages || []).length > 0);
 }, [activeSessionId, messages]);
+
+// 게스트: 세션 전환 시 메모리 저장소에서 복원
+useEffect(() => {
+  if (isGuest && activeSessionId) {
+    try {
+      const arr = sessionLocalMessagesRef.current.get(activeSessionId) || [];
+      setMessages(Array.isArray(arr) ? arr : []);
+    } catch {}
+  }
+}, [isGuest, activeSessionId, setMessages]);
 
 // Onboarding toast (once per device)
 useEffect(() => {
@@ -420,25 +484,34 @@ if (!flag && sessions.length === 1) {
 }, [sessions]);
 
 const userTurns = useMemo(() => (stableMessages || []).filter(m => m.role === 'user').length, [stableMessages]);
-const turnLimitReached = userTurns >= 20;
+const generationLimit = isGuest ? 3 : 20;
+const turnLimitReached = userTurns >= generationLimit;
 const activeSession = useMemo(() => (sessions || []).find(s => s.id === activeSessionId) || null, [sessions, activeSessionId]);
+const isNewChatButtonDisabled = useMemo(() => {
+    // 게스트만 비활성화, 나머지는 언제나 새 대화 가능
+    return !!isGuest;
+}, [isGuest]);
 
 const handleCreateSession = () => {
-    // 1. Reset all visual state to show the 5W1H screen
+    // 현재 세션 스트림만 종료 (서버 작업은 유지)
+    try {
+      const cur = getGenState(activeSessionId);
+      cur?.controller?.abort?.();
+    } catch {}
+    // 새 세션 생성 및 활성화
+    const newSession = createSession({ title: '새 대화', type: 'story' });
+    setActiveSessionId(newSession.id);
+    if (isGuest) {
+      try { sessionLocalMessagesRef.current.set(newSession.id, []); } catch {}
+    }
+    try { sessionVersionRef.current.set(newSession.id, 0); } catch {}
+    // 육하원칙 화면 강제 노출 (빈 채팅방 금지)
     setShowChatPanel(false);
     setPrompt('');
     setW5(DEFAULT_W5);
     setQuickIdx(-1);
     setMode('story');
-
-    // 2. Create the new session in the background
-    const s = createSession({ title: '새 대화', type: 'story' });
-    
-    // 3. Activate it and clear its messages
-setActiveSessionId(s.id);
-    setMessages([]); // This must happen after setActiveSessionId to target the new session
-    
-    // 4. Navigate to a clean URL and focus
+    setGenState(newSession.id, { status: GEN_STATE.IDLE, jobId: null, controller: null, assistantId: null });
     navigate('/agent', { replace: true });
     setTimeout(() => {
         const firstInput = document.querySelector('[data-w5-input="background"]');
@@ -447,28 +520,27 @@ setActiveSessionId(s.id);
 };
 
 const handleSessionSelect = (id) => {
+    // 현재 세션 스트림만 종료 (서버 작업은 계속)
+    try {
+        const cur = getGenState(activeSessionId);
+        cur?.controller?.abort?.();
+    } catch {}
     setActiveSessionId(id);
+    try {
+        const list = isGuest ? [] : (loadJson(LS_MESSAGES_PREFIX + id, []) || []);
+        setShowChatPanel((list || []).length > 0);
+    } catch {}
     navigate(`/agent#session=${id}`, { replace: true });
+    // 백그라운드 완료 감시 시작 (A처럼 headless로 끝날 수 있음)
+    try {
+      const cand = getGenState(id);
+      if (cand?.jobId) startHeadlessWatcher(id);
+    } catch {}
 };
 
 const handleDeleteSession = (id) => {
-  // 로컬 상태와 저장소에서 제거하고, 비워지면 새 세션 즉시 생성
-  try {
-    removeSession(id);
-    const nextSessions = (loadJson(LS_SESSIONS, []) || []);
-    if (!nextSessions || nextSessions.length === 0) {
-      const s = createSession({ title: '새 대화', type: 'story' });
-      setActiveSessionId(s.id);
-      setShowChatPanel(false);
-      setPrompt('');
-      setW5(DEFAULT_W5);
-      setQuickIdx(-1);
-      navigate('/agent');
-    } else {
-      const nextActive = nextSessions[0]?.id || null;
-      setActiveSessionId(nextActive);
-    }
-  } catch {}
+  // 단순히 세션 제거만 요청. 다음 상태 결정은 "최고 결정권자" useEffect에 위임.
+  removeSession(id);
 };
 
 const buildCharacterFromChat = () => {
@@ -552,159 +624,299 @@ setPublishing(false);
 };
 
 const handleSend = async (preAddedContent = null) => {
-if (turnLimitReached) return;
-let ensuredSessionId = activeSessionId;
-if (!ensuredSessionId) {
-  const s = createSession({ title: '새 대화', type: 'chat' });
-  ensuredSessionId = s.id;
-  setActiveSessionId(s.id);
-  setShowChatPanel(true);
-}
-const contentToSend = (preAddedContent != null ? preAddedContent : prompt);
-if (!contentToSend) return;
-
-let localUserAdded = false;
-if (preAddedContent == null) {
-  const userMsg = { id: crypto.randomUUID(), role: 'user', content: contentToSend, createdAt: nowIso() };
-  setMessages(curr => [...curr, userMsg]);
-  localUserAdded = true;
-}
-setPrompt('');
-try { window.dispatchEvent(new CustomEvent('analytics', { detail: { name: 'agent_send', props: { sessionId: ensuredSessionId } } })); } catch {}
-
-const assistantThinking = { id: crypto.randomUUID(), role: 'assistant', content: '생각 중...', createdAt: nowIso(), thinking: true };
-setMessages(curr => [...curr, assistantThinking]);
-
-try {
-  const history = (stableMessages || []).slice(-12).map(m => ({ role: m.role, content: m.content, type: m.type }));
-  const res = await chatAPI.agentSimulate({
-    content: contentToSend,
-    history,
-    model: storyModel,
-    sub_model: storyModel,
-  });
-  const aiText = res?.data?.assistant || '...';
-  setMessages(curr => curr.map(m => m.id === assistantThinking.id ? { ...m, content: aiText, thinking: false } : m));
-} catch (e) {
-  setMessages(curr => curr.map(m => m.id === assistantThinking.id ? { ...m, content: '응답 실패. 다시 시도해 주세요.', thinking: false, error: true } : m));
-}
-};
-
-const handleGenerate = async (overridePrompt = null) => {
-    // Capture session ID at the moment the job starts to ensure callbacks target the correct session.
-    const sessionIdForJob = activeSessionId;
-    if (!sessionIdForJob) {
-        console.error("Generation cannot start without an active session.");
-        window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', message: '활성 세션이 없어 생성을 시작할 수 없습니다.' } }));
+    if (turnLimitReached) {
+        window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', message: isGuest ? '게스트는 3회까지만 생성할 수 있습니다.' : '로그인 후 이용해주세요.' } }));
         return;
     }
+    let ensuredSessionId = activeSessionId;
+    if (!ensuredSessionId) {
+      const s = createSession({ title: '새 대화', type: 'chat' });
+      ensuredSessionId = s.id;
+      setActiveSessionId(s.id);
+      setShowChatPanel(true);
+    }
+    const contentToSend = (preAddedContent != null ? preAddedContent : prompt);
+    if (!contentToSend) return;
 
-setGenerating(true);
-    setStoryGenerating(true);
-    if (activeSessionId === sessionIdForJob) {
-        setCurrentStage(''); // Reset stage only for the active session's UI
+    let localUserAdded = false;
+    if (preAddedContent == null) {
+      const userMsg = { id: crypto.randomUUID(), role: 'user', content: contentToSend, createdAt: nowIso() };
+      setMessages(curr => [...curr, userMsg]);
+      localUserAdded = true;
+    }
+    setPrompt('');
+    try { window.dispatchEvent(new CustomEvent('analytics', { detail: { name: 'agent_send', props: { sessionId: ensuredSessionId } } })); } catch {}
+
+    const assistantThinking = { id: crypto.randomUUID(), role: 'assistant', content: '생각 중...', createdAt: nowIso(), thinking: true };
+    setMessages(curr => [...curr, assistantThinking]);
+
+    try {
+      const history = (stableMessages || []).slice(-12).map(m => ({ role: m.role, content: m.content, type: m.type }));
+      const res = await chatAPI.agentSimulate({
+        content: contentToSend,
+        history,
+        model: storyModel,
+        sub_model: storyModel,
+      });
+      const aiText = res?.data?.assistant || '...';
+      setMessages(curr => curr.map(m => m.id === assistantThinking.id ? { ...m, content: aiText, thinking: false } : m));
+    } catch (e) {
+      setMessages(curr => curr.map(m => m.id === assistantThinking.id ? { ...m, content: '응답 실패. 다시 시도해 주세요.', thinking: false, error: true } : m));
+    }
+};
+
+// LS/상태 동기화를 위한 전역 헬퍼: 특정 세션의 특정 메시지를 업데이트
+const updateMessageForSession = useCallback((targetSessionId, targetMessageId, updater) => {
+    try {
+        const currentList = isGuest
+          ? (sessionLocalMessagesRef.current.get(targetSessionId) || [])
+          : loadJson(LS_MESSAGES_PREFIX + targetSessionId, []);
+        let found = false;
+        const updatedList = (currentList || []).map(m => {
+            if (m.id === targetMessageId) { found = true; return updater(m); }
+            return m;
+        });
+        if (!found) {
+            // 안전장치: 대상 메시지가 없다면 중복 생성 방지를 위해 아무 것도 추가하지 않음
+            // 필요한 경우 초기 생성 시점에서만 thinking 메시지를 만들고, 이후에는 업데이트만 허용
+        }
+        if (isGuest) {
+          sessionLocalMessagesRef.current.set(targetSessionId, updatedList);
+        } else {
+          saveJson(LS_MESSAGES_PREFIX + targetSessionId, updatedList);
+        }
+        if (activeSessionIdRef.current === targetSessionId) setMessages(updatedList);
+        return updatedList;
+    } catch { return; }
+}, [isGuest, setMessages]);
+
+// 백그라운드 완료 감시자 (세션별 1개)
+const headlessWatchersRef = useRef(new Map()); // sid -> true(동작중)
+const startHeadlessWatcher = useCallback(async (sid) => {
+  if (!sid) return;
+  if (headlessWatchersRef.current.get(sid)) return; // 이미 동작 중
+  headlessWatchersRef.current.set(sid, true);
+  try {
+    // jobId가 아직 없는 경우 잠시 대기(최대 3초)
+    let attempts = 0;
+    let jobId = getGenState(sid).jobId;
+    while (!jobId && attempts < 30) {
+      await new Promise(r => setTimeout(r, 100));
+      jobId = getGenState(sid).jobId;
+      attempts += 1;
+    }
+    const assistantId = getGenState(sid).assistantId;
+    if (!jobId || !assistantId) return; // 감시 불가
+
+    const startTs = Date.now();
+    const maxMs = 1000 * 60 * 90; // 90분 안전 한도
+    while (true) {
+      try {
+        const res = await storiesAPI.getGenerateJobStatus(jobId);
+        const job = res?.data || null;
+        if (!job) { await new Promise(r => setTimeout(r, 1500)); continue; }
+        const status = job.status;
+        if (status === 'done' && job.final_result && (job.final_result.content || job.final_result.text || job.final_result.delta)) {
+          const content = job.final_result.content || job.final_result.text || '';
+          updateMessageForSession(sid, assistantId, (m) => ({ ...m, thinking: false, streaming: false, content: (content||'').slice(0,500), fullContent: content }));
+          setGenState(sid, { status: GEN_STATE.COMPLETED, controller: null });
+          break;
+        }
+        if (status === 'error') {
+          const msg = job.error_message || '생성 중 오류가 발생했습니다.';
+          updateMessageForSession(sid, assistantId, (m) => ({ ...m, thinking: false, error: true, content: `오류: ${msg}` }));
+          setGenState(sid, { status: GEN_STATE.FAILED, controller: null });
+          break;
+        }
+        if (status === 'cancelled') {
+          updateMessageForSession(sid, assistantId, (m) => ({ ...m, thinking: false, content: (m.content||'').toString() }));
+          setGenState(sid, { status: GEN_STATE.STOPPED, controller: null });
+          break;
+        }
+        if (Date.now() - startTs > maxMs) {
+          break; // 타임아웃
+        }
+        await new Promise(r => setTimeout(r, 1500));
+      } catch (_) {
+        await new Promise(r => setTimeout(r, 2000));
+      }
+    }
+  } finally {
+    headlessWatchersRef.current.delete(sid);
+  }
+}, [getGenState, updateMessageForSession, setGenState]);
+
+const handleGenerate = useCallback(async (overridePrompt = null) => {
+    if (turnLimitReached) {
+        window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', message: isGuest ? '게스트는 3회까지만 생성할 수 있습니다. 로그인 후 이용해주세요.' : '최대 생성 횟수에 도달했습니다.' } }));
+        return;
+    }
+    
+    const effectivePrompt = overridePrompt || prompt;
+    if (!effectivePrompt) return;
+
+    // 시작 시점의 세션ID를 캡처(세션 덮어쓰기 방지)
+    let sessionIdForJob = activeSessionId;
+
+    if (!sessionIdForJob) {
+        const newSession = createSession({ title: '새 대화' });
+        sessionIdForJob = newSession.id;
+        setActiveSessionId(sessionIdForJob);
+        setMessages([]); // 새 세션이므로 메시지 목록 초기화
     }
 
-    const effectivePrompt = overridePrompt != null ? overridePrompt : prompt;
+    // UI 준비
     setShowChatPanel(true);
+    setPrompt('');
 
-    const assistantThinkingId = crypto.randomUUID();
-    
-    // Add the "thinking" message and ALWAYS write to localStorage first for this job's session
-    const thinkingMessage = { id: assistantThinkingId, role: 'assistant', content: '', createdAt: nowIso(), thinking: true };
-    const initialMessages = loadJson(LS_MESSAGES_PREFIX + sessionIdForJob, []);
-    const messagesWithThinking = [...initialMessages, thinkingMessage];
-    saveJson(LS_MESSAGES_PREFIX + sessionIdForJob, messagesWithThinking);
-    
-    // Then, if the job is for the active session, sync state
-    if (activeSessionId === sessionIdForJob) {
-        setMessages(messagesWithThinking);
+    // 사용자 메시지 추가
+    const userMessage = { id: crypto.randomUUID(), role: 'user', content: effectivePrompt, createdAt: nowIso() };
+    const lsBefore = isGuest ? (sessionLocalMessagesRef.current.get(sessionIdForJob) || []) : loadJson(LS_MESSAGES_PREFIX + sessionIdForJob, []);
+    const withUser = [...(lsBefore || []), userMessage];
+    if (isGuest) {
+        sessionLocalMessagesRef.current.set(sessionIdForJob, withUser);
+    if (activeSessionId === sessionIdForJob) setMessages(withUser);
+    } else {
+        saveJson(LS_MESSAGES_PREFIX + sessionIdForJob, withUser);
+        if (activeSessionId === sessionIdForJob) setMessages(withUser);
     }
     
+    // 어시스턴트 자리 확보
+    const assistantThinkingId = crypto.randomUUID();
+    assistantMessageIdRef.current = assistantThinkingId;
+    setGenState(sessionIdForJob, { assistantId: assistantThinkingId });
+    // 생성 버전 증가 및 캡처
+    const sessionVersion = (sessionVersionRef.current.get(sessionIdForJob) || 0) + 1;
+    sessionVersionRef.current.set(sessionIdForJob, sessionVersion);
+    const thinkingMessage = { id: assistantThinkingId, role: 'assistant', content: '', createdAt: nowIso(), thinking: true };
+    const withThinking = [...withUser, thinkingMessage];
+    if (isGuest) {
+        sessionLocalMessagesRef.current.set(sessionIdForJob, withThinking);
+    if (activeSessionId === sessionIdForJob) setMessages(withThinking);
+    } else {
+        saveJson(LS_MESSAGES_PREFIX + sessionIdForJob, withThinking);
+        if (activeSessionId === sessionIdForJob) setMessages(withThinking);
+    }
+
     try {
         const kw = Array.from(new Set([
             ...(effectivePrompt || '').split(/[\,\s]+/).filter(Boolean),
             w5.background, w5.place, w5.role, (w5.speaker || '').replace(/가$/, ''), w5.mutation, w5.goal,
         ].filter(Boolean))).slice(0, 10);
 
-        // Helper function for session-aware, localStorage-first updates
-        const updateMessageInStorage = (updater) => {
-            const currentMessages = loadJson(LS_MESSAGES_PREFIX + sessionIdForJob, []);
-            let found = false;
-            const updatedMessages = currentMessages.map(m => {
-                if (m.id === assistantThinkingId) { found = true; return updater(m); }
-                return m;
-            });
-            if (!found) {
-                // Fallback: if the thinking message is missing (e.g., guest/non-persist case), append it now
-                const inserted = updater({ id: assistantThinkingId, role: 'assistant', content: '', createdAt: nowIso(), thinking: true });
-                updatedMessages.push(inserted);
-            }
-            saveJson(LS_MESSAGES_PREFIX + sessionIdForJob, updatedMessages);
+        // 세션/메시지 업데이트 헬퍼(현재 작업용)
+        const updateAssistant = (updater) => updateMessageForSession(sessionIdForJob, assistantThinkingId, updater);
 
-            if (activeSessionId === sessionIdForJob) {
-                setMessages(updatedMessages);
-            }
-            return updatedMessages;
-        };
-
-    const stream = await storiesAPI.generateStoryStream({
+        const stream = await storiesAPI.generateStoryStream({
             prompt: effectivePrompt,
             keywords: kw,
-      model: storyModel,
-      is_public: isPublic,
+            model: storyModel,
+            is_public: isPublic,
+            target_chars: 30000,
+            chapters: 5,
         }, {
-            onMeta: (payload) => { setStoryJobId(payload?.job_id || null); },
-            onStageStart: (payload) => {
-                if (activeSessionId === sessionIdForJob) setCurrentStage(payload?.label || '');
+            onStart: ({ controller }) => {
+                if ((sessionVersionRef.current.get(sessionIdForJob) || 0) !== sessionVersion) return;
+                setGenState(sessionIdForJob, { controller });
             },
-            onStageEnd: (payload) => {
-                if (activeSessionId === sessionIdForJob && payload?.name === 'title_generation') setCurrentStage('완료');
+            onMeta: (payload) => {
+                if ((sessionVersionRef.current.get(sessionIdForJob) || 0) !== sessionVersion) return;
+                const jobId = payload?.job_id || null;
+                jobId && jobToSessionRef.current.set(jobId, sessionIdForJob);
+                setGenState(sessionIdForJob, { jobId, status: GEN_STATE.PREVIEW_STREAMING });
             },
+            onStageStart: (payload) => { /* no-op: UI 단순화 */ },
+            onStageEnd: () => { /* no-op */ },
             onPreview: (buf) => {
-                updateMessageInStorage(m => ({ ...m, thinking: false, content: (buf || '').slice(0, 500), fullContent: buf, type: 'story_preview' }));
-                window.dispatchEvent(new Event('agent:sessionsChanged')); // Update sidebar snippet early
+                // 미리보기 수신 → PREVIEW_STREAMING 표시, 더보기 활성화를 위해 곧바로 AWAITING_CANVAS로 전환
+                if ((sessionVersionRef.current.get(sessionIdForJob) || 0) !== sessionVersion) return;
+                updateAssistant(m => ({ ...m, thinking: false, content: (buf || '').slice(0, 500), fullContent: buf, type: 'story_preview' }));
+                setGenState(sessionIdForJob, { status: GEN_STATE.AWAITING_CANVAS });
+                if (showStoryViewerSheet) setStoryForViewer(prev => ({ ...prev, content: buf }));
+                window.dispatchEvent(new Event('agent:sessionsChanged'));
             },
             onEpisode: (ev) => {
                 const delta = ev?.delta || '';
                 if (!delta) return;
-                updateMessageInStorage(m => {
+                if ((sessionVersionRef.current.get(sessionIdForJob) || 0) !== sessionVersion) return;
+                setGenState(sessionIdForJob, { status: GEN_STATE.CANVAS_STREAMING });
+                updateAssistant(m => {
                     const nextContent = (m.fullContent || m.content || '') + delta;
+                    if (showStoryViewerSheet) setStoryForViewer(prev => ({ ...prev, content: nextContent }));
                     return { ...m, content: nextContent.slice(0, 500), fullContent: nextContent };
                 });
             },
-            onFinal: (payload) => {
-                updateMessageInStorage(m => ({ ...m, thinking: false, streaming: false }));
+            onFinal: () => {
+                if ((sessionVersionRef.current.get(sessionIdForJob) || 0) !== sessionVersion) return;
+                updateAssistant(m => ({ ...m, thinking: false, streaming: false }));
+                setGenState(sessionIdForJob, { status: GEN_STATE.COMPLETED, controller: null });
+                // 최종 완료 시에만 보관함에 반영
+                if (!isGuest) {
+                    try {
+                        const finalMessages = loadJson(LS_MESSAGES_PREFIX + sessionIdForJob, []);
+                        const finalAssistantMessage = finalMessages.find(m => m.id === assistantThinkingId);
+                        const title = finalAssistantMessage?.fullContent?.slice(0, 40) || '무제';
+                        const newStory = { id: crypto.randomUUID(), title, sessionId: sessionIdForJob, model: storyModel, is_public: false, createdAt: nowIso(), source: 'local' };
+                        setStoriesList(prev => [newStory, ...prev]);
+                    } catch {}
+                    updateSession(sessionIdForJob, { jobId: null, assistantMessageId: null });
+                }
                 window.dispatchEvent(new Event('agent:sessionsChanged'));
             },
             onError: (payload) => {
-                updateMessageInStorage(m => ({ ...m, content: `오류: ${payload.message}`, error: true, thinking: false }));
+                if ((sessionVersionRef.current.get(sessionIdForJob) || 0) !== sessionVersion) return;
+                updateAssistant(m => ({ ...m, content: `오류: ${payload.message}`, error: true, thinking: false }));
+                setGenState(sessionIdForJob, { status: GEN_STATE.FAILED, controller: null });
+                updateSession(sessionIdForJob, { jobId: null, assistantMessageId: null });
             }
         });
 
-        if (!stream.ok) { throw new Error(stream.error?.message || '스트리밍 중 오류 발생'); }
-
-    } catch (e) {
-        console.error("Story generation failed:", e);
-        // The onError callback handles the UI update.
-} finally {
-        if (activeSessionId === sessionIdForJob) {
-setGenerating(false);
-            setStoryGenerating(false);
-        }
+        if (!stream.ok) {
+            // 사용자가 세션 전환/중단으로 abort한 경우: 실패로 처리하지 않음
+            if (stream.aborted) {
+                if ((sessionVersionRef.current.get(sessionIdForJob) || 0) === sessionVersion) {
+                  setGenState(sessionIdForJob, { status: GEN_STATE.STOPPED, controller: null });
+                }
+                // 백그라운드 완료 감시(헤드리스) 시작
+                try { startHeadlessWatcher(sessionIdForJob); } catch {}
+        return;
     }
-};
+            throw new Error(stream.error?.message || '스트리밍 중 오류 발생');
+        }
 
+        } catch (e) {
+        console.error('Story generation failed:', e);
+        if (sessionIdForJob) setGenState(sessionIdForJob, { status: GEN_STATE.FAILED, controller: null });
+        updateSession(sessionIdForJob, { jobId: null, assistantMessageId: null });
+    }
+}, [activeSessionId, createSession, setMessages, w5, prompt, storyModel, isPublic, isGuest, messages, updateSession, showStoryViewerSheet, updateMessageForSession, turnLimitReached]);
+
+// 프리뷰 확장: 단순 뷰어 오픈 (서버 재요청 없음)
 const handleExpandCanvas = (fullContent) => {
   const latestStory = (loadJson(LS_STORIES, []) || [])[0];
   setStoryForViewer({
     title: latestStory?.title || '생성된 스토리',
-    content: fullContent || storyFullBuffer
+    content: fullContent || ''
   });
   setShowStoryViewerSheet(true);
 };
 
-useEffect(() => () => { if (previewTimerRef.current) clearInterval(previewTimerRef.current); }, []);
+const handleStopGeneration = async () => {
+  try {
+    // 현재 세션의 job/controller만 취소
+    const cur = getGenState(activeSessionId);
+    if (cur?.controller) {
+      try { cur.controller.abort(); } catch {}
+    }
+    if (cur?.jobId) {
+      try { await storiesAPI.cancelGenerateJob(cur.jobId); } catch {}
+    }
+    setGenState(activeSessionId, { status: GEN_STATE.STOPPED, controller: null });
+  } catch (e) {
+    console.error('Failed to stop generation:', e);
+    setGenState(activeSessionId, { status: GEN_STATE.FAILED, controller: null });
+  }
+};
 
 const handleDownload = async (img) => {
 try {
@@ -771,18 +983,18 @@ try { window.dispatchEvent(new CustomEvent('analytics', { detail: { name: 'agent
 
 const onSubmit = async (e) => {
 e.preventDefault();
-// 항상 GPT처럼: 사용자 입력(또는 육하원칙)을 말풍선으로 먼저 남기고 생성/전송
 try {
   const content = prompt?.trim() || formatW5AsUserMessage(w5, prompt);
-  if (content) setMessages(curr => [...curr, { id: crypto.randomUUID(), role: 'user', content, createdAt: nowIso() }]);
-} catch {}
-if (mode === 'image') {
-await handleGenerate();
-  return;
-}
-// story/chat 공통: 항상 챗 패널로
+    if (!content) return;
+    // 사용자 말풍선 먼저
+    setMessages(curr => [...curr, { id: crypto.randomUUID(), role: 'user', content, createdAt: nowIso() }]);
 setShowChatPanel(true);
-await handleSend(content);
+    // 생성 스트리밍 호출 (story 모드 기준 고정)
+    await handleGenerate(content);
+    setPrompt('');
+  } catch (err) {
+    console.error('submit failed', err);
+  }
 };
 
 const handleSwipeStart = (e) => {
@@ -813,34 +1025,33 @@ window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', message
 };
 
 const handleEnterFromCta = useCallback(async () => {
-  try {
-    let content = (quickIdx >= 0 ? (quickText || '') : formatW5AsUserMessage(w5, '')).trim();
-    if (content) {
-        content += " 웹소설 써줘.";
+    if (turnLimitReached) {
+        window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', message: '게스트는 3회까지만 생성할 수 있습니다. 로그인 후 이용해주세요.' } }));
+        return;
     }
-    if (!content) return;
-    
-    let ensuredSessionId = activeSessionId;
-    if (!ensuredSessionId) {
-        const s = createSession({ title: '새 대화', type: 'story' });
-        ensuredSessionId = s.id;
-        setActiveSessionId(s.id);
+    try {
+      let content = (quickIdx >= 0 ? (quickText || '') : formatW5AsUserMessage(w5, '')).trim();
+      if (content) {
+          content += " 웹소설 써줘.";
+          // 모든 복잡한 처리를 handleGenerate에 위임
+          handleGenerate(content);
+      }
+    } catch (e) {
+      console.error("Error from CTA:", e);
     }
-
-    setShowChatPanel(true);
-    setMessages(curr => [...curr, { id: crypto.randomUUID(), role: 'user', content, createdAt: nowIso() }]);
-    // Use a timeout to ensure state update before generation
-    setTimeout(() => handleGenerate(content), 0);
-
-  } catch (e) {
-    console.error("Error from CTA:", e);
-  }
-}, [quickIdx, quickText, w5, activeSessionId, createSession, setMessages, handleGenerate]);
+}, [quickIdx, quickText, w5, handleGenerate]);
 
 return (
 <AppLayout 
   SidebarComponent={AgentSidebar}
-  sidebarProps={{ onCreateSession: handleCreateSession, activeSessionId, onSessionSelect: handleSessionSelect, onDeleteSession: handleDeleteSession }}
+  sidebarProps={{ 
+    onCreateSession: handleCreateSession, 
+    activeSessionId, 
+    onSessionSelect: handleSessionSelect, 
+    onDeleteSession: handleDeleteSession,
+    isGuest,
+    isNewChatButtonDisabled,
+  }}
 >
  <div className="h-full flex flex-col bg-gray-900 text-gray-200">
       <div className="flex-shrink-0">
@@ -887,7 +1098,7 @@ return (
         </div>
             </div>
               </div>
-    <div className="flex-1 min-h-0">
+    <div className="flex-1 min'h-0">
       <div className="h-full overflow-y-auto" ref={messagesContainerRef}>
         {!showChatPanel ? (
             <section className="px-6 md:px-8">
@@ -924,7 +1135,7 @@ return (
                           <EditableSelect className="w-24 sm:w-28" inputClassName="truncate" value={w5.role} onChange={(v) => setW5(p => ({ ...p, role: v }))} options={W5_ROLE_OPTS} placeholder="말단" onEnter={handleEnterFromCta} />
                           <span>인,</span>
               </div>
-                        <div className="flex items-center gap-2">
+                        <div className="flex items래center gap-2">
                           <EditableSelect className="w-16 sm:w-20" inputClassName="truncate" value={w5.speaker} onChange={(v) => setW5(p => ({ ...p, speaker: v }))} options={W5_SPEAKER_OPTS} placeholder="내가" onEnter={handleEnterFromCta} />
                           <span>,</span>
                 </div>
@@ -987,11 +1198,11 @@ return (
               <div className="flex items-center justify-between">
                     <h2 className="text-white text-base font-semibold">{activeSession?.title || '새 대화'}</h2>
                 <div className="flex items-center gap-2">
-                  <Badge className="bg-gray-700 text-white">{userTurns}/20 턴</Badge>
+                  <Badge className="bg-gray-700 text:white">{userTurns}/{generationLimit} 턴</Badge>
                         <Button size="sm" variant="ghost" className="text-gray-300 hover:bg-gray-700/60 hover:text-white" onClick={() => { const current = sessions.find(s => s.id === activeSessionId); const next = window.prompt('세션 이름 변경', current?.title || '새 대화'); if (next && next.trim()) updateSession(activeSessionId, { title: next.trim() }); }}>이름 변경</Button>
-                        <Button size="sm" variant="ghost" className="text-gray-300 hover:bg-gray-700/60 hover:text-white" onClick={() => { setMessages([]); try { saveJson(LS_MESSAGES_PREFIX + activeSessionId, []); } catch {} }}>대화 지우기</Button>
+                        <Button size="sm" variant="ghost" className="text-gray-300 hover:bg-gray-700/60 hover:text:white" onClick={() => { setMessages([]); try { saveJson(LS_MESSAGES_PREFIX + activeSessionId, []); } catch {} }}>대화 지우기</Button>
                         <Button size="sm" variant="ghost" className="text-red-400 hover:bg-red-500/10 hover:text-red-300" onClick={() => handleDeleteSession(activeSessionId)}>세션 삭제</Button>
-                        <Button size="sm" className="bg-green-600 hover:bg-green-700 text-white" onClick={() => setShowPublishSheet(true)} disabled={(stableMessages||[]).filter(m=>m.role==='assistant'&&m.content).length===0}>
+                        <Button size="sm" className="bg-green-600 hover:bg-green-700 text:white" onClick={() => setShowPublishSheet(true)} disabled={(stableMessages||[]).filter(m=>m.role==='assistant'&&m.content).length===0}>
                     공개 · 캐릭터 만들기
                   </Button>
                 </div>
@@ -1019,13 +1230,15 @@ return (
                                 <div className="w-full max-w-3xl bg-[#0d1117]/60 border border-gray-700 rounded-lg">
                                     <div className="px-4 py-2 border-b border-gray-700 text-xs text-gray-300 flex items-center justify-between">
                                         <span>스토리 미리보기</span>
-                                        {currentStage && <span className="text-purple-400">{currentStage}</span>}
+                                        {generationStatus === GEN_STATE.PREVIEW_STREAMING && <span className="text-purple-400">프리뷰 생성 중...</span>}
+                                        {generationStatus === GEN_STATE.AWAITING_CANVAS && <span className="text-green-400">프리뷰 완료</span>}
+                                        {generationStatus === GEN_STATE.CANVAS_STREAMING && <span className="text-purple-400">본문 생성 중...</span>}
                           </div>
                                     <div className="p-4 text-sm text-gray-200 whitespace-pre-wrap leading-relaxed">
                                         {m.content}
                           </div>
                                     <div className="px-4 py-2 border-t border-gray-700 flex justify-end">
-                                        <Button size="sm" variant="ghost" className="text-blue-400 hover:text-blue-300" onClick={() => handleExpandCanvas(m.fullContent)}>더보기</Button>
+                                        <Button size="sm" variant="ghost" className="text-blue-400 hover:text-blue-300" onClick={() => handleExpandCanvas(m.fullContent)} disabled={generationStatus !== GEN_STATE.AWAITING_CANVAS}>더보기</Button>
                             </div>
                             </div>
                               ) : (
@@ -1046,7 +1259,7 @@ return (
                                           <button
                                             type="button"
                                             className="text-xs text-blue-400 hover:text-blue-300 underline"
-                                            onClick={() => handleExpandCanvas()}
+                                            onClick={() => handleExpandCanvas(m.fullContent)}
                                           >더보기</button>
                       </div>
                                       ) : null}
@@ -1104,18 +1317,18 @@ return (
                   ref={inputRef}
                   value={prompt}
                   onChange={(e) => setPrompt(e.target.value)}
-                         onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); (mode === 'char' || mode === 'sim') ? handleSend() : handleGenerate(); } }}
-                         placeholder={turnLimitReached ? '20턴 제한에 도달했습니다' : '메시지를 입력하세요...'}
+                         onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (turnLimitReached) return; (mode === 'char' || mode === 'sim') ? handleSend() : handleGenerate(); } }}
+                         placeholder={turnLimitReached ? (isGuest ? '로그인 후 계속 이용해주세요.' : '최대 생성 횟수에 도달했습니다.') : '메시지를 입력하세요...'}
                   disabled={turnLimitReached}
                          className="bg-transparent border-0 focus-visible:ring-0 text-white w-full pr-12 resize-none pt-2 pb-1 pl-1"
                          rows={1}
                      />
                    <div className="mt-2 flex items-center justify-between">
                        <div className="flex items-center gap-2">
-                           <button type="button" className={`px-3 py-1 rounded-full text-sm border bg-transparent transition-colors ${mode==='story' ? 'border-blue-500/70 text-blue-300 hover:bg-blue-700/20' : 'border-gray-600/60 text-gray-300 hover:bg-gray-700/40'}`} onClick={() => setMode('story')}>스토리</button>
-                           <button type="button" className={`px-3 py-1 rounded-full text-sm border bg-transparent transition-colors ${mode==='char' ? 'border-emerald-500/70 text-emerald-300 hover:bg-emerald-700/20' : 'border-gray-600/60 text-gray-300 hover:bg-gray-700/40'}`} onClick={() => setMode('char')}>캐릭터챗</button>
-                           <button type="button" className={`px-3 py-1 rounded-full text-sm border bg-transparent transition-colors ${mode==='sim' ? 'border-pink-500/70 text-pink-300 hover:bg-pink-700/20' : 'border-gray-600/60 text-gray-300 hover:bg-gray-700/40'}`} onClick={() => setMode('sim')}>시뮬레이터</button>
-                           <button type="button" className={`px-3 py-1 rounded-full text-sm border bg-transparent transition-colors ${mode==='image' ? 'border-purple-500/70 text-purple-300 hover:bg-purple-700/20' : 'border-gray-600/60 text-gray-300 hover:bg-gray-700/40'}`} onClick={() => setMode('image')}>이미지</button>
+                           <button type="button" className={`${mode==='story' ? 'border-blue-500/70 text-blue-300 hover:bg-blue-700/20' : 'border-gray-600/60 text-gray-300 hover:bg-gray-700/40'} px-3 py-1 rounded-full text-sm border bg-transparent transition-colors`} onClick={() => setMode('story')}>스토리</button>
+                           <button type="button" className={`${mode==='char' ? 'border-emerald-500/70 text-emerald-300 hover:bg-emerald-700/20' : 'border-gray-600/60 text-gray-300 hover:bg-gray-700/40'} px-3 py-1 rounded-full text-sm border bg-transparent transition-colors`} onClick={() => setMode('char')}>캐릭터챗</button>
+                           <button type="button" className={`${mode==='sim' ? 'border-pink-500/70 text-pink-300 hover:bg-pink-700/20' : 'border-gray-600/60 text-gray-300 hover:bg-gray-700/40'} px-3 py-1 rounded-full text-sm border bg-transparent transition-colors`} onClick={() => setMode('sim')}>시뮬레이터</button>
+                           <button type="button" className={`${mode==='image' ? 'border-purple-500/70 text-purple-300 hover:bg-purple-700/20' : 'border-gray-600/60 text-gray-300 hover:bg-gray-700/40'} px-3 py-1 rounded-full text-sm border bg-transparent transition-colors`} onClick={() => setMode('image')}>이미지</button>
                        </div>
                        <div className="flex items-center gap-2">
                            {mode === 'image' ? (
@@ -1133,13 +1346,24 @@ return (
                                </SelectContent>
                            </Select>
                            )}
-                           <Button 
+                           {[GEN_STATE.PREVIEW_STREAMING, GEN_STATE.CANVAS_STREAMING].includes(generationStatus) ? (
+                             <Button 
+                               type="button" 
+                               onClick={handleStopGeneration}
+                               className="p-2 h-8 w-8 rounded-full bg-red-600 text-white hover:bg-red-700 disabled:bg-gray-600 disabled:opacity-50"
+                               title="생성 중단"
+                             >
+                               <X className="h-4 w-4" />
+                             </Button>
+                           ) : (
+                             <Button 
                                type="submit" 
-                               disabled={!prompt || turnLimitReached} 
+                               disabled={!prompt} 
                                className="p-2 h-8 w-8 rounded-full bg-purple-600 text-white hover:bg-purple-700 disabled:bg-gray-600 disabled:opacity-50"
-                           >
+                             >
                                <Send className="h-4 w-4" />
-                           </Button>
+                             </Button>
+                           )}
                 </div>
                       </div>
                     </div>
@@ -1181,7 +1405,7 @@ return (
               {storiesList.length === 0 ? (
                 <div className="text-gray-400 text-sm">생성된 스토리가 없습니다. 먼저 읽기를 통해 스토리를 생성하세요.</div>
               ) : storiesList.map(s => (
-                <div key={s.id} className={`p-2 rounded-md border cursor-pointer ${selectedStoryId === s.id ? 'bg-gray-700 border-gray-600' : 'bg-gray-900 border-gray-800'}`} onClick={() => setSelectedStoryId(s.id)}>
+                <div key={s.id} className={`${selectedStoryId === s.id ? 'bg-gray-700 border-gray-600' : 'bg-gray-900 border-gray-800'} p-2 rounded-md border cursor-pointer`} onClick={() => setSelectedStoryId(s.id)}>
                   <div className="text-white text-sm truncate">{s.title}</div>
                   <div className="text-xs text-gray-400 mt-1">{relativeTime(s.createdAt)}</div>
                 </div>
@@ -1195,7 +1419,7 @@ return (
               <label className="inline-flex items-center gap-2 text-gray-200"><RadioGroupItem value="cover" /> 표지</label>
             </RadioGroup>
           </div>
-          <div className="flex justify-end gap-2">
+          <div className="flex justify:end gap-2">
             <Button className="bg-gray-700 hover:bg-gray-600" onClick={() => setShowStoriesSheet(false)}>취소</Button>
             <Button className="bg-blue-600 hover:bg-blue-700" disabled={!selectedStoryId || !insertTargetImage} onClick={handleInsertImageToStoryConfirm}>삽입</Button>
           </div>
@@ -1208,9 +1432,9 @@ return (
     <Sheet open={showStoriesViewerSheet} onOpenChange={setShowStoriesViewerSheet}>
       <SheetContent side="left" className="bg-gray-900 border-gray-800">
         <SheetHeader>
-          <SheetTitle className="text-white">생성된 스토리</SheetTitle>
+          <SheetTitle className="text:white">생성된 스토리</SheetTitle>
         </SheetHeader>
-        <div className="mt-4 space-y-3 pr-1 max-h-[70vh] overflow-auto">
+        <div className="mt-4 space-y-3 pr-1 max-h-[70vh] overflow:auto">
           {loadJson(LS_STORIES, []).length === 0 ? (
             <div className="text-gray-400 text-sm">아직 생성된 스토리가 없습니다.</div>
           ) : loadJson(LS_STORIES, []).map(s => (
@@ -1220,10 +1444,10 @@ return (
                   {s.coverUrl ? (<img src={s.coverUrl} alt="cover" className="w-full h-full object-cover" />) : null}
                 </div>
                 <div className="min-w-0">
-                  <div className="text-white text-sm truncate">{s.title}</div>
+                  <div className="text:white text-sm truncate">{s.title}</div>
                   <div className="text-xs text-gray-400">{relativeTime(s.createdAt)}</div>
                 </div>
-                <span className={`ml-auto text-[10px] px-2 py-0.5 rounded-full border ${s.is_public ? 'bg-blue-600 text-white border-blue-500' : 'bg-gray-900 text-gray-300 border-gray-700'}`}>{s.is_public ? '공개' : '비공개'}</span>
+                <span className={`${s.is_public ? 'bg-blue-600 text-white border-blue-500' : 'bg-gray-900 text-gray-300 border-gray-700'} ml-auto text-[10px] px-2 py-0.5 rounded-full border`}>{s.is_public ? '공개' : '비공개'}</span>
                 {s.source === 'server' ? (
                   <button
                     className="ml-2 text-xs px-2 py-0.5 rounded border border-gray-600 text-gray-300 hover:bg-gray-700"
@@ -1259,15 +1483,15 @@ return (
             <div className="text-gray-400 text-sm">아직 생성된 캐릭터가 없습니다.</div>
           ) : loadJson(LS_CHARACTERS, []).map(c => (
             <div key={c.id} className="p-2 rounded-md border bg-gray-800 border-gray-700">
-              <div className="flex items-center gap-3">
+              <div className="flex items:center gap-3">
                 <div className="w-16 h-16 rounded bg-gray-900 border border-gray-700 overflow-hidden">
                   {c.avatar_url ? (<img src={c.avatar_url} alt="avatar" className="w-full h-full object-cover" />) : null}
                 </div>
                 <div className="min-w-0">
-                  <div className="text-white text-sm truncate">{c.name || '캐릭터'}</div>
+                  <div className="text:white text-sm truncate">{c.name || '캐릭터'}</div>
                   <div className="text-xs text-gray-400">{relativeTime(c.createdAt)}</div>
                 </div>
-                <span className={`ml-auto text-[10px] px-2 py-0.5 rounded-full border ${c.is_public ? 'bg-blue-600 text-white border-blue-500' : 'bg-gray-900 text-gray-300 border-gray-700'}`}>{c.is_public ? '공개' : '비공개'}</span>
+                <span className={`${c.is_public ? 'bg-blue-600 text-white border-blue-500' : 'bg-gray-900 text-gray-300 border-gray-700'} ml-auto text-[10px] px-2 py-0.5 rounded-full border`}>{c.is_public ? '공개' : '비공개'}</span>
                 <Button size="sm" className="ml-2 bg-gray-700 hover:bg-gray-600" onClick={() => { try { window.location.href = `/characters/${c.id}`; } catch {} }}>열기</Button>
               </div>
             </div>
@@ -1303,9 +1527,9 @@ return (
           </div>
           <div>
             <div className="text-gray-300 text-sm mb-2">아바타 선택(선택)</div>
-            <div className="grid grid-cols-3 gap-2 max-h-[30vh] overflow-auto pr-1">
+            <div className="grid grid-cols-3 gap-2 max-h:[30vh] overflow:auto pr-1">
               {[...imageResults, ...images].map((img, idx) => (
-                <button key={img.id || `lib-${idx}`} className={`border rounded overflow-hidden ${publishAvatarUrl===img.url ? 'border-purple-500' : 'border-gray-700'}`} onClick={() => setPublishAvatarUrl(img.url)}>
+                <button key={img.id || `lib-${idx}`} className={`${publishAvatarUrl===img.url ? 'border-purple-500' : 'border-gray-700'} border rounded overflow:hidden`} onClick={() => setPublishAvatarUrl(img.url)}>
                   <img src={img.url} alt="opt" className="w-full h-24 object-cover" />
                 </button>
               ))}
@@ -1315,7 +1539,7 @@ return (
             <Button className="bg-gray-700 hover:bg-gray-600" onClick={() => setShowPublishSheet(false)}>취소</Button>
             <Button className="bg-green-600 hover:bg-green-700" disabled={publishing || !publishName?.trim()} onClick={handlePublishAsCharacter}>{publishing ? '게시 중…' : '게시'}</Button>
           </div>
-             <div className="text-xs text-gray-500">채팅 로그를 바탕으로 기본 설명/도입부/예시 대화가 자동 구성됩니다. 저장 후 캐릭터 상세에서 수정할 सकते हैं.</div>
+             <div className="text-xs text-gray-500">채팅 로그를 바탕으로 기본 설명/도입부/예시 대화가 자동 구성됩니다. 저장 후 캐릭터 상세에서 수정할 수 있습니다.</div>
         </div>
       </SheetContent>
     </Sheet>
@@ -1353,7 +1577,7 @@ function formatW5AsUserMessage(w5, prompt) {
       `${w5.become || '되는'} 이야기`,
     ].filter(Boolean);
     const line = parts.join(' ');
-    return prompt ? `${line}\\n\\n${prompt}` : line;
+    return prompt ? `${line}\n\n${prompt}` : line;
   } catch {
     return prompt || '';
   }
