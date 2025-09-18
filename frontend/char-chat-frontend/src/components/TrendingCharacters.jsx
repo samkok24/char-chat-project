@@ -98,13 +98,10 @@ const TrendingCharacters = () => {
     return items.slice(start, start + pageSize);
   }, [items, page, hasCarousel]);
 
+  // 자동 슬라이드 비활성화: 화살표 클릭 때만 이동
   useEffect(() => {
-    if (!hasCarousel) return;
-    const id = setInterval(() => {
-      setPage((prev) => (prev + 1) % pageCount);
-    }, 5000);
-    return () => clearInterval(id);
-  }, [hasCarousel, pageCount]);
+    return () => {};
+  }, []);
 
   const gotoPrev = () => setPage((prev) => (prev - 1 + pageCount) % pageCount);
   const gotoNext = () => setPage((prev) => (prev + 1) % pageCount);

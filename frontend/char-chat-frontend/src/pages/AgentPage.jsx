@@ -221,30 +221,96 @@ const isGuest = !user;
 const { sessions, createSession, updateSession, removeSession } = useAgentSessions(!isGuest === true);
 const [activeSessionId, setActiveSessionId] = useState((!isGuest ? (sessions[0]?.id || null) : null));
 const { messages, setMessages } = useSessionMessages(activeSessionId || '', !isGuest === true);
+const queryClient = useQueryClient();
+const [scrollElement, setScrollElement] = useState(null);
+// P0: activeSessionIdRef/sessionLocalMessagesRef for live updates
 const activeSessionIdRef = useRef(activeSessionId);
 useEffect(() => { activeSessionIdRef.current = activeSessionId; }, [activeSessionId]);
-// 게스트 모드용 세션별 메시지 임시 저장소(메모리)
-const sessionLocalMessagesRef = useRef(new Map()); // sid -> messages[]
-const queryClient = useQueryClient();
-const messagesContainerRef = useRef(null);
+const sessionLocalMessagesRef = useRef(new Map());
+const messagesContainerRef = useCallback(node => {
+    if (node !== null) {
+        setScrollElement(node);
+    }
+}, []);
+// --- Scroll management (P1): conditional follow + scroll-down button ---
+const isAtBottomRef = useRef(true);
+const isFollowingRef = useRef(true);
+const suppressAutoScrollRef = useRef(false);
+const suppressTimerRef = useRef(null);
+const [showScrollDown, setShowScrollDown] = useState(false);
+const BOTTOM_THRESHOLD = 16;
+const scrollRafIdRef = useRef(0);
+
+const scrollToBottom = useCallback(() => {
+  try {
+    if (scrollElement) {
+      scrollElement.scrollTo({ top: scrollElement.scrollHeight, behavior: 'smooth' });
+    }
+  } catch {}
+}, [scrollElement]);
+
+const scrollToBottomRaf = useCallback(() => {
+  try {
+    if (scrollRafIdRef.current) return;
+    scrollRafIdRef.current = requestAnimationFrame(() => {
+      scrollRafIdRef.current = 0;
+      if (isFollowingRef.current) scrollToBottom();
+    });
+  } catch {}
+}, [scrollToBottom]);
+
+const suppressNextAutoScroll = useCallback((ms = 300) => {
+  try { if (suppressTimerRef.current) clearTimeout(suppressTimerRef.current); } catch {}
+  suppressAutoScrollRef.current = true;
+  suppressTimerRef.current = setTimeout(() => {
+    suppressAutoScrollRef.current = false;
+    suppressTimerRef.current = null;
+  }, ms);
+}, []);
 const stableMessages = useMemo(() => messages, [messages]);
 // 가상 스크롤러(최상단에서 훅 호출)
 const rowVirtualizer = useVirtualizer({
   count: stableMessages.length,
-  getScrollElement: () => messagesContainerRef.current,
+  getScrollElement: () => scrollElement,
   estimateSize: () => 64,
   overscan: 8,
 });
 
-// 새 메시지 도착 시 자동 스크롤(하단)
+// 새 메시지 도착 시: 하단에 있을 때만 자동 따라가기
 useEffect(() => {
   try {
-    const el = messagesContainerRef.current;
-    if (el) {
-      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
-    }
+    if (!scrollElement) return;
+    if (suppressAutoScrollRef.current) return;
+    if (isFollowingRef.current) scrollToBottomRaf();
   } catch {}
-}, [stableMessages]);
+}, [stableMessages, scrollElement, scrollToBottomRaf]);
+
+// 스크롤 위치 감지 및 버튼 표시/숨김
+useEffect(() => {
+  if (!scrollElement) return;
+  const el = scrollElement;
+  const handleScroll = () => {
+    try {
+      const atBottom = (el.scrollHeight - el.clientHeight) <= (el.scrollTop + BOTTOM_THRESHOLD);
+      isAtBottomRef.current = atBottom;
+      if (atBottom) {
+        setShowScrollDown(false);
+        isFollowingRef.current = true; // 하단에 도달하면 다시 따라가기 허용
+      } else {
+        setShowScrollDown(true);
+        isFollowingRef.current = false; // 위로 올리면 따라가기 해제
+      }
+    } catch {}
+  };
+  handleScroll();
+  el.addEventListener('scroll', handleScroll, { passive: true });
+  return () => { try { el.removeEventListener('scroll', handleScroll); } catch {} };
+}, [scrollElement]);
+
+// rAF cleanup on unmount
+useEffect(() => {
+  return () => { try { if (scrollRafIdRef.current) cancelAnimationFrame(scrollRafIdRef.current); } catch {} };
+}, []);
 
 const [prompt, setPrompt] = useState('');
 const inputRef = useRef(null);
@@ -263,6 +329,55 @@ const sessionVersionRef = useRef(new Map()); // sid -> version (int)
 const [generationStatus, setGenerationStatus] = useState(GEN_STATE.IDLE);
 // job 관리(취소/복구용) - 현재 세션의 jobId만 저장
 const [storyJobId, setStoryJobId] = useState(null);
+// Canvas stage label (dynamic wording for streaming phases)
+const [canvasStageLabel, setCanvasStageLabel] = useState('본문 작성 중입니다');
+
+const formatCanvasStageLabel = useCallback((payload) => {
+  try {
+    const raw = payload?.label || payload?.name || payload?.stage || payload?.phase || payload?.id || '';
+    if (!raw) {
+      if (typeof payload?.index === 'number') {
+        const idx = Number(payload.index);
+        const steps = [
+          '스토리 컨셉 구상 중입니다',
+          '세계관 설정 짜는 중입니다',
+          '캐릭터 기획 중입니다',
+          '본문 작성 중입니다',
+          '교정교열 중입니다',
+        ];
+        return steps[idx] || '본문 작성 중입니다';
+      }
+      return '본문 작성 중입니다';
+    }
+    const text = String(raw).toLowerCase();
+    const map = {
+      concept: '스토리 컨셉 구상 중입니다',
+      idea: '스토리 컨셉 구상 중입니다',
+      outline: '스토리 컨셉 구상 중입니다',
+      preview: '스토리 컨셉 구상 중입니다',
+      world: '세계관 설정 짜는 중입니다',
+      worldbuild: '세계관 설정 짜는 중입니다',
+      worldbuilding: '세계관 설정 짜는 중입니다',
+      setting: '세계관 설정 짜는 중입니다',
+      character: '캐릭터 기획 중입니다',
+      characters: '캐릭터 기획 중입니다',
+      persona: '캐릭터 기획 중입니다',
+      draft: '본문 작성 중입니다',
+      write: '본문 작성 중입니다',
+      writing: '본문 작성 중입니다',
+      compose: '본문 작성 중입니다',
+      body: '본문 작성 중입니다',
+      canvas: '본문 작성 중입니다',
+      expand: '본문 작성 중입니다',
+      refine: '교정교열 중입니다',
+      polish: '교정교열 중입니다',
+      proofread: '교정교열 중입니다',
+      finalize: '교정교열 중입니다',
+      finalizing: '교정교열 중입니다',
+    };
+    return map[text] || '본문 작성 중입니다';
+  } catch { return '본문 작성 중입니다'; }
+}, []);
 
 const getGenState = useCallback((sid) => {
   return genBySessionRef.current.get(sid) || { status: GEN_STATE.IDLE, jobId: null, controller: null, assistantId: null };
@@ -818,6 +933,16 @@ const handleGenerate = useCallback(async (overridePrompt = null) => {
             onStart: ({ controller }) => {
                 if ((sessionVersionRef.current.get(sessionIdForJob) || 0) !== sessionVersion) return;
                 setGenState(sessionIdForJob, { controller });
+                // P2: 스트리밍 시작 시 하단 여부에 따라 따라가기 결정
+                try {
+                  const el = scrollElement;
+                  if (el) {
+                    const atBottom = (el.scrollHeight - el.clientHeight) <= (el.scrollTop + BOTTOM_THRESHOLD);
+                    isAtBottomRef.current = atBottom;
+                    isFollowingRef.current = atBottom;
+                    setShowScrollDown(!atBottom);
+                  }
+                } catch {}
             },
             onMeta: (payload) => {
                 if ((sessionVersionRef.current.get(sessionIdForJob) || 0) !== sessionVersion) return;
@@ -825,8 +950,13 @@ const handleGenerate = useCallback(async (overridePrompt = null) => {
                 jobId && jobToSessionRef.current.set(jobId, sessionIdForJob);
                 setGenState(sessionIdForJob, { jobId, status: GEN_STATE.PREVIEW_STREAMING });
             },
-            onStageStart: (payload) => { /* no-op: UI 단순화 */ },
-            onStageEnd: () => { /* no-op */ },
+            onStageStart: (payload) => {
+                // 단계 시작: 라벨 갱신
+                setCanvasStageLabel(formatCanvasStageLabel(payload));
+            },
+            onStageEnd: () => {
+                // 단계 종료: 다음 단계 진입시 갱신되므로 여기선 유지
+            },
             onPreview: (buf) => {
                 // 미리보기 수신 → PREVIEW_STREAMING 표시, 더보기 활성화를 위해 곧바로 AWAITING_CANVAS로 전환
                 if ((sessionVersionRef.current.get(sessionIdForJob) || 0) !== sessionVersion) return;
@@ -834,6 +964,8 @@ const handleGenerate = useCallback(async (overridePrompt = null) => {
                 setGenState(sessionIdForJob, { status: GEN_STATE.AWAITING_CANVAS });
                 if (showStoryViewerSheet) setStoryForViewer(prev => ({ ...prev, content: buf }));
                 window.dispatchEvent(new Event('agent:sessionsChanged'));
+                // P2: 미리보기 도착 시 조건부 스크롤
+                if (isFollowingRef.current) scrollToBottomRaf(); else setShowScrollDown(true);
             },
             onEpisode: (ev) => {
                 const delta = ev?.delta || '';
@@ -845,11 +977,14 @@ const handleGenerate = useCallback(async (overridePrompt = null) => {
                     if (showStoryViewerSheet) setStoryForViewer(prev => ({ ...prev, content: nextContent }));
                     return { ...m, content: nextContent.slice(0, 500), fullContent: nextContent };
                 });
+                // P2: 델타 도착 시 조건부 스크롤
+                if (isFollowingRef.current) scrollToBottomRaf(); else setShowScrollDown(true);
             },
             onFinal: () => {
                 if ((sessionVersionRef.current.get(sessionIdForJob) || 0) !== sessionVersion) return;
                 updateAssistant(m => ({ ...m, thinking: false, streaming: false }));
                 setGenState(sessionIdForJob, { status: GEN_STATE.COMPLETED, controller: null });
+                setCanvasStageLabel('완료되었습니다');
                 // 최종 완료 시에만 보관함에 반영
                 if (!isGuest) {
                     try {
@@ -867,6 +1002,7 @@ const handleGenerate = useCallback(async (overridePrompt = null) => {
                 if ((sessionVersionRef.current.get(sessionIdForJob) || 0) !== sessionVersion) return;
                 updateAssistant(m => ({ ...m, content: `오류: ${payload.message}`, error: true, thinking: false }));
                 setGenState(sessionIdForJob, { status: GEN_STATE.FAILED, controller: null });
+                setCanvasStageLabel('오류가 발생했습니다.');
                 updateSession(sessionIdForJob, { jobId: null, assistantMessageId: null });
             }
         });
@@ -1098,8 +1234,8 @@ return (
         </div>
             </div>
               </div>
-    <div className="flex-1 min'h-0">
-      <div className="h-full overflow-y-auto" ref={messagesContainerRef}>
+    <div className="flex-1 min-h-0">
+      <div className="overflow-y-auto pb-40 relative" ref={messagesContainerRef} style={{ maxHeight: 'calc(100vh - 160px)' }}>
         {!showChatPanel ? (
             <section className="px-6 md:px-8">
               <div className="flex flex-col items-center justify-center select-none gap-6">
@@ -1232,7 +1368,10 @@ return (
                                         <span>스토리 미리보기</span>
                                         {generationStatus === GEN_STATE.PREVIEW_STREAMING && <span className="text-purple-400">프리뷰 생성 중...</span>}
                                         {generationStatus === GEN_STATE.AWAITING_CANVAS && <span className="text-green-400">프리뷰 완료</span>}
-                                        {generationStatus === GEN_STATE.CANVAS_STREAMING && <span className="text-purple-400">본문 생성 중...</span>}
+                                        {generationStatus === GEN_STATE.CANVAS_STREAMING && <span className="text-purple-400">{canvasStageLabel}</span>}
+                                        {generationStatus === GEN_STATE.COMPLETED && <span className="text-green-400">완료되었습니다</span>}
+                                        {generationStatus === GEN_STATE.FAILED && <span className="text-red-400">오류가 발생했습니다.</span>}
+                                        {generationStatus === GEN_STATE.STOPPED && <span className="text-yellow-400">중단되었습니다.</span>}
                           </div>
                                     <div className="p-4 text-sm text-gray-200 whitespace-pre-wrap leading-relaxed">
                                         {m.content}
@@ -1296,12 +1435,25 @@ return (
               </div>
                 </div>
         )}
+        {/* Scroll to Bottom Button (P1) */}
+        {showScrollDown && (
+          <button
+            type="button"
+            onClick={() => { isFollowingRef.current = true; setShowScrollDown(false); scrollToBottom(); }}
+            className="absolute bottom-4 right-6 z-10 w-10 h-10 rounded-full bg-blue-600 text-white shadow-lg hover:bg-blue-700"
+            title="맨 아래로"
+          >
+            ↓
+          </button>
+        )}
               </div>
     </div>
        {/* 화면 하단 고정 입력창 */}
        <div className="fixed bottom-0 left-64 right-0 bg-gradient-to-t from-gray-900 to-transparent">
            <div className="w-full max-w-4xl mx-auto p-3">
            <form onSubmit={(e) => { e.preventDefault();
+               // P1: 전송 직후 자동 스크롤 억제 (사용자 문맥 보존)
+               suppressNextAutoScroll();
                const content = (prompt || '').trim();
                if (!content) return; 
                if (mode === 'char' || mode === 'sim') { handleSend(); }
@@ -1317,7 +1469,7 @@ return (
                   ref={inputRef}
                   value={prompt}
                   onChange={(e) => setPrompt(e.target.value)}
-                         onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (turnLimitReached) return; (mode === 'char' || mode === 'sim') ? handleSend() : handleGenerate(); } }}
+                         onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (turnLimitReached) return; suppressNextAutoScroll(); (mode === 'char' || mode === 'sim') ? handleSend() : handleGenerate(); } }}
                          placeholder={turnLimitReached ? (isGuest ? '로그인 후 계속 이용해주세요.' : '최대 생성 횟수에 도달했습니다.') : '메시지를 입력하세요...'}
                   disabled={turnLimitReached}
                          className="bg-transparent border-0 focus-visible:ring-0 text-white w-full pr-12 resize-none pt-2 pb-1 pl-1"

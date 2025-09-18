@@ -29,6 +29,22 @@ export const SocketProvider = ({ children }) => {
   const [currentPage, setCurrentPage] = useState(1);
   const { user, isAuthenticated } = useAuth();
 
+  // 스킵(continue) 지시문 메시지를 UI에서 숨기기 위한 필터
+  const isSkipDirective = useCallback((m) => {
+    try {
+      const type = (m && (m.messageType || m.type)) ? String(m.messageType || m.type).toLowerCase() : '';
+      const isUser = (m && (m.senderType === 'user' || m.sender_type === 'user'));
+      const content = String(m?.content || '').trim();
+      if (!isUser) return false;
+      if (type === 'continue') return true;
+      // 알려진 지시문 문구 및 변형 패턴 필터링
+      if (content === '유저 응답 없이 방금 대답을 이어서 작성해줘') return true;
+      if (/유저\s*응답\s*없이/.test(content) && /이어/.test(content) && /작성/.test(content)) return true;
+      if (/맥락/.test(content) && /이어서/.test(content)) return true;
+      return false;
+    } catch { return false; }
+  }, []);
+
   // Socket 연결 설정
   useEffect(() => {
     if (isAuthenticated && user) {
@@ -79,15 +95,17 @@ export const SocketProvider = ({ children }) => {
 
         newSocket.on('new_message', (message) => {
           console.log('새 메시지:', message);
+          if (isSkipDirective(message)) return; // 스킵 지시문은 화면에 표시하지 않음
           setMessages(prev => [...prev, message]);
         });
 
         newSocket.on('message_history', (data) => {
           console.log('메시지 기록:', data);
+          const filtered = Array.isArray(data.messages) ? data.messages.filter(m => !isSkipDirective(m)) : [];
           if (data.page === 1) {
-            setMessages(data.messages);
+            setMessages(filtered);
           } else {
-            setMessages(prev => [...data.messages, ...prev]);
+            setMessages(prev => [...filtered, ...prev]);
           }
           setHasMoreMessages(data.hasMore);
           setCurrentPage(data.page);

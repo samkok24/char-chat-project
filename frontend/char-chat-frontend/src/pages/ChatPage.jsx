@@ -109,6 +109,8 @@ const ChatPage = () => {
   });
   const [uiTheme, setUiTheme] = useState('system');
   const [typingSpeed, setTypingSpeed] = useState(40);
+  // 해상된 테마 상태 (light/dark)
+  const [resolvedTheme, setResolvedTheme] = useState('dark');
   // 원작챗 상태
   const [isOrigChat, setIsOrigChat] = useState(false);
   const [origAnchor, setOrigAnchor] = useState(null);
@@ -295,6 +297,22 @@ const ChatPage = () => {
     };
     const t = resolveTheme();
     try { document.documentElement.setAttribute('data-theme', t); } catch (_) {}
+  }, [uiTheme]);
+
+  // resolvedTheme 동기화 + 시스템 변경 감지
+  useEffect(() => {
+    const media = (typeof window !== 'undefined' && window.matchMedia) ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+    const compute = () => {
+      try {
+        const t = (uiTheme === 'system') ? (media && media.matches ? 'dark' : 'light') : uiTheme;
+        setResolvedTheme(t);
+      } catch (_) { setResolvedTheme('dark'); }
+    };
+    compute();
+    if (uiTheme === 'system' && media) {
+      try { media.addEventListener('change', compute); } catch { try { media.addListener(compute); } catch {} }
+      return () => { try { media.removeEventListener('change', compute); } catch { try { media.removeListener(compute); } catch {} } };
+    }
   }, [uiTheme]);
 
   useEffect(() => {
@@ -593,7 +611,17 @@ const ChatPage = () => {
           )}
         </div>
 
-        <div className={`max-w-full sm:max-w-[85%] px-3 py-2 rounded-2xl shadow-md ${isUser ? 'bg-white rounded-tr-none' : 'bg-white/10 lg:bg-white/10 rounded-tl-none'}`} style={{ color: isUser ? (message.isNarration ? uiColors.userNarration : uiColors.userSpeech) : (message.isNarration ? uiColors.charNarration : uiColors.charSpeech) }}>
+        <div
+          className={`max-w-full sm:max-w-[85%] px-3 py-2 rounded-2xl shadow-md ${isUser ? 'rounded-tr-none' : 'rounded-tl-none'}
+            ${isUser
+              ? (resolvedTheme === 'light' ? 'bg-white border border-gray-300' : 'bg-white text-black')
+              : (resolvedTheme === 'light' ? 'bg-white border border-gray-300' : 'bg-white/10 lg:bg-white/10')}
+          `}
+          style={{ color: isUser
+            ? (resolvedTheme === 'light' ? (message.isNarration ? '#111827' : '#111827') : (message.isNarration ? uiColors.userNarration : uiColors.userSpeech))
+            : (resolvedTheme === 'light' ? '#0b0b0b' : (message.isNarration ? uiColors.charNarration : uiColors.charSpeech))
+          }}
+        >
           {(!isUser && editingMessageId === message.id) ? (
             <div className="space-y-2">
               <Textarea value={editText} onChange={(e)=>setEditText(e.target.value)} rows={4} />
