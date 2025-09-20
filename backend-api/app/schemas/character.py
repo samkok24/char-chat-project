@@ -215,6 +215,14 @@ class CharacterDetailResponse(BaseModel):
     # 통계
     chat_count: int
     like_count: int
+    origin_story_id: Optional[uuid.UUID] = None
+    # 원작 웹소설 카드용 보강 필드
+    origin_story_title: Optional[str] = None
+    origin_story_cover: Optional[str] = None
+    origin_story_creator: Optional[str] = None
+    origin_story_views: Optional[int] = None
+    origin_story_likes: Optional[int] = None
+    origin_story_excerpt: Optional[str] = None
     
     # 타임스탬프
     created_at: datetime
@@ -242,6 +250,7 @@ class CharacterListResponse(BaseModel):
     image_descriptions: Optional[List[Dict[str, Any]]] = None
     chat_count: int
     like_count: int
+    origin_story_id: Optional[uuid.UUID] = None
     is_public: bool
     created_at: datetime
     creator_username: Optional[str] = None

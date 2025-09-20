@@ -19,8 +19,11 @@ class Story(Base):
     title = Column(String(200), nullable=False)
     content = Column(Text, nullable=False)
     summary = Column(Text)
+    cover_url = Column(String(500))
     genre = Column(String(50))
     is_public = Column(Boolean, default=True, index=True)
+    # 원작챗 여부(스토리 기반 대화용 플래그)
+    is_origchat = Column(Boolean, default=False, index=True)
     is_featured = Column(Boolean, default=False)
     view_count = Column(Integer, default=0)
     like_count = Column(Integer, default=0)
@@ -30,7 +33,13 @@ class Story(Base):
 
     # 관계 설정
     creator = relationship("User", back_populates="stories")
-    character = relationship("Character", back_populates="stories")
+    # 모호성 제거: Character.stories와 동일한 FK(Story.character_id)로 연결
+    character = relationship(
+        "Character",
+        back_populates="stories",
+        foreign_keys=[character_id],
+        primaryjoin="Story.character_id==Character.id",
+    )
     likes = relationship("StoryLike", back_populates="story", cascade="all, delete-orphan")
     comments = relationship("StoryComment", back_populates="story", cascade="all, delete-orphan")
 

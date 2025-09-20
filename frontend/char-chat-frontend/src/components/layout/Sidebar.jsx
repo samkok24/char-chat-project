@@ -54,6 +54,33 @@ const Sidebar = () => {
     navigate('/');
   };
 
+  const loadRecentStories = async () => {
+    // 최근 본 웹소설: localStorage 키 스캔 후 존재하는 스토리만 로드
+    try {
+      const keys = Object.keys(localStorage || {}).filter(k => k.startsWith('reader_progress:'));
+      const pairs = keys.map(k => {
+        const id = k.replace('reader_progress:', '');
+        return { id, lastNo: getReadingProgress(id), at: getReadingProgressAt(id) };
+      });
+      // 최근 시각 순으로 정렬 후 최대 8개
+      const ids = pairs.sort((a,b) => (b.at||0) - (a.at||0)).slice(0, 8).map(p => p.id);
+      const stories = await Promise.all(ids.map(async (id) => {
+        try {
+          const res = await storiesAPI.getStory(id);
+          return res.data;
+        } catch(_) { return null; }
+      }));
+      const list = stories.filter(Boolean).map(s => ({
+        id: s.id,
+        title: s.title,
+        cover_url: s.cover_url,
+        last_no: getReadingProgress(s.id),
+        at: getReadingProgressAt(s.id)
+      }));
+      setRecentStories(list);
+    } catch(_) { setRecentStories([]); }
+  };
+
   const loadRooms = async () => {
     try {
       setLoading(true);
@@ -74,30 +101,7 @@ const Sidebar = () => {
         }));
         setCharacterImageById(Object.fromEntries(entries));
       }
-      // 최근 본 웹소설: localStorage 키 스캔 후 존재하는 스토리만 로드
-      try {
-        const keys = Object.keys(localStorage || {}).filter(k => k.startsWith('reader_progress:'));
-        const pairs = keys.map(k => {
-          const id = k.replace('reader_progress:', '');
-          return { id, lastNo: getReadingProgress(id), at: getReadingProgressAt(id) };
-        });
-        // 최근 시각 순으로 정렬 후 최대 8개
-        const ids = pairs.sort((a,b) => (b.at||0) - (a.at||0)).slice(0, 8).map(p => p.id);
-        const stories = await Promise.all(ids.map(async (id) => {
-          try {
-            const res = await storiesAPI.getStory(id);
-            return res.data;
-          } catch(_) { return null; }
-        }));
-        const list = stories.filter(Boolean).map(s => ({
-          id: s.id,
-          title: s.title,
-          cover_url: s.cover_url,
-          last_no: getReadingProgress(s.id),
-          at: getReadingProgressAt(s.id)
-        }));
-        setRecentStories(list);
-      } catch(_) { setRecentStories([]); }
+      await loadRecentStories();
     } catch (error) {
       console.error('채팅방 목록을 불러오는데 실패했습니다.', error);
     } finally {
@@ -109,10 +113,30 @@ const Sidebar = () => {
     if (isAuthenticated) {
       loadRooms();
     } else {
-      setChatRooms([]);
-      setLoading(false);
+      // 비로그인 상태에서도 최근 본 웹소설은 노출
+      (async () => {
+        try {
+          setLoading(true);
+          setChatRooms([]);
+          await loadRecentStories();
+        } finally {
+          setLoading(false);
+        }
+      })();
     }
   }, [isAuthenticated]);
+
+  // 로컬스토리지 변경 시(다른 탭 등) 최근 웹소설 갱신
+  useEffect(() => {
+    const onStorage = (e) => {
+      if (!e) return;
+      if (typeof e.key === 'string' && (e.key.startsWith('reader_progress:') || e.key.startsWith('reader_progress_at:'))) {
+        loadRecentStories();
+      }
+    };
+    try { window.addEventListener('storage', onStorage); } catch(_) {}
+    return () => { try { window.removeEventListener('storage', onStorage); } catch(_) {} };
+  }, []);
 
   useEffect(() => {
     if (!isAuthenticated) return;
@@ -223,7 +247,7 @@ const Sidebar = () => {
                   thumb: characterImageById[room.character?.id] || getCharacterPrimaryImage(room.character || {}),
                   at: new Date(room.last_message_time || room.updated_at || room.created_at || 0).getTime() || 0,
                   href: `/ws/chat/${room.character?.id}`,
-                  is_origchat: !!room.is_origchat,
+                  is_origchat: !!(room?.character?.origin_story_id),
                 }));
                 const storyItems = (recentStories || []).map((s) => ({
                   kind: 'story',

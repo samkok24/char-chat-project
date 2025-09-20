@@ -15,6 +15,7 @@ services:
       ENVIRONMENT: "development"
       DEBUG: "true"
       REDIS_URL: "redis://redis:6379/0"
+      RANKING_SCHEDULER_ENABLED: "1"
     ports:
       - "8000:8000"
     volumes:

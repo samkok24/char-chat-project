@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { charactersAPI } from '../lib/api';
+import { rankingAPI } from '../lib/api';
 import { resolveImageUrl } from '../lib/images';
 import { DEFAULT_SQUARE_URI } from '../lib/placeholder';
 import { MessageCircle, Heart, ChevronLeft, ChevronRight } from 'lucide-react';
@@ -13,11 +13,13 @@ const TrendingItem = ({ character }) => {
   const navigate = useNavigate();
   const imgSrc = resolveImageUrl(character?.thumbnail_url || character?.avatar_url) || DEFAULT_SQUARE_URI;
   const username = character?.creator_username;
+  const isWebNovel = character?.source_type === 'IMPORTED';
+  const isOrigChat = !!(character?.origin_story_id || character?.is_origchat);
 
   return (
     <li>
       <Link to={`/characters/${character?.id}`} className="flex gap-3 items-start">
-        <div className={`relative rounded-xl overflow-hidden flex-shrink-0 border ${character?.source_type === 'IMPORTED' ? 'border-blue-500/40' : 'border-purple-500/40'}`} style={{ width: 89, height: 138 }}>
+        <div className={`relative rounded-xl overflow-hidden flex-shrink-0 border ${isOrigChat ? 'border-orange-500/60' : (isWebNovel ? 'border-blue-500/40' : 'border-purple-500/40')}`} style={{ width: 89, height: 138 }}>
           <img
             src={imgSrc}
             alt={character?.name}
@@ -27,11 +29,13 @@ const TrendingItem = ({ character }) => {
             loading="lazy"
           />
           <div className="absolute top-1 left-1">
-            {(character?.source_type === 'IMPORTED') ? (
+            {isOrigChat ? (
+              <Badge className="bg-orange-400 text-black hover:bg-orange-400">원작챗</Badge>
+            ) : (isWebNovel ? (
               <Badge className="bg-blue-600 text-white hover:bg-blue-600">웹소설</Badge>
             ) : (
               <Badge className="bg-purple-600 text-white hover:bg-purple-600">캐릭터</Badge>
-            )}
+            ))}
           </div>
           <div className="absolute bottom-1 right-1 py-0.5 px-1.5 rounded bg-black/60 text-xs text-gray-100 flex items-center gap-2">
             <span className="inline-flex items-center gap-1"><MessageCircle className="w-3 h-3" />{formatCount(character?.chat_count ?? 0)}</span>
@@ -77,13 +81,13 @@ const TrendingSkeleton = () => (
 
 const TrendingCharacters = () => {
   const { data = [], isLoading, isError } = useQuery({
-    queryKey: ['trending-characters'],
+    queryKey: ['trending-characters-daily'],
     queryFn: async () => {
-      // 캐러셀을 위해 충분한 수를 받아오되, 화면에는 9개씩만 표시
-      const res = await charactersAPI.getCharacters({ sort: 'views', limit: 36 });
-      return res.data || [];
+      const res = await rankingAPI.getDaily({ kind: 'character' });
+      return Array.isArray(res.data?.items) ? res.data.items : [];
     },
-    staleTime: 5 * 60 * 1000,
+    staleTime: 30 * 1000,
+    refetchOnWindowFocus: true,
   });
 
   const pageSize = 8;

@@ -32,6 +32,8 @@ export const HistoryChatCard = ({ character, onClick, onPin, onDelete }) => {
   };
 
   const formatChatCount = (count) => formatCount(count);
+  const isWebNovel = character?.source_type === 'IMPORTED';
+  const isOrigChat = !!(character?.origin_story_id || character?.is_origchat);
 
   return (
     <div className="relative">
@@ -81,7 +83,7 @@ export const HistoryChatCard = ({ character, onClick, onPin, onDelete }) => {
         tabIndex={0}
         onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } }}
       >
-        <div className="group flex text-white bg-[#1f2327] rounded-2xl transition-colors duration-200 hover:bg-[#252a2f] border border-[#2a2f35] hover:border-[#3a4047] h-[10.5rem] lg:h-[11.5rem] overflow-hidden">
+        <div className={`group flex text-white bg-[#1f2327] rounded-2xl transition-colors duration-200 hover:bg-[#252a2f] border ${isOrigChat ? 'border-orange-500/60' : (isWebNovel ? 'border-blue-500/40' : 'border-purple-500/40')} h-[10.5rem] lg:h-[11.5rem] overflow-hidden`}>
           {/* 좌측 이미지 영역 (30%) */}
           <div className="w-[30%] relative bg-[#0d0f11] flex-shrink-0 rounded-l-2xl overflow-hidden">
             <div className="absolute inset-0">
@@ -95,7 +97,13 @@ export const HistoryChatCard = ({ character, onClick, onPin, onDelete }) => {
                 }}
               />
               <div className="absolute top-1 left-1">
-                <Badge className="bg-purple-600 text-white hover:bg-purple-600">캐릭터</Badge>
+                {isOrigChat ? (
+                  <Badge className="bg-orange-400 text-black hover:bg-orange-400">원작챗</Badge>
+                ) : (isWebNovel ? (
+                  <Badge className="bg-blue-600 text-white hover:bg-blue-600">웹소설</Badge>
+                ) : (
+                  <Badge className="bg-purple-600 text-white hover:bg-purple-600">캐릭터</Badge>
+                ))}
               </div>
               {/* 채팅 수 & 좋아요 수 표시 */}
               <div className="absolute bottom-2.5 right-1 py-0.5 px-1.5 rounded bg-black bg-opacity-60 cursor-zoom-in" title="클릭하여 캐릭터 정보 보기">

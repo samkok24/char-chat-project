@@ -33,6 +33,7 @@ import AppLayout from '../components/layout/AppLayout';
 import { CharacterCard as SharedCharacterCard, CharacterCardSkeleton as SharedCharacterCardSkeleton } from '../components/CharacterCard';
 import StoryExploreCard from '../components/StoryExploreCard';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../components/ui/tabs';
+import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogAction } from '../components/ui/alert-dialog';
 
 // 좋아요한 캐릭터 탭 컴포넌트
 const FavoritesTab = () => {
@@ -79,9 +80,15 @@ const MyCharactersPage = () => {
   const [characters, setCharacters] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  // 선택삭제(내 캐릭터 탭)
+  const [selectModeChars, setSelectModeChars] = useState(false);
+  const [selectedCharIds, setSelectedCharIds] = useState(new Set());
+  const [isBulkDeletingChars, setIsBulkDeletingChars] = useState(false);
+  const [doneModal, setDoneModal] = useState({ open: false, message: '' });
 
   const { user } = useAuth();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const location = useLocation();
 
   useEffect(() => {
@@ -92,7 +99,11 @@ const MyCharactersPage = () => {
     setLoading(true);
     try {
       const response = await charactersAPI.getMyCharacters();
-      setCharacters(response.data);
+      // 원작챗(웹소설에서 추출된 캐릭터)은 제외하고, 내가 만든 일반 캐릭터만 표시
+      const onlyRegular = Array.isArray(response.data)
+        ? response.data.filter((c) => !c.origin_story_id)
+        : [];
+      setCharacters(onlyRegular);
     } catch (err) {
       console.error('내 캐릭터 목록 로드 실패:', err);
       setError('캐릭터 목록을 불러올 수 없습니다.');
@@ -109,10 +120,45 @@ const MyCharactersPage = () => {
     try {
       await charactersAPI.deleteCharacter(characterId);
       setCharacters(characters.filter(c => c.id !== characterId));
+      // 홈/탐색 섹션 즉시 갱신
+      try {
+        const qc = queryClient;
+        qc.invalidateQueries({ queryKey: ['top-origchat-daily'] });
+        qc.invalidateQueries({ queryKey: ['webnovel-characters'] });
+        qc.invalidateQueries({ queryKey: ['characters'] });
+        qc.invalidateQueries({ queryKey: ['liked-characters'] });
+        qc.invalidateQueries({ queryKey: ['explore-stories'] });
+      } catch (_) {}
     } catch (err) {
       console.error('캐릭터 삭제 실패:', err);
       alert('캐릭터 삭제에 실패했습니다.');
     }
+  };
+
+  const toggleSelectChar = (id) => {
+    setSelectedCharIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const bulkDeleteChars = async () => {
+    if (selectedCharIds.size === 0) return;
+    if (!window.confirm(`${selectedCharIds.size}개의 캐릭터를 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.`)) return;
+    setIsBulkDeletingChars(true);
+    const ids = Array.from(selectedCharIds);
+    let success = 0, failed = 0;
+    for (const id of ids) {
+      try { await charactersAPI.deleteCharacter(id); success += 1; }
+      catch (_) { failed += 1; }
+    }
+    const removeSet = new Set(ids);
+    setCharacters(prev => prev.filter(c => !removeSet.has(c.id)));
+    setSelectedCharIds(new Set());
+    setSelectModeChars(false);
+    setIsBulkDeletingChars(false);
+    setDoneModal({ open: true, message: failed ? `${success}개 삭제, ${failed}개 실패` : `${success}개 삭제 완료` });
   };
 
   const CharacterCard = ({ character }) => (
@@ -286,32 +332,49 @@ const MyCharactersPage = () => {
           </Button>
         </div>
 
-        <Tabs defaultValue={location.hash === '#favorites' ? 'favorites' : (location.hash === '#stories' ? 'stories' : 'mine')} className="mt-2">
+        <Tabs defaultValue={location.hash === '#favorites' ? 'favorites' : (location.hash === '#stories' ? 'stories' : (location.hash === '#origchat' ? 'origchat' : 'mine'))} className="mt-2">
           <TabsList className="bg-gray-800 border border-gray-700">
             <TabsTrigger value="mine" className="text-gray-200 data-[state=active]:bg-yellow-500 data-[state=active]:text-black">내가 만든 캐릭터</TabsTrigger>
             <TabsTrigger value="stories" className="text-gray-200 data-[state=active]:bg-yellow-500 data-[state=active]:text-black">내가 쓴 작품</TabsTrigger>
             <TabsTrigger value="favorites" className="text-gray-200 data-[state=active]:bg-yellow-500 data-[state=active]:text-black">내가 좋아하는 캐릭터</TabsTrigger>
+            <TabsTrigger value="origchat" className="text-gray-200 data-[state=active]:bg-yellow-500 data-[state=active]:text-black">내가 만든 원작챗</TabsTrigger>
           </TabsList>
           {/* 내가 만든 캐릭터 탭 */}
           <TabsContent value="mine">
             {error && (<div className="text-red-400 mb-4">{error}</div>)}
+            <div className="flex items-center justify-between mt-2">
+              <div className="text-sm text-gray-400">총 {characters.length.toLocaleString()}개</div>
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm" disabled={isBulkDeletingChars} onClick={()=> setSelectModeChars(v=>!v)}>{selectModeChars ? '선택 해제' : '선택'}</Button>
+                <Button size="sm" className="bg-red-600 hover:bg-red-700 disabled:opacity-50" disabled={!selectModeChars || selectedCharIds.size===0 || isBulkDeletingChars} onClick={bulkDeleteChars}>
+                  선택삭제 ({selectedCharIds.size})
+                </Button>
+              </div>
+            </div>
             {characters.length > 0 ? (
               <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 mt-4">
                 {characters.map((character) => (
-                  <div key={character.id} className="relative group" onClick={() => navigate(`/characters/${character.id}`, { state: { fromMyGrid: true } })}>
+                  <div key={character.id} className="relative group" onClick={() => { if (!selectModeChars) navigate(`/characters/${character.id}`, { state: { fromMyGrid: true } }); }}>
+                    {selectModeChars && (
+                      <label className="absolute top-2 right-2 z-20 inline-flex items-center gap-1 bg-black/60 backdrop-blur-sm text-white text-xs px-2 py-1 rounded-md ring-1 ring-white/20 shadow-sm cursor-pointer">
+                        <input className="w-4 h-4" disabled={isBulkDeletingChars} type="checkbox" checked={selectedCharIds.has(character.id)} onChange={()=>toggleSelectChar(character.id)} /> 선택
+                      </label>
+                    )}
                     <SharedCharacterCard character={character} />
                     <div className="absolute top-1 right-1 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                       <button
                         title="수정"
                         className="w-7 h-7 rounded bg-black/70 text-white hover:bg-black/90 flex items-center justify-center"
-                        onClick={(e)=>{ e.stopPropagation(); navigate(`/characters/${character.id}/edit`); }}
+                        disabled={isBulkDeletingChars}
+                        onClick={(e)=>{ e.stopPropagation(); if (!selectModeChars && !isBulkDeletingChars) navigate(`/characters/${character.id}/edit`); }}
                       >
                         <Edit className="w-3.5 h-3.5" />
                       </button>
                       <button
                         title="삭제"
                         className="w-7 h-7 rounded bg-black/70 text-white hover:bg-black/90 flex items-center justify-center"
-                        onClick={(e)=>{ e.stopPropagation(); deleteCharacter(character.id); }}
+                        disabled={isBulkDeletingChars}
+                        onClick={(e)=>{ e.stopPropagation(); if (!selectModeChars && !isBulkDeletingChars) deleteCharacter(character.id); }}
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>
@@ -344,7 +407,21 @@ const MyCharactersPage = () => {
           <TabsContent value="favorites">
             <FavoritesTab />
           </TabsContent>
+
+          {/* 내가 만든 원작챗 탭 */}
+          <TabsContent value="origchat">
+            <MyOrigChatTab />
+          </TabsContent>
         </Tabs>
+        <AlertDialog open={doneModal.open} onOpenChange={(v)=> setDoneModal(prev => ({ ...prev, open: v }))}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>삭제되었습니다</AlertDialogTitle>
+              <AlertDialogDescription>{doneModal.message || '선택 항목이 삭제되었습니다.'}</AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogAction onClick={()=> setDoneModal({ open: false, message: '' })}>확인</AlertDialogAction>
+          </AlertDialogContent>
+        </AlertDialog>
       </main>
     </div>
     </AppLayout>
@@ -355,6 +432,10 @@ const MyCharactersPage = () => {
 const MyStoriesTab = () => {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false);
+  const [doneModal, setDoneModal] = useState({ open: false, message: '' });
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['my-stories'],
     queryFn: async () => {
@@ -393,29 +474,124 @@ const MyStoriesTab = () => {
   }
 
   return (
-    <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 mt-4">
-      {data.map(story => (
-        <div key={story.id} className="relative group" onClick={()=>navigate(`/stories/${story.id}`, { state: { fromMyGrid: true } })}>
-          <StoryExploreCard story={story} />
-          <div className="absolute top-1 right-1 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-            <button
-              title="수정"
-              className="w-7 h-7 rounded bg-black/70 text-white hover:bg-black/90 flex items-center justify-center"
-              onClick={(e)=>{ e.stopPropagation(); navigate(`/stories/${story.id}/edit`); }}
-            >
-              <Edit className="w-3.5 h-3.5" />
-            </button>
-            <button
-              title="삭제"
-              className="w-7 h-7 rounded bg-black/70 text-white hover:bg-black/90 flex items-center justify-center"
-              onClick={(e)=>{ e.stopPropagation(); handleDelete(story.id); }}
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-            </button>
+    <>
+      <div className="flex items-center justify-end mb-2">
+        <Button variant="outline" size="sm" onClick={()=> setSelectMode(v=>!v)}>{selectMode ? '선택 해제' : '선택'}</Button>
+        <Button size="sm" className="ml-2 bg-red-600 hover:bg-red-700 disabled:opacity-50" disabled={!selectMode || selectedIds.size===0 || isBulkDeleting}
+          onClick={async()=>{
+            if (!window.confirm(`${selectedIds.size}개의 작품을 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.`)) return;
+            setIsBulkDeleting(true);
+            let success=0, failed=0;
+            for (const id of Array.from(selectedIds)) { try { await storiesAPI.deleteStory(id); success+=1; } catch(_) { failed+=1; } }
+            await refetch();
+            setSelectedIds(new Set());
+            setSelectMode(false);
+            setIsBulkDeleting(false);
+            queryClient.invalidateQueries({ queryKey: ['explore-stories'] });
+            queryClient.invalidateQueries({ queryKey: ['top-stories-views'] });
+            setDoneModal({ open: true, message: failed ? `${success}개 삭제, ${failed}개 실패` : `${success}개 삭제 완료` });
+          }}>
+          선택삭제 ({selectedIds.size})
+        </Button>
+      </div>
+      <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 mt-4">
+        {data.map(story => (
+          <div key={story.id} className="relative group" onClick={()=>{ if(!selectMode) navigate(`/stories/${story.id}`, { state: { fromMyGrid: true } }); }}>
+            {selectMode && (
+              <label className="absolute top-2 right-2 z-20 inline-flex items-center gap-1 bg-black/60 backdrop-blur-sm text-white text-xs px-2 py-1 rounded-md ring-1 ring-white/20 shadow-sm cursor-pointer">
+                <input className="w-4 h-4" disabled={isBulkDeleting} type="checkbox" checked={selectedIds.has(story.id)} onChange={()=> setSelectedIds(prev=>{ const next=new Set(prev); if(next.has(story.id)) next.delete(story.id); else next.add(story.id); return next; })} /> 선택
+              </label>
+            )}
+            <StoryExploreCard story={story} />
+            <div className="absolute top-1 right-1 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+              <button
+                title="수정"
+                className="w-7 h-7 rounded bg-black/70 text-white hover:bg-black/90 flex items-center justify-center"
+                disabled={isBulkDeleting}
+                onClick={(e)=>{ e.stopPropagation(); if(!selectMode && !isBulkDeleting) navigate(`/stories/${story.id}/edit`); }}
+              >
+                <Edit className="w-3.5 h-3.5" />
+              </button>
+              <button
+                title="삭제"
+                className="w-7 h-7 rounded bg-black/70 text-white hover:bg-black/90 flex items-center justify-center"
+                disabled={isBulkDeleting}
+                onClick={(e)=>{ e.stopPropagation(); if(!selectMode && !isBulkDeleting) handleDelete(story.id); }}
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            </div>
           </div>
-        </div>
-      ))}
-    </div>
+        ))}
+      </div>
+    </>
+  );
+};
+
+const MyOrigChatTab = () => {
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const { data = [], isLoading, isError, refetch } = useQuery({
+    queryKey: ['my-origchat-chars'],
+    queryFn: async () => {
+      const res = await charactersAPI.getMyCharacters();
+      const list = Array.isArray(res.data) ? res.data : [];
+      return list.filter(c => !!c.origin_story_id);
+    },
+    staleTime: 0,
+    refetchOnMount: 'always',
+  });
+
+  if (isLoading) {
+    return (
+      <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 mt-4">
+        {Array.from({ length: 12 }).map((_, i) => (
+          <SharedCharacterCardSkeleton key={i} />
+        ))}
+      </div>
+    );
+  }
+  if (isError) {
+    return <div className="text-red-400 mt-4">내가 만든 원작챗을 불러오지 못했습니다.</div>;
+  }
+  if (!data.length) {
+    return <div className="text-gray-400 mt-4">아직 생성한 원작챗이 없습니다.</div>;
+  }
+  return (
+    <>
+      <div className="flex items-center justify-end mb-2">
+        <Button variant="outline" size="sm" onClick={()=> setSelectMode(v=>!v)}>{selectMode ? '선택 해제' : '선택'}</Button>
+        <Button size="sm" className="ml-2 bg-red-600 hover:bg-red-700 disabled:opacity-50" disabled={!selectMode || selectedIds.size===0}
+          onClick={async()=>{
+            if (!window.confirm(`${selectedIds.size}개의 원작챗 캐릭터를 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.`)) return;
+            for (const id of Array.from(selectedIds)) { try { await charactersAPI.deleteCharacter(id); } catch(_) {} }
+            await refetch();
+            setSelectedIds(new Set());
+            setSelectMode(false);
+            // 홈/탐색 섹션 즉시 갱신
+            queryClient.invalidateQueries({ queryKey: ['top-origchat-daily'] });
+            queryClient.invalidateQueries({ queryKey: ['webnovel-characters'] });
+            queryClient.invalidateQueries({ queryKey: ['characters'] });
+            queryClient.invalidateQueries({ queryKey: ['liked-characters'] });
+            queryClient.invalidateQueries({ queryKey: ['explore-stories'] });
+            setDoneModal({ open: true, message: '삭제 완료' });
+          }}>선택삭제 ({selectedIds.size})</Button>
+      </div>
+      <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 mt-4">
+        {data.map((c) => (
+          <div key={c.id} className="relative group" onClick={() => { if(!selectMode) navigate(`/characters/${c.id}`, { state: { fromMyGrid: true } }); }}>
+            {selectMode && (
+              <label className="absolute top-2 right-2 z-20 inline-flex items-center gap-1 bg-black/60 backdrop-blur-sm text-white text-xs px-2 py-1 rounded-md ring-1 ring-white/20 shadow-sm cursor-pointer">
+                <input className="w-4 h-4" type="checkbox" checked={selectedIds.has(c.id)} onChange={()=> setSelectedIds(prev=>{ const next=new Set(prev); if(next.has(c.id)) next.delete(c.id); else next.add(c.id); return next; })} /> 선택
+              </label>
+            )}
+            <SharedCharacterCard character={{ ...c, source_type: 'IMPORTED' }} />
+          </div>
+        ))}
+      </div>
+    </>
   );
 };
 

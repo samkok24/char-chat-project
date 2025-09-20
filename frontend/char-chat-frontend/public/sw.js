@@ -1,5 +1,5 @@
 /* Simple SW: stale-while-revalidate for API GETs and static assets */
-const VERSION = 'sw-v1';
+const VERSION = 'sw-v2';
 const STATIC_CACHE = `${VERSION}-static`;
 const API_CACHE = `${VERSION}-api`;
 
@@ -40,7 +40,8 @@ self.addEventListener('fetch', (event) => {
           caches.open(STATIC_CACHE).then((cache) => cache.put(request, respClone));
           return response;
         }).catch(() => cached);
-        return cached || fetchPromise;
+        // 보장: 네트워크/캐시 모두 실패 시에도 유효한 Response 반환
+        return cached || fetchPromise.catch(() => new Response('', { status: 504 }));
       })
     );
     return;
@@ -57,7 +58,8 @@ self.addEventListener('fetch', (event) => {
           }
           return response;
         }).catch(() => cached);
-        return cached || fetchPromise;
+        // 보장: 네트워크/캐시 모두 실패 시에도 유효한 Response 반환
+        return cached || fetchPromise.catch(() => new Response(JSON.stringify({ error: 'offline', url }), { status: 503, headers: { 'Content-Type': 'application/json' } }));
       })
     );
   }

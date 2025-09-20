@@ -22,6 +22,17 @@ from app.api.characters import router as characters_router  # ✅ 필수: 캐릭
 # from app.api.generation import router as generation_router # ✨ 신규: 생성 API (임시 비활성화)
 from app.api.users import router as users_router
 from app.api.story_importer import router as story_importer_router # ✨ 신규: 스토리 임포터 API
+from app.api.rankings import router as rankings_router
+import os
+try:
+    from apscheduler.schedulers.asyncio import AsyncIOScheduler
+    _aps_available = True
+except Exception:  # ModuleNotFoundError 등
+    AsyncIOScheduler = None  # type: ignore
+    _aps_available = False
+from app.services.ranking_service import build_daily_ranking, persist_daily_ranking, today_kst
+from app.core.database import AsyncSessionLocal
+from app.api.story_chapters import router as story_chapters_router  # 📚 회차 API
 from app.api.memory_notes import router as memory_notes_router
 from app.api.user_personas import router as user_personas_router # ✨ 신규: 기억노트 API
 from app.api.stories import router as stories_router    # ⏳ 나중에: 스토리 API (차별점)
@@ -189,6 +200,24 @@ app.include_router(tags_router, prefix="/tags", tags=["🏷️ 태그"])
 
 # ⏳ Phase 3: 콘텐츠 확장 API (향후 개발)
 app.include_router(stories_router, prefix="/stories", tags=["📚 스토리"])
+app.include_router(story_chapters_router, prefix="/chapters", tags=["📚 회차"])
+app.include_router(rankings_router, prefix="/rankings", tags=["🏆 랭킹"])
+
+# ---- Scheduler: 00:00 KST daily snapshot ----
+SCHED_ENABLED = os.getenv('RANKING_SCHEDULER_ENABLED', '0') == '1'
+scheduler = AsyncIOScheduler() if (SCHED_ENABLED and _aps_available) else None
+
+@app.on_event("startup")
+async def _start_scheduler():
+    if scheduler and not scheduler.running:
+        scheduler.start()
+        scheduler.add_job(_snapshot_daily_ranking_job, 'cron', hour=0, minute=0, timezone='Asia/Seoul')
+        logger.info("⏰ 일일 랭킹 스냅샷 스케줄러 활성화 (00:00 KST)")
+
+async def _snapshot_daily_ranking_job():
+    async with AsyncSessionLocal() as db:
+        data = await build_daily_ranking(db)
+        await persist_daily_ranking(db, today_kst(), data)
 app.include_router(payment_router, prefix="/payment", tags=["⏳ 결제 (단순화 예정)"])
 app.include_router(point_router, prefix="/point", tags=["⏳ 포인트 (단순화 예정)"])
 

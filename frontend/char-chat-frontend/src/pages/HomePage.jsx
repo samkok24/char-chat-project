@@ -140,7 +140,7 @@ const HomePage = () => {
         return list.filter(s => s?.is_public !== false);
       } catch (_) { return []; }
     },
-    staleTime: 60 * 1000,
+    staleTime: 30 * 1000,
   });
   const sentinelRef = useRef(null);
 
@@ -148,8 +148,7 @@ const HomePage = () => {
   const mixedItems = React.useMemo(() => {
     const result = [];
     const interval = 5; // 캐릭터 5개마다 스토리 1개 삽입
-    const canInjectStories = sourceFilter !== 'ORIGINAL';
-    const storyQueue = canInjectStories ? [...(exploreStories || [])] : [];
+  const storyQueue = [...(exploreStories || [])];
 
     characters.forEach((ch, idx) => {
       result.push({ kind: 'character', data: ch });
@@ -304,18 +303,15 @@ const HomePage = () => {
             <TrendingCharacters />
           </ErrorBoundary>
 
-          {/* 원작챗 TOP10 (주황) - 캐릭터 TOP 바로 아래 */}
-          <ErrorBoundary>
-            <TopOrigChat />
-          </ErrorBoundary>
-
           {/* 웹소설 TOP10 (블루) */}
           <ErrorBoundary>
             <TopStories />
           </ErrorBoundary>
 
-          {/* 웹소설 원작 섹션 (최근 대화 아래로 이동) */}
-          {/* 이동됨 */}
+          {/* 웹소설 원작 섹션 (상시 노출) */}
+          <ErrorBoundary>
+            <TopOrigChat />
+          </ErrorBoundary>
 
           {/* 최근 대화 섹션 - 관심 캐릭터 영역 임시 비노출 */}
           {isAuthenticated && (
@@ -333,10 +329,7 @@ const HomePage = () => {
             </>
           )}
 
-          {/* 웹소설 원작 섹션: 비노출 처리 */}
-          {/* <ErrorBoundary>
-            <WebNovelSection />
-          </ErrorBoundary> */}
+          {/* 하단 중복 섹션 제거 */}
 
           {/* Scenes 섹션 (나중에 구현) */}
           {/* <section className="mb-10">
@@ -395,7 +388,7 @@ const HomePage = () => {
                       item.kind === 'story' ? (
                         <StoryExploreCard key={`story-${item.data.id}`} story={item.data} />
                       ) : (
-                        <CharacterCard key={`char-${item.data.id}`} character={item.data} />
+                        <CharacterCard key={`char-${item.data.id}`} character={item.data} showOriginBadge />
                       )
                     ))}
                   </div>

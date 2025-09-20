@@ -55,7 +55,7 @@ const ChatRedirectPage = () => {
         <AlertCircle className="w-12 h-12 text-red-500 mb-4" />
         <h3 className="text-xl font-bold mb-2">오류</h3>
         <p className="mb-6">{error}</p>
-        <Button onClick={() => navigate('/')} variant="outline" className="bg-transparent border-white text-white hover:bg-white hover:text-gray-900">
+        <Button onClick={() => navigate('/')} variant="outline" className="bg-transparent border-white text-white hover:bg-gray-100 hover:text-gray-900">
           홈으로 돌아가기
         </Button>
       </div>

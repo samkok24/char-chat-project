@@ -18,6 +18,8 @@ class StoryChapter(Base):
     title = Column(String(200), nullable=True)
     content = Column(Text, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    # 조회수
+    view_count = Column(Integer, default=0)
 
     __table_args__ = (
         UniqueConstraint('story_id', 'no', name='uq_story_chapter_no'),

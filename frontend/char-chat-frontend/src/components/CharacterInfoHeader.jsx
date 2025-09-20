@@ -22,7 +22,7 @@ const CharacterInfoHeader = ({ character, likeCount, isLiked, handleLike, isOwne
       <div className="flex items-center justify-between">
         <div className="flex items-center space-x-4">
           <div className="flex items-center space-x-2 text-sm text-gray-400">
-            <Heart className={`w-4 h-4 ${isLiked ? 'text-red-500 fill-current' : ''}`} />
+            <Heart className="w-4 h-4 text-red-500" fill={isLiked ? 'currentColor' : 'none'} />
             <span>{likeCount.toLocaleString()}</span>
           </div>
           <div className="flex items-center space-x-2 text-sm text-gray-400">
@@ -68,18 +68,18 @@ const CharacterInfoHeader = ({ character, likeCount, isLiked, handleLike, isOwne
 
       <div className="flex items-start justify-between">
         <h1 className="text-4xl font-bold">{character.name}</h1>
-        <Button onClick={handleLike} variant="ghost" size="icon" className={`${isLiked ? 'text-red-500 hover:text-red-500' : ''}`}>
-          <Heart className={`w-6 h-6 ${isLiked ? 'fill-current' : ''}`} />
+        <Button onClick={handleLike} variant="ghost" size="icon">
+          <Heart className="w-6 h-6 text-red-500" fill={isLiked ? 'currentColor' : 'none'} />
         </Button>
       </div>
 
-      {isWebNovel && (
+      {/* 원작챗 상세에서는 이름 아래 배지를 표시하지 않음 (이미지 위 배지만 유지) */}
+      {!character?.origin_story_id && (
         <div className="flex items-center gap-2">
-          <Badge className="bg-indigo-600 hover:bg-indigo-600">웹소설</Badge>
-          {workId && (
-            <Button variant="outline" className="border-gray-700 text-gray-200 h-7 px-2" onClick={() => navigate(`/works/${workId}`)}>
-              원작 보기
-            </Button>
+          {(isWebNovel || character?.source_type === 'IMPORTED') ? (
+            <Badge className="bg-blue-600 text-white hover:bg-blue-600">웹소설</Badge>
+          ) : (
+            <Badge className="bg-purple-600 text-white hover:bg-purple-600">캐릭터</Badge>
           )}
         </div>
       )}
@@ -99,9 +99,12 @@ const CharacterInfoHeader = ({ character, likeCount, isLiked, handleLike, isOwne
         </div>
       )}
       
-      <p className="text-gray-200">
-        여러분은 이세계소환당하면 어떤 삶을 살고 싶으신가요?
-      </p>
+      {/* 소개 섹션의 하드코딩 문구 제거, 공개일/수정일 노출 */}
+      <div className="text-sm text-gray-500 pt-1">
+        <span>공개일 {new Date(character.created_at).toLocaleDateString()}</span>
+        {' '}|{' '}
+        <span>수정일 {new Date(character.updated_at).toLocaleDateString()}</span>
+      </div>
       
       {Array.isArray(tags) && tags.length > 0 && (
         <div className="flex flex-wrap gap-2">
@@ -114,9 +117,7 @@ const CharacterInfoHeader = ({ character, likeCount, isLiked, handleLike, isOwne
         </div>
       )}
       
-      <div className="text-sm text-gray-500 pt-2">
-        <span>공개일 2025-06-20</span> | <span>수정일 2025-06-30</span>
-      </div>
+      {/* 하단 중복 표시는 제거됨 */}
     </div>
   );
 };

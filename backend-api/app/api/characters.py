@@ -2,13 +2,14 @@
 캐릭터 관련 API 라우터 - CAVEDUCK 스타일 고급 캐릭터 생성
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional
 import uuid
 
 from app.core.database import get_db
 from app.core.security import get_current_user, get_current_active_user
+from app.core.security import get_current_user_optional  # 진짜 optional 의존성 사용
 from app.models.user import User
 from app.models.character import Character  # Character 모델 import 추가
 from app.schemas.character import (
@@ -56,10 +57,13 @@ from app.services.character_service import (
     update_advanced_character,
     get_advanced_character_by_id,
     get_character_example_dialogues,
-    update_character_public_status # 서비스 함수 임포트 추가
+    update_character_public_status, # 서비스 함수 임포트 추가
+    increment_character_chat_count,
 )
 from app.schemas.tag import CharacterTagsUpdate, TagResponse
 from app.models.tag import Tag, CharacterTag
+from app.models.story_extracted_character import StoryExtractedCharacter
+from sqlalchemy import update as sql_update
 from sqlalchemy import select, delete, insert
 from app.services.comment_service import (
     create_character_comment,
@@ -182,6 +186,7 @@ async def convert_character_to_detail_response(character: Character, db: AsyncSe
         personality=character.personality,
         speech_style=character.speech_style,
         greeting=character.greeting,
+        origin_story_id=getattr(character, 'origin_story_id', None),
         world_setting=getattr(character, 'world_setting', None),
         user_display_description=getattr(character, 'user_display_description', None),
         use_custom_description=getattr(character, 'use_custom_description', False),
@@ -393,6 +398,7 @@ async def get_characters(
     sort: Optional[str] = Query(None, description="정렬: views|likes|recent"),
     source_type: Optional[str] = Query(None, description="생성 출처: ORIGINAL|IMPORTED"),
     tags: Optional[str] = Query(None, description="필터 태그 목록(콤마 구분 slug)"),
+    only: Optional[str] = Query(None, description="origchat|regular"),
     db: AsyncSession = Depends(get_db)
 ):
     """캐릭터 목록 조회"""
@@ -414,7 +420,8 @@ async def get_characters(
             search=search,
             sort=sort,
             source_type=source_type,
-            tags=[s for s in (tags.split(',') if tags else []) if s]
+            tags=[s for s in (tags.split(',') if tags else []) if s],
+            only=only,
         )
 
     # 일관된 응답: creator_username 포함하여 매핑
@@ -427,6 +434,7 @@ async def get_characters(
             greeting=char.greeting,
             avatar_url=char.avatar_url,
             image_descriptions=getattr(char, 'image_descriptions', []),
+            origin_story_id=getattr(char, 'origin_story_id', None),
             chat_count=char.chat_count,
             like_count=char.like_count,
             is_public=char.is_public,
@@ -505,8 +513,9 @@ async def get_my_characters(
 @router.get("/{character_id}", response_model=CharacterDetailResponse) # 1. 응답 모델을 고급 버전으로 변경
 async def get_character(
     character_id: uuid.UUID,
-    current_user: Optional[User] = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    background_tasks: BackgroundTasks,
+    current_user: Optional[User] = Depends(get_current_user_optional),
+    db: AsyncSession = Depends(get_db),
 ):
     """캐릭터 상세 조회 (고급 응답 모델 사용)"""
     # 2. 데이터를 가져오는 서비스도 고급 버전으로 변경
@@ -526,13 +535,43 @@ async def get_character(
     
     # 3. 🔥 고급 응답 모델로 변환하는 헬퍼 함수를 재사용
     response_data = await convert_character_to_detail_response(character, db)
+    # 원작 스토리 카드용 보강 필드
+    try:
+        if response_data.origin_story_id:
+            from sqlalchemy import select
+            from app.models.story import Story
+            from sqlalchemy.orm import joinedload
+            s = (await db.execute(
+                select(Story).where(Story.id == response_data.origin_story_id).options(joinedload(Story.creator))
+            )).scalars().first()
+            if s:
+                response_data_dict = response_data.model_dump()
+                response_data_dict["origin_story_title"] = s.title
+                response_data_dict["origin_story_cover"] = getattr(s, "cover_url", None)
+                response_data_dict["origin_story_creator"] = getattr(s.creator, "username", None) if getattr(s, "creator", None) else None
+                response_data_dict["origin_story_views"] = int(s.view_count or 0)
+                response_data_dict["origin_story_likes"] = int(s.like_count or 0)
+                try:
+                    text = (s.content or "").strip()
+                    excerpt = " ".join(text.split())[:140] if text else None
+                except Exception:
+                    excerpt = None
+                response_data_dict["origin_story_excerpt"] = excerpt
+                response_data = CharacterDetailResponse(**response_data_dict)
+    except Exception:
+        pass
     
     # is_liked 상태 추가 (로그인한 사용자인 경우만)
     if current_user:
         response_data.is_liked = await is_character_liked_by_user(db, character_id, current_user.id)
     else:
         response_data.is_liked = False
-        
+    # 상세페이지 접속 시 조회수(뷰 개념) 증가: chat_count를 조회수로 간주
+    try:
+        background_tasks.add_task(increment_character_chat_count, db, character_id)
+    except Exception:
+        pass
+    
     return response_data
 
 @router.put("/{character_id}", response_model=CharacterResponse)
@@ -608,6 +647,19 @@ async def delete_character_info(
             detail="이 캐릭터를 삭제할 권한이 없습니다."
         )
     
+    # 원작챗 연결이 있는 경우 그리드가 변형되지 않도록 character_id만 NULL 처리 후 삭제
+    try:
+        await db.execute(
+            sql_update(StoryExtractedCharacter)
+            .where(StoryExtractedCharacter.character_id == character_id)
+            .values(character_id=None)
+        )
+        await db.commit()
+    except Exception:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
     await delete_character(db, character_id)
 
 

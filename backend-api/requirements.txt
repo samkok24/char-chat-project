@@ -13,6 +13,9 @@ asyncpg==0.29.0
 # Redis
 redis==5.0.1
 hiredis==2.2.3
+APScheduler==3.10.4
+tzlocal==5.2
+pytz==2024.1
 
 # 인증 및 보안
 python-jose[cryptography]==3.3.0

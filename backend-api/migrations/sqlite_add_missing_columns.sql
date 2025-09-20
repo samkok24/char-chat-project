@@ -59,3 +59,11 @@ CREATE TABLE IF NOT EXISTS chat_message_edits (
   FOREIGN KEY (message_id) REFERENCES chat_messages(id) ON DELETE CASCADE,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
+
+-- stories 테이블: is_origchat 컬럼 추가 (존재 시 무시)
+ALTER TABLE stories ADD COLUMN is_origchat BOOLEAN DEFAULT 0;
+-- characters 테이블: origin_story_id 컬럼 추가 (존재 시 무시)
+ALTER TABLE characters ADD COLUMN origin_story_id CHAR(36);
+
+-- story_chapters 테이블: view_count 컬럼 추가 (존재 시 무시)
+ALTER TABLE story_chapters ADD COLUMN view_count INTEGER DEFAULT 0;

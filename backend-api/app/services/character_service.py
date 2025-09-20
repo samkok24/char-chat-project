@@ -381,6 +381,7 @@ async def get_public_characters(
     sort: Optional[str] = None,
     source_type: Optional[str] = None,
     tags: Optional[list[str]] = None,
+    only: Optional[str] = None,
 ) -> List[Character]:
     """공개 캐릭터 목록 조회"""
     query = (
@@ -400,6 +401,14 @@ async def get_public_characters(
     # 출처 유형 필터 (예: ORIGINAL, IMPORTED)
     if source_type:
         query = query.where(Character.source_type == source_type)
+    
+    # 원작챗/일반 캐릭터 필터
+    if only:
+        only_key = (only or "").strip().lower()
+        if only_key in ["origchat", "original_chat", "origin"]:
+            query = query.where(Character.origin_story_id.isnot(None))
+        elif only_key in ["regular", "normal", "characterchat", "characters"]:
+            query = query.where(Character.origin_story_id.is_(None))
     
     # 태그 필터 (AND)
     if tags:

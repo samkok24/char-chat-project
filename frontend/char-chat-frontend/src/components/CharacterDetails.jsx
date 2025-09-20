@@ -28,7 +28,7 @@ const timeAgo = (dateString) => {
 
 
 
-const CharacterDetails = ({ character, comments, commentText, setCommentText, handleCommentSubmit, handleDeleteComment, submittingComment, user, tags = [] }) => {
+const CharacterDetails = ({ character, comments, commentText, setCommentText, handleCommentSubmit, handleDeleteComment, submittingComment, user, tags = [], originStoryCard = null }) => {
   return (
     <div className="space-y-8">
       {/* 소개 */}
@@ -46,6 +46,9 @@ const CharacterDetails = ({ character, comments, commentText, setCommentText, ha
           {character.world_setting || '아직 세계관 설정이 없습니다.'}
         </div>
       </section>
+
+      {/* 원작 웹소설 카드: 세계관 바로 아래 */}
+      {originStoryCard}
 
       {/* 태그 */}
       <section id="tags">

@@ -2,7 +2,7 @@ import React, { useMemo } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import AppLayout from '../components/layout/AppLayout';
 import { Button } from '../components/ui/button';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { chaptersAPI, storiesAPI } from '../lib/api';
 import { setReadingProgress } from '../lib/reading';
 import { ArrowLeft, ArrowRight, Home } from 'lucide-react';
@@ -11,6 +11,7 @@ import { resolveImageUrl } from '../lib/images';
 const ChapterReaderPage = () => {
   const { storyId: storyIdFromPath, chapterNumber } = useParams();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [sp] = useSearchParams();
   const chatOpen = sp.get('chat') === '1';
   const storyId = storyIdFromPath || sp.get('storyId');
@@ -58,6 +59,21 @@ const ChapterReaderPage = () => {
   React.useEffect(() => {
     if (chapter?.no) setReadingProgress(storyId, chapter.no);
   }, [storyId, chapter?.no]);
+
+  // 회차 진입 시 뷰 카운트 증가 트리거 및 목록 무효화
+  React.useEffect(() => {
+    const run = async () => {
+      try {
+        const id = chapter?.id;
+        if (!id) return;
+        await chaptersAPI.getOne(id); // 서버에서 비동기로 view_count 증가
+        // 스토리 상세의 회차 목록을 최신으로
+        try { queryClient.invalidateQueries({ queryKey: ['chapters-by-story', storyId] }); } catch (_) {}
+      } catch (_) {}
+    };
+    run();
+    // chapter.id 변경 시마다 1회
+  }, [chapter?.id, storyId, queryClient]);
 
   // 심리스 내비게이션 제거 (IntersectionObserver 비활성화)
 

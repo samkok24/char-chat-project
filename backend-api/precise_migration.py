@@ -67,12 +67,20 @@ COLUMNS_TO_ADD = {
         ("affinity_stages", "TEXT"), # TEXT for JSON
         ("custom_module_id", "CHAR(36)"),
         ("use_translation", "BOOLEAN DEFAULT 1"),
+        ("origin_story_id", "CHAR(36)"),
     ],
     "character_settings": [
         ("custom_prompt_template", "TEXT"),
         ("use_memory", "BOOLEAN DEFAULT 1"),
         ("memory_length", "INTEGER DEFAULT 20"),
         ("response_style", "VARCHAR(50) DEFAULT 'natural'"),
+    ],
+    "stories": [
+        ("is_origchat", "BOOLEAN DEFAULT 0"),
+        ("cover_url", "VARCHAR(500)"),
+    ],
+    "story_chapters": [
+        ("view_count", "INTEGER DEFAULT 0"),
     ]
 }
 
@@ -140,6 +148,27 @@ def run_precise_migration():
                         # 다른 오류는 전파하여 중단
                         raise e
         
+        # 3. is_origchat 백필(스토리 테이블에 컬럼 존재 시)
+        try:
+            print("\n🔎 'stories' 테이블의 컬럼 확인 중...")
+            cursor.execute("PRAGMA table_info(stories)")
+            story_cols = [row[1] for row in cursor.fetchall()]
+            if 'is_origchat' in story_cols:
+                print("  -> ✅ 'is_origchat' 컬럼 존재. 백필을 진행합니다.")
+                # 3-1) 추출 캐릭터가 존재하는 스토리 마크
+                print("  -> 🧩 story_extracted_characters 기반 백필...")
+                cursor.execute("UPDATE stories SET is_origchat = 1 WHERE id IN (SELECT DISTINCT story_id FROM story_extracted_characters)")
+                # 3-2) characters.origin_story_id 기반 백필
+                print("  -> 🧩 characters.origin_story_id 기반 백필...")
+                cursor.execute("UPDATE stories SET is_origchat = 1 WHERE id IN (SELECT DISTINCT origin_story_id FROM characters WHERE origin_story_id IS NOT NULL)")
+                # 3-3) 기존 프록시 규칙: story.character_id가 존재하면 원작챗으로 간주(과거 규칙 호환)
+                print("  -> 🧩 story.character_id 기반 백필(과거 호환)...")
+                cursor.execute("UPDATE stories SET is_origchat = 1 WHERE character_id IS NOT NULL")
+            else:
+                print("  -> ⚠️  'is_origchat' 컬럼이 없습니다. 백필을 건너뜁니다.")
+        except Exception as e:
+            print(f"  -> ❌ is_origchat 백필 중 오류: {e}")
+
         conn.commit()
         print("\n🎉 모든 마이그레이션 작업이 성공적으로 완료되었습니다!")
 

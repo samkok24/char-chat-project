@@ -244,18 +244,29 @@ export const SocketProvider = ({ children }) => {
 
   // 메시지 전송
   const sendMessage = useCallback((roomId, content, messageType = 'text') => {
-    if (socket && connected) {
+    if (!socket || !connected) return;
+    const needsJoin = !currentRoom || currentRoom?.id !== roomId;
+    const doSend = () => {
       if (messageType === 'continue') {
         socket.emit('continue', { roomId });
-        return;
+      } else {
+        socket.emit('send_message', { roomId, content, messageType });
       }
-      socket.emit('send_message', {
-        roomId,
-        content,
-        messageType,
-      });
+    };
+    if (needsJoin) {
+      try {
+        socket.emit('join_room', { roomId });
+        const once = (data) => {
+          try { if (data?.roomId === roomId) doSend(); } finally { socket.off('room_joined', once); }
+        };
+        socket.on('room_joined', once);
+        // 안전장치: 1.5초 후 리스너 정리
+        setTimeout(() => { try { socket.off('room_joined', once); } catch {} }, 1500);
+      } catch(_) { /* no-op */ }
+      return;
     }
-  }, [socket, connected]);
+    doSend();
+  }, [socket, connected, currentRoom]);
 
   // 타이핑 상태 전송
   const startTyping = useCallback((roomId) => {

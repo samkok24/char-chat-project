@@ -75,7 +75,7 @@ const StoryEditPage = () => {
   return (
     <div className="min-h-screen bg-gray-900 text-gray-200 p-4 sm:p-6 lg:p-8">
       <div className="max-w-3xl mx-auto space-y-4">
-        <Button variant="ghost" onClick={()=>navigate(-1)}><ArrowLeft className="w-5 h-5 mr-2"/>뒤로 가기</Button>
+        <Button variant="ghost" onClick={()=>navigate('/')}><ArrowLeft className="w-5 h-5 mr-2"/>뒤로 가기</Button>
         {error && (
           <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>
         )}

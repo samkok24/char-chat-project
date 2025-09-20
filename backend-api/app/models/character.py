@@ -53,6 +53,8 @@ class Character(Base):
     
     # ✨ 생성 출처
     source_type = Column(String(20), nullable=False, default='ORIGINAL') # 'ORIGINAL' 또는 'IMPORTED'
+    # 원작 연결 스토리 ID(원작챗 파생 캐릭터 식별)
+    origin_story_id = Column(UUID(), ForeignKey("stories.id"), nullable=True, index=True)
     
     # 📊 통계
     chat_count = Column(Integer, default=0)
@@ -72,7 +74,21 @@ class Character(Base):
     settings = relationship("CharacterSetting", back_populates="character", uselist=False, cascade="all, delete-orphan")
     example_dialogues = relationship("CharacterExampleDialogue", back_populates="character", cascade="all, delete-orphan")
     chat_rooms = relationship("ChatRoom", back_populates="character", cascade="all, delete-orphan")
-    stories = relationship("Story", back_populates="character")
+    # 스토리와의 관계: Story.character_id 를 통한 역참조만 사용하여 모호성 제거
+    from sqlalchemy.orm import foreign
+    stories = relationship(
+        "Story",
+        back_populates="character",
+        primaryjoin="Character.id==foreign(Story.character_id)",
+        foreign_keys="Story.character_id",
+    )
+    # 캐릭터가 어떤 원작 스토리에서 파생되었는지(단방향)
+    origin_story = relationship(
+        "Story",
+        primaryjoin="foreign(Character.origin_story_id)==Story.id",
+        foreign_keys=[origin_story_id],
+        viewonly=True,
+    )
     likes = relationship("CharacterLike", back_populates="character", cascade="all, delete-orphan")
     comments = relationship("CharacterComment", back_populates="character", cascade="all, delete-orphan")
     tags = relationship("Tag", secondary="character_tags", back_populates="characters")

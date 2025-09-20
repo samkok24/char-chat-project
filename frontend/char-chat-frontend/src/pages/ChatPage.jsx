@@ -118,6 +118,8 @@ const ChatPage = () => {
   const [origTotalChapters, setOrigTotalChapters] = useState(null);
   const [origRangeFrom, setOrigRangeFrom] = useState(null);
   const [origRangeTo, setOrigRangeTo] = useState(null);
+  const [origTurnLoading, setOrigTurnLoading] = useState(false);
+  const [lastOrigTurnPayload, setLastOrigTurnPayload] = useState(null);
   const [relTrust, setRelTrust] = useState(50);
   const [relAffinity, setRelAffinity] = useState(50);
   const [relTension, setRelTension] = useState(50);
@@ -397,8 +399,11 @@ const ChatPage = () => {
     // 원작챗이면 HTTP 턴 호출, 아니면 소켓 전송
     if (isOrigChat && origStoryId) {
       try {
-        const resp = await origChatAPI.turn({ room_id: chatRoomId, user_text: messageContent });
-        const assistantText = resp.data?.assistant || '';
+        setOrigTurnLoading(true);
+        const payload = { room_id: chatRoomId, user_text: messageContent };
+        setLastOrigTurnPayload(payload);
+        const resp = await origChatAPI.turn(payload);
+        const assistantText = resp.data?.ai_message?.content || resp.data?.assistant || '';
         const meta = resp.data?.meta || {};
         const aiMessage = {
           id: `temp-ai-${Date.now()}`,
@@ -420,6 +425,32 @@ const ChatPage = () => {
         setRangeWarning(typeof warn === 'string' ? warn : '');
       } catch (err) {
         console.error('원작챗 턴 실패', err);
+        try {
+          const retry = window.confirm('응답 생성에 실패했습니다. 다시 시도할까요?');
+          if (retry && lastOrigTurnPayload) {
+            const resp = await origChatAPI.turn(lastOrigTurnPayload);
+            const assistantText = resp.data?.assistant || '';
+            const meta = resp.data?.meta || {};
+            const aiMessage = {
+              id: `temp-ai-${Date.now()}`,
+              roomId: chatRoomId,
+              senderType: 'assistant',
+              content: assistantText,
+              created_at: new Date().toISOString()
+            };
+            setMessages(prev => [...prev, aiMessage]);
+            const clamp = (v) => Math.max(0, Math.min(100, v));
+            const d = meta.deltas || {};
+            if (typeof d.trust === 'number') setRelTrust(prev => clamp((prev ?? 50) + d.trust));
+            if (typeof d.affinity === 'number') setRelAffinity(prev => clamp((prev ?? 50) + d.affinity));
+            if (typeof d.tension === 'number') setRelTension(prev => clamp((prev ?? 50) + d.tension));
+            setPendingChoices(Array.isArray(meta.choices) ? meta.choices : []);
+            const warn = meta.warning;
+            setRangeWarning(typeof warn === 'string' ? warn : '');
+          }
+        } catch(_) {}
+      } finally {
+        setOrigTurnLoading(false);
       }
       setNewMessage('');
       if (inputRef.current) { inputRef.current.style.height = 'auto'; }
@@ -448,8 +479,11 @@ const ChatPage = () => {
     setMessages(prev => [...prev, tempUser]);
     setPendingChoices([]);
     try {
-      const resp = await origChatAPI.turn({ room_id: chatRoomId, choice_id: choice.id, user_text: choice.label });
-      const assistantText = resp.data?.assistant || '';
+      setOrigTurnLoading(true);
+      const payload = { room_id: chatRoomId, choice_id: choice.id, user_text: choice.label };
+      setLastOrigTurnPayload(payload);
+      const resp = await origChatAPI.turn(payload);
+      const assistantText = resp.data?.ai_message?.content || resp.data?.assistant || '';
       const meta = resp.data?.meta || {};
       // 요구사항: 선택 문장에 이어서 말풍선으로 나오기 → 선택 문장 + AI 답변 결합
       const combined = `${choice.label}\n\n${assistantText}`;
@@ -471,6 +505,33 @@ const ChatPage = () => {
       setRangeWarning(typeof warn === 'string' ? warn : '');
     } catch (e) {
       console.error('선택 처리 실패', e);
+      try {
+        const retry = window.confirm('응답 생성에 실패했습니다. 다시 시도할까요?');
+        if (retry && lastOrigTurnPayload) {
+          const resp = await origChatAPI.turn(lastOrigTurnPayload);
+          const assistantText = resp.data?.assistant || '';
+          const meta = resp.data?.meta || {};
+          const combined = `${choice.label}\n\n${assistantText}`;
+          const aiMessage = {
+            id: `temp-ai-${Date.now()}`,
+            roomId: chatRoomId,
+            senderType: 'assistant',
+            content: combined,
+            created_at: new Date().toISOString()
+          };
+          setMessages(prev => [...prev, aiMessage]);
+          const clamp = (v) => Math.max(0, Math.min(100, v));
+          const d = meta.deltas || {};
+          if (typeof d.trust === 'number') setRelTrust(prev => clamp((prev ?? 50) + d.trust));
+          if (typeof d.affinity === 'number') setRelAffinity(prev => clamp((prev ?? 50) + d.affinity));
+          if (typeof d.tension === 'number') setRelTension(prev => clamp((prev ?? 50) + d.tension));
+          setPendingChoices(Array.isArray(meta.choices) ? meta.choices : []);
+          const warn = meta.warning;
+          setRangeWarning(typeof warn === 'string' ? warn : '');
+        }
+      } catch(_) {}
+    } finally {
+      setOrigTurnLoading(false);
     }
   };
   

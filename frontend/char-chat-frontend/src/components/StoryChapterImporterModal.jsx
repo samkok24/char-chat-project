@@ -137,10 +137,11 @@ const StoryChapterImporterModal = ({ open, onClose, onApplyAppend, onApplyReplac
 
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!v) onClose?.(); }}>
-      <DialogContent className="sm:max-w-4xl max-h-[85vh] bg-gray-900 text-gray-100 border border-gray-700 overflow-hidden flex flex-col">
+      <DialogContent className="sm:max-w-4xl max-h-[85vh] bg-gray-900 text-gray-100 border border-gray-700 overflow-hidden flex flex-col" aria-describedby="txt-import-desc">
         <DialogHeader>
           <DialogTitle className="text-white">txt로 일괄 업로드</DialogTitle>
         </DialogHeader>
+        <div id="txt-import-desc" className="sr-only">텍스트 업로드 후 회차를 자동 추출하는 모달</div>
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 flex-1 min-h-0 overflow-auto pr-1">
           <Card className="bg-gray-800 border border-gray-700">
             <CardHeader>

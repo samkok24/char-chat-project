@@ -8,6 +8,7 @@ import { Skeleton } from './ui/skeleton';
 import { Heart, MessageCircle } from 'lucide-react';
 import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
 import { formatCount } from '../lib/format';
+import { Badge } from './ui/badge';
 
 export const RecentChatCard = ({ character, onClick }) => {
   const defaultAvatar = DEFAULT_AVATAR_URI;
@@ -15,6 +16,9 @@ export const RecentChatCard = ({ character, onClick }) => {
   const safeUrl = (url) => resolveImageUrl(url) || defaultAvatar;
   
   const formatChatCount = (count) => formatCount(count);
+  const isWebNovel = character?.source_type === 'IMPORTED';
+  const isOrigChat = !!(character?.origin_story_id || character?.is_origchat);
+  const borderClass = isOrigChat ? 'border-orange-500/60' : (isWebNovel ? 'border-blue-500/40' : 'border-purple-500/40');
 
   return (
     <div 
@@ -28,7 +32,7 @@ export const RecentChatCard = ({ character, onClick }) => {
       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } }}
     >
       <div>
-        <div className={`group/card h-[146px] bg-[#1f2327] hover:cursor-pointer hover:bg-[#252a2f] rounded-2xl relative transition-colors duration-200 border ${character?.source_type === 'IMPORTED' ? 'border-blue-500/40' : 'border-purple-500/40'}`} style={{ width: '312px' }}>
+        <div className={`group/card h-[146px] bg-[#1f2327] hover:cursor-pointer hover:bg-[#252a2f] rounded-2xl relative transition-colors duration-200 border ${borderClass}`} style={{ width: '312px' }}>
           <div className="w-full h-full p-4 flex flex-col gap-2">
             <div className="flex flex-row h-full space-x-3 w-full">
               {/* 캐릭터 이미지 */}
@@ -48,6 +52,15 @@ export const RecentChatCard = ({ character, onClick }) => {
                     e.target.src = defaultAvatar;
                   }}
                 />
+                <div className="absolute top-1 left-1">
+                  {isOrigChat ? (
+                    <Badge className="bg-orange-400 text-black hover:bg-orange-400">원작챗</Badge>
+                  ) : (isWebNovel ? (
+                    <Badge className="bg-blue-600 text-white hover:bg-blue-600">웹소설</Badge>
+                  ) : (
+                    <Badge className="bg-purple-600 text-white hover:bg-purple-600">캐릭터</Badge>
+                  ))}
+                </div>
                 {/* 인디케이터: 이미지 우하단에 항상 표시 */}
                 <div className="absolute bottom-1 right-1 py-0.5 px-1.5 rounded bg-black/60">
                   <div className="flex items-center gap-x-2 text-gray-200">

@@ -14,8 +14,9 @@ from app.core.database import get_db
 from app.core.security import get_current_user, get_current_user_optional
 from app.models.user import User
 from app.models.story import Story
+from app.models.story_extracted_character import StoryExtractedCharacter
 from app.schemas.story import (
-    StoryCreate, StoryUpdate, StoryResponse, StoryListResponse,
+    StoryCreate, StoryUpdate, StoryResponse, StoryListResponse, StoryListItem,
     StoryGenerationRequest, StoryGenerationResponse, StoryWithDetails, StoryStreamRequest
 )
 from app.schemas.comment import (
@@ -28,6 +29,14 @@ from app.services.comment_service import (
     update_story_comment, delete_story_comment
 )
 from app.services.job_service import JobService, get_job_service
+from app.services.origchat_service import (
+    ensure_extracted_characters_for_story,
+    extract_characters_from_story,
+)
+from app.services.origchat_service import _enrich_character_fields
+from app.models.story_chapter import StoryChapter
+from app.models.character import Character
+from sqlalchemy import select, delete
 
 router = APIRouter()
 
@@ -286,12 +295,35 @@ async def get_stories(
     stories = await story_service.get_public_stories(
         db, skip=skip, limit=limit, search=search, genre=genre
     )
-    
-    story_responses = [StoryResponse.model_validate(story) for story in stories]
-    
+
+    # 목록용 항목으로 변환하면서 excerpt 채움
+    items: list[StoryListItem] = []
+    for s in stories:
+        try:
+            text = (s.content or "").strip()
+        except Exception:
+            text = ""
+        # 간단 발췌: 줄바꿈/공백 정리 후 앞부분 140자
+        excerpt = " ".join(text.split())[:140] if text else None
+        items.append(StoryListItem(
+            id=s.id,
+            title=s.title,
+            genre=s.genre,
+            is_public=bool(s.is_public),
+            is_origchat=bool(getattr(s, "is_origchat", False)),
+            like_count=int(s.like_count or 0),
+            view_count=int(s.view_count or 0),
+            comment_count=int(s.comment_count or 0),
+            created_at=s.created_at,
+            creator_username=(s.creator.username if getattr(s, "creator", None) else None),
+            character_name=(s.character.name if getattr(s, "character", None) else None),
+            cover_url=getattr(s, "cover_url", None),
+            excerpt=excerpt,
+        ))
+
     return StoryListResponse(
-        stories=story_responses,
-        total=len(story_responses),
+        stories=items,
+        total=len(items),
         skip=skip,
         limit=limit
     )
@@ -309,12 +341,33 @@ async def get_my_stories(
     stories = await story_service.get_stories_by_creator(
         db, current_user.id, skip=skip, limit=limit, search=search
     )
-    
-    story_responses = [StoryResponse.model_validate(story) for story in stories]
-    
+
+    items: list[StoryListItem] = []
+    for s in stories:
+        try:
+            text = (s.content or "").strip()
+        except Exception:
+            text = ""
+        excerpt = " ".join(text.split())[:140] if text else None
+        items.append(StoryListItem(
+            id=s.id,
+            title=s.title,
+            genre=s.genre,
+            is_public=bool(s.is_public),
+            is_origchat=bool(getattr(s, "is_origchat", False)),
+            like_count=int(s.like_count or 0),
+            view_count=int(s.view_count or 0),
+            comment_count=int(s.comment_count or 0),
+            created_at=s.created_at,
+            creator_username=(s.creator.username if getattr(s, "creator", None) else None),
+            character_name=(s.character.name if getattr(s, "character", None) else None),
+            cover_url=getattr(s, "cover_url", None),
+            excerpt=excerpt,
+        ))
+
     return StoryListResponse(
-        stories=story_responses,
-        total=len(story_responses),
+        stories=items,
+        total=len(items),
         skip=skip,
         limit=limit
     )
@@ -342,6 +395,12 @@ async def get_story(
     
     # StoryResponse 형식으로 먼저 변환
     story_dict = StoryResponse.model_validate(story).model_dump()
+    # 총 조회수(작품 상세 + 회차 합계) 계산
+    try:
+        from app.services.story_service import get_story_total_views
+        story_dict["view_count"] = await get_story_total_views(db, story_id)
+    except Exception:
+        pass
     
     # 추가 정보 포함
     story_dict["creator_username"] = story.creator.username if story.creator else None
@@ -466,6 +525,209 @@ async def get_story_like_status(
         "is_liked": is_liked,
         "like_count": story.like_count
     }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 등장인물 추출: 조회 / 재생성 / 전체 삭제
+# 프론트 기대 경로: GET /stories/{story_id}/extracted-characters
+#                 POST /stories/{story_id}/extracted-characters/rebuild
+#                 DELETE /stories/{story_id}/extracted-characters
+# ──────────────────────────────────────────────────────────────────────────────
+
+@router.get("/{story_id}/extracted-characters")
+async def get_extracted_characters_endpoint(
+    story_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional),
+):
+    story = await story_service.get_story_by_id(db, story_id)
+    if not story:
+        raise HTTPException(status_code=404, detail="스토리를 찾을 수 없습니다")
+
+    # 최초 요청 시 비어있다면 간이 보장 로직 수행(회차가 있으면 최소 3인 구성)
+    rows = await db.execute(
+        select(StoryExtractedCharacter)
+        .where(StoryExtractedCharacter.story_id == story_id)
+        .order_by(StoryExtractedCharacter.order_index.asc(), StoryExtractedCharacter.created_at.asc())
+    )
+    items = rows.scalars().all()
+    if not items:
+        # 최초 생성은 크리에이터가 상세 페이지를 볼 때 1회만 수행
+        # 조건: 소유자 + 아직 원작챗으로 표시되지 않은 스토리(is_origchat=False)
+        if current_user and story.creator_id == current_user.id and not getattr(story, "is_origchat", False):
+            try:
+                await ensure_extracted_characters_for_story(db, story_id)
+            except Exception:
+                pass
+            rows = await db.execute(
+                select(StoryExtractedCharacter)
+                .where(StoryExtractedCharacter.story_id == story_id)
+                .order_by(StoryExtractedCharacter.order_index.asc(), StoryExtractedCharacter.created_at.asc())
+            )
+            items = rows.scalars().all()
+
+    def to_dict(rec: StoryExtractedCharacter):
+        return {
+            "id": str(rec.id),
+            "name": rec.name,
+            "description": rec.description,
+            "initial": rec.initial,
+            "avatar_url": rec.avatar_url,
+            "character_id": str(rec.character_id) if getattr(rec, "character_id", None) else None,
+            "order_index": rec.order_index,
+        }
+
+    return {"items": [to_dict(r) for r in items]}
+
+
+@router.post("/{story_id}/extracted-characters/rebuild")
+async def rebuild_extracted_characters_endpoint(
+    story_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional),
+):
+    story = await story_service.get_story_by_id(db, story_id)
+    if not story:
+        raise HTTPException(status_code=404, detail="스토리를 찾을 수 없습니다")
+    # 작성자만 재생성 허용
+    if not current_user or story.creator_id != current_user.id:
+        raise HTTPException(status_code=403, detail="재생성 권한이 없습니다")
+
+    # 기존 레코드 삭제
+    await db.execute(delete(StoryExtractedCharacter).where(StoryExtractedCharacter.story_id == story_id))
+    await db.commit()
+
+    # LLM 기반 추출 시도 → 실패 시 간이 보장 로직
+    created = 0
+    try:
+        created = await extract_characters_from_story(db, story_id)
+    except Exception:
+        created = 0
+    if not created:
+        # 다시생성하기는 반드시 LLM 결과를 요구. 실패 시 503 반환
+        raise HTTPException(status_code=503, detail="LLM 추출에 실패했습니다. API 키/모델 설정을 확인해 주세요.")
+
+    # 최종 목록 반환
+    rows = await db.execute(
+        select(StoryExtractedCharacter)
+        .where(StoryExtractedCharacter.story_id == story_id)
+        .order_by(StoryExtractedCharacter.order_index.asc(), StoryExtractedCharacter.created_at.asc())
+    )
+    items = rows.scalars().all()
+    return {"items": [
+        {
+            "id": str(r.id),
+            "name": r.name,
+            "description": r.description,
+            "initial": r.initial,
+            "avatar_url": r.avatar_url,
+            "character_id": str(r.character_id) if getattr(r, "character_id", None) else None,
+            "order_index": r.order_index,
+        } for r in items
+    ], "created": len(items)}
+
+
+@router.delete("/{story_id}/extracted-characters")
+async def delete_extracted_characters_endpoint(
+    story_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    story = await story_service.get_story_by_id(db, story_id)
+    if not story:
+        raise HTTPException(status_code=404, detail="스토리를 찾을 수 없습니다")
+    if story.creator_id != current_user.id:
+        raise HTTPException(status_code=403, detail="삭제 권한이 없습니다")
+    res = await db.execute(delete(StoryExtractedCharacter).where(StoryExtractedCharacter.story_id == story_id))
+    await db.commit()
+    # rowcount는 드라이버에 따라 None일 수 있음
+    deleted = getattr(res, "rowcount", None)
+    return {"deleted": deleted if isinstance(deleted, int) else True}
+
+
+@router.post("/{story_id}/extracted-characters/{extracted_id}/rebuild")
+async def rebuild_single_extracted_character_endpoint(
+    story_id: uuid.UUID,
+    extracted_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """해당 스토리의 특정 추출 캐릭터(그리드 카드 1개)만 재생성한다.
+    - 작성자만 가능
+    - character_id가 있으면 해당 캐릭터를 LLM 보강(_enrich)만 수행
+    - character_id가 없으면 새 캐릭터를 생성 후 링크
+    - 그리드 레코드는 유지(이름/설명은 기존 유지; 상세페이지 내용만 보강)
+    """
+    # 스토리/권한 확인
+    story = await story_service.get_story_by_id(db, story_id)
+    if not story:
+        raise HTTPException(status_code=404, detail="스토리를 찾을 수 없습니다")
+    if story.creator_id != current_user.id:
+        raise HTTPException(status_code=403, detail="재생성 권한이 없습니다")
+
+    # 추출 캐릭터 레코드 확인
+    rec = await db.get(StoryExtractedCharacter, extracted_id)
+    if not rec or str(rec.story_id) != str(story_id):
+        raise HTTPException(status_code=404, detail="추출 캐릭터를 찾을 수 없습니다")
+
+    # 컨텍스트 구축: 모든 회차 텍스트를 이어 붙여 상한선까지 사용
+    rows = await db.execute(
+        select(StoryChapter.content)
+        .where(StoryChapter.story_id == story_id)
+        .order_by(StoryChapter.no.asc())
+    )
+    contents = [r[0] or "" for r in rows.all()]
+    combined = "\n\n".join([t for t in contents if t])
+    # 길이 제한(LLM 프롬프트 과대 방지)
+    if combined and len(combined) > 12000:
+        combined = combined[:12000]
+
+    # 캐릭터 생성/보강
+    char: Optional[Character] = None
+    if rec.character_id:
+        char = await db.get(Character, rec.character_id)
+    if not char:
+        # 새 캐릭터 생성
+        char = Character(
+            creator_id=current_user.id,
+            name=rec.name,
+            description=rec.description or None,
+            character_type="roleplay",
+            base_language="ko",
+            has_affinity_system=True,
+            affinity_rules="기본 호감도 규칙: 상호 배려와 신뢰 상승, 공격적 발화 시 하락",
+            affinity_stages='[{"stage": "낯섦", "min": 0}, {"stage": "친근", "min": 40}, {"stage": "신뢰", "min": 70}]',
+            is_public=True,
+            is_active=True,
+            source_type='IMPORTED',
+            origin_story_id=story_id,
+            use_translation=True,
+        )
+        db.add(char)
+        await db.flush()
+        rec.character_id = char.id
+        try:
+            await db.commit()
+        except Exception:
+            await db.rollback()
+
+    # LLM 보강(실패는 조용히 무시)
+    try:
+        await _enrich_character_fields(db, char, combined)
+    except Exception:
+        pass
+
+    # 최신 레코드 반환(그리드 표시 스키마)
+    out = {
+        "id": str(rec.id),
+        "name": rec.name,
+        "description": rec.description,
+        "initial": rec.initial,
+        "avatar_url": rec.avatar_url,
+        "character_id": str(rec.character_id) if getattr(rec, "character_id", None) else None,
+        "order_index": rec.order_index,
+    }
+    return {"item": out}
 
 
 @router.post("/{story_id}/comments", response_model=StoryCommentResponse, status_code=status.HTTP_201_CREATED)

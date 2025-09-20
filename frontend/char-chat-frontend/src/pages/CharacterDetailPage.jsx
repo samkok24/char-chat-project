@@ -29,6 +29,7 @@ import CharacterInfoHeader from '../components/CharacterInfoHeader'; // 컴포�
 import ChatInteraction from '../components/ChatInteraction'; // 컴포넌트 임포트
 import CharacterDetails from '../components/CharacterDetails'; // 컴포넌트 임포트
 import AnalyzedCharacterCard from '../components/AnalyzedCharacterCard';
+import StoryExploreCard from '../components/StoryExploreCard';
 import { getReadingProgress } from '../lib/reading';
 
 const CharacterDetailPage = () => {
@@ -56,15 +57,9 @@ const CharacterDetailPage = () => {
   const [submittingComment, setSubmittingComment] = useState(false);
   const [tags, setTags] = useState([]);
 
-  // 3. 바로 여기에 handleGoBack 함수를 만듭니다.
+  // 3. 뒤로가기: 항상 홈(메인 탭)으로 이동
   const handleGoBack = () => {
-    // location.state 안에 fromCreate가 true인지 확인합니다.
-    // '?'는 location.state가 null이나 undefined일 때 오류가 발생하는 것을 막아줍니다.
-    if (location.state?.fromCreate || location.state?.fromEdit) {
-      navigate('/my-characters'); 
-    } else {
-      navigate(-1);
-    }
+    navigate('/');
   };
 
   useEffect(() => {
@@ -206,6 +201,7 @@ const CharacterDetailPage = () => {
   };
 
   const isOwner = user && character?.creator_id === user.id;
+  const originStoryId = character?.origin_story_id || null;
 
   const togglePublicMutation = useMutation({
     mutationFn: () => charactersAPI.toggleCharacterPublic(characterId),
@@ -236,6 +232,13 @@ const CharacterDetailPage = () => {
     if (!window.confirm('정말로 이 캐릭터를 삭제하시겠습니까?')) return;
     try {
       await charactersAPI.deleteCharacter(characterId);
+      try {
+        queryClient.invalidateQueries({ queryKey: ['top-origchat-daily'] });
+        queryClient.invalidateQueries({ queryKey: ['webnovel-characters'] });
+        queryClient.invalidateQueries({ queryKey: ['characters'] });
+        queryClient.invalidateQueries({ queryKey: ['liked-characters'] });
+        queryClient.invalidateQueries({ queryKey: ['explore-stories'] });
+      } catch (_) {}
       navigate('/');
     } catch (err) {
       console.error('캐릭터 삭제 실패:', err);
@@ -289,7 +292,13 @@ const CharacterDetailPage = () => {
                 className="absolute inset-0 w-full h-full object-cover rounded-lg"
               />
               <div className="absolute top-2 left-2">
-                <Badge className="bg-purple-600 text-white hover:bg-purple-600">캐릭터</Badge>
+                {character?.origin_story_id ? (
+                  <Badge className="bg-orange-400 text-black hover:bg-orange-400">원작챗</Badge>
+                ) : (isWebNovel || character?.source_type === 'IMPORTED') ? (
+                  <Badge className="bg-blue-600 text-white hover:bg-blue-600">웹소설</Badge>
+                ) : (
+                  <Badge className="bg-purple-600 text-white hover:bg-purple-600">캐릭터</Badge>
+                )}
               </div>
             </div>
             {/* 미니 갤러리: 가로 스크롤 */}
@@ -331,6 +340,8 @@ const CharacterDetailPage = () => {
               tags={tags}
             />
 
+            {/* 원작 웹소설 카드는 CharacterDetails 내 '세계관' 아래에서만 노출 */}
+
             {isWebNovel && workId && (
               <div className="flex items-center gap-2">
                 <Button className="bg-purple-600 hover:bg-purple-700" onClick={() => navigate(`/works/${workId}/chapters/1`)}>
@@ -339,7 +350,11 @@ const CharacterDetailPage = () => {
                 <Button variant="outline" className="border-gray-700 text-gray-200" onClick={() => navigate(`/works/${workId}/chapters/${continueChapter}`)}>
                   이어보기{progress > 0 ? ` (${continueChapter}화)` : ''}
                 </Button>
-                <Button variant="secondary" className="bg-pink-600 hover:bg-pink-700" onClick={() => navigate(`/works/${workId}/chapters/${continueChapter}?chat=1`)}>
+                <Button
+                  variant="secondary"
+                  className="bg-pink-600 hover:bg-pink-700"
+                  onClick={() => navigate(`/ws/chat/${characterId}?source=origchat&storyId=${workId}&anchor=${continueChapter}`)}
+                >
                   원작챗 시작
                 </Button>
               </div>
@@ -370,6 +385,15 @@ const CharacterDetailPage = () => {
               submittingComment={submittingComment}
               user={user}
               tags={tags}
+              originStoryCard={originStoryId ? (
+                <div className="max-w-sm">
+                  <StoryExploreCard
+                    story={{ id: originStoryId, title: character?.origin_story_title, cover_url: character?.origin_story_cover, creator_username: character?.origin_story_creator, view_count: character?.origin_story_views, like_count: character?.origin_story_likes, excerpt: character?.origin_story_excerpt }}
+                    compact
+                    onClick={() => navigate(`/stories/${originStoryId}`)}
+                  />
+                </div>
+              ) : null}
             />
           </div>
         </div>

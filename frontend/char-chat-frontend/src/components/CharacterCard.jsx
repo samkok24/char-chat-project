@@ -9,12 +9,15 @@ import { MessageCircle, Heart } from 'lucide-react';
 import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
 import { Badge } from './ui/badge';
 import { formatCount } from '../lib/format';
+import { storiesAPI } from '../lib/api';
 
-export const CharacterCard = ({ character, onCardClick, onButtonClick, footerContent }) => {
+export const CharacterCard = ({ character, onCardClick, onButtonClick, footerContent, showOriginBadge = false }) => {
   const navigate = useNavigate();
   const isWebNovel = character?.source_type === 'IMPORTED';
-  const borderClass = isWebNovel ? 'border-blue-500/40' : 'border-purple-500/40';
-  const hoverBorderClass = isWebNovel ? 'hover:border-blue-500' : 'hover:border-purple-500';
+  const isFromOrigChat = !!(character?.origin_story_id || character?.is_origchat);
+  const borderClass = isFromOrigChat ? 'border-orange-500/60' : (isWebNovel ? 'border-blue-500/40' : 'border-purple-500/40');
+  const hoverBorderClass = isFromOrigChat ? 'hover:border-orange-500' : (isWebNovel ? 'hover:border-blue-500' : 'hover:border-purple-500');
+  const [originTitle, setOriginTitle] = React.useState(character?.origin_story_title || '');
 
   const handleCardClick = () => {
     if (onCardClick) {
@@ -33,6 +36,24 @@ export const CharacterCard = ({ character, onCardClick, onButtonClick, footerCon
     }
   };
 
+  React.useEffect(() => {
+    let active = true;
+    const fetchTitleIfNeeded = async () => {
+      if (!showOriginBadge) return;
+      const sid = character?.origin_story_id;
+      if (!sid) return;
+      if (character?.origin_story_title) return; // already provided
+      try {
+        const res = await storiesAPI.getStory(sid);
+        if (!active) return;
+        const t = res.data?.title;
+        if (t) setOriginTitle(t);
+      } catch (_) {}
+    };
+    fetchTitleIfNeeded();
+    return () => { active = false; };
+  }, [showOriginBadge, character?.origin_story_id, character?.origin_story_title]);
+
   return (
     <div 
       className={`bg-gray-800 rounded-xl overflow-hidden hover:bg-gray-700 transition-all duration-200 cursor-pointer group border ${borderClass} ${hoverBorderClass}`}
@@ -48,7 +69,9 @@ export const CharacterCard = ({ character, onCardClick, onButtonClick, footerCon
           wrapperClassName="w-full h-full"
         />
         <div className="absolute top-1 left-1">
-          {character?.source_type === 'IMPORTED' ? (
+          {isFromOrigChat ? (
+            <Badge className="bg-orange-400 text-black hover:bg-orange-400">원작챗</Badge>
+          ) : character?.source_type === 'IMPORTED' ? (
             <Badge className="bg-blue-600 text-white hover:bg-blue-600">웹소설</Badge>
           ) : (
             <Badge className="bg-purple-600 text-white hover:bg-purple-600">캐릭터</Badge>
@@ -62,10 +85,25 @@ export const CharacterCard = ({ character, onCardClick, onButtonClick, footerCon
       </div>
       
       {/* 캐릭터 정보 */}
-      <div className="p-4 relative pb-6 h-[120px] overflow-hidden">
-        <h3 className="font-medium text-white truncate">{character.name}</h3>
+      <div className={`${showOriginBadge && isFromOrigChat ? 'px-4 pt-0 pb-6' : 'p-4 pb-6'} relative h-[120px] overflow-hidden`}>
+        {showOriginBadge && isFromOrigChat && !(character?.origin_story_title || originTitle) && (
+          <div className="mb-0.5 h-[18px] w-20 rounded-md bg-gray-700 animate-pulse" />
+        )}
+        {showOriginBadge && isFromOrigChat && (character?.origin_story_title || originTitle) && (
+          <span
+            onClick={(e)=>{ e.stopPropagation(); const sid = character?.origin_story_id; if (sid) navigate(`/stories/${sid}`); }}
+            className="block mb-0.5 w-full"
+            role="link"
+            aria-label="원작 웹소설로 이동"
+          >
+            <Badge title={character?.origin_story_title || originTitle} className="bg-blue-600 text-white hover:bg-blue-500 inline-flex max-w-full truncate text-[10px] px-1.5 py-0.5 rounded-md justify-start text-left leading-[1.05] tracking-tight">
+              {character?.origin_story_title || originTitle}
+            </Badge>
+          </span>
+        )}
+        <h3 className="font-medium text-white truncate text-[13px] leading-tight">{character.name}</h3>
         {/* 설명 */}
-        <p className="text-sm text-gray-500 mt-1 line-clamp-2 pr-1">
+        <p className="text-[12px] text-gray-400 mt-0.5 line-clamp-2 pr-1">
           {character.description || '설명이 없습니다.'}
         </p>
         

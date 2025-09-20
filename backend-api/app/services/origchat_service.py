@@ -4,7 +4,8 @@
 """
 from typing import Optional, Dict, Any, List, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, update
+import uuid
 
 from app.models.story import Story
 from app.models.story_chapter import StoryChapter
@@ -84,6 +85,88 @@ async def build_context_pack(db: AsyncSession, story_id, anchor: int, character_
     except Exception:
         pass
     return pack
+
+
+# --- 캐릭터 자동 보강(성격/말투/인사/세계관/배경) ---
+async def _enrich_character_fields(
+    db: AsyncSession,
+    character: Character,
+    combined_context: str,
+    *,
+    model: str = "claude",
+    sub_model: str = "claude-3-5-sonnet-20241022",
+) -> None:
+    """회차 텍스트 컨텍스트를 바탕으로 캐릭터 필드를 LLM으로 보강한다.
+    실패해도 조용히 무시한다(서비스 지속성 우선).
+    """
+    try:
+        from app.services.ai_service import get_ai_chat_response
+        import json
+
+        prompt = (
+            "당신은 스토리에서 특정 등장인물의 캐릭터 시트를 작성하는 전문가입니다.\n"
+            "아래 작품 발췌(다수 회차를 연결한 텍스트)에서 인물의 말투/성격/세계관 맥락을 추론해 필드를 채우세요.\n"
+            "JSON만 출력하세요. 스키마는 다음과 같습니다.\n"
+            "{\"personality\": string, \"speech_style\": string, \"greeting\": string, \"world_setting\": string, \"background_story\": string}\n"
+            "제약:\n- 모든 텍스트는 한국어로 작성\n- greeting은 1~2문장, 말투 반영\n- background_story는 스포일러/향후 전개 금지, 현 시점 특징 요약\n- 허위 설정 금지, 텍스트에 근거\n"
+            f"대상 캐릭터명: {character.name}\n"
+            "[작품 발췌]\n"
+            f"{combined_context[:12000]}"
+        )
+
+        text = await get_ai_chat_response(
+            character_prompt=prompt,
+            user_message="캐릭터 시트를 JSON으로만 출력하세요.",
+            history=[],
+            preferred_model=model,
+            preferred_sub_model=sub_model,
+            response_length_pref="short",
+        )
+
+        text = (text or "").strip()
+        start = text.find('{'); end = text.rfind('}')
+        data = None
+        if start != -1 and end != -1 and end > start:
+            try:
+                data = json.loads(text[start:end+1])
+            except Exception:
+                data = None
+        if not data or not isinstance(data, dict):
+            return
+
+        def _clip(v: Optional[str], n: int) -> Optional[str]:
+            if not v:
+                return None
+            s = str(v).strip()
+            return s[:n] if s else None
+
+        # 필드 보강(존재할 때만 갱신)
+        personality = _clip(data.get("personality"), 1200)
+        speech_style = _clip(data.get("speech_style"), 800)
+        greeting = _clip(data.get("greeting"), 500)
+        world_setting = _clip(data.get("world_setting"), 2000)
+        background_story = _clip(data.get("background_story"), 3000)
+
+        updated = False
+        if personality and personality != (character.personality or ""):
+            character.personality = personality; updated = True
+        if speech_style and speech_style != (character.speech_style or ""):
+            character.speech_style = speech_style; updated = True
+        if greeting and greeting != (character.greeting or ""):
+            character.greeting = greeting; updated = True
+        if world_setting and world_setting != (character.world_setting or ""):
+            character.world_setting = world_setting; updated = True
+        if background_story and background_story != (character.background_story or ""):
+            character.background_story = background_story; updated = True
+
+        if updated:
+            try:
+                await db.commit()
+            except Exception:
+                await db.rollback()
+    except Exception:
+        # 보강 실패는 무시(로그는 상위에서 처리하거나 추후 추가)
+        return
 
 
 def simple_delta_from_text(user_text: str) -> Dict[str, int]:
@@ -247,6 +330,12 @@ async def ensure_extracted_characters_for_story(db: AsyncSession, story_id) -> N
         # 1차: LLM 기반 자동 추출 시도
         created = await extract_characters_from_story(db, story_id)
         if created and created > 0:
+            # 추출 성공 시 스토리를 원작챗으로 플래그
+            try:
+                await db.execute(update(Story).where(Story.id == story_id).values(is_origchat=True))
+                await db.commit()
+            except Exception:
+                await db.rollback()
             return
         basics = [
             {"name": "나", "description": "1인칭 화자(이름 미공개)"},
@@ -263,6 +352,12 @@ async def ensure_extracted_characters_for_story(db: AsyncSession, story_id) -> N
             )
             db.add(rec)
         await db.commit()
+        # 기본 캐릭터 생성으로라도 원작챗 플래그 지정
+        try:
+            await db.execute(update(Story).where(Story.id == story_id).values(is_origchat=True))
+            await db.commit()
+        except Exception:
+            await db.rollback()
     except Exception:
         # 실패는 치명적 아님
         pass
@@ -319,83 +414,151 @@ async def extract_characters_from_story(db: AsyncSession, story_id, max_chapters
     if not windows:
         return 0
 
-    try:
-        from app.services.ai_service import get_ai_chat_response
-        import json
-        director_prompt = (
-            "당신은 소설에서 등장인물을 추출하는 전문 분석가입니다. 다음 발췌들을 바탕으로 주요 등장인물 3~5명을 한국어로 추출하세요.\n"
-            "반드시 작품 원문에서 사용하는 고유 이름(예: 김철수, 아린, 레이튼 등)을 사용하고, '주인공', '동료 A', '라이벌' 같은 일반명은 금지합니다.\n"
-            "만약 1인칭 시점으로 이름이 드러나지 않는 주인공이라면 name은 '나'로 표기하고, description에는 화자의 특성/관계/직업 등 구체적 단서를 요약하세요.\n"
-            "규칙:\n- JSON만 출력.\n- 스키마: {\"characters\": [{\"name\": string, \"description\": string}]}\n"
-            "- description은 80자 이내로, 작품 맥락(역할/관계/직업/능력/갈등 축)을 구체적으로. 일반적인 문구 금지."
-        )
-        agg: Dict[str, Dict[str, Any]] = {}
-        order_counter = 0
-        for win in windows:
+    from app.services.ai_service import get_ai_chat_response
+    import json
+    director_prompt = (
+        "당신은 소설에서 등장인물을 추출하는 전문 분석가입니다. 다음 발췌들을 바탕으로 주요 등장인물 3~5명을 한국어로 추출하세요.\n"
+        "반드시 작품 원문에서 사용하는 고유 이름(예: 김철수, 아린, 레이튼 등)을 사용하고, '주인공', '동료 A', '라이벌' 같은 일반명은 금지합니다.\n"
+        "만약 1인칭 시점으로 이름이 드러나지 않는 주인공이라면 name은 '나'로 표기하고, description에는 화자의 특성/관계/직업 등 구체적 단서를 요약하세요.\n"
+        "규칙:\n- JSON만 출력.\n- 스키마: {\"characters\": [{\"name\": string, \"description\": string}]}\n"
+        "- description은 80자 이내로, 작품 맥락(역할/관계/직업/능력/갈등 축)을 구체적으로. 일반적인 문구 금지."
+    )
+    agg: Dict[str, Dict[str, Any]] = {}
+    order_counter = 0
+    for win in windows:
+        try:
             raw = await get_ai_chat_response(
                 character_prompt=director_prompt,
                 user_message=win,
                 history=[],
                 preferred_model="claude",
-                preferred_sub_model="claude-sonnet-4-0",
+                preferred_sub_model="claude-3-5-sonnet-20241022",
                 response_length_pref="short",
             )
-            text = (raw or "").strip()
-            start = text.find('{')
-            end = text.rfind('}')
-            data = None
-            if start != -1 and end != -1 and end > start:
-                try:
-                    data = json.loads(text[start:end+1])
-                except Exception:
-                    data = None
-            if not data or not isinstance(data.get('characters'), list):
-                continue
-            for ch in data['characters'][:5]:
-                try:
-                    name = str(ch.get('name') or '').strip()
-                    if not name:
-                        continue
-                    key = _norm_name(name)
-                    desc = str(ch.get('description') or '').strip()
-                    # 금지된 일반명 필터링
-                    if key in {"주인공","동료","동료 a","라이벌","적","안타고니스트","조연"}:
-                        continue
-                    if key not in agg:
-                        agg[key] = {"name": name, "initial": name[:1], "desc": desc[:100], "count": 1, "order": order_counter}
-                        order_counter += 1
-                    else:
-                        agg[key]["count"] += 1
-                        # 더 길거나 정보가 많은 설명으로 업데이트
-                        if desc and (len(desc) > len(agg[key]["desc"]) ):
-                            agg[key]["desc"] = desc[:100]
-                except Exception:
+        except Exception:
+            continue
+        text = (raw or "").strip()
+        start = text.find('{')
+        end = text.rfind('}')
+        data = None
+        if start != -1 and end != -1 and end > start:
+            try:
+                data = json.loads(text[start:end+1])
+            except Exception:
+                data = None
+        if not data or not isinstance(data.get('characters'), list):
+            continue
+        for ch in data['characters'][:5]:
+            try:
+                name = str(ch.get('name') or '').strip()
+                if not name:
                     continue
+                key = _norm_name(name)
+                desc = str(ch.get('description') or '').strip()
+                # 금지된 일반명 필터링
+                if key in {"주인공","동료","동료 a","라이벌","적","안타고니스트","조연"}:
+                    continue
+                if key not in agg:
+                    agg[key] = {"name": name, "initial": name[:1], "desc": desc[:100], "count": 1, "order": order_counter}
+                    order_counter += 1
+                else:
+                    agg[key]["count"] += 1
+                    # 더 길거나 정보가 많은 설명으로 업데이트
+                    if desc and (len(desc) > len(agg[key]["desc"]) ):
+                        agg[key]["desc"] = desc[:100]
+            except Exception:
+                continue
 
-        if not agg:
-            return 0
-        top = sorted(agg.values(), key=lambda x: (-x["count"], x["order"]))[:5]
-        # 최종 검증: 이름이 너무 일반적인 경우 제거(예: '나'는 허용)
-        def is_generic(n: str) -> bool:
-            k = _norm_name(n)
-            if k == '나':
-                return False
-            bad = {"주인공","동료","동료 a","라이벌","적","안타고니스트","조연","친구","남자","여자"}
-            return k in bad
-        top = [it for it in top if not is_generic(it['name'])]
-        if not top:
-            return 0
-        # 스토리 소유자 ID로 캐릭터 소유자 설정
-        srow = await db.execute(select(Story.creator_id).where(Story.id == story_id))
-        s_creator = (srow.first() or [None])[0]
-        owner_id = s_creator or uuid.uuid4()
+    # ---- 내러티브 1인칭('나') 별칭 병합(보수적) ----
+    def _norm_name_for_cmp(name: str) -> str:
+        return (name or "").lower().replace(" ", "").strip()
 
-        # 윈도우 전체를 합쳐 컨텍스트(너무 길면 앞부분 위주)
-        combined = "\n\n".join(windows)
-        if len(combined) > 20000:
-            combined = combined[:20000]
+    if "나" in {v["name"] for v in agg.values()} or ("나" in agg):
+        # 후보 목록에서 '나'를 제외한 고유명들
+        candidate_names = [v["name"] for k, v in agg.items() if _norm_name_for_cmp(v["name"]) != _norm_name_for_cmp("나")]
+        # LLM에 전체 컨텍스트를 주고 별칭 판단을 요청(증거기반 JSON)
+        try:
+            combined_for_alias = "\n\n".join(windows)
+            if len(combined_for_alias) > 12000:
+                combined_for_alias = combined_for_alias[:12000]
+            alias_prompt = (
+                "다음 작품 발췌에서 1인칭 화자 '나'가 아래 후보 이름들 중 한 명과 동일인인지 판별하세요.\n"
+                "JSON만 출력하고, 스키마는 {\"alias_of\": string|null, \"confidence\": number, \"evidences\":[string]} 입니다.\n"
+                "규칙: 근거가 충분하지 않으면 alias_of는 null, confidence는 0~1.0. 한국어로만 작성.\n"
+                f"[후보] {json.dumps(candidate_names, ensure_ascii=False)}\n"
+                "[발췌]\n" + combined_for_alias
+            )
+            alias_raw = await get_ai_chat_response(
+                character_prompt=alias_prompt,
+                user_message="JSON만 출력",
+                history=[],
+                preferred_model="claude",
+                preferred_sub_model="claude-3-5-sonnet-20241022",
+                response_length_pref="short",
+            )
+            alias_txt = (alias_raw or "").strip()
+            s = alias_txt.find('{'); e = alias_txt.rfind('}')
+            alias_data = None
+            if s != -1 and e != -1 and e > s:
+                try:
+                    alias_data = json.loads(alias_txt[s:e+1])
+                except Exception:
+                    alias_data = None
+            if alias_data and isinstance(alias_data, dict):
+                alias_name = (alias_data.get("alias_of") or "").strip()
+                conf = float(alias_data.get("confidence") or 0)
+                if alias_name and conf >= 0.7:
+                    # '나' 키를 찾아 병합
+                    key_i = None
+                    for k, v in list(agg.items()):
+                        if _norm_name_for_cmp(v["name"]) == _norm_name_for_cmp("나"):
+                            key_i = k
+                            break
+                    target_key = None
+                    for k, v in agg.items():
+                        if _norm_name_for_cmp(v["name"]) == _norm_name_for_cmp(alias_name):
+                            target_key = k
+                            break
+                    if key_i is not None and target_key is not None and key_i != target_key:
+                        # count 합산, 설명은 더 긴 쪽 유지
+                        agg[target_key]["count"] += agg[key_i]["count"]
+                        if len(agg.get(key_i, {}).get("desc", "")) > len(agg[target_key].get("desc", "")):
+                            agg[target_key]["desc"] = agg.get(key_i, {}).get("desc", "")[:100]
+                        try:
+                            del agg[key_i]
+                        except Exception:
+                            pass
+        except Exception:
+            # 별칭 판단 실패 시 아무 것도 하지 않음(보수적)
+            pass
 
-        for idx, it in enumerate(top):
+    if not agg:
+        # LLM이 실패하면 0을 반환하여 상위에서 폴백/에러 처리
+        return 0
+    top = sorted(agg.values(), key=lambda x: (-x["count"], x["order"]))[:5]
+    # 최종 검증: 이름이 너무 일반적인 경우 제거(예: '나'는 허용)
+    def is_generic(n: str) -> bool:
+        k = _norm_name(n)
+        if k == '나':
+            return False
+        bad = {"주인공","동료","동료 a","라이벌","적","안타고니스트","조연","친구","남자","여자"}
+        return k in bad
+    top = [it for it in top if not is_generic(it['name'])]
+    if not top:
+        return 0
+    # 스토리 소유자 ID로 캐릭터 소유자 설정
+    srow = await db.execute(select(Story.creator_id).where(Story.id == story_id))
+    s_creator = (srow.first() or [None])[0]
+    owner_id = s_creator or uuid.uuid4()
+
+    # 윈도우 전체를 합쳐 컨텍스트(너무 길면 앞부분 위주)
+    combined = "\n\n".join(windows)
+    if len(combined) > 20000:
+        combined = combined[:20000]
+
+    created_count = 0
+    for idx, it in enumerate(top):
+        try:
             # 캐릭터 엔티티 생성(원작 연동 타입)
             ch = Character(
                 creator_id=owner_id,
@@ -403,6 +566,7 @@ async def extract_characters_from_story(db: AsyncSession, story_id, max_chapters
                 description=it.get('desc'),
                 character_type='roleplay',
                 source_type='IMPORTED',
+                origin_story_id=story_id,
                 is_public=True,
                 has_affinity_system=True,
                 affinity_rules='기본 호감도 규칙: 상호 배려와 신뢰 상승, 공격적 발화 시 하락',
@@ -410,8 +574,11 @@ async def extract_characters_from_story(db: AsyncSession, story_id, max_chapters
             )
             db.add(ch)
             await db.flush()
-            # LLM으로 세부 필드 채우기
-            await _enrich_character_fields(db, ch, combined)
+            # LLM 보강은 베스트-에포트
+            try:
+                await _enrich_character_fields(db, ch, combined)
+            except Exception:
+                pass
             rec = StoryExtractedCharacter(
                 story_id=story_id,
                 name=it['name'],
@@ -420,13 +587,127 @@ async def extract_characters_from_story(db: AsyncSession, story_id, max_chapters
                 order_index=idx,
                 character_id=ch.id,
             )
+            db.add(rec)
+            await db.commit()
+            created_count += 1
+        except Exception:
             try:
-                db.add(rec)
+                await db.rollback()
+            except Exception:
+                pass
+            continue
+    # 추출 캐릭터 생성이 있었다면 스토리를 원작챗으로 플래그
+    if created_count > 0:
+        try:
+            await db.execute(update(Story).where(Story.id == story_id).values(is_origchat=True))
+            await db.commit()
+        except Exception:
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+    return created_count
+
+
+async def refresh_extracted_characters_for_story(
+    db: AsyncSession,
+    story_id,
+    max_chapters: int | None = None,
+) -> int:
+    """기존 추출 캐릭터가 있을 때, 최신 회차 기준으로 description 등을 보강 갱신한다.
+    - 이름 매칭(대소문자/공백 무시) 기반으로 동일 인물을 찾아 업데이트
+    - 신규 캐릭터 생성/삭제는 하지 않음(안전 갱신)
+    반환값: 갱신된 레코드 수
+    """
+    try:
+        # 기존 추출 캐릭터 목록
+        rows = await db.execute(
+            select(StoryExtractedCharacter).where(StoryExtractedCharacter.story_id == story_id)
+        )
+        existing = rows.scalars().all()
+        if not existing:
+            return 0
+
+        # 회차 텍스트 수집
+        stmt = (
+            select(StoryChapter.no, StoryChapter.title, StoryChapter.content)
+            .where(StoryChapter.story_id == story_id)
+            .order_by(StoryChapter.no.asc())
+        )
+        if isinstance(max_chapters, int) and max_chapters > 0:
+            stmt = stmt.limit(max_chapters)
+        rows = await db.execute(stmt)
+        chapters = rows.all()
+        if not chapters:
+            return 0
+
+        windows = _chunk_windows_from_chapters(chapters, max_chars=6000)
+        if not windows:
+            return 0
+
+        # AI로 최신 설명 재수집(간단 집계)
+        from app.services.ai_service import get_ai_chat_response
+        import json
+        director_prompt = (
+            "등장인물의 최신 요약을 갱신합니다. JSON만 출력하세요. 스키마: {\"characters\": [{\"name\": string, \"description\": string}]}"
+        )
+        agg: Dict[str, Dict[str, Any]] = {}
+        for win in windows:
+            raw = await get_ai_chat_response(
+                character_prompt=director_prompt,
+                user_message=win,
+                history=[],
+                preferred_model="claude",
+                preferred_sub_model="claude-3-5-sonnet-20241022",
+                response_length_pref="short",
+            )
+            text = (raw or "").strip()
+            start = text.find('{'); end = text.rfind('}')
+            data = None
+            if start != -1 and end != -1 and end > start:
+                try:
+                    data = json.loads(text[start:end+1])
+                except Exception:
+                    data = None
+            if not data or not isinstance(data.get('characters'), list):
+                continue
+            for ch in data['characters'][:8]:
+                try:
+                    name = str(ch.get('name') or '').strip()
+                    if not name:
+                        continue
+                    key = _norm_name(name)
+                    desc = str(ch.get('description') or '').strip()
+                    if key not in agg:
+                        agg[key] = {"name": name, "desc": desc}
+                    else:
+                        # 더 긴 설명로 보강
+                        if desc and (len(desc) > len(agg[key]["desc"])):
+                            agg[key]["desc"] = desc
+                except Exception:
+                    continue
+
+        if not agg:
+            return 0
+
+        # 기존 레코드 갱신
+        updated = 0
+        for rec in existing:
+            k = _norm_name(rec.name)
+            cand = agg.get(k)
+            if not cand:
+                continue
+            new_desc = (cand.get("desc") or "").strip()
+            if new_desc and new_desc != (rec.description or ""):
+                rec.description = new_desc[:160]
+                updated += 1
+        if updated:
+            try:
                 await db.commit()
             except Exception:
-                # 유니크 제약 등으로 실패 시 롤백 후 다음 항목 진행
                 await db.rollback()
-        return len(top)
+                updated = 0
+        return updated
     except Exception:
         return 0
 

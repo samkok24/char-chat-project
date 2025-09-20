@@ -2,7 +2,7 @@
 스토리 회차 API
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete, update
 from typing import List, Optional
@@ -12,7 +12,7 @@ from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.story import Story
 from sqlalchemy import update as sql_update
-from app.services.origchat_service import upsert_episode_summary_for_chapter
+from app.services.origchat_service import upsert_episode_summary_for_chapter, refresh_extracted_characters_for_story
 from app.models.story_chapter import StoryChapter
 from app.models.user import User
 from app.schemas.story import ChapterCreate, ChapterUpdate, ChapterResponse
@@ -48,6 +48,11 @@ async def create_chapter(
         # 회차 생성은 요약에 영향 → 스토리 summary_version 증가
         await db.execute(sql_update(Story).where(Story.id == ch.story_id).values(summary_version=Story.summary_version + 1))
         await db.commit()
+        # 등장인물 추출 정보도 최신 회차 등록 시 보강 갱신(비차단식)
+        try:
+            await refresh_extracted_characters_for_story(db, ch.story_id)
+        except Exception:
+            pass
     except Exception:
         pass
     return ch
@@ -69,10 +74,18 @@ async def list_chapters(
 
 
 @router.get("/{chapter_id}", response_model=ChapterResponse)
-async def get_chapter(chapter_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def get_chapter(chapter_id: uuid.UUID, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
     ch = await db.get(StoryChapter, chapter_id)
     if not ch:
         raise HTTPException(status_code=404, detail="회차를 찾을 수 없습니다")
+    # 조회수 증가(비차단)
+    try:
+        async def _inc():
+            await db.execute(update(StoryChapter).where(StoryChapter.id == chapter_id).values(view_count=StoryChapter.view_count + 1))
+            await db.commit()
+        background_tasks.add_task(_inc)
+    except Exception:
+        pass
     return ch
 
 
@@ -100,6 +113,11 @@ async def update_chapter(
         # 회차 수정도 요약 영향 → 버전 증가
         await db.execute(sql_update(Story).where(Story.id == ch.story_id).values(summary_version=Story.summary_version + 1))
         await db.commit()
+        # 등장인물 추출 설명 보강(회차 변경 반영)
+        try:
+            await refresh_extracted_characters_for_story(db, ch.story_id)
+        except Exception:
+            pass
     except Exception:
         pass
     return ch

@@ -9,16 +9,18 @@ import uuid
 
 
 class StoryBase(BaseModel):
-    """스토리 기본 스키마"""
+    """스토리 기본 스키마 (응답용은 최소 길이 제약 완화)"""
     title: str = Field(..., min_length=1, max_length=200)
-    content: str = Field(..., min_length=100, max_length=50000)
+    content: str = Field(..., min_length=1, max_length=50000)
     keywords: Optional[List[str]] = Field(None, max_items=10)
     genre: Optional[str] = Field(None, max_length=50)
     is_public: bool = True
+    cover_url: Optional[str] = None
 
 
 class StoryCreate(StoryBase):
-    """스토리 생성 스키마"""
+    """스토리 생성 스키마 (요청용: 본문 최소 100자)"""
+    content: str = Field(..., min_length=100, max_length=50000)
     character_id: Optional[uuid.UUID] = None
 
 
@@ -29,6 +31,7 @@ class StoryUpdate(BaseModel):
     keywords: Optional[List[str]] = Field(None, max_items=10)
     genre: Optional[str] = Field(None, max_length=50)
     is_public: Optional[bool] = None
+    cover_url: Optional[str] = None
 
 
 class StoryResponse(StoryBase):
@@ -38,6 +41,7 @@ class StoryResponse(StoryBase):
     id: uuid.UUID
     creator_id: uuid.UUID
     character_id: Optional[uuid.UUID]
+    is_origchat: bool
     like_count: int
     view_count: int
     comment_count: int
@@ -45,20 +49,32 @@ class StoryResponse(StoryBase):
     updated_at: datetime
 
 
-class StoryListResponse(BaseModel):
-    """스토리 목록 응답 스키마"""
+class StoryListItem(BaseModel):
+    """스토리 목록용 항목 스키마 (가벼운 필드만)"""
     model_config = ConfigDict(from_attributes=True)
-    
+
     id: uuid.UUID
     title: str
     genre: Optional[str]
-    keywords: Optional[List[str]]
+    is_public: bool = True
+    is_origchat: bool = False
     like_count: int
     view_count: int
     comment_count: int
     created_at: datetime
-    creator_username: str
-    character_name: Optional[str]
+    creator_username: Optional[str] = None
+    character_name: Optional[str] = None
+    cover_url: Optional[str] = None
+    # 목록 카드에서 사용할 간단 소개(요약)
+    excerpt: Optional[str] = None
+
+
+class StoryListResponse(BaseModel):
+    """스토리 목록 컨테이너 응답"""
+    stories: List[StoryListItem]
+    total: int
+    skip: int
+    limit: int
 
 
 class StoryWithDetails(StoryResponse):
@@ -96,3 +112,26 @@ class StoryStreamRequest(BaseModel):
     top_p: float = Field(..., ge=0.0, le=1.0)
     n: int = Field(..., ge=1, le=10)
     stream: bool = True
+
+
+# ---- 회차(Chapters) 스키마 ----
+class ChapterBase(BaseModel):
+    story_id: uuid.UUID
+    no: int = Field(..., ge=0)
+    title: Optional[str] = Field(None, max_length=200)
+    content: str = Field(..., min_length=1)
+
+
+class ChapterCreate(ChapterBase):
+    pass
+
+
+class ChapterUpdate(BaseModel):
+    title: Optional[str] = Field(None, min_length=1, max_length=200)
+    content: Optional[str] = Field(None, min_length=1)
+
+
+class ChapterResponse(ChapterBase):
+    model_config = ConfigDict(from_attributes=True)
+    id: uuid.UUID
+    created_at: datetime

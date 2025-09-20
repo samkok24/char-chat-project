@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import AsyncGenerator
 
 from app.models.story import Story
+from app.models.story_chapter import StoryChapter
 from app.models.user import User
 from app.models.character import Character
 from app.models.like import StoryLike
@@ -349,10 +350,21 @@ async def get_public_stories(
     skip: int = 0,
     limit: int = 20,
     search: Optional[str] = None,
-    genre: Optional[str] = None
+    genre: Optional[str] = None,
+    *,
+    sort: Optional[str] = None,
+    only: Optional[str] = None,
 ) -> List[Story]:
     """공개 스토리 목록 조회"""
-    query = select(Story).where(Story.is_public == True)
+    # 관계 lazy-load 금지: async 컨텍스트에서 MissingGreenlet 방지 위해 eager-load
+    query = (
+        select(Story)
+        .options(
+            selectinload(Story.creator),
+            selectinload(Story.character),
+        )
+        .where(Story.is_public == True)
+    )
     
     if search:
         query = query.where(
@@ -364,8 +376,27 @@ async def get_public_stories(
     
     if genre:
         query = query.where(Story.genre == genre)
-    
-    query = query.order_by(Story.like_count.desc(), Story.created_at.desc()).offset(skip).limit(limit)
+    # only 필터: webnovel|origchat (is_origchat 필드 기반)
+    if only:
+        only_key = (only or '').strip().lower()
+        if only_key in ['origchat', 'original_chat', 'origin']:
+            query = query.where(Story.is_origchat == True)
+        elif only_key in ['webnovel', 'novel', 'story']:
+            # NULL(미세팅)도 웹소설로 간주하여 누락 방지
+            query = query.where(or_(Story.is_origchat == False, Story.is_origchat.is_(None)))
+
+    # 정렬: views|likes|recent
+    order = (sort or '').strip().lower() if sort else None
+    if order in ['views', 'view', '조회수']:
+        query = query.order_by(Story.view_count.desc(), Story.like_count.desc(), Story.created_at.desc())
+    elif order in ['likes', 'like', '좋아요']:
+        query = query.order_by(Story.like_count.desc(), Story.created_at.desc())
+    elif order in ['recent', 'latest', 'created_at', '최신']:
+        query = query.order_by(Story.created_at.desc())
+    else:
+        query = query.order_by(Story.like_count.desc(), Story.created_at.desc())
+
+    query = query.offset(skip).limit(limit)
     
     result = await db.execute(query)
     return result.scalars().all()
@@ -461,8 +492,18 @@ async def increment_story_view_count(db: AsyncSession, story_id: uuid.UUID) -> b
         .where(Story.id == story_id)
         .values(view_count=Story.view_count + 1)
     )
+    # 회차 목록 총합도 캐시용으로 계산해두고 싶다면 여기에서 별도 통계 테이블에 적재 가능(생략)
     await db.commit()
     return True
+
+
+async def get_story_total_views(db: AsyncSession, story_id: uuid.UUID) -> int:
+    """작품 전체조회수 = 상세 진입수(Story.view_count) + 모든 회차의 view_count 합"""
+    srow = await db.execute(select(Story.view_count).where(Story.id == story_id))
+    base = (srow.first() or [0])[0] or 0
+    crow = await db.execute(select(func.coalesce(func.sum(StoryChapter.view_count), 0)).where(StoryChapter.story_id == story_id))
+    chsum = (crow.first() or [0])[0] or 0
+    return int(base) + int(chsum)
 
 
 # 스토리 생성 서비스 인스턴스

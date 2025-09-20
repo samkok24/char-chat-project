@@ -5,14 +5,15 @@ CAVEDUCK 스타일: 채팅 중심 최적화
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from typing import List
+from sqlalchemy import select, update
+from typing import List, Optional
 import uuid
 
 from app.core.database import get_db
 from app.core.security import get_current_user, get_current_user_optional
 from app.models.user import User
-from app.models.character import CharacterSetting, CharacterExampleDialogue
+from app.models.character import CharacterSetting, CharacterExampleDialogue, Character
+from app.models.story import Story
 
 from app.services import chat_service
 from app.services import ai_service
@@ -373,6 +374,76 @@ async def send_message_and_get_response_legacy(
 ):
     """메시지 전송 및 AI 응답 생성 (레거시 호환성)"""
     return await send_message(request, current_user, db)
+
+
+# ----- 원작챗 전용 엔드포인트 (경량 래퍼) -----
+@router.post("/origchat/start", response_model=ChatRoomResponse, status_code=status.HTTP_201_CREATED)
+async def origchat_start(
+    payload: dict,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """원작챗 세션 시작: 스토리/캐릭터/앵커 정보는 현재 저장하지 않고 룸만 생성/재사용.
+    요청 예시: { story_id, character_id, chapter_anchor, timeline_mode, range_from, range_to }
+    """
+    try:
+        character_id = payload.get("character_id")
+        if not character_id:
+            raise HTTPException(status_code=400, detail="character_id가 필요합니다")
+        room = await chat_service.get_or_create_chat_room(db, current_user.id, character_id)
+        # 스토리 플래그 자동 세팅: payload의 story_id 우선, 없으면 캐릭터의 origin_story_id로 유도
+        try:
+            story_id = payload.get("story_id")
+            if not story_id:
+                row = await db.execute(select(Character.origin_story_id).where(Character.id == character_id))
+                story_id = (row.first() or [None])[0]
+            if story_id:
+                await db.execute(update(Story).where(Story.id == story_id).values(is_origchat=True))
+                await db.commit()
+        except Exception:
+            await db.rollback()
+        return room
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"origchat start failed: {e}")
+
+
+@router.post("/origchat/turn", response_model=SendMessageResponse)
+async def origchat_turn(
+    payload: dict,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """원작챗 턴 진행: room_id 기준으로 캐릭터를 찾아 일반 send_message 흐름을 재사용.
+    요청 예시: { room_id, user_text?, choice_id? }
+    """
+    try:
+        room_id = payload.get("room_id")
+        if not room_id:
+            raise HTTPException(status_code=400, detail="room_id가 필요합니다")
+        room = await chat_service.get_chat_room_by_id(db, room_id)
+        if not room:
+            raise HTTPException(status_code=404, detail="채팅방을 찾을 수 없습니다")
+        if room.user_id != current_user.id:
+            raise HTTPException(status_code=403, detail="권한이 없습니다")
+        # 안전망: 캐릭터에 연결된 원작 스토리가 있으면 플래그 지정
+        try:
+            crow = await db.execute(select(Character.origin_story_id).where(Character.id == room.character_id))
+            sid = (crow.first() or [None])[0]
+            if sid:
+                await db.execute(update(Story).where(Story.id == sid).values(is_origchat=True))
+                await db.commit()
+        except Exception:
+            await db.rollback()
+        user_text = (payload.get("user_text") or "").strip()
+        # choice_id는 현재 별도 해석 없이 continue 동작으로 처리 (빈 문자열)
+        req = SendMessageRequest(character_id=room.character_id, content=user_text)
+        return await send_message(req, current_user, db)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"origchat turn failed: {e}")
 
 @router.delete("/rooms/{room_id}/messages")
 async def clear_chat_messages(

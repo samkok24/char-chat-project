@@ -5,6 +5,7 @@ import AppLayout from '../components/layout/AppLayout';
 import { Button } from '../components/ui/button';
 import { storiesAPI, chaptersAPI, origChatAPI } from '../lib/api';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
+import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogCancel, AlertDialogAction } from '../components/ui/alert-dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Heart, ArrowLeft, AlertCircle, MoreVertical, Copy, Trash2, Edit, MessageCircle, Eye } from 'lucide-react';
 import { Avatar, AvatarFallback, AvatarImage } from '../components/ui/avatar';
@@ -18,6 +19,8 @@ import { getReadingProgress } from '../lib/reading';
 import { resolveImageUrl } from '../lib/images';
 import { Skeleton } from '../components/ui/skeleton';
 import CharacterProfileInline from '../components/inline/CharacterProfileInline';
+import OrigChatStartModal from '../components/OrigChatStartModal';
+import ChapterManageModal from '../components/ChapterManageModal';
 
 const StoryDetailPage = () => {
   const { storyId } = useParams();
@@ -26,6 +29,10 @@ const StoryDetailPage = () => {
   const locationState = useLocation().state || {};
   const { user, isAuthenticated } = useAuth();
   const extractedRef = useRef(null);
+  const [chapterModalOpen, setChapterModalOpen] = useState(false);
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
+  const [confirmRebuildOpen, setConfirmRebuildOpen] = useState(false);
+  const [origModalOpen, setOrigModalOpen] = useState(false);
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ['story', storyId],
@@ -47,6 +54,7 @@ const StoryDetailPage = () => {
   }, [story]);
 
   const [likeCount, setLikeCount] = useState(story.like_count || 0);
+  const [pageToast, setPageToast] = useState({ show: false, type: 'success', message: '' });
   const [isLiked, setIsLiked] = useState(false);
   const [error, setError] = useState('');
   const [comments, setComments] = useState([]);
@@ -151,6 +159,7 @@ const StoryDetailPage = () => {
       }
       const anchorNo = f || targetReadNo;
       const effectiveCharacterId = characterId || story.character_id;
+      // 로딩 표시 (버튼 비활성은 생략)
       await origChatAPI.getContextPack(storyId, { anchor: anchorNo, characterId: effectiveCharacterId, rangeFrom: f, rangeTo: t });
       const startRes = await origChatAPI.start({ story_id: storyId, character_id: effectiveCharacterId, chapter_anchor: anchorNo, timeline_mode: 'fixed', range_from: f, range_to: t });
       const roomId = startRes.data?.id || startRes.data?.room_id;
@@ -161,6 +170,20 @@ const StoryDetailPage = () => {
       }
     } catch (e) {
       console.error('원작챗 시작 실패', e);
+      // 재시도 안내
+      const retry = window.confirm('원작챗 시작에 실패했습니다. 다시 시도할까요?');
+      if (retry) {
+        try {
+          const anchorNo = Number(range_from) || targetReadNo;
+          await origChatAPI.getContextPack(storyId, { anchor: anchorNo });
+          const startRes = await origChatAPI.start({ story_id: storyId, character_id: characterId || story.character_id, chapter_anchor: anchorNo, timeline_mode: 'fixed' });
+          const roomId = startRes.data?.id || startRes.data?.room_id;
+          if (roomId) {
+            navigate(`/ws/chat/${characterId || story.character_id}?source=origchat&storyId=${storyId}&anchor=${anchorNo}`);
+            return;
+          }
+        } catch (_) {}
+      }
       navigate(`/ws/chat/${characterId || story.character_id}`);
     }
   };
@@ -248,34 +271,72 @@ const StoryDetailPage = () => {
       setCharactersLoading(false);
     }
   };
+  // 재생성 중 백엔드 처리 지연을 대비한 폴링
+  const pollExtractedUntil = async (timeoutMs = 90000, intervalMs = 1500) => {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      try {
+        const r = await storiesAPI.getExtractedCharacters(storyId);
+        const items = Array.isArray(r.data?.items) ? r.data.items : [];
+        if (items.length > 0) {
+          setExtractedItems(items);
+          return true;
+        }
+      } catch (_) {}
+      await new Promise((r) => setTimeout(r, intervalMs));
+    }
+    return false;
+  };
   useEffect(() => {
     fetchExtracted();
-    const timer = setTimeout(() => {
-      // 초회 응답이 비었어도 백엔드가 비동기로 보장 생성 중일 수 있으니 한 번 더 폴링
-      if (!extractedItems || extractedItems.length === 0) {
-        fetchExtracted();
-      }
-    }, 1200);
-    return () => clearTimeout(timer);
   }, [storyId]);
   const episodesSorted = Array.isArray(chaptersResp) ? chaptersResp : [];
   const firstChapterNo = episodesSorted.length > 0 ? (episodesSorted[0]?.no || 1) : 1;
   const showContinue = Number(progressChapterNo) > 0;
   const targetReadNo = showContinue ? Number(progressChapterNo) : Number(firstChapterNo);
 
+  const handleDeleteAll = async () => {
+    try {
+      setCharactersLoading(true);
+      await storiesAPI.deleteExtractedCharacters(storyId);
+      await fetchExtracted();
+      setPageToast({ show: true, type: 'success', message: '전체 삭제 완료' });
+    } catch (e) {
+      console.error('전체 삭제 실패', e);
+      setPageToast({ show: true, type: 'error', message: '전체 삭제 실패' });
+    } finally {
+      setCharactersLoading(false);
+      setConfirmDeleteOpen(false);
+    }
+  };
+
+  const handleRebuildAll = async () => {
+    try {
+      setCharactersLoading(true);
+      await storiesAPI.rebuildExtractedCharacters(storyId);
+      await fetchExtracted();
+      setPageToast({ show: true, type: 'success', message: '전체 재생성 완료' });
+    } catch (e) {
+      console.error('재생성 실패', e);
+      try {
+        const ok = await pollExtractedUntil();
+        if (ok) setPageToast({ show: true, type: 'success', message: '전체 재생성 완료' });
+        else setPageToast({ show: true, type: 'error', message: '전체 재생성 실패' });
+      } catch (_) {
+        setPageToast({ show: true, type: 'error', message: '전체 재생성 실패' });
+      }
+    } finally {
+      setCharactersLoading(false);
+      setConfirmRebuildOpen(false);
+    }
+  };
+
   return (
     <AppLayout>
       <div className="bg-gray-900 text-white min-h-screen p-4 sm:p-6 lg:p-8">
         <div className="max-w-7xl mx-auto">
           <header className="mb-6">
-            <Button variant="ghost" onClick={() => {
-              const fromMyGrid = Boolean(locationState.fromMyGrid);
-              if (fromMyGrid) {
-                navigate('/my-characters#stories');
-              } else {
-                navigate(-1);
-              }
-            }} className="mb-2">
+            <Button variant="ghost" onClick={() => { navigate('/'); }} className="mb-2">
               <ArrowLeft className="w-5 h-5 mr-2" /> 뒤로 가기
             </Button>
           </header>
@@ -288,7 +349,7 @@ const StoryDetailPage = () => {
               <div className="text-center">
                 <AlertCircle className="w-12 h-12 text-red-500 mx-auto mb-4" />
                 <p className="text-gray-400">존재하지 않는 작품입니다.</p>
-                <Button onClick={() => navigate('/')} variant="outline" className="mt-4 bg-white text-black hover:bg-white">홈으로 돌아가기</Button>
+                <Button onClick={() => navigate('/')} variant="outline" className="mt-4 bg-white text-black hover:bg-gray-100">홈으로 돌아가기</Button>
               </div>
             </div>
           )}
@@ -364,11 +425,11 @@ const StoryDetailPage = () => {
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  <Button variant={isLiked ? 'secondary' : 'outline'} onClick={handleLike} className={isLiked ? 'bg-pink-600 hover:bg-pink-700 text-white' : ''}>
-                    <Heart className={`w-4 h-4 mr-2 ${isLiked ? '' : 'text-pink-500'}`} />
+                  <Button variant="outline" onClick={handleLike}>
+                    <Heart className="w-4 h-4 mr-2 text-pink-500" fill={isLiked ? 'currentColor' : 'none'} />
                     {likeCount.toLocaleString()}
                   </Button>
-                  <Button variant="outline" onClick={handleShare} className="bg-white text-black hover:bg-white">
+                  <Button variant="outline" onClick={handleShare} className="bg-white text-black hover:bg-gray-100">
                     <Copy className="w-4 h-4 mr-2" /> 공유
                   </Button>
                   <DropdownMenu>
@@ -426,28 +487,10 @@ const StoryDetailPage = () => {
                   </Button>
                   <Button
                     className="w-full bg-red-600 hover:bg-red-700 text-white font-semibold py-5"
-                    onClick={async () => {
-                      try {
-                        if (!isAuthenticated) { navigate('/login'); return; }
-                        if (!story.character_id) {
-                          try { extractedRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch (_) {}
-                          alert('작품에 연결된 캐릭터가 없습니다. 아래 "주요 캐릭터"에서 캐릭터를 선택해 원작챗을 시작하세요.');
-                          return;
-                        }
-                        // 원작챗 컨텍스트팩 프리페치(앵커: 이어보기 또는 첫화)
-                        await origChatAPI.getContextPack(storyId, { anchor: targetReadNo });
-                        // 방 생성(원작챗)
-                        const startRes = await origChatAPI.start({ story_id: storyId, character_id: story.character_id, chapter_anchor: targetReadNo, timeline_mode: 'fixed' });
-                        const roomId = startRes.data?.id || startRes.data?.room_id;
-                        if (roomId) {
-                          navigate(`/ws/chat/${story.character_id}?source=origchat&storyId=${storyId}&anchor=${targetReadNo}`);
-                        } else {
-                          navigate(`/ws/chat/${story.character_id}`);
-                        }
-                      } catch (e) {
-                        console.error('원작챗 시작 실패', e);
-                        navigate(`/ws/chat/${story.character_id}`);
-                      }
+                    onClick={() => {
+                      if (!isAuthenticated) { navigate('/login'); return; }
+                      // 항상 모달 먼저 오픈(후속 동작은 모달 내부에서 처리)
+                      setOrigModalOpen(true);
                     }}
                   >
                     원작챗 시작
@@ -467,43 +510,20 @@ const StoryDetailPage = () => {
                 <div className="flex items-center justify-between">
                   <h2 className="text-lg font-semibold">이 작품의 등장인물</h2>
                   {isOwner && (
-                    <Button
-                      variant="outline"
-                      className="h-8 px-3 bg-white text-black border-gray-300 hover:bg-white"
-                      onClick={async()=>{
-                        try {
-                          setCharactersLoading(true);
-                          await storiesAPI.rebuildExtractedCharacters(storyId);
-                          await fetchExtracted();
-                        } catch (e) {
-                          console.error('재생성 실패', e);
-                        } finally {
-                          setCharactersLoading(false);
-                        }
-                      }}
-                    >다시 생성하기</Button>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="destructive"
+                        className="h-8 px-3"
+                        onClick={()=> setConfirmDeleteOpen(true)}
+                      >전체 삭제</Button>
+                      <Button
+                        variant="outline"
+                        className="h-8 px-3 bg-white text-black border-gray-300 hover:bg-gray-100"
+                        onClick={()=> setConfirmRebuildOpen(true)}
+                      >전체 재생성</Button>
+                    </div>
                   )}
                 </div>
-                {isOwner && (
-                  <div className="flex items-center justify-end">
-                    <Button
-                      variant="destructive"
-                      className="h-8 px-3"
-                      onClick={async()=>{
-                        if (!window.confirm('정말 전체 삭제하시겠습니까?')) return;
-                        try {
-                          setCharactersLoading(true);
-                          await storiesAPI.deleteExtractedCharacters(storyId);
-                          await fetchExtracted();
-                        } catch (e) {
-                          console.error('전체 삭제 실패', e);
-                        } finally {
-                          setCharactersLoading(false);
-                        }
-                      }}
-                    >전체 삭제</Button>
-                  </div>
-                )}
                 {charactersLoading && (
                   <div className="space-y-3">
                     <div className="h-1.5 w-full bg-gray-700 rounded overflow-hidden">
@@ -525,16 +545,50 @@ const StoryDetailPage = () => {
                   </div>
                 )}
                 {!charactersLoading && extractedItems.length === 0 && (
-                  <div className="flex items-center justify-between bg-gray-800/40 border border-gray-700 rounded-md p-3">
-                    <span className="text-sm text-gray-400">아직 등장인물이 준비되지 않았습니다.</span>
-                    <Button variant="outline" className="h-8 px-3" onClick={fetchExtracted}>다시 불러오기</Button>
-                  </div>
+                  episodesSorted.length === 0 ? (
+                    <div className="flex items-center justify-between bg-gray-800/40 border border-gray-700 rounded-md p-3">
+                      <span className="text-sm text-gray-400">회차 등록을 먼저 해주세요.</span>
+                      {isOwner && (
+                        <Button variant="outline" className="h-8 px-3 bg-white text-black border-gray-300 hover:bg-gray-100" onClick={() => setChapterModalOpen(true)}>회차등록</Button>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="flex items-center justify-between bg-gray-800/40 border border-gray-700 rounded-md p-3">
+                      <span className="text-sm text-gray-400">원작챗을 다시 생성해주세요.</span>
+                      {isOwner && (
+                        <Button
+                          variant="outline"
+                          className="h-8 px-3 bg-white text-black border-gray-300 hover:bg-gray-100"
+                          onClick={async()=>{
+                            try {
+                              setCharactersLoading(true);
+                              await storiesAPI.rebuildExtractedCharacters(storyId);
+                              await fetchExtracted();
+                              setPageToast({ show: true, type: 'success', message: '전체 재생성 완료' });
+                            } catch (e) {
+                              console.error('재생성 실패', e);
+                              try {
+                                const ok = await pollExtractedUntil();
+                                if (ok) setPageToast({ show: true, type: 'success', message: '전체 재생성 완료' });
+                                else setPageToast({ show: true, type: 'error', message: '전체 재생성 실패' });
+                              } catch(_) {
+                                setPageToast({ show: true, type: 'error', message: '전체 재생성 실패' });
+                              }
+                            } finally {
+                              setCharactersLoading(false);
+                            }
+                          }}
+                        >전체 재생성</Button>
+                      )}
+                    </div>
+                  )
                 )}
                 {!charactersLoading && extractedItems.length > 0 && (
                   <ExtractedCharactersGrid
                     storyId={storyId}
                     itemsOverride={extractedItems}
                     maxNo={episodesSorted.length || 1}
+                    isOwner={!!isOwner}
                     onStart={(payload)=>handleStartOrigChatWithRange(payload)}
                   />
                 )}
@@ -546,10 +600,10 @@ const StoryDetailPage = () => {
                   <h2 className="text-lg font-semibold">회차</h2>
                   <div className="flex items-center gap-2">
                     {episodesSorted.length > 0 && (
-                      <Button variant="outline" className="h-8 px-3 bg-white text-black border-gray-300 hover:bg-white" onClick={() => setSortDesc((v)=>!v)}>{sortDesc ? '최신순' : '오름차순'}</Button>
+                      <Button variant="outline" className="h-8 px-3 bg-white text-black border-gray-300 hover:bg-gray-100" onClick={() => setSortDesc((v)=>!v)}>{sortDesc ? '최신순' : '오름차순'}</Button>
                     )}
-                    {locationState.fromMyGrid && (
-                      <Button variant="outline" className="h-8 px-3 bg-white text-black border-gray-300 hover:bg-white" onClick={() => navigate(`/story-importer?storyId=${storyId}`)}>회차등록</Button>
+                    {isOwner && (
+                      <Button variant="outline" className="h-8 px-3 bg-white text-black border-gray-300 hover:bg-gray-100" onClick={() => setChapterModalOpen(true)}>회차등록</Button>
                     )}
                   </div>
                 </div>
@@ -632,12 +686,66 @@ const StoryDetailPage = () => {
           )}
         </div>
       </div>
+      <ChapterManageModal
+        open={chapterModalOpen}
+        onClose={() => setChapterModalOpen(false)}
+        storyId={storyId}
+        onAfterSave={() => {
+          try { queryClient.invalidateQueries({ queryKey: ['chapters-by-story', storyId] }); } catch {}
+        }}
+      />
+      <OrigChatStartModal
+        open={origModalOpen}
+        onClose={() => setOrigModalOpen(false)}
+        storyId={storyId}
+        totalChapters={episodesSorted.length || 1}
+        lastReadNo={Number(progressChapterNo) || 0}
+      />
+      {pageToast.show && (
+        <div className={`fixed bottom-6 left-1/2 -translate-x-1/2 px-4 py-2 rounded-md text-sm shadow-lg ${pageToast.type==='success' ? 'bg-green-600 text-white' : 'bg-red-600 text-white'}`}>
+          {pageToast.message}
+          <button className="ml-3 text-white/80 hover:text-white" onClick={()=> setPageToast({ show: false, type: 'success', message: '' })}>닫기</button>
+        </div>
+      )}
+      {/* 전체 삭제 확인 모달 */}
+      <AlertDialog open={confirmDeleteOpen} onOpenChange={setConfirmDeleteOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>전체 삭제</AlertDialogTitle>
+            <AlertDialogDescription>
+              추출된 모든 등장인물을 삭제합니다. 이 작업은 되돌릴 수 없습니다.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="flex items-center justify-end gap-2">
+            <AlertDialogCancel>취소</AlertDialogCancel>
+            <AlertDialogAction onClick={handleDeleteAll} className="bg-red-600 hover:bg-red-700">삭제</AlertDialogAction>
+          </div>
+        </AlertDialogContent>
+      </AlertDialog>
+      {/* 전체 재생성 확인 모달 */}
+      <AlertDialog open={confirmRebuildOpen} onOpenChange={setConfirmRebuildOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>전체 재생성</AlertDialogTitle>
+            <AlertDialogDescription>
+              모든 회차 텍스트를 바탕으로 등장인물을 다시 추출합니다. 시간이 걸릴 수 있습니다.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="flex items-center justify-end gap-2">
+            <AlertDialogCancel>취소</AlertDialogCancel>
+            <AlertDialogAction onClick={handleRebuildAll}>재생성</AlertDialogAction>
+          </div>
+        </AlertDialogContent>
+      </AlertDialog>
     </AppLayout>
   );
 };
 
-const ExtractedCharactersGrid = ({ storyId, itemsOverride = null, onStart, maxNo = 1 }) => {
+const ExtractedCharactersGrid = ({ storyId, itemsOverride = null, onStart, maxNo = 1, isOwner = false }) => {
   const [items, setItems] = useState(itemsOverride || []);
+  const navigate = useNavigate();
+  const [busyId, setBusyId] = useState(null);
+  const [toast, setToast] = useState({ show: false, type: 'success', message: '' });
   const [openId, setOpenId] = useState(null);
   const [profileOpenId, setProfileOpenId] = useState(null);
   const [fromNo, setFromNo] = useState('1');
@@ -654,19 +762,31 @@ const ExtractedCharactersGrid = ({ storyId, itemsOverride = null, onStart, maxNo
   // 기본값 세팅: from=1, to=마지막으로 본 회차(없으면 현재 연재된 회차)
   useEffect(() => {
     if (didInit) return;
+    // 로컬 저장 복원
+    try {
+      const key = `origchat:range:${storyId}`;
+      const saved = JSON.parse(localStorage.getItem(key) || 'null');
+      if (saved && saved.from && saved.to) {
+        setFromNo(String(Math.min(Math.max(1, Number(saved.from)||1), maxOptions)));
+        setToNo(String(Math.min(Math.max(1, Number(saved.to)||1), maxOptions)));
+        setDidInit(true);
+        return;
+      }
+    } catch (_) {}
     const defaultFrom = '1';
     const defaultTo = String(Math.min(maxOptions, lastReadNo > 0 ? lastReadNo : maxOptions));
     setFromNo(defaultFrom);
     setToNo(defaultTo);
     setDidInit(true);
-  }, [didInit, maxOptions, lastReadNo]);
+  }, [didInit, maxOptions, lastReadNo, storyId]);
 
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-      {items.map((c, idx) => (
+    <>
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+        {items.map((c, idx) => (
         <Dialog key={`${c.name}-${idx}`} open={openId===idx} onOpenChange={(v)=> setOpenId(v?idx:null)}>
           <DialogTrigger asChild>
-            <button className="bg-gray-800/40 border border-gray-700 rounded-md p-3 text-left hover:bg-gray-700/40">
+            <div className="relative bg-gray-800/40 border border-gray-700 rounded-md p-3 text-left hover:bg-gray-700/40">
               <div className="flex items-center gap-3">
                 {c.avatar_url ? (
                   <img src={c.avatar_url} alt={c.name} className="w-10 h-10 rounded-full object-cover" />
@@ -680,22 +800,59 @@ const ExtractedCharactersGrid = ({ storyId, itemsOverride = null, onStart, maxNo
                   <div className="text-xs text-gray-400 line-clamp-2">{c.description || ''}</div>
                 </div>
               </div>
-            </button>
+              {/* 개별 재생성 버튼 */}
+              {isOwner && (
+              <div className="absolute top-2 right-2 z-10">
+                <button
+                  type="button"
+                  title="이 캐릭터만 다시 생성"
+                  className={`w-7 h-7 rounded bg-black/70 text-white hover:bg-black/90 flex items-center justify-center ${busyId===c.id ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  onClick={async (e)=>{
+                    e.stopPropagation();
+                    if (busyId) return;
+                    if (!c.id) return;
+                    try {
+                      setBusyId(c.id);
+                      await storiesAPI.rebuildSingleExtractedCharacter(storyId, c.id);
+                      // 성공 시 리스트 재조회(부분 상태 갱신보다 안전)
+                      try {
+                        const r = await storiesAPI.getExtractedCharacters(storyId);
+                        const items = Array.isArray(r.data?.items) ? r.data.items : [];
+                        setItems(items);
+                        setToast({ show: true, type: 'success', message: `${c.name} 재생성 완료` });
+                      } catch(_) {}
+                    } catch (err) {
+                      console.error('개별 재생성 실패', err);
+                      setToast({ show: true, type: 'error', message: `${c.name} 재생성 실패` });
+                    } finally {
+                      setBusyId(null);
+                    }
+                  }}
+                >
+                  {busyId===c.id ? (
+                    <svg className="animate-spin w-3.5 h-3.5" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path></svg>
+                  ) : (
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" className="w-3.5 h-3.5"><path fill="currentColor" d="M12 6V2l-5 5 5 5V8c3.31 0 6 2.69 6 6 0 1.01-.25 1.96-.69 2.8l1.46 1.46A7.932 7.932 0 0020 14c0-4.42-3.58-8-8-8zm-6.31.2A7.932 7.932 0 004 14c0 4.42 3.58 8 8 8v4l5-5-5-5v4c-3.31 0-6-2.69-6-6 0-1.01.25-1.96.69-2.8L5.23 6.2z"/></svg>
+                  )}
+                </button>
+              </div>
+              )}
+            </div>
           </DialogTrigger>
-          <DialogContent className="bg-gray-900 text-white border border-gray-700">
+          <DialogContent className="bg-gray-900 text-white border border-gray-700" aria-describedby={`dlg-desc-${idx}`}>
             <DialogHeader>
               <DialogTitle className="text-white">원작챗 시작 - {c.name}</DialogTitle>
               <div className="sr-only" id={`dlg-desc-${idx}`}>회차 범위 선택 모달</div>
             </DialogHeader>
             <div className="space-y-3" aria-describedby={`dlg-desc-${idx}`} role="document">
-              {/* 프로필 보기 버튼 */}
+              {/* 상세페이지 이동 버튼 */}
               {c.character_id && (
                 <div className="flex justify-end">
                   <Button
                     variant="outline"
-                    className="h-8 px-3 bg-white text-black border-gray-300 hover:bg-white"
-                    onClick={()=> setProfileOpenId(idx)}
-                  >프로필 보기</Button>
+                    className="h-8 px-3 bg-white text-black border-gray-300 hover:bg-gray-100"
+                    onClick={()=> { setOpenId(null); navigate(`/characters/${c.character_id}`); }}
+                  >상세페이지</Button>
                 </div>
               )}
               <div className="text-sm text-gray-300">회차 범위를 선택하세요 (예: 1~6, 4~35)</div>
@@ -717,7 +874,7 @@ const ExtractedCharactersGrid = ({ storyId, itemsOverride = null, onStart, maxNo
               </div>
 
               <div className="flex items-center gap-2">
-                <Select value={fromNo} onValueChange={(v)=>{ setFromNo(v); if (rangeMode==='single') setToNo(v); }}>
+                <Select value={fromNo} onValueChange={(v)=>{ setFromNo(v); if (rangeMode==='single') setToNo(v); try { localStorage.setItem(`origchat:range:${storyId}`, JSON.stringify({ from: v, to: (rangeMode==='single'? v : toNo) })); } catch(_){} }}>
                   <SelectTrigger className="w-28 bg-gray-800 border-gray-700"><SelectValue placeholder="From" /></SelectTrigger>
                   <SelectContent className="bg-gray-800 text-white border-gray-700 max-h-64 overflow-auto">
                     {Array.from({length:maxOptions}).map((_,i)=> (
@@ -726,7 +883,7 @@ const ExtractedCharactersGrid = ({ storyId, itemsOverride = null, onStart, maxNo
                   </SelectContent>
                 </Select>
                 <span className="text-gray-400">~</span>
-                <Select value={toNo} onValueChange={setToNo} disabled={rangeMode==='single'}>
+                <Select value={toNo} onValueChange={(v)=>{ setToNo(v); try { localStorage.setItem(`origchat:range:${storyId}`, JSON.stringify({ from: fromNo, to: v })); } catch(_){} }} disabled={rangeMode==='single'}>
                   <SelectTrigger className={`w-28 border ${rangeMode==='single' ? 'bg-gray-800/50 border-gray-700 opacity-70 cursor-not-allowed' : 'bg-gray-800 border-gray-700'}`}><SelectValue placeholder="To" /></SelectTrigger>
                   <SelectContent className="bg-gray-800 text-white border-gray-700 max-h-64 overflow-auto">
                     {Array.from({length:maxOptions}).map((_,i)=> (
@@ -735,52 +892,26 @@ const ExtractedCharactersGrid = ({ storyId, itemsOverride = null, onStart, maxNo
                   </SelectContent>
                 </Select>
               </div>
-              {/* 경고 문구: 마지막 읽은 회차를 초과 선택 시 */}
-              {(() => {
-                const f = Number(fromNo)||1; const t = Number(toNo)||f;
-                const beyond = (f > (lastReadNo||0)) || (t > (lastReadNo||0));
-                return beyond ? (
-                  <div className="text-xs text-yellow-400">마지막까지 본 회차({lastReadNo>0?`${lastReadNo}화`:'없음'}) 이후를 선택했습니다. 스포일러는 가드에 의해 제한됩니다.</div>
-                ) : null;
-              })()}
-              <div className="flex justify-end">
-                <Button
-                  className="bg-red-600 hover:bg-red-700 text-white"
-                  onClick={()=>{
-                    const f = Math.max(1, Number(fromNo)||1);
-                    const tCandidate = rangeMode==='single' ? f : (Number(toNo)||f);
-                    const t = Math.max(f, tCandidate);
-                    const cappedF = Math.min(f, maxOptions);
-                    const cappedT = Math.min(t, maxOptions);
-                    onStart?.({ characterName: c.name, characterId: c.character_id || null, range_from: cappedF, range_to: cappedT });
-                    setOpenId(null);
-                  }}
-                >확인</Button>
-              </div>
+              <Button
+                className="w-full"
+                onClick={() => onStart({ range_from: fromNo, range_to: toNo, characterId: c.character_id })}
+                disabled={!c.character_id || !fromNo || !toNo || rangeMode === 'single' || fromNo === toNo}
+              >
+                원작챗 시작
+              </Button>
             </div>
           </DialogContent>
-          {/* 캐릭터 프로필 미니 모달 */}
-          {profileOpenId===idx && c.character_id && (
-            <Dialog open={true} onOpenChange={(v)=> { if(!v) setProfileOpenId(null); }}>
-              <DialogContent className="bg-gray-900 text-white border border-gray-700 max-w-lg">
-                <DialogHeader>
-                  <DialogTitle className="text-white">프로필 - {c.name}</DialogTitle>
-                </DialogHeader>
-                <div className="space-y-3">
-                  <CharacterProfileInline characterId={c.character_id} />
-                  <div className="flex justify-end">
-                    <Button onClick={()=> setProfileOpenId(null)} className="bg-gray-700 hover:bg-gray-600">닫기</Button>
-                  </div>
-                </div>
-              </DialogContent>
-            </Dialog>
-          )}
         </Dialog>
-      ))}
-    </div>
+        ))}
+      </div>
+      {toast.show && (
+        <div className={`fixed bottom-6 left-1/2 -translate-x-1/2 px-4 py-2 rounded-md text-sm shadow-lg ${toast.type==='success' ? 'bg-green-600 text-white' : 'bg-red-600 text-white'}`}>
+          {toast.message}
+          <button className="ml-3 text-white/80 hover:text-white" onClick={()=> setToast({ show: false, type: 'success', message: '' })}>닫기</button>
+        </div>
+      )}
+    </>
   );
 };
 
 export default StoryDetailPage;
-
-

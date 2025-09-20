@@ -58,6 +58,7 @@ class CharacterForChatResponse(BaseModel):
     id: uuid.UUID
     name: str
     avatar_url: Optional[str] = None
+    origin_story_id: Optional[uuid.UUID] = None
 
     class Config:
         from_attributes = True

@@ -333,7 +333,7 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto" aria-describedby="model-modal-desc">
         <DialogHeader>
           <DialogTitle className="text-xl font-bold">설정</DialogTitle>
           {/* 현재 선택된 모델 표시 */}
@@ -344,7 +344,7 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
             </div>
           </div>
         </DialogHeader>
-
+        <div id="model-modal-desc" className="sr-only">모델 및 대화 설정을 구성하는 모달</div>
 
 
         {/* 탭 메뉴 */}

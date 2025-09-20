@@ -32,7 +32,7 @@ api.interceptors.request.use(
     } catch (_) {}
     if (!path.startsWith('/')) path = `/${path}`;
     path = path.split('?')[0];
-    const isPublicCharacters = path === '/characters' || /^\/characters\/\d+$/.test(path);
+    const isPublicCharacters = path === '/characters' || /^\/characters\/[0-9a-fA-F-\-]+$/.test(path);
     const isPublicStories = path === '/stories' || /^\/stories\/\d+$/.test(path);
     const isPublicTags = path.startsWith('/tags');
     const isPublicGet = isGet && (isPublicCharacters || isPublicStories || isPublicTags);
@@ -361,7 +361,9 @@ export const storiesAPI = {
   getExtractedCharacters: (storyId) =>
     api.get(`/stories/${storyId}/extracted-characters`),
   rebuildExtractedCharacters: (storyId) =>
-    api.post(`/stories/${storyId}/extracted-characters/rebuild`),
+    api.post(`/stories/${storyId}/extracted-characters/rebuild`, null, { timeout: 300000 }),
+  rebuildSingleExtractedCharacter: (storyId, extractedId) =>
+    api.post(`/stories/${storyId}/extracted-characters/${extractedId}/rebuild`, null, { timeout: 180000 }),
   deleteExtractedCharacters: (storyId) =>
     api.delete(`/stories/${storyId}/extracted-characters`),
   
@@ -467,6 +469,11 @@ export const storiesAPI = {
   
   deleteComment: (commentId) =>
     api.delete(`/stories/comments/${commentId}`),
+};
+
+// 🏆 랭킹 API
+export const rankingAPI = {
+  getDaily: (params = {}) => api.get('/rankings/daily', { params }),
 };
 
 // 📖 회차(Chapters) API
