@@ -6,6 +6,7 @@ import { Input } from '../components/ui/input';
 import { Textarea } from '../components/ui/textarea';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { ArrowLeft, Loader2 } from 'lucide-react';
+import ImageGenerateInsertModal from '../components/ImageGenerateInsertModal';
 
 const StoryEditPage = () => {
   const { storyId } = useParams();
@@ -20,6 +21,7 @@ const StoryEditPage = () => {
   const [coverUrl, setCoverUrl] = useState('');
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [imgModalOpen, setImgModalOpen] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -75,7 +77,10 @@ const StoryEditPage = () => {
   return (
     <div className="min-h-screen bg-gray-900 text-gray-200 p-4 sm:p-6 lg:p-8">
       <div className="max-w-3xl mx-auto space-y-4">
-        <Button variant="ghost" onClick={()=>navigate('/')}><ArrowLeft className="w-5 h-5 mr-2"/>뒤로 가기</Button>
+        <div className="flex items-center gap-2">
+          <Button variant="ghost" onClick={()=>navigate('/')}><ArrowLeft className="w-5 h-5 mr-2"/>뒤로 가기</Button>
+          <Button onClick={()=> setImgModalOpen(true)}>대표이미지 생성/삽입</Button>
+        </div>
         {error && (
           <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>
         )}
@@ -86,6 +91,7 @@ const StoryEditPage = () => {
               <input type="file" accept="image/*" className="hidden" onChange={(e)=>{ const f=e.target.files?.[0]; if(f) handleUpload(f); }} />
               업로드
             </label>
+            <Button variant="outline" onClick={()=> setImgModalOpen(true)}>이미지 생성/삽입</Button>
             {uploading && <span className="text-xs text-gray-400">업로드 중... {progress}%</span>}
           </div>
           {coverUrl && <img src={coverUrl} alt="cover" className="mt-3 w-28 h-40 object-cover rounded border border-gray-700"/>}
@@ -112,6 +118,25 @@ const StoryEditPage = () => {
           <Button onClick={handleSave} disabled={saving}>{saving ? '저장 중...' : '저장'}</Button>
         </div>
       </div>
+      {/* 이미지 생성/삽입 모달 */}
+      <ImageGenerateInsertModal
+        open={imgModalOpen}
+        onClose={(e)=>{
+          setImgModalOpen(false);
+          if (e && e.attached) {
+            // 스토리 편집 페이지에서는 대표 이미지가 갱신되도록 표지 URL을 즉시 반영
+            try {
+              // 모달이 story 엔티티에 부착했으므로, 첫 번째 이미지가 대표가 됨
+              const focusUrl = e?.focusUrl;
+              if (focusUrl) {
+                setCoverUrl(focusUrl);
+              }
+            } catch(_) {}
+          }
+        }}
+        entityType={'story'}
+        entityId={storyId}
+      />
     </div>
   );
 };

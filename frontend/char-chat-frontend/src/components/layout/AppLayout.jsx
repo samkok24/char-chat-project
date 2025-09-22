@@ -16,12 +16,12 @@ const AppLayout = ({ children, SidebarComponent = Sidebar, sidebarProps }) => {
         {children}
         {/* PIP 스타일 플로팅 썸네일 */}
         <Link
-          to={onAgentPage ? '/dashboard' : '/agent?start=new'}
+          to={onAgentPage ? '/dashboard' : '/dashboard'}
           className="fixed right-8 bottom-5 z-40 block w-80 h-48 rounded-lg overflow-hidden group"
-          title={onAgentPage ? '메인으로' : '스토리 에이전트'}
+          title={'메인으로'}
         >
           <img
-            src={onAgentPage ? '/main.png' : '/agent.png'}
+            src={'/main.png'}
             alt="pip"
             className="w-full h-full object-cover" />
           <div className="pointer-events-none absolute inset-0 rounded-lg border-2 border-purple-500/70 shadow-[0_0_20px_rgba(168,85,247,0.45)] animate-pulse"></div>

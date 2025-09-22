@@ -23,6 +23,7 @@ from app.api.characters import router as characters_router  # ✅ 필수: 캐릭
 from app.api.users import router as users_router
 from app.api.story_importer import router as story_importer_router # ✨ 신규: 스토리 임포터 API
 from app.api.rankings import router as rankings_router
+from app.api.media import router as media_router
 import os
 try:
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -196,6 +197,7 @@ app.include_router(memory_notes_router, prefix="/memory-notes", tags=["✨ 기�
 app.include_router(user_personas_router, prefix="/user-personas", tags=["👤 유저 페르소나 (신규)"])
 app.include_router(files_router, prefix="/files", tags=["🗂️ 파일"])
 app.include_router(tags_router, prefix="/tags", tags=["🏷️ 태그"])
+app.include_router(media_router, prefix="/media", tags=["🖼️ 미디어"])
 
 
 # ⏳ Phase 3: 콘텐츠 확장 API (향후 개발)

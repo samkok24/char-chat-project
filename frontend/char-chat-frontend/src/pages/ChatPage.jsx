@@ -7,7 +7,7 @@ import ErrorBoundary from '../components/ErrorBoundary';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useSocket } from '../contexts/SocketContext';
-import { charactersAPI, chatAPI, usersAPI, origChatAPI } from '../lib/api'; // usersAPI 추가
+import { charactersAPI, chatAPI, usersAPI, origChatAPI, mediaAPI } from '../lib/api'; // usersAPI 추가
 import { resolveImageUrl, getCharacterPrimaryImage, buildPortraitSrcSet } from '../lib/images';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -35,7 +35,9 @@ import {
   FastForward,
   Asterisk,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  Pin,
+  PinOff
 } from 'lucide-react';
 import { Textarea } from '../components/ui/textarea'; // Textarea 추가
 import {
@@ -96,6 +98,9 @@ const ChatPage = () => {
   // 이미지 캐러셀 상태
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
   const [characterImages, setCharacterImages] = useState([]);
+  const [mediaAssets, setMediaAssets] = useState([]);
+  const [isPinned, setIsPinned] = useState(false);
+  const [pinnedUrl, setPinnedUrl] = useState('');
   // 전역 UI 설정(로컬)
   const [uiFontSize, setUiFontSize] = useState('base'); // sm|base|lg|xl
   const [uiLetterSpacing, setUiLetterSpacing] = useState('normal'); // tighter|tight|normal|wide|wider
@@ -130,6 +135,8 @@ const ChatPage = () => {
   const inputRef = useRef(null);
   const chatContainerRef = useRef(null); // For scroll handling
   const prevScrollHeightRef = useRef(0); // For scroll position restoration
+  const isPinnedRef = useRef(false);
+  const pinnedUrlRef = useRef('');
 
   // AI 메타 주석(예: "(성향 점수 35...)") 제거
   const sanitizeAiText = useCallback((text) => {
@@ -149,6 +156,15 @@ const ChatPage = () => {
   }, []);
 
   useEffect(() => {
+    // 세션 핀 상태 복원
+    try {
+      const raw = sessionStorage.getItem(`cc:chat:pin:v1:${characterId}`);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && parsed.url) { setIsPinned(true); setPinnedUrl(parsed.url); }
+      } else { setIsPinned(false); setPinnedUrl(''); }
+    } catch (_) { setIsPinned(false); setPinnedUrl(''); }
+
     const initializeChat = async () => {
       setLoading(true);
       setError('');
@@ -162,7 +178,7 @@ const ChatPage = () => {
           thumbnail_url: data.thumbnail_url || data.avatar_url,
         });
 
-        // 캐릭터 이미지 배열 수집: avatar + image_descriptions + (없으면) thumbnail, 중복 제거
+        // 캐릭터 기본 이미지 수집
         try {
           const main = data?.avatar_url ? [data.avatar_url] : [];
           const gallery = Array.isArray(data?.image_descriptions)
@@ -172,9 +188,24 @@ const ChatPage = () => {
           const unique = Array.from(new Set([...main, ...gallery, ...fallback]));
           setCharacterImages(unique);
           setCurrentImageIndex(0);
-        } catch (_) {
-          // ignore image collection failure
-        }
+        } catch (_) {}
+
+        // mediaAPI 자산 우선 적용
+        try {
+          const mediaRes = await mediaAPI.listAssets({ entityType: 'character', entityId: characterId, presign: false, expiresIn: 300 });
+          const assets = Array.isArray(mediaRes.data?.items) ? mediaRes.data.items : (Array.isArray(mediaRes.data) ? mediaRes.data : []);
+          setMediaAssets(assets);
+          const urls = Array.from(new Set(assets.map(a => a.url).filter(Boolean)));
+          if (urls.length) {
+            setCharacterImages(urls);
+            if (isPinnedRef.current && pinnedUrlRef.current) {
+              const idx = urls.findIndex(u => u === pinnedUrlRef.current);
+              setCurrentImageIndex(idx >= 0 ? idx : 0);
+            } else {
+              setCurrentImageIndex(0);
+            }
+          }
+        } catch (_) {}
 
         // 2. 🔥 채팅방 정보 가져오기 또는 생성
         const params = new URLSearchParams(location.search || '');
@@ -288,6 +319,34 @@ const ChatPage = () => {
       window.removeEventListener('ui:settingsChanged', onUiChanged);
     };
   }, [characterId, leaveRoom, location.search]); // chatRoomId 제거
+
+  // 최신 핀 상태를 ref에 반영
+  useEffect(() => { isPinnedRef.current = isPinned; pinnedUrlRef.current = pinnedUrl; }, [isPinned, pinnedUrl]);
+
+  // 상세에서 미디어 변경 시 채팅방 이미지 갱신(세션 핀 유지)
+  useEffect(() => {
+    const onMediaUpdated = (e) => {
+      try {
+        const d = e?.detail || {};
+        if (d.entityType === 'character' && String(d.entityId) === String(characterId)) {
+          mediaAPI.listAssets({ entityType: 'character', entityId: characterId, presign: false, expiresIn: 300 }).then((res) => {
+            const assets = Array.isArray(res.data?.items) ? res.data.items : (Array.isArray(res.data) ? res.data : []);
+            setMediaAssets(assets);
+            const urls = Array.from(new Set(assets.map(a => a.url).filter(Boolean)));
+            setCharacterImages(urls);
+            if (isPinnedRef.current && pinnedUrlRef.current) {
+              const idx = urls.findIndex(u => u === pinnedUrlRef.current);
+              setCurrentImageIndex(idx >= 0 ? idx : 0);
+            } else {
+              setCurrentImageIndex(0);
+            }
+          }).catch(()=>{});
+        }
+      } catch(_) {}
+    };
+    window.addEventListener('media:updated', onMediaUpdated);
+    return () => window.removeEventListener('media:updated', onMediaUpdated);
+  }, [characterId]);
 
   // 테마 적용: documentElement에 data-theme 설정
   useEffect(() => {
@@ -598,6 +657,22 @@ const ChatPage = () => {
   const isPrevDisabled = currentImageIndex === 0;
   const isNextDisabled = characterImages.length === 0 || currentImageIndex === characterImages.length - 1;
 
+  const togglePin = () => {
+    try {
+      const key = `cc:chat:pin:v1:${characterId}`;
+      if (!isPinned) {
+        const url = characterImages[currentImageIndex] || '';
+        setIsPinned(true);
+        setPinnedUrl(url);
+        sessionStorage.setItem(key, JSON.stringify({ url }));
+      } else {
+        setIsPinned(false);
+        setPinnedUrl('');
+        sessionStorage.removeItem(key);
+      }
+    } catch(_) {}
+  };
+
   // 선택 썸네일이 항상 보이도록 자동 스크롤
   useEffect(() => {
     try {
@@ -773,7 +848,13 @@ const ChatPage = () => {
               <Button
                 variant="ghost"
                 size="icon"
-                onClick={() => navigate('/')}
+                onClick={() => {
+                  if (isOrigChat && origStoryId) {
+                    navigate(`/stories/${origStoryId}`);
+                  } else {
+                    navigate(`/characters/${characterId}`);
+                  }
+                }}
                 className="rounded-full text-[var(--app-fg)] hover:bg-[var(--hover-bg)]"
               >
                 <ArrowLeft className="w-5 h-5" />
@@ -898,11 +979,31 @@ const ChatPage = () => {
                     height={height}
                     alt={character?.name}
                     loading="eager"
+                    aria-live="polite"
+                    aria-label={`${Math.min(characterImages.length, Math.max(1, currentImageIndex + 1))} / ${characterImages.length}`}
                   />
                 );
               })()}
               {/* 배경 오버레이 */}
               <div className="absolute inset-0 pointer-events-none" style={{ backgroundColor: `rgba(0,0,0,${Math.max(0, Math.min(100, uiOverlay))/100})` }} />
+              {/* 이미지 핀 토글 */}
+              {characterImages.length > 1 && (
+                <div className="absolute top-2 right-2 z-10">
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        onClick={togglePin}
+                        aria-pressed={isPinned}
+                        aria-label={isPinned ? '이미지 고정 해제' : '이미지 고정'}
+                        className={`rounded-md p-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-500 focus-visible:ring-offset-2 focus-visible:ring-offset-black/30 transition ${isPinned ? 'bg-purple-600 text-white' : 'bg-black/60 text-white hover:bg-black/70'}`}
+                      >
+                        {isPinned ? <Pin className="w-4 h-4" /> : <PinOff className="w-4 h-4" />}
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>{isPinned ? '고정 해제' : '이미지 고정'}</TooltipContent>
+                  </Tooltip>
+                </div>
+              )}
               
             </div>
           </aside>

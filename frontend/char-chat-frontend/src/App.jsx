@@ -12,6 +12,7 @@ import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { SocketProvider } from './contexts/SocketContext';
 import { Loader2 } from 'lucide-react';
 import './App.css';
+import MediaEventsBridge from './components/MediaEventsBridge';
 
 // 🚀 API 캐싱 설정 (성능 최적화)
 const queryClient = new QueryClient({
@@ -101,8 +102,8 @@ const AppRouter = () => {
       <Suspense fallback={<PageLoader />}>
         <Routes>
           {/* 🔥 CAVEDUCK 핵심 페이지 (우선 로딩) */}
-          {/* 초기 진입은 에이전트 탭으로 */}
-          <Route path="/" element={<Navigate to="/agent" replace />} />
+          {/* 초기 진입은 메인 탭으로 */}
+          <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="/agent" element={<AgentPage />} />
           {/* 대시보드 별도 경로 */}
           <Route path="/dashboard" element={<HomePage />} />
@@ -236,8 +237,8 @@ const AppRouter = () => {
             }
           />
 
-          {/* 기본 리다이렉트 */}
-          <Route path="*" element={<Navigate to="/agent" replace />} />
+          {/* 기본 리다이렉트: 메인 탭 */}
+          <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>
       </Suspense>
     </Router>
@@ -251,6 +252,7 @@ function App() {
       <AuthProvider>
         <SocketProvider>
           <div className="App">
+            <MediaEventsBridge />
             <AppRouter />
           </div>
         </SocketProvider>

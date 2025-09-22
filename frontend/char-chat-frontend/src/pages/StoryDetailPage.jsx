@@ -3,11 +3,12 @@ import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import AppLayout from '../components/layout/AppLayout';
 import { Button } from '../components/ui/button';
-import { storiesAPI, chaptersAPI, origChatAPI } from '../lib/api';
+import { storiesAPI, chaptersAPI, origChatAPI, mediaAPI } from '../lib/api';
+import RecentGeneratedStrip from '../components/RecentGeneratedStrip';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
 import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogCancel, AlertDialogAction } from '../components/ui/alert-dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
-import { Heart, ArrowLeft, AlertCircle, MoreVertical, Copy, Trash2, Edit, MessageCircle, Eye } from 'lucide-react';
+import { Heart, ArrowLeft, AlertCircle, MoreVertical, Copy, Trash2, Edit, MessageCircle, Eye, Image as ImageIcon } from 'lucide-react';
 import { Avatar, AvatarFallback, AvatarImage } from '../components/ui/avatar';
 import { Badge } from '../components/ui/badge';
 import { Alert, AlertDescription } from '../components/ui/alert';
@@ -21,6 +22,7 @@ import { Skeleton } from '../components/ui/skeleton';
 import CharacterProfileInline from '../components/inline/CharacterProfileInline';
 import OrigChatStartModal from '../components/OrigChatStartModal';
 import ChapterManageModal from '../components/ChapterManageModal';
+import ImageGenerateInsertModal from '../components/ImageGenerateInsertModal';
 
 const StoryDetailPage = () => {
   const { storyId } = useParams();
@@ -30,6 +32,7 @@ const StoryDetailPage = () => {
   const { user, isAuthenticated } = useAuth();
   const extractedRef = useRef(null);
   const [chapterModalOpen, setChapterModalOpen] = useState(false);
+  const [imgModalOpen, setImgModalOpen] = useState(false);
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [confirmRebuildOpen, setConfirmRebuildOpen] = useState(false);
   const [origModalOpen, setOrigModalOpen] = useState(false);
@@ -83,17 +86,48 @@ const StoryDetailPage = () => {
     loadSocial();
   }, [storyId, isAuthenticated]);
 
-  // 갤러리 이미지 구성: cover_url + keywords의 cover: 항목들
+  // 미디어 자산: 스토리용 리스트 조회
+  const { data: mediaAssets = [], refetch: refetchMedia } = useQuery({
+    queryKey: ['media-assets', 'story', storyId],
+    queryFn: async () => {
+      const res = await mediaAPI.listAssets({ entityType: 'story', entityId: storyId, presign: true, expiresIn: 300 });
+      return Array.isArray(res.data?.items) ? res.data.items : (Array.isArray(res.data) ? res.data : []);
+    },
+    enabled: !!storyId,
+    staleTime: 0,
+  });
+
+  // 갤러리 이미지 구성: mediaAssets 우선, 없으면 cover_url + keywords의 cover: 항목들
   useEffect(() => {
     try {
+      const assetUrls = (mediaAssets || []).map(a => a.url);
+      if (assetUrls.length > 0) {
+        const uniqueA = Array.from(new Set(assetUrls));
+        setGalleryImages(uniqueA);
+        const firstA = uniqueA[0] || '';
+        setActiveImage(firstA);
+        if (firstA) {
+          try {
+            const probe = new Image();
+            probe.onload = () => {
+              const w = probe.naturalWidth || 1;
+              const h = probe.naturalHeight || 1;
+              setBaseRatio(h / w);
+            };
+            probe.src = resolveImageUrl(firstA) || firstA;
+          } catch (_) { setBaseRatio(1); }
+        } else { setBaseRatio(1); }
+        return;
+      }
+
       const kws = Array.isArray(story.keywords) ? story.keywords : [];
       const kwUrls = kws
         .filter((k) => typeof k === 'string' && k.startsWith('cover:'))
         .map((k) => k.replace(/^cover:/, ''))
         .filter(Boolean);
-      const unique = Array.from(new Set([story.cover_url, ...kwUrls].filter(Boolean)));
-      setGalleryImages(unique);
-      const first = unique[0] || '';
+      const fallback = Array.from(new Set([story.cover_url, ...kwUrls].filter(Boolean)));
+      setGalleryImages(fallback);
+      const first = fallback[0] || '';
       setActiveImage(first);
       if (first) {
         try {
@@ -104,18 +138,14 @@ const StoryDetailPage = () => {
             setBaseRatio(h / w);
           };
           probe.src = resolveImageUrl(first) || first;
-        } catch (_) {
-          setBaseRatio(1);
-        }
-      } else {
-        setBaseRatio(1);
-      }
+        } catch (_) { setBaseRatio(1); }
+      } else { setBaseRatio(1); }
     } catch (_) {
       setGalleryImages([]);
       setActiveImage('');
       setBaseRatio(1);
     }
-  }, [story.cover_url, story.keywords]);
+  }, [story.cover_url, story.keywords, mediaAssets]);
 
   const likeMutation = useMutation({
     mutationFn: (liked) => (liked ? storiesAPI.unlikeStory(storyId) : storiesAPI.likeStory(storyId)),
@@ -339,6 +369,11 @@ const StoryDetailPage = () => {
             <Button variant="ghost" onClick={() => { navigate('/'); }} className="mb-2">
               <ArrowLeft className="w-5 h-5 mr-2" /> 뒤로 가기
             </Button>
+            {isOwner && (
+              <div className="mb-2">
+                <Button className="bg-purple-600 hover:bg-purple-700" onClick={()=> setImgModalOpen(true)}>대표이미지 생성/삽입</Button>
+              </div>
+            )}
           </header>
           {/* 로딩/에러 상태 표시 */}
           {isLoading && (
@@ -366,10 +401,13 @@ const StoryDetailPage = () => {
                     src={resolveImageUrl(activeImage) || activeImage}
                     alt={story.title}
                     className="absolute inset-0 w-full h-full object-cover rounded-lg"
+                    aria-live="polite"
+                    aria-label={`${galleryImages.indexOf(activeImage) + 1} / ${galleryImages.length}`}
                   />
                 ) : (
                   <div className="absolute inset-0 bg-gray-800 rounded-lg flex items-center justify-center text-gray-500">NO COVER</div>
                 )}
+                <span className="sr-only" aria-live="polite">{`${galleryImages.indexOf(activeImage) + 1} / ${galleryImages.length}`}</span>
                 <div className="absolute top-2 left-2">
                   <Badge className="bg-blue-600 text-white hover:bg-blue-600">웹소설</Badge>
                 </div>
@@ -396,6 +434,7 @@ const StoryDetailPage = () => {
                   })}
                 </div>
               )}
+              <RecentGeneratedStrip items={mediaAssets.slice(0, 20)} onSelect={(u)=> setActiveImage(u)} />
             </div>
 
             {/* Right: Info & Actions */}
@@ -694,6 +733,28 @@ const StoryDetailPage = () => {
           try { queryClient.invalidateQueries({ queryKey: ['chapters-by-story', storyId] }); } catch {}
         }}
       />
+      <ImageGenerateInsertModal
+        open={imgModalOpen}
+        onClose={(e)=>{
+          setImgModalOpen(false);
+          if (e && e.attached) {
+            try {
+              refetchMedia();
+              queryClient.invalidateQueries({ queryKey: ['explore-stories'] });
+              queryClient.invalidateQueries({ queryKey: ['top-stories-views'] });
+              try { window.dispatchEvent(new CustomEvent('media:updated', { detail: { entityType: 'story', entityId: storyId } })); } catch(_) {}
+              // 삽입 후 바로 보기
+              const focusUrl = e?.focusUrl;
+              if (focusUrl) {
+                setActiveImage(focusUrl);
+                setGalleryImages(prev => Array.from(new Set([focusUrl, ...prev])));
+              }
+            } catch (_) {}
+          }
+        }}
+        entityType={'story'}
+        entityId={storyId}
+      />
       <OrigChatStartModal
         open={origModalOpen}
         onClose={() => setOrigModalOpen(false)}
@@ -752,6 +813,7 @@ const ExtractedCharactersGrid = ({ storyId, itemsOverride = null, onStart, maxNo
   const [toNo, setToNo] = useState('1');
   const [rangeMode, setRangeMode] = useState('multi'); // 'multi' | 'single'
   const [didInit, setDidInit] = useState(false);
+  const [imgModalFor, setImgModalFor] = useState(null); // { entityType, entityId }
   const maxOptions = Math.max(1, Number(maxNo)||1);
   const lastReadNo = Number(getReadingProgress(storyId) || 0);
 
@@ -802,7 +864,7 @@ const ExtractedCharactersGrid = ({ storyId, itemsOverride = null, onStart, maxNo
               </div>
               {/* 개별 재생성 버튼 */}
               {isOwner && (
-              <div className="absolute top-2 right-2 z-10">
+              <div className="absolute top-2 right-2 z-10 flex items-center gap-1">
                 <button
                   type="button"
                   title="이 캐릭터만 다시 생성"
@@ -834,6 +896,14 @@ const ExtractedCharactersGrid = ({ storyId, itemsOverride = null, onStart, maxNo
                   ) : (
                     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" className="w-3.5 h-3.5"><path fill="currentColor" d="M12 6V2l-5 5 5 5V8c3.31 0 6 2.69 6 6 0 1.01-.25 1.96-.69 2.8l1.46 1.46A7.932 7.932 0 0020 14c0-4.42-3.58-8-8-8zm-6.31.2A7.932 7.932 0 004 14c0 4.42 3.58 8 8 8v4l5-5-5-5v4c-3.31 0-6-2.69-6-6 0-1.01.25-1.96.69-2.8L5.23 6.2z"/></svg>
                   )}
+                </button>
+                <button
+                  type="button"
+                  title="이미지 생성/삽입"
+                  className="w-7 h-7 rounded bg-black/70 text-white hover:bg-black/90 flex items-center justify-center"
+                  onClick={(e)=>{ e.stopPropagation(); if (!c.character_id) return; setImgModalFor({ entityType: 'character', entityId: c.character_id }); }}
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" className="w-3.5 h-3.5"><path fill="currentColor" d="M21 19V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14l4-4h12a2 2 0 0 0 2-2ZM8.5 11A2.5 2.5 0 1 1 11 8.5 2.5 2.5 0 0 1 8.5 11Z"/></svg>
                 </button>
               </div>
               )}
@@ -910,6 +980,24 @@ const ExtractedCharactersGrid = ({ storyId, itemsOverride = null, onStart, maxNo
           <button className="ml-3 text-white/80 hover:text-white" onClick={()=> setToast({ show: false, type: 'success', message: '' })}>닫기</button>
         </div>
       )}
+      {/* 이미지 생성/삽입 모달: 개별 원작챗 캐릭터용 */}
+      <ImageGenerateInsertModal
+        open={!!imgModalFor}
+        onClose={(e)=>{
+          setImgModalFor(null);
+          if (e && e.attached) {
+            (async ()=>{
+              try {
+                const r = await storiesAPI.getExtractedCharacters(storyId);
+                const items = Array.isArray(r.data?.items) ? r.data.items : [];
+                setItems(items);
+              } catch(_) {}
+            })();
+          }
+        }}
+        entityType={imgModalFor?.entityType || 'character'}
+        entityId={imgModalFor?.entityId || ''}
+      />
     </>
   );
 };

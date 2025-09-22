@@ -13,6 +13,7 @@ import { storiesAPI } from '../lib/api';
 
 export const CharacterCard = ({ character, onCardClick, onButtonClick, footerContent, showOriginBadge = false }) => {
   const navigate = useNavigate();
+  const charId = character?.id || character?.character_id || character?.characterId || character?.target_id;
   const isWebNovel = character?.source_type === 'IMPORTED';
   const isFromOrigChat = !!(character?.origin_story_id || character?.is_origchat);
   const borderClass = isFromOrigChat ? 'border-orange-500/60' : (isWebNovel ? 'border-blue-500/40' : 'border-purple-500/40');
@@ -21,18 +22,18 @@ export const CharacterCard = ({ character, onCardClick, onButtonClick, footerCon
 
   const handleCardClick = () => {
     if (onCardClick) {
-      onCardClick(character.id);
+      onCardClick(charId);
     } else {
-      navigate(`/characters/${character.id}`);
+      if (charId) navigate(`/characters/${charId}`);
     }
   };
 
   const handleButtonClick = (e) => {
     e.stopPropagation();
     if (onButtonClick) {
-      onButtonClick(character.id, character.chat_room_id);
+      onButtonClick(charId, character.chat_room_id);
     } else {
-      navigate(`/ws/chat/${character.id}`);
+      if (charId) navigate(`/ws/chat/${charId}`);
     }
   };
 

@@ -6,7 +6,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'; // useMemo 추가
 import { useNavigate, Link, useParams, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { charactersAPI, filesAPI, API_BASE_URL, tagsAPI, api } from '../lib/api';
+import { charactersAPI, filesAPI, API_BASE_URL, tagsAPI, api, mediaAPI } from '../lib/api';
 import { replacePromptTokens } from '../lib/prompt';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -45,6 +45,7 @@ import {
 import { StoryImporterModal } from '../components/StoryImporterModal'; // StoryImporterModal 컴포넌트 추가
 import AvatarCropModal from '../components/AvatarCropModal';
 import TagSelectModal from '../components/TagSelectModal';
+import ImageGenerateInsertModal from '../components/ImageGenerateInsertModal';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../components/ui/dialog';
 import { CharacterCard } from '../components/CharacterCard';
 import DropzoneGallery from '../components/DropzoneGallery';
@@ -125,6 +126,7 @@ const CreateCharacterPage = () => {
   const activeSectionRef = useRef('section-basic');
   const [fieldErrors, setFieldErrors] = useState({}); // zod 인라인 오류 맵
   const [draftRestored, setDraftRestored] = useState(false);
+  const [imgModalOpen, setImgModalOpen] = useState(false);
 
   // 토큰 정의
   const TOKEN_ASSISTANT = '{{assistant}}';
@@ -1504,6 +1506,9 @@ const CreateCharacterPage = () => {
               <div className="text-xs text-gray-500 mr-2 hidden sm:block">
                 {isAutoSaving ? '자동저장 중…' : lastSavedAt ? `자동저장됨 • ${new Date(lastSavedAt).toLocaleTimeString()}` : ''}
               </div>
+              <Button variant="outline" onClick={()=>{ if(!isEditMode){ alert('이미지 생성/삽입은 저장 후 이용 가능합니다. 먼저 저장해주세요.'); return;} setImgModalOpen(true); }}>
+                대표이미지 생성/삽입
+              </Button>
               <Button variant="outline" onClick={() => setIsPreviewOpen(true)}>
                 <Eye className="w-4 h-4 mr-2" />
                 미리보기
@@ -1661,6 +1666,31 @@ const CreateCharacterPage = () => {
             setCropSrc('');
           }
         }}
+      />
+      {/* 이미지 생성/삽입 모달 (수정 모드) */}
+      <ImageGenerateInsertModal
+        open={imgModalOpen}
+        onClose={(e)=>{
+          setImgModalOpen(false);
+          if (e && e.attached && isEditMode) {
+            try {
+              mediaAPI.listAssets({ entityType: 'character', entityId: characterId, presign: true, expiresIn: 300 }).then((res)=>{
+                const items = Array.isArray(res.data?.items) ? res.data.items : [];
+                const urls = items.map(it => it.url).filter(Boolean);
+                setFormData(prev => ({
+                  ...prev,
+                  media_settings: {
+                    ...prev.media_settings,
+                    avatar_url: urls[0] || prev.media_settings.avatar_url,
+                    image_descriptions: urls.map(u => ({ url: u, description: '' })),
+                  }
+                }));
+              });
+            } catch(_) {}
+          }
+        }}
+        entityType={'character'}
+        entityId={characterId}
       />
       {/* 태그 선택 모달 */}
       <TagSelectModal

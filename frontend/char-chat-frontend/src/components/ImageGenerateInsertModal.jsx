@@ -1,0 +1,554 @@
+import React from 'react';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
+import { Button } from './ui/button';
+import { mediaAPI, charactersAPI, storiesAPI } from '../lib/api';
+import { Loader2, Trash2, X } from 'lucide-react';
+
+const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId }) => {
+  // 단일 갤러리: 업로드/생성 결과를 모두 여기에 누적
+  const inputRef = React.useRef(null);
+  const [busy, setBusy] = React.useState(false);
+  // 현재 갤러리(이미 삽입된 자산) 상태
+  const [gallery, setGallery] = React.useState([]);
+  const [galleryBusy, setGalleryBusy] = React.useState(false);
+  const dragIndexRef = React.useRef(null);
+  const saveTimerRef = React.useRef(null);
+  const hasLoadedRef = React.useRef(false);
+  // 생성 탭 상태
+  const [genProvider] = React.useState('gemini'); // 고정: gemini
+  const [genModel, setGenModel] = React.useState('gemini-2.5-flash-image-preview');
+  const [genRatio, setGenRatio] = React.useState('1:1');
+  const [genCount, setGenCount] = React.useState(2);
+  const [genPrompt, setGenPrompt] = React.useState('');
+  const lastParamsRef = React.useRef(null);
+  // 남은 시간 표시
+  const [etaMs, setEtaMs] = React.useState(0);
+  const etaTimerRef = React.useRef(null);
+
+  // 크롭 모달 상태
+  const [cropOpen, setCropOpen] = React.useState(false);
+  const [cropIndex, setCropIndex] = React.useState(-1);
+  const [cropLoading, setCropLoading] = React.useState(false);
+  const cropImgRef = React.useRef(null);
+  const cropWrapRef = React.useRef(null);
+  const cropImgBoxRef = React.useRef({ x: 0, y: 0, w: 0, h: 0 }); // 화면에 표시된 이미지 영역
+  const [cropRect, setCropRect] = React.useState({ x: 0, y: 0, w: 100, h: 100 });
+  const [cropDragging, setCropDragging] = React.useState(false);
+  const cropStartRef = React.useRef({ x: 0, y: 0 });
+  const [cropScale, setCropScale] = React.useState(1); // 0.3 ~ 1.0 (표시 이미지 영역 기준)
+
+  const clearEta = () => {
+    if (etaTimerRef.current) {
+      clearInterval(etaTimerRef.current);
+      etaTimerRef.current = null;
+    }
+    setEtaMs(0);
+  };
+
+  const startEta = (provider, count) => {
+    // 간단한 기준치: OpenAI 90s, Gemini 60s 기준
+    const base = provider === 'gemini' ? 60000 : 90000;
+    const total = base * Math.max(1, Number(count) || 1);
+    setEtaMs(total);
+    if (etaTimerRef.current) clearInterval(etaTimerRef.current);
+    etaTimerRef.current = setInterval(() => {
+      setEtaMs((prev) => {
+        const next = Math.max(0, prev - 1000);
+        if (next === 0) {
+          clearEta();
+        }
+        return next;
+      });
+    }, 1000);
+  };
+
+  const onPick = () => inputRef.current?.click();
+  const onFiles = async (e) => {
+    const selected = Array.from(e.target.files || []);
+    if (!selected.length) return;
+    setBusy(true);
+    try {
+      const res = await mediaAPI.upload(selected);
+      const items = res.data?.items || [];
+      setGallery((prev) => [...prev, ...items]);
+    } catch (_) {
+      // noop
+    } finally { setBusy(false); }
+  };
+
+  const confirmAttach = async () => {
+    if (!gallery.length) { onClose?.(); return; }
+    setBusy(true);
+    try {
+      const focusUrl = gallery[0]?.url || '';
+      await mediaAPI.attach({ entityType, entityId, assetIds: gallery.map(s => s.id), asPrimary: true });
+      // 전역 반영 이벤트 (모달 자체에서도 발행)
+      try { window.dispatchEvent(new CustomEvent('media:updated', { detail: { entityType, entityId } })); } catch(_) {}
+      try { window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'success', message: `삽입 완료 (${gallery.length}개)` } })); } catch(_) {}
+      onClose?.({ attached: true, focusUrl });
+    } finally { setBusy(false); }
+  };
+
+  const deleteOne = async (id) => {
+    setBusy(true);
+    try { await mediaAPI.deleteAssets([id]); setGallery(prev => prev.filter(s => s.id !== id)); }
+    catch(_) {}
+    finally { setBusy(false); }
+  };
+
+  const loadGallery = async () => {
+    if (!entityType || !entityId) return;
+    try {
+      setGalleryBusy(true);
+      const res = await mediaAPI.listAssets({ entityType, entityId, presign: true, expiresIn: 300 });
+      const items = Array.isArray(res.data?.items) ? res.data.items : (Array.isArray(res.data) ? res.data : []);
+      if (Array.isArray(items) && items.length > 0) {
+        setGallery(items);
+      } else {
+        // R2 연동 이전(레거시) 자산 표시: 엔티티 상세에서 avatar/cover 및 image_descriptions를 합성해 보여줌
+        try {
+          if (entityType === 'character') {
+            const r = await charactersAPI.getCharacter(entityId);
+            const d = r?.data || {};
+            const urls = [d.avatar_url, ...(Array.isArray(d.image_descriptions) ? d.image_descriptions.map(x => x.url) : [])].filter(Boolean);
+            const legacy = urls.map((u, i) => ({ id: `url:${i}:${u}`, url: u, is_primary: i === 0 }));
+            setGallery(legacy);
+          } else if (entityType === 'story') {
+            const r = await storiesAPI.getStory(entityId);
+            const d = r?.data || {};
+            const urls = [d.cover_url].filter(Boolean);
+            const legacy = urls.map((u, i) => ({ id: `url:${i}:${u}`, url: u, is_primary: i === 0 }));
+            setGallery(legacy);
+          } else {
+            setGallery([]);
+          }
+        } catch (_) {
+          setGallery([]);
+        }
+      }
+    } catch (_) {
+      setGallery([]);
+    } finally { setGalleryBusy(false); }
+  };
+
+  React.useEffect(() => {
+    if (!open) { hasLoadedRef.current = false; return; }
+    if (open && !hasLoadedRef.current) { hasLoadedRef.current = true; loadGallery(); }
+  }, [open, entityType, entityId]);
+
+  // 대표 이미지 비율에 맞춰 생성 비율 기본값을 자동으로 선택
+  React.useEffect(() => {
+    const url = gallery?.[0]?.url;
+    if (!url) return;
+    try {
+      const img = new Image();
+      img.onload = () => {
+        const w = img.naturalWidth || 0;
+        const h = img.naturalHeight || 0;
+        if (!w || !h) return;
+        const v = w / h;
+        const opts = [
+          { key: '1:1', r: 1 },
+          { key: '3:4', r: 3/4 },
+          { key: '4:3', r: 4/3 },
+          { key: '16:9', r: 16/9 },
+          { key: '9:16', r: 9/16 },
+        ];
+        let best = opts[0];
+        let bestDiff = Math.abs(v - best.r);
+        for (let i=1;i<opts.length;i++){
+          const d = Math.abs(v - opts[i].r);
+          if (d < bestDiff){ best = opts[i]; bestDiff = d; }
+        }
+        setGenRatio(best.key);
+      };
+      img.src = url;
+    } catch (_) {}
+  }, [gallery]);
+
+  const ratioToNumber = (key) => {
+    switch (key) {
+      case '1:1': return 1;
+      case '3:4': return 3/4;
+      case '4:3': return 4/3;
+      case '16:9': return 16/9;
+      case '9:16': return 9/16;
+      default: return 1;
+    }
+  };
+
+  const openCropFor = (index) => {
+    if (index == null || index < 0 || index >= gallery.length) return;
+    setCropIndex(index);
+    setCropOpen(true);
+    // 초기 크롭 사각형 계산은 이미지 onLoad에서 수행
+  };
+
+  const onCropImgLoad = () => {
+    try {
+      const img = cropImgRef.current;
+      const wrap = cropWrapRef.current;
+      if (!img || !wrap) return;
+      const wrapW = wrap.clientWidth;
+      const wrapH = wrap.clientHeight;
+      const naturalW = img.naturalWidth || 1;
+      const naturalH = img.naturalHeight || 1;
+      // object-contain으로 표시된 실제 이미지 영역 계산
+      const scale = Math.min(wrapW / naturalW, wrapH / naturalH);
+      const dispW = Math.round(naturalW * scale);
+      const dispH = Math.round(naturalH * scale);
+      const dispX = Math.round((wrapW - dispW) / 2);
+      const dispY = Math.round((wrapH - dispH) / 2);
+      cropImgBoxRef.current = { x: dispX, y: dispY, w: dispW, h: dispH };
+
+      // 주어진 비율로 표시 이미지 영역을 가득 채우는 최대 사각형 계산
+      const r = ratioToNumber(genRatio);
+      let w = dispW;
+      let h = Math.round(w / r);
+      if (h > dispH) {
+        h = dispH;
+        w = Math.round(h * r);
+      }
+      const x = Math.round(dispX + (dispW - w) / 2);
+      const y = Math.round(dispY + (dispH - h) / 2);
+      setCropRect({ x, y, w, h });
+      setCropScale(1);
+    } catch (_) {}
+  };
+
+  const onCropMouseDown = (e) => {
+    e.preventDefault();
+    setCropDragging(true);
+    cropStartRef.current = { x: e.clientX - cropRect.x, y: e.clientY - cropRect.y };
+  };
+  const onCropMouseMove = (e) => {
+    if (!cropDragging) return;
+    const box = cropImgBoxRef.current;
+    const wrap = cropWrapRef.current;
+    if (!wrap || !box) return;
+    let nx = e.clientX - cropStartRef.current.x;
+    let ny = e.clientY - cropStartRef.current.y;
+    // 경계 클램프
+    nx = Math.max(box.x, Math.min(nx, box.x + box.w - cropRect.w));
+    ny = Math.max(box.y, Math.min(ny, box.y + box.h - cropRect.h));
+    setCropRect(prev => ({ ...prev, x: nx, y: ny }));
+  };
+  const onCropMouseUp = () => setCropDragging(false);
+
+  const onCropScale = (value) => {
+    try {
+      const box = cropImgBoxRef.current;
+      const wrap = cropWrapRef.current;
+      if (!wrap || !box) return;
+      const r = ratioToNumber(genRatio);
+      const factor = Math.max(0.3, Math.min(1, Number(value) || 1));
+      // 박스 안에서 꽉 차는 최대 사각형을 기준으로 스케일
+      let baseW = box.w;
+      let baseH = Math.round(baseW / r);
+      if (baseH > box.h) {
+        baseH = box.h;
+        baseW = Math.round(baseH * r);
+      }
+      let w = Math.round(baseW * factor);
+      let h = Math.round(baseH * factor);
+      let x = cropRect.x;
+      let y = cropRect.y;
+      // 중심 유지
+      const cx = cropRect.x + cropRect.w / 2;
+      const cy = cropRect.y + cropRect.h / 2;
+      x = Math.max(box.x, Math.min(cx - w / 2, box.x + box.w - w));
+      y = Math.max(box.y, Math.min(cy - h / 2, box.y + box.h - h));
+      setCropRect({ x, y, w, h });
+      setCropScale(factor);
+    } catch (_) {}
+  };
+
+  const applyCrop = async () => {
+    if (cropIndex < 0) { setCropOpen(false); return; }
+    try {
+      setCropLoading(true);
+      const imgEl = cropImgRef.current;
+      const wrap = cropWrapRef.current;
+      if (!imgEl || !wrap) return;
+      // 실 이미지 픽셀 기준 좌표로 변환
+      const naturalW = imgEl.naturalWidth || 0;
+      const naturalH = imgEl.naturalHeight || 0;
+      const box = cropImgBoxRef.current;
+      const dispW = box.w || wrap.clientWidth;
+      const dispH = box.h || wrap.clientHeight;
+      const offX = box.x || 0;
+      const offY = box.y || 0;
+      const sx = Math.max(0, Math.min(naturalW, (cropRect.x - offX) / dispW * naturalW));
+      const sy = Math.max(0, Math.min(naturalH, (cropRect.y - offY) / dispH * naturalH));
+      const sw = Math.max(1, Math.min(naturalW - sx, cropRect.w / dispW * naturalW));
+      const sh = Math.max(1, Math.min(naturalH - sy, cropRect.h / dispH * naturalH));
+      // 캔버스에 크롭
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(sw);
+      canvas.height = Math.round(sh);
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(imgEl, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+      const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+      if (!blob) return;
+      const file = new File([blob], 'crop.png', { type: 'image/png' });
+      const res = await mediaAPI.upload([file]);
+      const items = Array.isArray(res.data?.items) ? res.data.items : (res.data?.items ? [res.data.items] : []);
+      if (items.length > 0) {
+        setGallery(prev => {
+          const next = prev.slice();
+          next[cropIndex] = items[0];
+          return next;
+        });
+      }
+      setCropOpen(false);
+    } catch (_) {
+      try { window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', message: '크롭 실패' } })); } catch {}
+    } finally {
+      setCropLoading(false);
+    }
+  };
+
+  const onDragStart = (idx) => { dragIndexRef.current = idx; };
+  const onDragOver = (e) => { try { e.preventDefault(); } catch(_) {} };
+  const onDrop = (idx) => {
+    try {
+      const from = dragIndexRef.current;
+      if (from === null || from === undefined || from === idx) return;
+      setGallery(prev => {
+        const next = prev.slice();
+        const [moved] = next.splice(from, 1);
+        next.splice(idx, 0, moved);
+        return next;
+      });
+      // 드롭 후 자동 저장(디바운스)
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = setTimeout(() => {
+        saveReorder();
+      }, 600);
+    } finally { dragIndexRef.current = null; }
+  };
+
+  const saveReorder = async () => {
+    if (!gallery || gallery.length === 0) return;
+    setGalleryBusy(true);
+    try {
+      const orderedIds = gallery.map(g => g.id);
+      await mediaAPI.reorder({ entityType, entityId, orderedIds });
+      // 첫 번째를 대표로 지정
+      const firstId = orderedIds[0];
+      if (firstId) {
+        try { await mediaAPI.update(firstId, { is_primary: true }); } catch (_) {}
+      }
+      try { window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'success', message: '순서 저장됨 (첫 번째가 대표)' } })); } catch(_) {}
+      try { window.dispatchEvent(new CustomEvent('media:updated', { detail: { entityType, entityId } })); } catch(_) {}
+    } catch (_) {
+      try { window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', message: '순서 저장 실패' } })); } catch(_) {}
+    } finally { setGalleryBusy(false); }
+  };
+
+  return (
+    <>
+    <Dialog open={open} onOpenChange={(v)=>{ if(!v) onClose?.(); }}>
+      <DialogContent className="bg-gray-900 text-white border border-gray-800 max-w-4xl flex flex-col max-h-[85vh] overflow-hidden" aria-describedby="img-gen-insert-desc">
+        <button
+          type="button"
+          onClick={()=> onClose?.()}
+          aria-label="닫기"
+          className="absolute top-2 right-2 p-2 rounded-md bg-black/40 hover:bg-black/60 text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-500 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900"
+        >
+          <X className="w-4 h-4" />
+        </button>
+        <DialogHeader>
+          <DialogTitle>이미지 생성/삽입</DialogTitle>
+          <div id="img-gen-insert-desc" className="sr-only">이미지를 업로드하거나 생성하여 갤러리에 추가하고 순서를 변경합니다.</div>
+        </DialogHeader>
+        {/* 상단 생성/업로드 영역 */}
+        <div className="flex-shrink-0 p-4 bg-gray-800 border-b border-gray-700">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {/* 프로바이더는 Gemini 고정 */}
+              <div className="space-y-2">
+                <label className="text-xs text-gray-400">모델</label>
+                <input aria-label="이미지 생성 모델" value={genModel} onChange={(e)=> setGenModel(e.target.value)} className="w-full bg-gray-800 border border-gray-700 rounded p-2 text-sm text-white focus-visible:ring-2 focus-visible:ring-purple-500 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900" />
+              </div>
+              <div className="space-y-2">
+                <label className="text-xs text-gray-400">비율</label>
+                <select aria-label="이미지 비율" value={genRatio} onChange={(e)=> setGenRatio(e.target.value)} className="w-full bg-gray-800 border border-gray-700 rounded p-2 text-sm text-white focus-visible:ring-2 focus-visible:ring-purple-500 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900">
+                  <option value="1:1">1:1</option>
+                  <option value="3:4">3:4</option>
+                  <option value="4:3">4:3</option>
+                  <option value="16:9">16:9</option>
+                  <option value="9:16">9:16</option>
+                </select>
+              </div>
+              <div className="space-y-2">
+                <label className="text-xs text-gray-400">개수 (1~8)</label>
+                <input aria-label="생성 개수" type="number" min={1} max={8} value={genCount} onChange={(e)=> setGenCount(Math.max(1, Math.min(8, Number(e.target.value)||1)))} className="w-full bg-gray-800 border border-gray-700 rounded p-2 text-sm text-white focus-visible:ring-2 focus-visible:ring-purple-500 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900" />
+              </div>
+            </div>
+            <div className="space-y-2 mt-3">
+              <label className="text-xs text-gray-400">프롬프트</label>
+              <textarea rows={4} value={genPrompt} onChange={(e)=> setGenPrompt(e.target.value)} className="w-full bg-gray-800 border border-gray-700 rounded p-2 text-sm text-white focus-visible:ring-2 focus-visible:ring-purple-500 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900" placeholder="예) 보랏빛 네온의 사이버펑크 도시에서 미소짓는 요정" />
+              <div className="text-xs text-gray-500">- 팁: 스타일/조명/앵글/색감 키워드가 품질을 높입니다.</div>
+            </div>
+            <div className="flex items-center justify-end gap-2 mt-3">
+              <Button onClick={async()=>{
+                if (!genPrompt.trim()) { try { window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', message: '프롬프트를 입력해주세요.' } })); } catch(_) {} return; }
+                setBusy(true);
+                startEta('gemini', genCount);
+                const params = { provider: 'gemini', model: genModel, ratio: genRatio, count: genCount, prompt: genPrompt };
+                lastParamsRef.current = params;
+                try {
+                  const res = await mediaAPI.generate(params);
+                  const items = Array.isArray(res.data?.items) ? res.data.items : [];
+                  if (items.length === 0) {
+                    try { window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', message: '생성 결과가 없습니다.' } })); } catch(_) {}
+              } else {
+                setGallery(prev => [...prev, ...items]);
+                    try { window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'success', message: `${items.length}개 생성됨` } })); } catch(_) {}
+                  }
+                } catch (e) {
+                  try { window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', message: '생성 실패. 재시도 해주세요.' } })); } catch(_) {}
+                } finally { setBusy(false); clearEta(); }
+              }} disabled={busy} className="bg-purple-600 hover:bg-purple-700 inline-flex items-center gap-2">
+                {busy && <Loader2 className="w-4 h-4 animate-spin" />}<span>생성</span>
+              </Button>
+              <Button onClick={async()=>{
+                if (!lastParamsRef.current) return;
+                setBusy(true);
+                startEta('gemini', genCount);
+                try {
+                  const res = await mediaAPI.generate(lastParamsRef.current);
+                  const items = Array.isArray(res.data?.items) ? res.data.items : [];
+                  if (items.length > 0) {
+                    setGallery(prev => [...prev, ...items]);
+                    try { window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'success', message: `${items.length}개 생성됨` } })); } catch(_) {}
+                  }
+                } catch (_) {
+                  try { window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', message: '재시도 실패' } })); } catch(_) {}
+                } finally { setBusy(false); clearEta(); }
+              }} disabled={busy || !lastParamsRef.current} variant="outline" className="bg-gray-800 border-gray-700 text-gray-200">재시도</Button>
+            </div>
+            {busy && (
+              <div className="mt-2 text-xs text-gray-400">
+                <div className="flex items-center justify-between">
+                  <span>남은 시간(예상)</span>
+                  <span>{Math.ceil(etaMs/1000)}초</span>
+                </div>
+                <div className="h-1.5 bg-gray-800 rounded overflow-hidden mt-1">
+                  <div className="h-full bg-purple-500" style={{ width: `${Math.max(0, 100 - (etaMs / ( 60000 * Math.max(1, Number(genCount)||1) ))*100)}%` }} />
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* 단일 갤러리 영역 (스크롤 가능) */}
+        <div className="flex-grow overflow-y-auto p-4 space-y-4 custom-scrollbar">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-sm font-medium text-gray-200">갤러리</h3>
+            <div className="text-xs text-gray-400">드래그로 순서 변경 · 첫 번째가 대표</div>
+          </div>
+          {galleryBusy && <div className="text-xs text-gray-400 mb-2">불러오는 중...</div>}
+          <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-3" role="list" aria-label="이미지 갤러리">
+            {gallery.length===0 && !galleryBusy && (
+              <div className="col-span-3 text-center text-gray-400 py-8">갤러리에 이미지가 없습니다. 업로드하거나 생성해보세요.</div>
+            )}
+            {gallery.map((g, idx) => (
+              <div
+                key={g.id}
+                role="listitem"
+                draggable={!String(g.id).startsWith('url:')}
+                onDragStart={()=> { if (!String(g.id).startsWith('url:')) onDragStart(idx); }}
+                onDragOver={(e)=> { if (!String(g.id).startsWith('url:')) onDragOver(e); }}
+                onDrop={()=> { if (!String(g.id).startsWith('url:')) onDrop(idx); }}
+                className={`group relative border rounded-md overflow-hidden ${idx===0?'border-blue-500 ring-2 ring-blue-500':'border-gray-700'} bg-gray-800 cursor-pointer select-none`}
+                title={idx===0?'대표 이미지':''}
+                onClick={() => openCropFor(idx)}
+              >
+                {idx===0 && (
+                  <div className="absolute top-1 left-1 z-10 bg-blue-600 text-white text-[10px] px-1.5 py-0.5 rounded">대표</div>
+                )}
+                <img src={g.url} alt={`갤러리 이미지 ${idx+1}`} className="w-full h-28 object-cover" />
+                <button
+                  type="button"
+                  onMouseDown={(e)=> { e.stopPropagation(); e.preventDefault(); }}
+                  onDragStart={(e)=> { e.stopPropagation(); e.preventDefault(); }}
+                  onClick={(e)=> { e.stopPropagation(); e.preventDefault(); if (!String(g.id).startsWith('url:')) deleteOne(g.id); }}
+                  className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 transition bg-black/60 hover:bg-black/80 text-white rounded p-1"
+                  aria-label="이미지 삭제"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {busy && (
+          <div className="absolute inset-0 bg-black/30 backdrop-blur-sm rounded-lg flex items-center justify-center" aria-hidden>
+            <div className="flex items-center gap-2 text-gray-100 text-sm"><Loader2 className="w-4 h-4 animate-spin" /> 처리 중...</div>
+          </div>
+        )}
+
+        {/* 하단 확인 바 (좌측 업로드 추가) */}
+        <div className="flex-shrink-0 flex items-center justify-between gap-2 p-4 bg-gray-800 border-t border-gray-700">
+          <div className="flex items-center gap-2">
+            <input ref={inputRef} type="file" accept="image/*" multiple className="hidden" onChange={onFiles} />
+            <Button onClick={onPick} disabled={busy} className="bg-white text-black hover:bg-gray-100">업로드</Button>
+          </div>
+          <Button onClick={confirmAttach} disabled={busy || gallery.length === 0} className="bg-purple-600 hover:bg-purple-700">확인 ({gallery.length}개 삽입)</Button>
+        </div>
+        {/* ↑ 상단 생성/업로드 영역의 바깥 그리드 닫기 보완 */}
+      </DialogContent>
+    </Dialog>
+
+    {/* 크롭 모달 */}
+    <Dialog open={cropOpen} onOpenChange={(v)=>{ if(!v) setCropOpen(false); }}>
+      <DialogContent className="bg-gray-900 text-white border border-gray-800 max-w-3xl">
+        <DialogHeader>
+          <DialogTitle>이미지 크롭</DialogTitle>
+        </DialogHeader>
+        <div
+          ref={cropWrapRef}
+          className="relative w-full h-[60vh] bg-black/50 rounded-md overflow-hidden select-none"
+          onMouseMove={onCropMouseMove}
+          onMouseUp={onCropMouseUp}
+          onMouseLeave={onCropMouseUp}
+        >
+          {cropIndex >= 0 && gallery[cropIndex] && (
+            <img
+              ref={cropImgRef}
+              src={gallery[cropIndex].url}
+              alt="crop"
+              className="absolute inset-0 w-full h-full object-contain"
+              onLoad={onCropImgLoad}
+              draggable={false}
+            />
+          )}
+          {/* 크롭 사각형 */}
+          <div
+            className="absolute border-2 border-purple-500 bg-purple-500/10 cursor-move"
+            style={{ left: `${cropRect.x}px`, top: `${cropRect.y}px`, width: `${cropRect.w}px`, height: `${cropRect.h}px` }}
+            onMouseDown={onCropMouseDown}
+          />
+        </div>
+        <div className="mt-3 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-gray-400">크기</span>
+            <input type="range" min={0.3} max={1} step={0.01} value={cropScale} onChange={(e)=> onCropScale(e.target.value)} />
+          </div>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" className="bg-gray-800 border-gray-700 text-gray-200" onClick={()=> setCropOpen(false)} disabled={cropLoading}>취소</Button>
+            <Button className="bg-purple-600 hover:bg-purple-700" onClick={applyCrop} disabled={cropLoading}>{cropLoading ? '적용 중…' : '적용'}</Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+    </>
+  );
+};
+
+export default ImageGenerateInsertModal;
+
+

@@ -5,10 +5,10 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate,useLocation} from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { charactersAPI,API_BASE_URL, api } from '../lib/api';
+import { charactersAPI,API_BASE_URL, api, mediaAPI } from '../lib/api';
 import { resolveImageUrl } from '../lib/images';
 import { DEFAULT_SQUARE_URI } from '../lib/placeholder';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button } from '../components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '../components/ui/avatar';
 import { Badge } from '../components/ui/badge';
@@ -30,6 +30,8 @@ import ChatInteraction from '../components/ChatInteraction'; // 컴포넌트 임
 import CharacterDetails from '../components/CharacterDetails'; // 컴포넌트 임포트
 import AnalyzedCharacterCard from '../components/AnalyzedCharacterCard';
 import StoryExploreCard from '../components/StoryExploreCard';
+import ImageGenerateInsertModal from '../components/ImageGenerateInsertModal';
+import RecentGeneratedStrip from '../components/RecentGeneratedStrip';
 import { getReadingProgress } from '../lib/reading';
 
 const CharacterDetailPage = () => {
@@ -51,6 +53,18 @@ const CharacterDetailPage = () => {
   // 첫 번째 이미지의 가로세로 비율을 기억하여 메인 프리뷰의 사이즈를 고정
   const [baseRatio, setBaseRatio] = useState(1); // height/width
   const [likeCount, setLikeCount] = useState(0);
+  const [imgModalOpen, setImgModalOpen] = useState(false);
+
+  // Media assets for this character
+  const { data: mediaAssets = [], refetch: refetchMedia } = useQuery({
+    queryKey: ['media-assets', 'character', characterId],
+    queryFn: async () => {
+      const res = await mediaAPI.listAssets({ entityType: 'character', entityId: characterId, presign: true, expiresIn: 300 });
+      return Array.isArray(res.data?.items) ? res.data.items : (Array.isArray(res.data) ? res.data : []);
+    },
+    enabled: !!characterId,
+    staleTime: 0,
+  });
 
   const [comments, setComments] = useState([]);
   const [commentText, setCommentText] = useState('');
@@ -83,9 +97,10 @@ const CharacterDetailPage = () => {
         
         // 중복 제거 (아바타와 갤러리 이미지가 같을 수 있으므로)
         const uniqueImages = [...new Set(allImages)];
-
-        setGalleryImages(uniqueImages);
-        const first = uniqueImages[0] || DEFAULT_SQUARE_URI;
+        const fromAssets = (mediaAssets || []).map(a => a.url);
+        const finalImages = fromAssets.length > 0 ? fromAssets : uniqueImages;
+        setGalleryImages(finalImages);
+        const first = finalImages[0] || DEFAULT_SQUARE_URI;
         setActiveImage(first); // 기본 이미지
         // 첫 이미지의 비율을 측정해 고정
         try {
@@ -123,7 +138,15 @@ const CharacterDetailPage = () => {
       }
     };
     loadCharacterData();
-  }, [characterId, isAuthenticated]);
+  }, [characterId, isAuthenticated, mediaAssets]);
+
+  React.useEffect(() => {
+    if ((mediaAssets || []).length > 0) {
+      const urls = mediaAssets.map(a => a.url);
+      setGalleryImages(urls);
+      if (urls[0]) setActiveImage(urls[0]);
+    }
+  }, [mediaAssets]);
 
   const handleCommentSubmit = async (e) => {
     e.preventDefault();
@@ -278,6 +301,11 @@ const CharacterDetailPage = () => {
             <ArrowLeft className="w-5 h-5 mr-2" />
             뒤로 가기
           </Button>
+          {isOwner && (
+            <div className="mb-2">
+              <Button className="bg-purple-600 hover:bg-purple-700" onClick={()=> setImgModalOpen(true)}>대표이미지 생성/삽입</Button>
+            </div>
+          )}
         </header>
 
         {/* 메인 컨텐츠 그리드 */}
@@ -290,7 +318,10 @@ const CharacterDetailPage = () => {
                 src={resolveImageUrl(activeImage) || activeImage}
                 alt={character.name}
                 className="absolute inset-0 w-full h-full object-cover rounded-lg"
+                aria-live="polite"
+                aria-label={`${galleryImages.indexOf(activeImage) + 1} / ${galleryImages.length}`}
               />
+              <span className="sr-only" aria-live="polite">{`${galleryImages.indexOf(activeImage) + 1} / ${galleryImages.length}`}</span>
               <div className="absolute top-2 left-2">
                 {character?.origin_story_id ? (
                   <Badge className="bg-orange-400 text-black hover:bg-orange-400">원작챗</Badge>
@@ -394,6 +425,32 @@ const CharacterDetailPage = () => {
                   />
                 </div>
               ) : null}
+            />
+            {/* 최근 생성물: 현재 상세 엔티티 단위 */}
+            <RecentGeneratedStrip items={mediaAssets.slice(0, 20)} onSelect={(u)=> setActiveImage(u)} />
+            <ImageGenerateInsertModal
+              open={imgModalOpen}
+              onClose={(e)=>{ 
+                setImgModalOpen(false); 
+                if (e && e.attached) {
+                  try {
+                    refetchMedia();
+                    queryClient.invalidateQueries({ queryKey: ['characters'] });
+                    queryClient.invalidateQueries({ queryKey: ['trending-characters-daily'] });
+                    queryClient.invalidateQueries({ queryKey: ['top-origchat-daily'] });
+                    // 글로벌 미디어 갱신 이벤트 디스패치(채팅방 등에서 갤러리 갱신)
+                    try { window.dispatchEvent(new CustomEvent('media:updated', { detail: { entityType: 'character', entityId: characterId } })); } catch(_) {}
+                    // 삽입 후 바로 보기 포커스
+                    const focusUrl = e?.focusUrl;
+                    if (focusUrl) {
+                      setActiveImage(focusUrl);
+                      setGalleryImages(prev => Array.from(new Set([focusUrl, ...prev])));
+                    }
+                  } catch (_) {}
+                }
+              }}
+              entityType={'character'}
+              entityId={characterId}
             />
           </div>
         </div>

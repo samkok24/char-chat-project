@@ -11,6 +11,7 @@ import { formatCount } from '../lib/format';
 
 const TrendingItem = ({ character }) => {
   const navigate = useNavigate();
+  const charId = character?.id || character?.character_id || character?.characterId || character?.target_id;
   const imgSrc = resolveImageUrl(character?.thumbnail_url || character?.avatar_url) || DEFAULT_SQUARE_URI;
   const username = character?.creator_username;
   const isWebNovel = character?.source_type === 'IMPORTED';
@@ -18,7 +19,7 @@ const TrendingItem = ({ character }) => {
 
   return (
     <li>
-      <Link to={`/characters/${character?.id}`} className="flex gap-3 items-start">
+      <Link to={charId ? `/characters/${charId}` : '#'} className="flex gap-3 items-start" onClick={(e)=>{ if(!charId){ e.preventDefault(); e.stopPropagation(); } }}>
         <div className={`relative rounded-xl overflow-hidden flex-shrink-0 border ${isOrigChat ? 'border-orange-500/60' : (isWebNovel ? 'border-blue-500/40' : 'border-purple-500/40')}`} style={{ width: 89, height: 138 }}>
           <img
             src={imgSrc}

@@ -553,6 +553,64 @@ export const filesAPI = {
   },
 };
 
+// 🖼️ 미디어(이미지) API
+export const mediaAPI = {
+  listAssets: ({ entityType, entityId, presign = false, expiresIn = 300 }) =>
+    api.get(`/media/assets`, { params: { entity_type: entityType, entity_id: entityId, presign, expires_in: expiresIn } }),
+  upload: (files) => {
+    const form = new FormData();
+    files.forEach((f) => form.append('files', f));
+    return api.post(`/media/upload`, form, { headers: { 'Content-Type': 'multipart/form-data' } });
+  },
+  attach: ({ entityType, entityId, assetIds, asPrimary = false }) =>
+    api.post(`/media/assets/attach`, null, {
+      params: { entity_type: entityType, entity_id: entityId, asset_ids: assetIds, as_primary: asPrimary },
+      paramsSerializer: {
+        serialize: (params) => {
+          const usp = new URLSearchParams();
+          Object.entries(params).forEach(([k, v]) => {
+            if (Array.isArray(v)) v.forEach((x) => usp.append(k, x));
+            else if (v !== undefined && v !== null) usp.append(k, v);
+          });
+          return usp.toString();
+        },
+      },
+    }),
+  reorder: ({ entityType, entityId, orderedIds }) =>
+    api.patch(`/media/assets/order`, null, {
+      params: { entity_type: entityType, entity_id: entityId, ordered_ids: orderedIds },
+      paramsSerializer: {
+        serialize: (params) => {
+          const usp = new URLSearchParams();
+          Object.entries(params).forEach(([k, v]) => {
+            if (Array.isArray(v)) v.forEach((x) => usp.append(k, x));
+            else if (v !== undefined && v !== null) usp.append(k, v);
+          });
+          return usp.toString();
+        },
+      },
+    }),
+  update: (assetId, { is_primary, order_index } = {}) =>
+    api.patch(`/media/assets/${assetId}`, null, { params: { is_primary, order_index } }),
+  deleteAsset: (assetId) => api.delete(`/media/assets/${assetId}`),
+  deleteAssets: (assetIds) =>
+    api.delete(`/media/assets`, {
+      params: { asset_ids: assetIds },
+      paramsSerializer: {
+        serialize: (params) => {
+          const usp = new URLSearchParams();
+          Object.entries(params).forEach(([k, v]) => {
+            if (Array.isArray(v)) v.forEach((x) => usp.append(k, x));
+            else if (v !== undefined && v !== null) usp.append(k, v);
+          });
+          return usp.toString();
+        },
+      },
+    }),
+  generate: (params, options = {}) => api.post(`/media/generate`, null, { params, ...options }),
+  getJob: (jobId) => api.get(`/media/jobs/${jobId}`),
+};
+
 // 📝 기억노트 관련 API
 export const memoryNotesAPI = {
   // 특정 캐릭터의 기억노트 목록 조회
