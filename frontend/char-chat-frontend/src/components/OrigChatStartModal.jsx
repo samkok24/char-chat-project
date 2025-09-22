@@ -246,17 +246,17 @@ const OrigChatStartModal = ({ open, onClose, storyId, totalChapters = 1, lastRea
                     <>
                       <div className="text-sm text-gray-300 whitespace-pre-wrap">{preview?.description || '소개 정보가 없습니다.'}</div>
                       {/* 상세 필드 */}
+                      {preview?.world_setting && (
+                        <div className="text-sm"><span className="text-purple-400 drop-shadow-[0_0_6px_rgba(168,85,247,0.6)]">세계관</span> <span className="text-gray-200">{preview.world_setting}</span></div>
+                      )}
                       {preview?.personality && (
-                        <div className="text-sm"><span className="text-gray-400">성격</span> <span className="text-gray-200">{preview.personality}</span></div>
+                        <div className="text-sm"><span className="text-purple-400 drop-shadow-[0_0_6px_rgba(168,85,247,0.6)]">성격</span> <span className="text-gray-200">{preview.personality}</span></div>
                       )}
                       {preview?.speech_style && (
-                        <div className="text-sm"><span className="text-gray-400">말투</span> <span className="text-gray-200">{preview.speech_style}</span></div>
+                        <div className="text-sm"><span className="text-purple-400 drop-shadow-[0_0_6px_rgba(168,85,247,0.6)]">말투</span> <span className="text-gray-200">{preview.speech_style}</span></div>
                       )}
                       {preview?.greeting && (
-                        <div className="text-sm"><span className="text-gray-400">인사</span> <span className="text-gray-200">{preview.greeting}</span></div>
-                      )}
-                      {preview?.world_setting && (
-                        <div className="text-sm"><span className="text-gray-400">세계관</span> <span className="text-gray-200">{preview.world_setting}</span></div>
+                        <div className="text-sm"><span className="text-purple-400 drop-shadow-[0_0_6px_rgba(168,85,247,0.6)]">인사</span> <span className="text-gray-200">{preview.greeting}</span></div>
                       )}
                       {preview?.background_story && (
                         <div className="text-sm"><span className="text-gray-400">배경</span> <span className="text-gray-200">{preview.background_story}</span></div>

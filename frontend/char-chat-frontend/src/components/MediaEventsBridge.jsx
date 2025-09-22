@@ -12,6 +12,7 @@ const MediaEventsBridge = () => {
         // 공통: 주요 그리드/랭킹/탭 무효화
         queryClient.invalidateQueries({ queryKey: ['explore-stories'] });
         queryClient.invalidateQueries({ queryKey: ['top-stories-views'] });
+        queryClient.invalidateQueries({ queryKey: ['top-stories-daily'] });
         queryClient.invalidateQueries({ queryKey: ['trending-characters-daily'] });
         queryClient.invalidateQueries({ queryKey: ['top-origchat-daily'] });
         queryClient.invalidateQueries({ queryKey: ['characters'] });
@@ -22,10 +23,15 @@ const MediaEventsBridge = () => {
         if (detail?.entityType === 'story' && detail?.entityId) {
           // 스토리 상세/챕터 목록 등
           queryClient.invalidateQueries({ queryKey: ['story-detail', detail.entityId] });
+          queryClient.invalidateQueries({ queryKey: ['story', detail.entityId] });
+          queryClient.invalidateQueries({ queryKey: ['media-assets', 'story', detail.entityId] });
           queryClient.invalidateQueries({ queryKey: ['chapters-by-story', detail.entityId] });
         }
         if ((detail?.entityType === 'character' || detail?.entityType === 'origchat') && detail?.entityId) {
           queryClient.invalidateQueries({ queryKey: ['character-detail', detail.entityId] });
+          queryClient.invalidateQueries({ queryKey: ['top-origchat-daily'] });
+          // 내 원작챗 탭도 즉시 반영
+          queryClient.invalidateQueries({ queryKey: ['my-origchat-chars'] });
         }
       } catch (_) {}
     };

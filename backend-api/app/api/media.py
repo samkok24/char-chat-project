@@ -85,10 +85,20 @@ async def _sync_primary_to_entity(db: AsyncSession, entity_type: str, entity_id:
     asset = (await db.execute(q)).scalars().first()
     if not asset:
         return
+    # 캐시 버스트를 위해 버전 파라미터 추가
+    new_url = asset.url
+    try:
+        import time as _time
+        if new_url and "?" not in new_url:
+            new_url = f"{new_url}?v={int(_time.time())}"
+        elif new_url and "?" in new_url and "v=" not in new_url:
+            new_url = f"{new_url}&v={int(_time.time())}"
+    except Exception:
+        pass
     if entity_type == "character" or entity_type == "origchat":
-        await db.execute(update(Character).where(Character.id == entity_id).values(avatar_url=asset.url))
+        await db.execute(update(Character).where(Character.id == entity_id).values(avatar_url=new_url))
     elif entity_type == "story":
-        await db.execute(update(Story).where(Story.id == entity_id).values(cover_url=asset.url))
+        await db.execute(update(Story).where(Story.id == entity_id).values(cover_url=new_url))
     await db.commit()
 
 
@@ -278,7 +288,13 @@ async def generate_images_endpoint(
                                 ext = '.webp'
                             elif 'png' in mime_type:
                                 ext = '.png'
+                        # 캐시 갱신을 위해 쿼리 파라미터로 짧은 버전 스탬프 추가
                         asset_url = storage.save_bytes(raw, content_type=mime_type, key_hint=f"gen{ext}")
+                        try:
+                            if asset_url and "?" not in asset_url:
+                                asset_url = f"{asset_url}?v={int(__import__('time').time())}"
+                        except Exception:
+                            pass
                         asset = MediaAsset(
                             id=str(uuid.uuid4()),
                             user_id=str(current_user.id),
@@ -312,6 +328,30 @@ async def generate_images_endpoint(
 @router.get("/jobs/{job_id}")
 async def generation_job_status(job_id: str):
     return {"id": job_id, "status": "pending"}
+
+
+@router.post("/jobs/{job_id}/cancel")
+async def cancel_generation_job(job_id: str):
+    # 현재 동기 생성이므로 실제 취소는 클라이언트 AbortController로 처리.
+    # 추후 비동기 잡 큐 도입 시 상태 저장 로직 연계.
+    return {"id": job_id, "status": "cancelled"}
+
+
+@router.post("/events")
+async def track_media_event(
+    event: str = Query(..., description="generate_start|generate_success|generate_cancel|attach_commit|delete|reorder"),
+    entity_type: Optional[str] = Query(None),
+    entity_id: Optional[str] = Query(None),
+    count: Optional[int] = Query(None),
+):
+    try:
+        import logging
+        logging.getLogger("uvicorn.access").info(
+            f"media_event event={event} entity_type={entity_type} entity_id={entity_id} count={count}"
+        )
+    except Exception:
+        pass
+    return {"ok": True}
 
 
 @router.post("/assets/attach", response_model=MediaAssetListResponse)

@@ -12,7 +12,9 @@ import { formatCount } from '../lib/format';
 const TrendingItem = ({ character }) => {
   const navigate = useNavigate();
   const charId = character?.id || character?.character_id || character?.characterId || character?.target_id;
-  const imgSrc = resolveImageUrl(character?.thumbnail_url || character?.avatar_url) || DEFAULT_SQUARE_URI;
+  const raw = character?.thumbnail_url || character?.avatar_url;
+  const withV = raw ? `${raw}${raw.includes('?') ? '&' : '?'}v=${Date.now()}` : raw;
+  const imgSrc = resolveImageUrl(withV) || DEFAULT_SQUARE_URI;
   const username = character?.creator_username;
   const isWebNovel = character?.source_type === 'IMPORTED';
   const isOrigChat = !!(character?.origin_story_id || character?.is_origchat);

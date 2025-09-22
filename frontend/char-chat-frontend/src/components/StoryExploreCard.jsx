@@ -6,7 +6,7 @@ import { resolveImageUrl } from '../lib/images';
 
 const StoryExploreCard = ({ story, compact = false, onClick }) => {
   const navigate = useNavigate();
-  const cover = story?.cover_url || '';
+  const cover = story?.cover_url ? `${story.cover_url}${story.cover_url.includes('?') ? '&' : '?'}v=${Date.now()}` : '';
   const username = story?.creator_username;
 
   return (

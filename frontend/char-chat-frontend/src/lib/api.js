@@ -609,6 +609,8 @@ export const mediaAPI = {
     }),
   generate: (params, options = {}) => api.post(`/media/generate`, null, { params, ...options }),
   getJob: (jobId) => api.get(`/media/jobs/${jobId}`),
+  cancelJob: (jobId) => api.post(`/media/jobs/${jobId}/cancel`),
+  trackEvent: ({ event, entityType, entityId, count }) => api.post(`/media/events`, null, { params: { event, entity_type: entityType, entity_id: entityId, count } }),
 };
 
 // 📝 기억노트 관련 API

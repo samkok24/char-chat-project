@@ -12,8 +12,9 @@ const TopStories = () => {
       const items = Array.isArray(res.data?.items) ? res.data.items : [];
       return items;
     },
-    staleTime: 60 * 1000,
+    staleTime: 0,
     refetchOnWindowFocus: true,
+    refetchOnMount: 'always',
   });
   const empty = !isLoading && (!data || data.length === 0);
 

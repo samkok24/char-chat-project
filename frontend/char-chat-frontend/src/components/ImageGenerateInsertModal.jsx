@@ -17,13 +17,15 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId }) => {
   // 생성 탭 상태
   const [genProvider] = React.useState('gemini'); // 고정: gemini
   const [genModel, setGenModel] = React.useState('gemini-2.5-flash-image-preview');
-  const [genRatio, setGenRatio] = React.useState('1:1');
-  const [genCount, setGenCount] = React.useState(2);
+  // 기본값: 상세 페이지 메인 컨테이너(세로 3:4)에 맞춤
+  const [genRatio, setGenRatio] = React.useState('3:4');
+  const [genCount, setGenCount] = React.useState(1);
   const [genPrompt, setGenPrompt] = React.useState('');
   const lastParamsRef = React.useRef(null);
   // 남은 시간 표시
   const [etaMs, setEtaMs] = React.useState(0);
   const etaTimerRef = React.useRef(null);
+  const abortRef = React.useRef(null);
 
   // 크롭 모달 상태
   const [cropOpen, setCropOpen] = React.useState(false);
@@ -63,6 +65,25 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId }) => {
   };
 
   const onPick = () => inputRef.current?.click();
+  const canonUrl = (u) => {
+    try {
+      const q = String(u || '');
+      const i = q.indexOf('?');
+      return i >= 0 ? q.slice(0, i) : q;
+    } catch (_) { return String(u || ''); }
+  };
+  const dedupAssets = (arr) => {
+    const seen = new Set();
+    const out = [];
+    for (const a of arr) {
+      const u = canonUrl(a?.url);
+      const key = u || (a?.id ? String(a.id) : '');
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      out.push(a);
+    }
+    return out;
+  };
   const onFiles = async (e) => {
     const selected = Array.from(e.target.files || []);
     if (!selected.length) return;
@@ -70,7 +91,7 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId }) => {
     try {
       const res = await mediaAPI.upload(selected);
       const items = res.data?.items || [];
-      setGallery((prev) => [...prev, ...items]);
+      setGallery((prev) => dedupAssets([...prev, ...items]));
     } catch (_) {
       // noop
     } finally { setBusy(false); }
@@ -81,11 +102,16 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId }) => {
     setBusy(true);
     try {
       const focusUrl = gallery[0]?.url || '';
-      await mediaAPI.attach({ entityType, entityId, assetIds: gallery.map(s => s.id), asPrimary: true });
+      const realIds = gallery.filter(s => !String(s.id).startsWith('url:')).map(s => s.id);
+      if (realIds.length) {
+        await mediaAPI.attach({ entityType, entityId, assetIds: realIds, asPrimary: true });
+      }
       // 전역 반영 이벤트 (모달 자체에서도 발행)
       try { window.dispatchEvent(new CustomEvent('media:updated', { detail: { entityType, entityId } })); } catch(_) {}
       try { window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'success', message: `삽입 완료 (${gallery.length}개)` } })); } catch(_) {}
       onClose?.({ attached: true, focusUrl });
+      // 상세 페이지 강제 refetch 유도
+      try { window.dispatchEvent(new CustomEvent('media:updated', { detail: { entityType, entityId } })); } catch(_) {}
     } finally { setBusy(false); }
   };
 
@@ -100,10 +126,10 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId }) => {
     if (!entityType || !entityId) return;
     try {
       setGalleryBusy(true);
-      const res = await mediaAPI.listAssets({ entityType, entityId, presign: true, expiresIn: 300 });
+      const res = await mediaAPI.listAssets({ entityType, entityId, presign: false, expiresIn: 300 });
       const items = Array.isArray(res.data?.items) ? res.data.items : (Array.isArray(res.data) ? res.data : []);
       if (Array.isArray(items) && items.length > 0) {
-        setGallery(items);
+        setGallery(dedupAssets(items));
       } else {
         // R2 연동 이전(레거시) 자산 표시: 엔티티 상세에서 avatar/cover 및 image_descriptions를 합성해 보여줌
         try {
@@ -137,34 +163,7 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId }) => {
   }, [open, entityType, entityId]);
 
   // 대표 이미지 비율에 맞춰 생성 비율 기본값을 자동으로 선택
-  React.useEffect(() => {
-    const url = gallery?.[0]?.url;
-    if (!url) return;
-    try {
-      const img = new Image();
-      img.onload = () => {
-        const w = img.naturalWidth || 0;
-        const h = img.naturalHeight || 0;
-        if (!w || !h) return;
-        const v = w / h;
-        const opts = [
-          { key: '1:1', r: 1 },
-          { key: '3:4', r: 3/4 },
-          { key: '4:3', r: 4/3 },
-          { key: '16:9', r: 16/9 },
-          { key: '9:16', r: 9/16 },
-        ];
-        let best = opts[0];
-        let bestDiff = Math.abs(v - best.r);
-        for (let i=1;i<opts.length;i++){
-          const d = Math.abs(v - opts[i].r);
-          if (d < bestDiff){ best = opts[i]; bestDiff = d; }
-        }
-        setGenRatio(best.key);
-      };
-      img.src = url;
-    } catch (_) {}
-  }, [gallery]);
+  // 기본값은 3:4 유지. 이전 대표 이미지 비율로 자동 조정하지 않음.
 
   const ratioToNumber = (key) => {
     switch (key) {
@@ -308,23 +307,35 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId }) => {
     }
   };
 
-  const onDragStart = (idx) => { dragIndexRef.current = idx; };
-  const onDragOver = (e) => { try { e.preventDefault(); } catch(_) {} };
-  const onDrop = (idx) => {
+  const onDragStartItem = (e, idx) => {
+    dragIndexRef.current = idx;
     try {
-      const from = dragIndexRef.current;
-      if (from === null || from === undefined || from === idx) return;
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', String(idx));
+    } catch (_) {}
+  };
+  const onDragOverItem = (e) => { try { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; } catch(_) {} };
+  const onDragEnterItem = (e) => { try { e.preventDefault(); } catch(_) {} };
+  const onDropItem = (e, idx) => {
+    try {
+      e.preventDefault();
+      let from = dragIndexRef.current;
+      if (from === null || from === undefined) {
+        try { from = parseInt(e.dataTransfer.getData('text/plain') || '-1', 10); } catch (_) { from = -1; }
+      }
+      if (from === -1 || from === idx) return;
+      // 안전 가드: 인덱스 범위 확인
+      if (from < 0 || from >= gallery.length || idx < 0 || idx >= gallery.length) return;
       setGallery(prev => {
         const next = prev.slice();
         const [moved] = next.splice(from, 1);
         next.splice(idx, 0, moved);
         return next;
       });
-      // 드롭 후 자동 저장(디바운스)
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
       saveTimerRef.current = setTimeout(() => {
         saveReorder();
-      }, 600);
+      }, 400);
     } finally { dragIndexRef.current = null; }
   };
 
@@ -392,6 +403,8 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId }) => {
               <div className="text-xs text-gray-500">- 팁: 스타일/조명/앵글/색감 키워드가 품질을 높입니다.</div>
             </div>
             <div className="flex items-center justify-end gap-2 mt-3">
+              {/* 취소를 위해 AbortController 사용 */}
+              
               <Button onClick={async()=>{
                 if (!genPrompt.trim()) { try { window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', message: '프롬프트를 입력해주세요.' } })); } catch(_) {} return; }
                 setBusy(true);
@@ -399,35 +412,26 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId }) => {
                 const params = { provider: 'gemini', model: genModel, ratio: genRatio, count: genCount, prompt: genPrompt };
                 lastParamsRef.current = params;
                 try {
-                  const res = await mediaAPI.generate(params);
+                  try { await mediaAPI.trackEvent({ event: 'generate_start', entityType, entityId, count: genCount }); } catch(_) {}
+                  const controller = new AbortController();
+                  abortRef.current = controller;
+                  const res = await mediaAPI.generate(params, { signal: controller.signal });
                   const items = Array.isArray(res.data?.items) ? res.data.items : [];
                   if (items.length === 0) {
                     try { window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', message: '생성 결과가 없습니다.' } })); } catch(_) {}
               } else {
-                setGallery(prev => [...prev, ...items]);
+                setGallery(prev => dedupAssets([...prev, ...items]));
                     try { window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'success', message: `${items.length}개 생성됨` } })); } catch(_) {}
+                    try { await mediaAPI.trackEvent({ event: 'generate_success', entityType, entityId, count: items.length }); } catch(_) {}
                   }
                 } catch (e) {
                   try { window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', message: '생성 실패. 재시도 해주세요.' } })); } catch(_) {}
-                } finally { setBusy(false); clearEta(); }
+                } finally { setBusy(false); clearEta(); abortRef.current = null; }
               }} disabled={busy} className="bg-purple-600 hover:bg-purple-700 inline-flex items-center gap-2">
                 {busy && <Loader2 className="w-4 h-4 animate-spin" />}<span>생성</span>
               </Button>
-              <Button onClick={async()=>{
-                if (!lastParamsRef.current) return;
-                setBusy(true);
-                startEta('gemini', genCount);
-                try {
-                  const res = await mediaAPI.generate(lastParamsRef.current);
-                  const items = Array.isArray(res.data?.items) ? res.data.items : [];
-                  if (items.length > 0) {
-                    setGallery(prev => [...prev, ...items]);
-                    try { window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'success', message: `${items.length}개 생성됨` } })); } catch(_) {}
-                  }
-                } catch (_) {
-                  try { window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', message: '재시도 실패' } })); } catch(_) {}
-                } finally { setBusy(false); clearEta(); }
-              }} disabled={busy || !lastParamsRef.current} variant="outline" className="bg-gray-800 border-gray-700 text-gray-200">재시도</Button>
+              {/* 재시도 버튼 제거 */}
+              <Button onClick={async()=>{ try { if (abortRef.current) { abortRef.current.abort(); } await mediaAPI.cancelJob('ad-hoc'); await mediaAPI.trackEvent({ event: 'generate_cancel', entityType, entityId }); window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'success', message: '생성 취소됨' } })); } catch(_) {} clearEta(); setBusy(false); abortRef.current = null; }} disabled={!busy} variant="outline" className="bg-gray-800 border-gray-700 text-gray-200">취소</Button>
             </div>
             {busy && (
               <div className="mt-2 text-xs text-gray-400">
@@ -458,18 +462,20 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId }) => {
               <div
                 key={g.id}
                 role="listitem"
-                draggable={!String(g.id).startsWith('url:')}
-                onDragStart={()=> { if (!String(g.id).startsWith('url:')) onDragStart(idx); }}
-                onDragOver={(e)=> { if (!String(g.id).startsWith('url:')) onDragOver(e); }}
-                onDrop={()=> { if (!String(g.id).startsWith('url:')) onDrop(idx); }}
-                className={`group relative border rounded-md overflow-hidden ${idx===0?'border-blue-500 ring-2 ring-blue-500':'border-gray-700'} bg-gray-800 cursor-pointer select-none`}
+                draggable={true}
+                onDragStart={(e)=> onDragStartItem(e, idx)}
+                onDragOver={(e)=> onDragOverItem(e)}
+                onDragEnter={(e)=> onDragEnterItem(e)}
+                onDrop={(e)=> onDropItem(e, idx)}
+                onDragEnd={()=> { dragIndexRef.current = null; }}
+                className={`group relative border rounded-md overflow-hidden ${idx===0?'border-blue-500 ring-2 ring-blue-500':'border-gray-700'} bg-gray-800 cursor-grab active:cursor-grabbing select-none`}
                 title={idx===0?'대표 이미지':''}
                 onClick={() => openCropFor(idx)}
               >
                 {idx===0 && (
                   <div className="absolute top-1 left-1 z-10 bg-blue-600 text-white text-[10px] px-1.5 py-0.5 rounded">대표</div>
                 )}
-                <img src={g.url} alt={`갤러리 이미지 ${idx+1}`} className="w-full h-28 object-cover" />
+                <img src={g.url} alt={`갤러리 이미지 ${idx+1}`} className="w-full h-28 object-cover" draggable={false} />
                 <button
                   type="button"
                   onMouseDown={(e)=> { e.stopPropagation(); e.preventDefault(); }}
@@ -485,11 +491,7 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId }) => {
           </div>
         </div>
 
-        {busy && (
-          <div className="absolute inset-0 bg-black/30 backdrop-blur-sm rounded-lg flex items-center justify-center" aria-hidden>
-            <div className="flex items-center gap-2 text-gray-100 text-sm"><Loader2 className="w-4 h-4 animate-spin" /> 처리 중...</div>
-          </div>
-        )}
+        {/* 로딩 오버레이 제거: 취소 버튼 접근 가능 유지 */}
 
         {/* 하단 확인 바 (좌측 업로드 추가) */}
         <div className="flex-shrink-0 flex items-center justify-between gap-2 p-4 bg-gray-800 border-t border-gray-700">

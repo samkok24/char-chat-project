@@ -31,7 +31,6 @@ import CharacterDetails from '../components/CharacterDetails'; // 컴포넌트 �
 import AnalyzedCharacterCard from '../components/AnalyzedCharacterCard';
 import StoryExploreCard from '../components/StoryExploreCard';
 import ImageGenerateInsertModal from '../components/ImageGenerateInsertModal';
-import RecentGeneratedStrip from '../components/RecentGeneratedStrip';
 import { getReadingProgress } from '../lib/reading';
 
 const CharacterDetailPage = () => {
@@ -59,11 +58,12 @@ const CharacterDetailPage = () => {
   const { data: mediaAssets = [], refetch: refetchMedia } = useQuery({
     queryKey: ['media-assets', 'character', characterId],
     queryFn: async () => {
-      const res = await mediaAPI.listAssets({ entityType: 'character', entityId: characterId, presign: true, expiresIn: 300 });
+      const res = await mediaAPI.listAssets({ entityType: 'character', entityId: characterId, presign: false, expiresIn: 300 });
       return Array.isArray(res.data?.items) ? res.data.items : (Array.isArray(res.data) ? res.data : []);
     },
     enabled: !!characterId,
     staleTime: 0,
+    refetchOnMount: 'always',
   });
 
   const [comments, setComments] = useState([]);
@@ -102,16 +102,8 @@ const CharacterDetailPage = () => {
         setGalleryImages(finalImages);
         const first = finalImages[0] || DEFAULT_SQUARE_URI;
         setActiveImage(first); // 기본 이미지
-        // 첫 이미지의 비율을 측정해 고정
-        try {
-          const probe = new Image();
-          probe.onload = () => {
-            const w = probe.naturalWidth || 1;
-            const h = probe.naturalHeight || 1;
-            setBaseRatio(h / w);
-          };
-          probe.src = resolveImageUrl(first) || first;
-        } catch (_) {}
+        // 상세 메인 프리뷰는 항상 3:4(세로형)로 고정
+        setBaseRatio(4/3);
         
         // 좋아요 상태 확인
         if (isAuthenticated) {
@@ -145,6 +137,8 @@ const CharacterDetailPage = () => {
       const urls = mediaAssets.map(a => a.url);
       setGalleryImages(urls);
       if (urls[0]) setActiveImage(urls[0]);
+      // 상세는 세로형 컨테이너 고정(기본 3:4)
+      setBaseRatio(4/3);
     }
   }, [mediaAssets]);
 
@@ -426,8 +420,7 @@ const CharacterDetailPage = () => {
                 </div>
               ) : null}
             />
-            {/* 최근 생성물: 현재 상세 엔티티 단위 */}
-            <RecentGeneratedStrip items={mediaAssets.slice(0, 20)} onSelect={(u)=> setActiveImage(u)} />
+            {/* 최근 생성물 스트립 제거 */}
             <ImageGenerateInsertModal
               open={imgModalOpen}
               onClose={(e)=>{ 

@@ -3,8 +3,7 @@ import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import AppLayout from '../components/layout/AppLayout';
 import { Button } from '../components/ui/button';
-import { storiesAPI, chaptersAPI, origChatAPI, mediaAPI } from '../lib/api';
-import RecentGeneratedStrip from '../components/RecentGeneratedStrip';
+import { storiesAPI, chaptersAPI, origChatAPI, mediaAPI, charactersAPI } from '../lib/api';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
 import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogCancel, AlertDialogAction } from '../components/ui/alert-dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
@@ -90,11 +89,12 @@ const StoryDetailPage = () => {
   const { data: mediaAssets = [], refetch: refetchMedia } = useQuery({
     queryKey: ['media-assets', 'story', storyId],
     queryFn: async () => {
-      const res = await mediaAPI.listAssets({ entityType: 'story', entityId: storyId, presign: true, expiresIn: 300 });
+      const res = await mediaAPI.listAssets({ entityType: 'story', entityId: storyId, presign: false, expiresIn: 300 });
       return Array.isArray(res.data?.items) ? res.data.items : (Array.isArray(res.data) ? res.data : []);
     },
     enabled: !!storyId,
     staleTime: 0,
+    refetchOnMount: 'always',
   });
 
   // 갤러리 이미지 구성: mediaAssets 우선, 없으면 cover_url + keywords의 cover: 항목들
@@ -106,17 +106,8 @@ const StoryDetailPage = () => {
         setGalleryImages(uniqueA);
         const firstA = uniqueA[0] || '';
         setActiveImage(firstA);
-        if (firstA) {
-          try {
-            const probe = new Image();
-            probe.onload = () => {
-              const w = probe.naturalWidth || 1;
-              const h = probe.naturalHeight || 1;
-              setBaseRatio(h / w);
-            };
-            probe.src = resolveImageUrl(firstA) || firstA;
-          } catch (_) { setBaseRatio(1); }
-        } else { setBaseRatio(1); }
+        // 기본 3:4 비율로 고정
+        setBaseRatio(4/3);
         return;
       }
 
@@ -129,17 +120,7 @@ const StoryDetailPage = () => {
       setGalleryImages(fallback);
       const first = fallback[0] || '';
       setActiveImage(first);
-      if (first) {
-        try {
-          const probe = new Image();
-          probe.onload = () => {
-            const w = probe.naturalWidth || 1;
-            const h = probe.naturalHeight || 1;
-            setBaseRatio(h / w);
-          };
-          probe.src = resolveImageUrl(first) || first;
-        } catch (_) { setBaseRatio(1); }
-      } else { setBaseRatio(1); }
+      setBaseRatio(4/3);
     } catch (_) {
       setGalleryImages([]);
       setActiveImage('');
@@ -414,7 +395,7 @@ const StoryDetailPage = () => {
               </div>
               {/* 미니 갤러리: 가로 스크롤 썸네일 */}
               {galleryImages.length > 0 && (
-                <div id="detail-thumbnail-gallery" className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
+              <div id="detail-thumbnail-gallery" className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
                   {galleryImages.map((imgUrl, index) => {
                     const isActive = activeImage === imgUrl;
                     return (
@@ -434,7 +415,7 @@ const StoryDetailPage = () => {
                   })}
                 </div>
               )}
-              <RecentGeneratedStrip items={mediaAssets.slice(0, 20)} onSelect={(u)=> setActiveImage(u)} />
+              {/* 최근 생성물 스트립 제거 */}
             </div>
 
             {/* Right: Info & Actions */}
@@ -808,6 +789,8 @@ const ExtractedCharactersGrid = ({ storyId, itemsOverride = null, onStart, maxNo
   const [busyId, setBusyId] = useState(null);
   const [toast, setToast] = useState({ show: false, type: 'success', message: '' });
   const [openId, setOpenId] = useState(null);
+  const [previewMap, setPreviewMap] = useState({});
+  const [previewLoadingId, setPreviewLoadingId] = useState(null);
   const [profileOpenId, setProfileOpenId] = useState(null);
   const [fromNo, setFromNo] = useState('1');
   const [toNo, setToNo] = useState('1');
@@ -846,12 +829,30 @@ const ExtractedCharactersGrid = ({ storyId, itemsOverride = null, onStart, maxNo
     <>
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
         {items.map((c, idx) => (
-        <Dialog key={`${c.name}-${idx}`} open={openId===idx} onOpenChange={(v)=> setOpenId(v?idx:null)}>
+        <Dialog key={`${c.name}-${idx}`} open={openId===idx} onOpenChange={async (v)=> {
+          if (v) {
+            setOpenId(idx);
+            // 상세 프리뷰 비동기 로드 (OrigChatStartModal과 동일)
+            if (c.character_id && !previewMap[c.character_id]) {
+              try {
+                setPreviewLoadingId(c.character_id);
+                const res = await charactersAPI.getCharacter(c.character_id);
+                setPreviewMap((m)=> ({ ...m, [c.character_id]: res.data || null }));
+              } catch(_) {
+                setPreviewMap((m)=> ({ ...m, [c.character_id]: null }));
+              } finally {
+                setPreviewLoadingId(null);
+              }
+            }
+          } else {
+            setOpenId(null);
+          }
+        }}>
           <DialogTrigger asChild>
             <div className="relative bg-gray-800/40 border border-gray-700 rounded-md p-3 text-left hover:bg-gray-700/40">
               <div className="flex items-center gap-3">
                 {c.avatar_url ? (
-                  <img src={c.avatar_url} alt={c.name} className="w-10 h-10 rounded-full object-cover" />
+                  <img src={(c.avatar_url || '') + ((c.avatar_url||'').includes('?') ? '&' : '?') + 'v=' + Date.now()} alt={c.name} className="w-10 h-10 rounded-full object-cover" />
                 ) : (
                   <div className="w-10 h-10 rounded-full bg-blue-600 text-white flex items-center justify-center text-sm font-bold">
                     {c.initial || (c.name||'')[0] || 'C'}
@@ -909,26 +910,60 @@ const ExtractedCharactersGrid = ({ storyId, itemsOverride = null, onStart, maxNo
               )}
             </div>
           </DialogTrigger>
-          <DialogContent className="bg-gray-900 text-white border border-gray-700" aria-describedby={`dlg-desc-${idx}`}>
+          <DialogContent className="bg-gray-900 text-white border border-gray-700 max-w-4xl md:max-w-5xl" aria-describedby={`dlg-desc-${idx}`}>
             <DialogHeader>
               <DialogTitle className="text-white">원작챗 시작 - {c.name}</DialogTitle>
               <div className="sr-only" id={`dlg-desc-${idx}`}>회차 범위 선택 모달</div>
             </DialogHeader>
-            <div className="space-y-3" aria-describedby={`dlg-desc-${idx}`} role="document">
-              {/* 상세페이지 이동 버튼 */}
-              {c.character_id && (
-                <div className="flex justify-end">
-                  <Button
-                    variant="outline"
-                    className="h-8 px-3 bg-white text-black border-gray-300 hover:bg-gray-100"
-                    onClick={()=> { setOpenId(null); navigate(`/characters/${c.character_id}`); }}
-                  >상세페이지</Button>
+            <div className="space-y-4" aria-describedby={`dlg-desc-${idx}`} role="document">
+              {/* 미리보기: OrigChatStartModal과 동일 스타일 */}
+              <div className="grid grid-cols-1 lg:grid-cols-[320px_minmax(0,1fr)] gap-4">
+                <div>
+                  <div className="relative w-full rounded-lg overflow-hidden border border-gray-700" style={{ paddingTop: '100%' }}>
+                    {(() => {
+                      const pv = c.character_id ? previewMap[c.character_id] : null;
+                      const main = pv?.avatar_url || (Array.isArray(pv?.image_descriptions) && pv.image_descriptions[0]?.url) || c.avatar_url || '';
+                      return main ? (
+                        <img src={resolveImageUrl(main) || main} alt={c.name} className="absolute inset-0 w-full h-full object-cover" />
+                      ) : (
+                        <div className="absolute inset-0 flex items-center justify-center text-gray-500">NO IMAGE</div>
+                      );
+                    })()}
+                  </div>
                 </div>
-              )}
-              <div className="text-sm text-gray-300">회차 범위를 선택하세요 (예: 1~6, 4~35)</div>
-              <div className="text-xs text-gray-400">
-                마지막까지 본 회차는 {lastReadNo > 0 ? `${lastReadNo}화` : '없습니다'}.
+                <div className="space-y-2 min-w-0">
+                  <div className="text-white font-semibold text-lg truncate">{c.name}</div>
+                  {previewLoadingId === c.character_id ? (
+                    <div className="h-16 bg-gray-800/60 rounded" />
+                  ) : (
+                    (() => {
+                      const pv = c.character_id ? previewMap[c.character_id] : null;
+                      return (
+                        <>
+                          <div className="text-sm text-gray-300 whitespace-pre-wrap">{pv?.description || c.description || '소개 정보가 없습니다.'}</div>
+                          {pv?.world_setting && (<div className="text-sm"><span className="text-purple-400 drop-shadow-[0_0_6px_rgba(168,85,247,0.6)]">세계관</span> <span className="text-gray-200">{pv.world_setting}</span></div>)}
+                          {pv?.personality && (<div className="text-sm"><span className="text-purple-400 drop-shadow-[0_0_6px_rgba(168,85,247,0.6)]">성격</span> <span className="text-gray-200">{pv.personality}</span></div>)}
+                          {pv?.speech_style && (<div className="text-sm"><span className="text-purple-400 drop-shadow-[0_0_6px_rgba(168,85,247,0.6)]">말투</span> <span className="text-gray-200">{pv.speech_style}</span></div>)}
+                          {pv?.greeting && (<div className="text-sm"><span className="text-purple-400 drop-shadow-[0_0_6px_rgba(168,85,247,0.6)]">인사</span> <span className="text-gray-200">{pv.greeting}</span></div>)}
+                          {pv?.background_story && (<div className="text-sm"><span className="text-gray-400">배경</span> <span className="text-gray-200">{pv.background_story}</span></div>)}
+                        </>
+                      );
+                    })()
+                  )}
+                  {c.character_id && (
+                    <div className="pt-1">
+                      <Button
+                        variant="outline"
+                        className="h-8 px-3 bg-white text-black border-gray-300 hover:bg-gray-100"
+                        onClick={()=> { setOpenId(null); navigate(`/characters/${c.character_id}`); }}
+                      >상세페이지</Button>
+                    </div>
+                  )}
+                </div>
               </div>
+
+              {/* 범위 선택 안내 (간단 텍스트만 유지) */}
+              <div className="text-xs text-gray-400">원작챗 범위는 상단 ‘원작챗 시작’ 버튼에서 지정할 수 있습니다.</div>
               {/* 범위 모드 토글 */}
               <div className="flex items-center gap-3 pt-1">
                 <button

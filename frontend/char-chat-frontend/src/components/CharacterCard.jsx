@@ -64,7 +64,12 @@ export const CharacterCard = ({ character, onCardClick, onButtonClick, footerCon
       <div className="aspect-square relative overflow-hidden bg-gray-900">
         <LazyLoadImage
           alt={character.name}
-          src={resolveImageUrl(character.thumbnail_url || character.avatar_url) || DEFAULT_SQUARE_URI}
+          src={(() => {
+            const base = character?.avatar_url || character?.thumbnail_url || '';
+            const joined = base ? `${base}${base.includes('?') ? '&' : '?'}v=${Date.now()}` : '';
+            const url = resolveImageUrl(joined) || DEFAULT_SQUARE_URI;
+            return url;
+          })()}
           effect="blur"
           className="w-full h-full object-cover object-top group-hover:scale-105 transition-transform duration-300"
           wrapperClassName="w-full h-full"

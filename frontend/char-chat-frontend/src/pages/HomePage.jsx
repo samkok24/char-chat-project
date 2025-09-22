@@ -140,7 +140,9 @@ const HomePage = () => {
         return list.filter(s => s?.is_public !== false);
       } catch (_) { return []; }
     },
-    staleTime: 30 * 1000,
+    staleTime: 0,
+    refetchOnMount: 'always',
+    refetchOnWindowFocus: true,
   });
   const sentinelRef = useRef(null);
 

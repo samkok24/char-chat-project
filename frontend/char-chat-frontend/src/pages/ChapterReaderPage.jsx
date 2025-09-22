@@ -3,7 +3,7 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import AppLayout from '../components/layout/AppLayout';
 import { Button } from '../components/ui/button';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { chaptersAPI, storiesAPI } from '../lib/api';
+import { chaptersAPI, storiesAPI, mediaAPI } from '../lib/api';
 import { setReadingProgress } from '../lib/reading';
 import { ArrowLeft, ArrowRight, Home } from 'lucide-react';
 import { resolveImageUrl } from '../lib/images';
@@ -24,6 +24,17 @@ const ChapterReaderPage = () => {
     },
     enabled: !!storyId,
   });
+  // 스토리 미디어 자산 목록 (대표/갤러리)
+  const { data: mediaAssets = [] } = useQuery({
+    queryKey: ['media-assets', 'story', storyId],
+    queryFn: async () => {
+      const res = await mediaAPI.listAssets({ entityType: 'story', entityId: storyId, presign: false, expiresIn: 300 });
+      return Array.isArray(res.data?.items) ? res.data.items : (Array.isArray(res.data) ? res.data : []);
+    },
+    enabled: !!storyId,
+    staleTime: 0,
+    refetchOnMount: 'always',
+  });
   const { data: chapterList = [] } = useQuery({
     queryKey: ['chapters-by-story', storyId],
     queryFn: async () => {
@@ -42,16 +53,21 @@ const ChapterReaderPage = () => {
   const nextNo = useMemo(() => (Number(chapterNumber) + 1), [chapterNumber]);
   const prevNo = useMemo(() => (Math.max(1, Number(chapterNumber) - 1)), [chapterNumber]);
 
-  // 갤러리: cover_url + keywords의 cover: 항목들 구성
+  // 갤러리: media_assets 우선, 없으면 cover_url + keywords의 cover: 항목들
   const galleryImages = useMemo(() => {
     const s = story || {};
+    const assets = Array.isArray(mediaAssets) ? mediaAssets : [];
+    if (assets.length > 0) {
+      const urls = Array.from(new Set(assets.map(a => a.url).filter(Boolean)));
+      return urls;
+    }
     const kws = Array.isArray(s.keywords) ? s.keywords : [];
     const kwUrls = kws
       .filter((k) => typeof k === 'string' && k.startsWith('cover:'))
       .map((k) => k.replace(/^cover:/, ''))
       .filter(Boolean);
     return Array.from(new Set([s.cover_url, ...kwUrls].filter(Boolean)));
-  }, [story]);
+  }, [story, mediaAssets]);
   const coverUrl = useMemo(() => galleryImages[0] || '', [galleryImages]);
 
   const hasChapter = !!chapter;
@@ -123,7 +139,7 @@ const ChapterReaderPage = () => {
             <aside className="hidden lg:block">
               <div className="relative w-full rounded-lg overflow-hidden border border-gray-700 bg-gray-800" style={{ paddingTop: `${150}%` }}>
                 {coverUrl ? (
-                  <img src={resolveImageUrl(coverUrl) || coverUrl} alt={story?.title || 'cover'} className="absolute inset-0 w-full h-full object-cover object-top" />
+                  <img src={(resolveImageUrl(coverUrl) || coverUrl) + (coverUrl.includes('?') ? '&' : '?') + 'v=' + Date.now()} alt={story?.title || 'cover'} className="absolute inset-0 w-full h-full object-cover object-top" />
                 ) : (
                   <div className="absolute inset-0 flex items-center justify-center text-gray-500">NO COVER</div>
                 )}
@@ -133,7 +149,7 @@ const ChapterReaderPage = () => {
                   {galleryImages.map((imgUrl, idx) => (
                     <img
                       key={`${imgUrl}-${idx}`}
-                      src={resolveImageUrl(imgUrl) || imgUrl}
+                      src={(resolveImageUrl(imgUrl) || imgUrl) + (String(imgUrl).includes('?') ? '&' : '?') + 'v=' + Date.now()}
                       alt={`썸네일 ${idx + 1}`}
                       className={`w-16 h-16 object-cover rounded-md ${imgUrl === coverUrl ? 'ring-2 ring-blue-500 ring-offset-1 ring-offset-gray-900' : ''}`}
                       onClick={() => navigate(`/stories/${storyId}/chapters/${chapter?.no || chapterNumber}`, { replace: true })}

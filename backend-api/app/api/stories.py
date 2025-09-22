@@ -566,13 +566,39 @@ async def get_extracted_characters_endpoint(
             )
             items = rows.scalars().all()
 
+    # 연결된 캐릭터들의 대표 이미지(avatar_url)를 한 번에 조회해 보강
+    char_map = {}
+    try:
+        char_ids = [r.character_id for r in items if getattr(r, "character_id", None)]
+        if char_ids:
+            rows = (await db.execute(select(Character).where(Character.id.in_(char_ids)))).scalars().all()
+            char_map = {str(r.id): r for r in rows}
+    except Exception:
+        char_map = {}
+
+    def _with_cache_bust(url: Optional[str]) -> Optional[str]:
+        try:
+            if not url:
+                return url
+            # 간단 캐시 버스트 파라미터 추가
+            return f"{url}{'&' if '?' in url else '?'}v={int(__import__('time').time())}"
+        except Exception:
+            return url
+
     def to_dict(rec: StoryExtractedCharacter):
+        # 레코드 자체에 avatar_url이 없으면 연결된 캐릭터의 avatar_url로 보강
+        avatar = rec.avatar_url
+        if not avatar and getattr(rec, "character_id", None):
+            ch = char_map.get(str(rec.character_id))
+            if ch and getattr(ch, "avatar_url", None):
+                avatar = ch.avatar_url
+        avatar = _with_cache_bust(avatar)
         return {
             "id": str(rec.id),
             "name": rec.name,
             "description": rec.description,
             "initial": rec.initial,
-            "avatar_url": rec.avatar_url,
+            "avatar_url": avatar,
             "character_id": str(rec.character_id) if getattr(rec, "character_id", None) else None,
             "order_index": rec.order_index,
         }
