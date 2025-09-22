@@ -98,12 +98,10 @@ const MyCharactersPage = () => {
   const loadMyCharacters = async () => {
     setLoading(true);
     try {
-      const response = await charactersAPI.getMyCharacters();
-      // 원작챗(웹소설에서 추출된 캐릭터)은 제외하고, 내가 만든 일반 캐릭터만 표시
-      const onlyRegular = Array.isArray(response.data)
-        ? response.data.filter((c) => !c.origin_story_id)
-        : [];
-      setCharacters(onlyRegular);
+      // 서버 사이드 필터: regular만
+      const response = await charactersAPI.getMyCharacters({ only: 'regular', limit: 100 });
+      const list = Array.isArray(response.data) ? response.data : [];
+      setCharacters(list);
     } catch (err) {
       console.error('내 캐릭터 목록 로드 실패:', err);
       setError('캐릭터 목록을 불러올 수 없습니다.');

@@ -17,7 +17,9 @@ export const RecentChatCard = ({ character, onClick }) => {
   
   const formatChatCount = (count) => formatCount(count);
   const isWebNovel = character?.source_type === 'IMPORTED';
-  const isOrigChat = !!(character?.origin_story_id || character?.is_origchat);
+  // 최근 대화 목록의 항목은 서버가 character.origin_story_id를 항상 포함하지 않을 수 있어
+  // chat source 힌트 또는 쿼리 문자열이 전달되었는지 우선 확인하도록 보강
+  const isOrigChat = !!(character?.origin_story_id || character?.is_origchat || character?.source === 'origchat');
   const borderClass = isOrigChat ? 'border-orange-500/60' : (isWebNovel ? 'border-blue-500/40' : 'border-purple-500/40');
 
   return (
@@ -89,7 +91,16 @@ export const RecentChatCard = ({ character, onClick }) => {
                 </div>
 
                 {/* 하단 고정: 크리에이터 아바타 + 닉네임 */}
-                {character.creator_username && character.creator_id && (
+                {isOrigChat && character.origin_story_title ? (
+                  <Link
+                    to={character.origin_story_id ? `/stories/${character.origin_story_id}` : '#'}
+                    onClick={(e) => e.stopPropagation()}
+                    className="absolute left-0 bottom-0 inline-flex items-center gap-2 text-sm text-white truncate"
+                    title={character.origin_story_title}
+                  >
+                    <Badge className="bg-blue-600 text-white hover:bg-blue-500 truncate max-w-[150px] px-1.5 py-0.5 text-[10px] leading-[1.05] rounded-md">{character.origin_story_title}</Badge>
+                  </Link>
+                ) : (character.creator_username && character.creator_id) ? (
                   <Link
                     to={`/users/${character.creator_id}/creator`}
                     onClick={(e) => e.stopPropagation()}
@@ -101,7 +112,7 @@ export const RecentChatCard = ({ character, onClick }) => {
                     </Avatar>
                     <span className="truncate max-w-[140px]">{character.creator_username}</span>
                   </Link>
-                )}
+                ) : null}
               </div>
             </div>
           </div>

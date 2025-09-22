@@ -42,6 +42,7 @@ class Story(Base):
     )
     likes = relationship("StoryLike", back_populates="story", cascade="all, delete-orphan")
     comments = relationship("StoryComment", back_populates="story", cascade="all, delete-orphan")
+    tags = relationship("Tag", secondary="story_tags", back_populates="stories")
 
     def __repr__(self):
         return f"<Story(id={self.id}, title={self.title}, creator_id={self.creator_id})>"

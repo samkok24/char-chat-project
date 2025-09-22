@@ -4,7 +4,7 @@ import { Button } from './ui/button';
 import { mediaAPI, charactersAPI, storiesAPI } from '../lib/api';
 import { Loader2, Trash2, X } from 'lucide-react';
 
-const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId }) => {
+const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initialGallery }) => {
   // 단일 갤러리: 업로드/생성 결과를 모두 여기에 누적
   const inputRef = React.useRef(null);
   const [busy, setBusy] = React.useState(false);
@@ -103,15 +103,17 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId }) => {
     try {
       const focusUrl = gallery[0]?.url || '';
       const realIds = gallery.filter(s => !String(s.id).startsWith('url:')).map(s => s.id);
-      if (realIds.length) {
+      // 엔티티가 있을 때만 서버에 첨부
+      if (entityType && entityId && realIds.length) {
         await mediaAPI.attach({ entityType, entityId, assetIds: realIds, asPrimary: true });
+        try { window.dispatchEvent(new CustomEvent('media:updated', { detail: { entityType, entityId } })); } catch(_) {}
+        try { window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'success', message: `삽입 완료 (${gallery.length}개)` } })); } catch(_) {}
+        onClose?.({ attached: true, focusUrl, gallery: gallery.map(g => ({ id: g.id, url: g.url })) });
+      } else {
+        // 생성/업로드만 하고 표지로만 사용할 때(생성 페이지 등)
+        try { window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'success', message: '이미지 선택 완료' } })); } catch(_) {}
+        onClose?.({ attached: false, focusUrl, gallery: gallery.map(g => ({ id: g.id, url: g.url })) });
       }
-      // 전역 반영 이벤트 (모달 자체에서도 발행)
-      try { window.dispatchEvent(new CustomEvent('media:updated', { detail: { entityType, entityId } })); } catch(_) {}
-      try { window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'success', message: `삽입 완료 (${gallery.length}개)` } })); } catch(_) {}
-      onClose?.({ attached: true, focusUrl });
-      // 상세 페이지 강제 refetch 유도
-      try { window.dispatchEvent(new CustomEvent('media:updated', { detail: { entityType, entityId } })); } catch(_) {}
     } finally { setBusy(false); }
   };
 
@@ -159,8 +161,19 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId }) => {
 
   React.useEffect(() => {
     if (!open) { hasLoadedRef.current = false; return; }
-    if (open && !hasLoadedRef.current) { hasLoadedRef.current = true; loadGallery(); }
-  }, [open, entityType, entityId]);
+    if (open && !hasLoadedRef.current) {
+      hasLoadedRef.current = true;
+      if (entityType && entityId) {
+        loadGallery();
+      } else {
+        // 엔티티가 없는 생성 페이지 등: 초기 갤러리 주입
+        try {
+          const seed = Array.isArray(initialGallery) ? initialGallery : [];
+          if (seed.length) setGallery(dedupAssets(seed));
+        } catch (_) { setGallery([]); }
+      }
+    }
+  }, [open, entityType, entityId, initialGallery]);
 
   // 대표 이미지 비율에 맞춰 생성 비율 기본값을 자동으로 선택
   // 기본값은 3:4 유지. 이전 대표 이미지 비율로 자동 조정하지 않음.
@@ -341,11 +354,12 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId }) => {
 
   const saveReorder = async () => {
     if (!gallery || gallery.length === 0) return;
+    // 엔티티 없는 경우(생성 페이지)에는 서버 저장 없이 로컬 순서만 유지
+    if (!entityType || !entityId) return;
     setGalleryBusy(true);
     try {
       const orderedIds = gallery.map(g => g.id);
       await mediaAPI.reorder({ entityType, entityId, orderedIds });
-      // 첫 번째를 대표로 지정
       const firstId = orderedIds[0];
       if (firstId) {
         try { await mediaAPI.update(firstId, { is_primary: true }); } catch (_) {}

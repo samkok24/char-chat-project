@@ -111,12 +111,8 @@ const StoryDetailPage = () => {
         return;
       }
 
-      const kws = Array.isArray(story.keywords) ? story.keywords : [];
-      const kwUrls = kws
-        .filter((k) => typeof k === 'string' && k.startsWith('cover:'))
-        .map((k) => k.replace(/^cover:/, ''))
-        .filter(Boolean);
-      const fallback = Array.from(new Set([story.cover_url, ...kwUrls].filter(Boolean)));
+      // cover: 메타 키워드는 더 이상 사용하지 않음. 기존 데이터가 있더라도 무시
+      const fallback = Array.from(new Set([story.cover_url].filter(Boolean)));
       setGalleryImages(fallback);
       const first = fallback[0] || '';
       setActiveImage(first);
@@ -171,7 +167,9 @@ const StoryDetailPage = () => {
       const anchorNo = f || targetReadNo;
       const effectiveCharacterId = characterId || story.character_id;
       // 로딩 표시 (버튼 비활성은 생략)
-      await origChatAPI.getContextPack(storyId, { anchor: anchorNo, characterId: effectiveCharacterId, rangeFrom: f, rangeTo: t });
+      try {
+        await origChatAPI.getContextPack(storyId, { anchor: anchorNo, characterId: effectiveCharacterId, rangeFrom: f, rangeTo: t });
+      } catch (_) { /* 컨텍스트 팩은 선택적이므로 실패해도 계속 진행 */ }
       const startRes = await origChatAPI.start({ story_id: storyId, character_id: effectiveCharacterId, chapter_anchor: anchorNo, timeline_mode: 'fixed', range_from: f, range_to: t });
       const roomId = startRes.data?.id || startRes.data?.room_id;
       if (roomId) {
@@ -181,21 +179,9 @@ const StoryDetailPage = () => {
       }
     } catch (e) {
       console.error('원작챗 시작 실패', e);
-      // 재시도 안내
-      const retry = window.confirm('원작챗 시작에 실패했습니다. 다시 시도할까요?');
-      if (retry) {
-        try {
-          const anchorNo = Number(range_from) || targetReadNo;
-          await origChatAPI.getContextPack(storyId, { anchor: anchorNo });
-          const startRes = await origChatAPI.start({ story_id: storyId, character_id: characterId || story.character_id, chapter_anchor: anchorNo, timeline_mode: 'fixed' });
-          const roomId = startRes.data?.id || startRes.data?.room_id;
-          if (roomId) {
-            navigate(`/ws/chat/${characterId || story.character_id}?source=origchat&storyId=${storyId}&anchor=${anchorNo}`);
-            return;
-          }
-        } catch (_) {}
-      }
-      navigate(`/ws/chat/${characterId || story.character_id}`);
+      const status = e?.response?.status;
+      const detail = e?.response?.data?.detail || e?.message || '알 수 없는 오류';
+      setPageToast({ show: true, type: 'error', message: `원작챗 시작 실패${status ? ` (${status})` : ''}: ${detail}` });
     }
   };
 
@@ -324,9 +310,36 @@ const StoryDetailPage = () => {
   const handleRebuildAll = async () => {
     try {
       setCharactersLoading(true);
-      await storiesAPI.rebuildExtractedCharacters(storyId);
-      await fetchExtracted();
-      setPageToast({ show: true, type: 'success', message: '전체 재생성 완료' });
+      const useAsync = (import.meta.env?.VITE_EXTRACT_ASYNC ?? '0') === '1';
+      if (useAsync) {
+        // 비동기 잡 시작 → 폴링으로 완료 대기
+        const resp = await storiesAPI.rebuildExtractedCharactersAsync(storyId);
+        const jobId = resp?.data?.job_id;
+        if (!jobId) throw new Error('작업 ID를 받지 못했습니다.');
+        const start = Date.now();
+        const timeoutMs = 600000; // 10m
+        while (Date.now() - start < timeoutMs) {
+          const st = await storiesAPI.getExtractJobStatus(jobId);
+          const s = st?.data || {};
+          if (s.status === 'done') {
+            await fetchExtracted();
+            setPageToast({ show: true, type: 'success', message: '전체 재생성 완료' });
+            break;
+          }
+          if (s.status === 'error') {
+            throw new Error(s.error_message || '추출 작업 실패');
+          }
+          if (s.status === 'cancelled') {
+            setPageToast({ show: true, type: 'error', message: '작업이 취소되었습니다' });
+            break;
+          }
+          await new Promise(r => setTimeout(r, 1500));
+        }
+      } else {
+        await storiesAPI.rebuildExtractedCharacters(storyId);
+        await fetchExtracted();
+        setPageToast({ show: true, type: 'success', message: '전체 재생성 완료' });
+      }
     } catch (e) {
       console.error('재생성 실패', e);
       try {
@@ -631,7 +644,7 @@ const StoryDetailPage = () => {
                   <ul className="divide-y divide-gray-800 rounded-md border border-gray-700 overflow-hidden">
                     {episodesSorted.map((ch, idx) => (
                       <li
-                        key={`${ch.id || ch.no || idx}-${ch.title}`}
+                        key={ch.id ? `id:${ch.id}` : `no:${ch.no ?? 'NA'}|title:${(ch.title || '').slice(0,50)}|i:${idx}`}
                         className={`flex items-center justify-between bg-gray-800/30 px-3 py-2 cursor-pointer hover:bg-gray-700/40 ${Number(ch.no) === Number(progressChapterNo) ? 'ring-1 ring-purple-500/40 bg-gray-800/50' : ''}`}
                         onClick={() => navigate(`/stories/${storyId}/chapters/${ch.no || (idx + 1)}`)}
                         role="button"

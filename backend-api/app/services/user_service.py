@@ -10,6 +10,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import selectinload
 
 from app.models.character import Character
+from app.models.story import Story
 from app.models.like import CharacterLike
 from app.models.bookmark import CharacterBookmark
 from app.schemas.user import UserProfileResponse
@@ -175,26 +176,43 @@ async def get_recent_characters_for_user(db: AsyncSession, user_id: uuid.UUID, l
             Character,
             ChatRoom.id.label('chat_room_id'),
             last_message_subquery.c.last_chat_time,
-            last_message_subquery.c.last_message_snippet
+            last_message_subquery.c.last_message_snippet,
+            Story.title.label('origin_story_title')
         )
         .join(ChatRoom, Character.id == ChatRoom.character_id)
         .outerjoin(last_message_subquery, ChatRoom.id == last_message_subquery.c.chat_room_id)
+        .outerjoin(Story, Character.origin_story_id == Story.id)
         .where(ChatRoom.user_id == user_id)
         .options(selectinload(Character.creator))
-        .order_by(last_message_subquery.c.last_chat_time.desc().nullslast())
+        .order_by(last_message_subquery.c.last_chat_time.desc().nullslast(), Character.id)
         .limit(limit)
         .offset(skip)
     )
     rows = result.all()
     characters = []
-    for char, chat_room_id, last_chat_time, last_message_snippet in rows:
+    for char, chat_room_id, last_chat_time, last_message_snippet, origin_story_title in rows:
         # 연관된 정보를 Character 모델 객체의 임시 속성으로 추가
         char.chat_room_id = chat_room_id
         char.last_chat_time = last_chat_time
         char.last_message_snippet = last_message_snippet
+        # 원작 웹소설 제목 보강(있을 때)
+        try:
+            if getattr(char, 'origin_story_id', None) and origin_story_title:
+                char.origin_story_title = origin_story_title
+        except Exception:
+            pass
         characters.append(char)
         
-    return characters
+    # 동일 캐릭터가 여러 방으로 중복될 수 있으므로 character_id 기준 dedupe (가장 최신만 유지)
+    seen = set()
+    deduped: list[Character] = []
+    for c in characters:
+        cid = getattr(c, 'id', None)
+        if cid in seen:
+            continue
+        seen.add(cid)
+        deduped.append(c)
+    return deduped
 
 
 async def get_liked_characters_for_user(

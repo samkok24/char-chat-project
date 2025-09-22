@@ -155,7 +155,8 @@ const CreateCharacterPage = () => {
     return z.object({
       basic_info: z.object({
         name: z.string().min(1, '캐릭터 이름을 입력하세요'),
-        description: z.string().min(1, '캐릭터 설명을 입력하세요').refine(noIllegalTokens, '허용되지 않은 토큰이 포함됨'),
+        // 설명은 선택 입력 (백엔드도 optional)
+        description: z.string().optional().refine(noIllegalTokens, '허용되지 않은 토큰이 포함됨'),
         personality: z.string().optional().refine(noIllegalTokens, '허용되지 않은 토큰이 포함됨'),
         speech_style: z.string().optional().refine(noIllegalTokens, '허용되지 않은 토큰이 포함됨'),
         greeting: z.string().optional().refine(noIllegalTokens, '허용되지 않은 토큰이 포함됨'),
@@ -177,7 +178,7 @@ const CreateCharacterPage = () => {
         })
       }),
       example_dialogues: z.object({
-        dialogues: z.array(dialogueSchema).min(1, '예시 대화를 최소 1개 이상 작성하세요'),
+        dialogues: z.array(dialogueSchema),
       }),
       affinity_system: z.object({
         has_affinity_system: z.boolean(),
@@ -638,7 +639,7 @@ const CreateCharacterPage = () => {
     try {
       // Zod 검증
       const result = validateForm();
-      if (!result.success) {
+    if (!result.success) {
         setLoading(false);
         // 앵커 이동: 첫 오류 섹션으로 스크롤 이동
         const firstKey = Object.keys(fieldErrors)[0] || '';
@@ -686,6 +687,7 @@ const CreateCharacterPage = () => {
       };
 
       if (isEditMode) {
+        // 변경 없을 때도 저장 가능하게: 백엔드가 부분 업데이트 허용
         await charactersAPI.updateAdvancedCharacter(characterId, characterData);
         // 태그 저장
         await api.put(`/characters/${characterId}/tags`, { tags: selectedTagSlugs });

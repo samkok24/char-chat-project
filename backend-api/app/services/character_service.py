@@ -347,7 +347,8 @@ async def get_characters_by_creator(
     skip: int = 0,
     limit: int = 20,
     search: Optional[str] = None,
-    include_private: bool = False
+    include_private: bool = False,
+    only: Optional[str] = None,
 ) -> List[Character]:
     """생성자별 캐릭터 목록 조회"""
     query = (
@@ -366,6 +367,14 @@ async def get_characters_by_creator(
                 Character.description.ilike(f"%{search}%")
             )
         )
+
+    # 원작챗/일반 필터
+    if only:
+        only_key = (only or "").strip().lower()
+        if only_key in ["origchat", "original_chat", "origin"]:
+            query = query.where(Character.origin_story_id.isnot(None))
+        elif only_key in ["regular", "normal", "characterchat", "characters"]:
+            query = query.where(Character.origin_story_id.is_(None))
     
     query = query.order_by(Character.created_at.desc()).offset(skip).limit(limit)
     

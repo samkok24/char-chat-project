@@ -11,7 +11,7 @@ const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:3001';
 // Axios 인스턴스 생성
 const api = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 100000,
+  timeout: 600000,
   headers: {
     'Content-Type': 'application/json',
   },
@@ -361,9 +361,16 @@ export const storiesAPI = {
   getExtractedCharacters: (storyId) =>
     api.get(`/stories/${storyId}/extracted-characters`),
   rebuildExtractedCharacters: (storyId) =>
-    api.post(`/stories/${storyId}/extracted-characters/rebuild`, null, { timeout: 300000 }),
+    api.post(`/stories/${storyId}/extracted-characters/rebuild`, null, { timeout: 600000 }),
   rebuildSingleExtractedCharacter: (storyId, extractedId) =>
-    api.post(`/stories/${storyId}/extracted-characters/${extractedId}/rebuild`, null, { timeout: 180000 }),
+    api.post(`/stories/${storyId}/extracted-characters/${extractedId}/rebuild`, null, { timeout: 600000 }),
+  // 비동기 추출 잡 API
+  rebuildExtractedCharactersAsync: (storyId) =>
+    api.post(`/stories/${storyId}/extracted-characters/rebuild-async`),
+  getExtractJobStatus: (jobId) =>
+    api.get(`/stories/extracted-characters/jobs/${jobId}`),
+  cancelExtractJob: (jobId) =>
+    api.post(`/stories/extracted-characters/jobs/${jobId}/cancel`),
   deleteExtractedCharacters: (storyId) =>
     api.delete(`/stories/${storyId}/extracted-characters`),
   

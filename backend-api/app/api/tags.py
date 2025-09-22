@@ -38,7 +38,8 @@ async def list_tags(db: AsyncSession = Depends(get_db)):
     except Exception:
         pass
     result = await db.execute(select(Tag).order_by(Tag.name))
-    return result.scalars().all()
+    # cover: 메타 태그는 노출 금지
+    return [t for t in result.scalars().all() if not str(getattr(t, 'slug', '')).startswith('cover:')]
 
 
 @router.get("/used", response_model=List[TagResponse])
@@ -57,7 +58,7 @@ async def list_used_tags(
         .limit(limit)
     )
     result = await db.execute(stmt)
-    return result.scalars().all()
+    return [t for t in result.scalars().all() if not str(getattr(t, 'slug', '')).startswith('cover:')]
 
 
 @router.post("/", response_model=TagResponse, status_code=status.HTTP_201_CREATED)

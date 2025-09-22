@@ -81,7 +81,8 @@ class ChatRoomResponse(BaseModel):
 
 class SendMessageResponse(BaseModel):
     """메시지 전송 응답 스키마"""
-    user_message: ChatMessageResponse
+    # continue 모드 등 일부 상황에서 사용자 메시지가 저장되지 않을 수 있어 Optional 허용
+    user_message: ChatMessageResponse | None = None
     ai_message: ChatMessageResponse
 
 

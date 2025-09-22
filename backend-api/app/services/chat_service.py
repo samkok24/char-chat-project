@@ -17,12 +17,15 @@ async def get_or_create_chat_room(
     db: AsyncSession, user_id: uuid.UUID, character_id: uuid.UUID
 ) -> ChatRoom:
     """사용자와 캐릭터 간의 채팅방을 가져오거나 새로 생성"""
+    # 기존 방이 여러 개일 수 있어도 최신 1개만 사용하도록 안전하게 조회
     result = await db.execute(
         select(ChatRoom)
-        .options(selectinload(ChatRoom.character))  # character 정보를 즉시 로드하도록 수정
+        .options(selectinload(ChatRoom.character))
         .where(ChatRoom.user_id == user_id, ChatRoom.character_id == character_id)
+        .order_by(ChatRoom.updated_at.desc())
+        .limit(1)
     )
-    chat_room = result.scalar_one_or_none()
+    chat_room = result.scalars().first()
 
     if not chat_room:
         character_result = await db.execute(select(Character).where(Character.id == character_id))

@@ -32,9 +32,9 @@ const StoryEditPage = () => {
         setGenre(s.genre || '');
         setSynopsis(s.content || '');
         const kws = Array.isArray(s.keywords) ? s.keywords : [];
+        // cover: 메타 제거, 키워드 입력은 순수 태그만 유지
         setKeywords(kws.filter(k => !String(k).startsWith('cover:')).join(', '));
-        const coverK = kws.find(k => String(k).startsWith('cover:'));
-        setCoverUrl(coverK ? coverK.replace(/^cover:/, '') : (s.cover_url || ''));
+        setCoverUrl(s.cover_url || '');
       } catch (_) {
         setError('작품 정보를 불러오지 못했습니다.');
       } finally {
@@ -49,8 +49,7 @@ const StoryEditPage = () => {
     setSaving(true);
     try {
       const kw = keywords.split(',').map(s=>s.trim()).filter(Boolean).slice(0,10);
-      if (coverUrl && !kw.some(k=>k.startsWith('cover:'))) kw.push(`cover:${coverUrl}`);
-      await storiesAPI.updateStory(storyId, { title: title.trim(), content: synopsis.trim(), genre: genre || null, keywords: kw });
+      await storiesAPI.updateStory(storyId, { title: title.trim(), content: synopsis.trim(), genre: genre || null, keywords: kw, cover_url: coverUrl || null });
       navigate(`/stories/${storyId}`);
     } catch (_) {
       setError('저장에 실패했습니다.');

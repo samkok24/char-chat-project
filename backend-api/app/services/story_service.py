@@ -3,7 +3,7 @@
 """
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, delete, func, and_, or_
+from sqlalchemy import select, update, delete, func, and_, or_, insert
 from sqlalchemy.orm import selectinload, joinedload
 from typing import List, Optional, Dict, Any
 import uuid
@@ -17,6 +17,7 @@ from app.models.story_chapter import StoryChapter
 from app.models.user import User
 from app.models.character import Character
 from app.models.like import StoryLike
+from app.models.tag import Tag, StoryTag
 from app.schemas.story import StoryCreate, StoryUpdate, StoryGenerationRequest
 from app.services.ai_service import get_ai_completion, AIModel, get_ai_completion_stream
 
@@ -297,13 +298,48 @@ async def create_story(
     creator_id: uuid.UUID,
     story_data: StoryCreate
 ) -> Story:
-    """스토리 생성"""
-    story = Story(
-        creator_id=creator_id,
-        **story_data.model_dump()
-    )
-    db.add(story)
-    await db.commit()
+    """스토리 생성 (원자적 트랜잭션)
+    - 스토리 본문, 태그 생성/연결까지 성공해야만 커밋
+    - 중간 어떤 단계든 실패하면 전체 롤백되어 부분 생성이 남지 않음
+    """
+    # Story 모델에 없는 필드(예: keywords)를 제거하고 생성
+    payload = story_data.model_dump(exclude={"keywords"})
+
+    async with db.begin():  # 예외 발생 시 전체 롤백, 정상 종료 시 커밋
+        story = Story(
+            creator_id=creator_id,
+            **payload
+        )
+        db.add(story)
+        # id 확보를 위해 flush
+        await db.flush()
+
+        # 키워드 보정 및 태깅: 비어 있으면 장르를 1번 키워드로 사용
+        keywords: list[str] = story_data.keywords or []
+        genre = (story_data.genre or '').strip()
+        if not keywords and genre:
+            keywords = [genre]
+
+        if keywords:
+            # 기존 태그 조회
+            # cover: 메타는 태그로 저장하지 않음
+            clean_keywords = [k for k in keywords if not str(k).startswith('cover:')]
+            tag_rows = (await db.execute(select(Tag).where(Tag.slug.in_(clean_keywords)))).scalars().all()
+            existing = {t.slug: t for t in tag_rows}
+            # 누락 태그 생성
+            for slug in clean_keywords:
+                if slug not in existing:
+                    t = Tag(name=slug, slug=slug)
+                    db.add(t)
+                    await db.flush()
+                    existing[slug] = t
+            # 연결 저장 (중복 방지는 PK/Unique로 보장)
+            for slug, t in existing.items():
+                await db.execute(
+                    insert(StoryTag).values(story_id=story.id, tag_id=t.id)
+                )
+
+    # 트랜잭션 커밋 후 최신 상태로 리프레시
     await db.refresh(story)
     return story
 
@@ -314,7 +350,8 @@ async def get_story_by_id(db: AsyncSession, story_id: uuid.UUID) -> Optional[Sto
         select(Story)
         .options(
             joinedload(Story.creator),
-            joinedload(Story.character)
+            joinedload(Story.character),
+            selectinload(Story.tags),
         )
         .where(Story.id == story_id)
     )
@@ -329,7 +366,13 @@ async def get_stories_by_creator(
     search: Optional[str] = None
 ) -> List[Story]:
     """생성자별 스토리 목록 조회"""
-    query = select(Story).where(Story.creator_id == creator_id)
+    query = (
+        select(Story)
+        .options(
+            selectinload(Story.tags),
+        )
+        .where(Story.creator_id == creator_id)
+    )
     
     if search:
         query = query.where(
@@ -362,6 +405,7 @@ async def get_public_stories(
         .options(
             selectinload(Story.creator),
             selectinload(Story.character),
+            selectinload(Story.tags),
         )
         .where(Story.is_public == True)
     )

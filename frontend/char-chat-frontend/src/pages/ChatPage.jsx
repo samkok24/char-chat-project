@@ -237,6 +237,8 @@ const ChatPage = () => {
         }
         
         setChatRoomId(roomId);
+        // 최근 대화 리스트에서 원작챗 표시 정합성을 위해 세션 메타 힌트 브로드캐스트
+        try { window.dispatchEvent(new CustomEvent('chat:opened', { detail: { characterId, source } })); } catch(_) {}
 
         // 원작챗 컨텍스트 프리페치
         if (source === 'origchat' && storyIdParam) {

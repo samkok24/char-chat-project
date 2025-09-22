@@ -41,6 +41,36 @@ from sqlalchemy import select, delete
 router = APIRouter()
 
 
+def _story_to_response(story: Story) -> StoryResponse:
+    """Build StoryResponse safely without triggering lazy relation validation."""
+    try:
+        tag_slugs = [
+            t.slug for t in getattr(story, "tags", [])
+            if getattr(t, "slug", None) and not str(getattr(t, "slug", "")).startswith("cover:")
+        ]
+    except Exception:
+        tag_slugs = []
+    payload = {
+        "id": story.id,
+        "creator_id": story.creator_id,
+        "character_id": getattr(story, "character_id", None),
+        "title": story.title,
+        "content": story.content,
+        "keywords": None,
+        "genre": getattr(story, "genre", None),
+        "is_public": bool(getattr(story, "is_public", True)),
+        "cover_url": getattr(story, "cover_url", None),
+        "is_origchat": bool(getattr(story, "is_origchat", False)),
+        "like_count": int(getattr(story, "like_count", 0) or 0),
+        "view_count": int(getattr(story, "view_count", 0) or 0),
+        "comment_count": int(getattr(story, "comment_count", 0) or 0),
+        "created_at": story.created_at,
+        "updated_at": story.updated_at,
+        "tags": tag_slugs,
+    }
+    return StoryResponse(**payload)
+
+
 @router.post("/generate", response_model=StoryGenerationResponse)
 async def generate_story(
     request: StoryGenerationRequest,
@@ -280,7 +310,8 @@ async def create_story(
 ):
     """스토리 생성"""
     story = await story_service.create_story(db, current_user.id, story_data)
-    return StoryResponse.model_validate(story)
+    loaded = await story_service.get_story_by_id(db, story.id)
+    return _story_to_response(loaded)
 
 
 @router.get("/", response_model=StoryListResponse)
@@ -305,6 +336,15 @@ async def get_stories(
             text = ""
         # 간단 발췌: 줄바꿈/공백 정리 후 앞부분 140자
         excerpt = " ".join(text.split())[:140] if text else None
+    # 태그 슬러그 추출(cover: 메타 제외)
+    tag_slugs = []
+    try:
+        for t in (getattr(s, "tags", []) or []):
+            slug = getattr(t, "slug", None)
+            if slug and not str(slug).startswith("cover:"):
+                tag_slugs.append(slug)
+    except Exception:
+        pass
         items.append(StoryListItem(
             id=s.id,
             title=s.title,
@@ -319,6 +359,7 @@ async def get_stories(
             character_name=(s.character.name if getattr(s, "character", None) else None),
             cover_url=getattr(s, "cover_url", None),
             excerpt=excerpt,
+            tags=tag_slugs,
         ))
 
     return StoryListResponse(
@@ -394,7 +435,9 @@ async def get_story(
     background_tasks.add_task(story_service.increment_story_view_count, db, story_id)
     
     # StoryResponse 형식으로 먼저 변환
-    story_dict = StoryResponse.model_validate(story).model_dump()
+    # 기본 필드 직렬화는 수동 구성 함수 사용
+    base_resp = _story_to_response(story)
+    story_dict = base_resp.model_dump()
     # 총 조회수(작품 상세 + 회차 합계) 계산
     try:
         from app.services.story_service import get_story_total_views
@@ -412,6 +455,16 @@ async def get_story(
     else:
         story_dict["is_liked"] = False
     
+    # 태그 슬러그 주입
+    # 태그는 수동으로 슬러그 배열로 변환 (Pydantic from_attributes가 관계를 Tag 객체로 채우는 이슈 방지)
+    story_dict["tags"] = []
+    try:
+        for t in getattr(story, "tags", []) or []:
+            slug = getattr(t, "slug", None)
+            if slug and not str(slug).startswith("cover:"):
+                story_dict["tags"].append(slug)
+    except Exception:
+        pass
     return StoryWithDetails(**story_dict)
 
 
@@ -754,6 +807,91 @@ async def rebuild_single_extracted_character_endpoint(
         "order_index": rec.order_index,
     }
     return {"item": out}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 등장인물 추출: 비동기 잡 전환 (선택)
+# 기존 동기식 엔드포인트는 유지하고, 아래 비동기 버전을 추가 제공
+# ──────────────────────────────────────────────────────────────────────────────
+
+@router.post("/{story_id}/extracted-characters/rebuild-async")
+async def rebuild_extracted_characters_async_endpoint(
+    story_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional),
+    job_service: JobService = Depends(get_job_service),
+):
+    story = await story_service.get_story_by_id(db, story_id)
+    if not story:
+        raise HTTPException(status_code=404, detail="스토리를 찾을 수 없습니다")
+    if not current_user or story.creator_id != current_user.id:
+        raise HTTPException(status_code=403, detail="재생성 권한이 없습니다")
+
+    job_id = str(uuid.uuid4())
+
+    async def run_job():
+        try:
+            # 초기 상태 기록
+            await job_service.create_job(job_id, {
+                "kind": "extract_characters",
+                "story_id": str(story_id),
+                "status": "queued",
+                "stage": "starting",
+                "created": 0,
+                "error_message": None,
+                "cancelled": False,
+            })
+
+            await job_service.update_job(job_id, {"status": "running", "stage": "clearing"})
+
+            # 기존 레코드 삭제
+            await db.execute(delete(StoryExtractedCharacter).where(StoryExtractedCharacter.story_id == story_id))
+            await db.commit()
+
+            # 취소 확인
+            state = await job_service.get_job(job_id)
+            if state and state.get("cancelled"):
+                await job_service.update_job(job_id, {"status": "cancelled"})
+                return
+
+            await job_service.update_job(job_id, {"stage": "extracting"})
+
+            # 추출 실행
+            created = 0
+            try:
+                created = await extract_characters_from_story(db, story_id)
+            except Exception as e:
+                # 실패 시 에러 상태 기록
+                await job_service.update_job(job_id, {"status": "error", "error_message": f"LLM 추출 실패: {str(e)}"})
+                return
+
+            await job_service.update_job(job_id, {"status": "done", "created": int(created or 0), "stage": "done"})
+
+        except Exception as e:
+            try:
+                await job_service.update_job(job_id, {"status": "error", "error_message": str(e)})
+            except Exception:
+                pass
+
+    asyncio.create_task(run_job())
+
+    return {"job_id": job_id, "status": "queued"}
+
+
+@router.get("/extracted-characters/jobs/{job_id}")
+async def get_extracted_characters_job_status(job_id: str, job_service: JobService = Depends(get_job_service)):
+    job = await job_service.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+
+@router.post("/extracted-characters/jobs/{job_id}/cancel")
+async def cancel_extracted_characters_job(job_id: str, job_service: JobService = Depends(get_job_service)):
+    state = await job_service.cancel_job(job_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {"message": "cancelled"}
 
 
 @router.post("/{story_id}/comments", response_model=StoryCommentResponse, status_code=status.HTTP_201_CREATED)

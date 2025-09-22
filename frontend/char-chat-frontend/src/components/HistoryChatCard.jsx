@@ -148,7 +148,16 @@ export const HistoryChatCard = ({ character, onClick, onPin, onDelete }) => {
 
             {/* 하단 고정: 크리에이터 + 시간 */}
             <div className="absolute left-3 right-3 bottom-2 flex items-center justify-between">
-              {character.creator_username && character.creator_id && (
+              {isOrigChat && character.origin_story_title ? (
+                <Link
+                  to={character.origin_story_id ? `/stories/${character.origin_story_id}` : '#'}
+                  onClick={(e) => e.stopPropagation()}
+                  className="inline-flex items-center gap-1.5 text-[11px] lg:text-xs text-white truncate"
+                  title={character.origin_story_title}
+                >
+                  <Badge className="bg-blue-600 text-white hover:bg-blue-500 truncate max-w-[150px] px-1.5 py-0.5 text-[10px] leading-[1.05] rounded-md">{character.origin_story_title}</Badge>
+                </Link>
+              ) : (character.creator_username && character.creator_id) ? (
                 <Link
                   to={`/users/${character.creator_id}/creator`}
                   onClick={(e) => e.stopPropagation()}
@@ -160,7 +169,7 @@ export const HistoryChatCard = ({ character, onClick, onPin, onDelete }) => {
                   </Avatar>
                   <span className="truncate max-w-[120px]">{character.creator_username}</span>
                 </Link>
-              )}
+              ) : null}
               <span className="text-[11px] lg:text-xs text-gray-500">
                 {formatTime(character.last_chat_time)}
               </span>

@@ -57,12 +57,15 @@ async def get_my_recent_characters(
             image_descriptions=getattr(char, 'image_descriptions', []),
             chat_count=char.chat_count,
             like_count=char.like_count,
+            origin_story_id=getattr(char, 'origin_story_id', None),
             is_public=char.is_public,
             created_at=char.created_at,
             creator_username=char.creator.username if char.creator else None,
             chat_room_id=char.chat_room_id,
             last_chat_time=char.last_chat_time,
-            last_message_snippet=char.last_message_snippet
+            last_message_snippet=char.last_message_snippet,
+            # 원작 웹소설 표시용 메타(있을 때만)
+            origin_story_title=getattr(char, 'origin_story_title', None)
         ) for char in characters
     ]
 

@@ -70,11 +70,13 @@ const HomePage = () => {
     queryFn: async () => {
       try {
         const used = (await tagsAPI.getUsedTags()).data || [];
-        if (Array.isArray(used) && used.length > 0) return used;
+        const filtered = Array.isArray(used) ? used.filter(t => typeof t.slug === 'string' && !t.slug.startsWith('cover:')) : [];
+        if (filtered.length > 0) return filtered;
       } catch (_) {}
       try {
         const all = (await tagsAPI.getTags()).data || [];
-        return Array.isArray(all) ? all : [];
+        const filteredAll = Array.isArray(all) ? all.filter(t => typeof t.slug === 'string' && !t.slug.startsWith('cover:')) : [];
+        return filteredAll;
       } catch (e) {
         console.error('태그 목록 로드 실패:', e);
         return [];
@@ -89,7 +91,8 @@ const HomePage = () => {
     queryFn: async () => {
       try {
         const res = await tagsAPI.getUsedTags();
-        return res.data || [];
+        const arr = res.data || [];
+        return Array.isArray(arr) ? arr.filter(t => typeof t.slug === 'string' && !t.slug.startsWith('cover:')) : [];
       } catch (_) {
         return [];
       }
@@ -242,7 +245,14 @@ const HomePage = () => {
     const top = (topUsedTags || []).slice(0, 5);
     const topSlugs = new Set(top.map(t => t.slug));
     const base = (allTags || []).filter(t => !topSlugs.has(t.slug));
-    return [...base, ...[...top].reverse()];
+    const combined = [...base, ...[...top].reverse()];
+    // 최종 방어: cover: 접두 태그는 절대 노출하지 않음
+    const isBad = (t) => {
+      const s = String(t?.slug || '');
+      const n = String(t?.name || '');
+      return s.startsWith('cover:') || n.startsWith('cover:');
+    };
+    return combined.filter(t => !isBad(t));
   }, [allTags, topUsedTags]);
   const visibleTags = showAllTags ? arrangedTags : arrangedTags.slice(0, visibleTagLimit);
 

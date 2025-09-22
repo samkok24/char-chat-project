@@ -1,16 +1,18 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { storiesAPI, filesAPI, chaptersAPI } from '../lib/api';
+import { storiesAPI, chaptersAPI, mediaAPI } from '../lib/api';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../components/ui/card';
 import { Textarea } from '../components/ui/textarea';
 import { Input } from '../components/ui/input';
 import { Alert, AlertDescription } from '../components/ui/alert';
-import { AlertCircle, ArrowLeft, Wand2, Menu, Trash2, Edit } from 'lucide-react';
+import { AlertCircle, ArrowLeft, Wand2, Menu, Trash2, Edit, Plus } from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import ErrorBoundary from '../components/ErrorBoundary';
-import DropzoneGallery from '../components/DropzoneGallery';
+import ImageGenerateInsertModal from '../components/ImageGenerateInsertModal';
 import StoryChapterImporterModal from '../components/StoryChapterImporterModal';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../components/ui/dialog';
+import { AlertDialog, AlertDialogAction, AlertDialogContent, AlertDialogDescription, AlertDialogHeader, AlertDialogTitle } from '../components/ui/alert-dialog';
 
 const WorkCreatePage = () => {
   const navigate = useNavigate();
@@ -21,11 +23,14 @@ const WorkCreatePage = () => {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [coverUrl, setCoverUrl] = useState('');
-  const [uploading, setUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState(0);
-  // 미니 갤러리 상태
-  const [galleryExisting, setGalleryExisting] = useState([]); // [{url}]
-  const [galleryNew, setGalleryNew] = useState([]); // File[]
+  const [openImgModal, setOpenImgModal] = useState(false);
+  const [draftGallery, setDraftGallery] = useState(() => {
+    try {
+      const raw = localStorage.getItem('cc:work-new:gallery');
+      const saved = raw ? JSON.parse(raw) : null;
+      return Array.isArray(saved) ? saved : [];
+    } catch { return []; }
+  });
   // 회차 상태
   const [episodes, setEpisodes] = useState(() => {
     try {
@@ -44,6 +49,22 @@ const WorkCreatePage = () => {
   const [editingTitleId, setEditingTitleId] = useState(null);
   const [editingTitleDraft, setEditingTitleDraft] = useState('');
   const [formRestored, setFormRestored] = useState(false);
+  const [hasUnsaved, setHasUnsaved] = useState(false);
+  const [confirmLeaveOpen, setConfirmLeaveOpen] = useState(false);
+  const [savedModalOpen, setSavedModalOpen] = useState(false);
+
+  const markDirty = () => setHasUnsaved(true);
+
+  // 새로고침/창닫기 가드
+  useEffect(() => {
+    const onBeforeUnload = (e) => {
+      if (!hasUnsaved) return;
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [hasUnsaved]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -68,12 +89,7 @@ const WorkCreatePage = () => {
         const g = genre.trim();
         kw = [g, ...kw.filter((k) => k !== g)];
       }
-      // cover 메타 태그 추가 (UI에서는 배지에서 제외됨)
-      if (coverUrl) {
-        if (!kw.some((k) => String(k).startsWith('cover:')) && kw.length < 10) {
-          kw.push(`cover:${coverUrl}`);
-        }
-      }
+      // cover: 메타 태그는 더 이상 키워드에 주입하지 않음 (탐색 태그 오염 방지)
       const payload = {
         title: title.trim(),
         content: synopsis.trim(),
@@ -86,6 +102,13 @@ const WorkCreatePage = () => {
       const id = res?.data?.id;
       try {
         if (id) {
+          // 생성 모달에서 선택한 갤러리를 실제 스토리에 첨부(첫 장 대표)
+          try {
+            const assetIds = (draftGallery || []).map(a => a.id).filter(Boolean);
+            if (assetIds.length > 0) {
+              await mediaAPI.attach({ entityType: 'story', entityId: id, assetIds, asPrimary: true });
+            }
+          } catch (_) {}
           const filled = (episodes || []).filter((e) => (e?.content || '').trim().length > 0);
           const nowIso = new Date().toISOString();
           const payload = {
@@ -111,6 +134,7 @@ const WorkCreatePage = () => {
           try { localStorage.removeItem('cc:work-new'); } catch {}
         }
       } catch (_) {}
+      setHasUnsaved(false);
       navigate(id ? `/stories/${id}` : '/');
     } catch (e) {
       let msg = '작품 등록에 실패했습니다.';
@@ -128,60 +152,79 @@ const WorkCreatePage = () => {
     }
   };
 
-  const handleManualSave = () => {
+  const handleManualSave = async () => {
     try {
-      const draft = { title, genre, keywords, synopsis, coverUrl, galleryExisting };
+      const draft = { title, genre, keywords, synopsis, coverUrl };
       localStorage.setItem('cc:work-new', JSON.stringify(draft));
       localStorage.setItem('cc:episodes:new', JSON.stringify(episodes));
+      localStorage.setItem('cc:work-new:gallery', JSON.stringify(draftGallery));
+      localStorage.setItem('cc:work-new:explicit', '1');
       try { window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'success', message: '임시 저장 완료' } })); } catch (_) {}
+      setHasUnsaved(false);
+      setSavedModalOpen(true);
     } catch (_) {}
   };
 
-  // 회차 자동 저장 (디바운스)
-  useEffect(() => {
-    const t = setTimeout(() => {
-      try { localStorage.setItem('cc:episodes:new', JSON.stringify(episodes)); } catch {}
-    }, 800);
-    return () => clearTimeout(t);
-  }, [episodes]);
+  // 자동 저장 제거: 임시 저장 버튼을 누를 때만 로컬에 보존
 
-  // 폼 자동 저장/복원
+  // 폼 복원: 명시적 임시저장 되었을 때만 복원
   useEffect(() => {
     if (formRestored) return;
     try {
-      const raw = localStorage.getItem('cc:work-new');
-      if (raw) {
-        const draft = JSON.parse(raw);
-        if (typeof draft.title === 'string') setTitle(draft.title);
-        if (typeof draft.genre === 'string') setGenre(draft.genre);
-        if (typeof draft.keywords === 'string') setKeywords(draft.keywords);
-        if (typeof draft.synopsis === 'string') setSynopsis(draft.synopsis);
-        if (Array.isArray(draft.galleryExisting)) setGalleryExisting(draft.galleryExisting);
-        if (typeof draft.coverUrl === 'string') setCoverUrl(draft.coverUrl);
+      const marker = localStorage.getItem('cc:work-new:explicit');
+      if (marker === '1') {
+        const raw = localStorage.getItem('cc:work-new');
+        if (raw) {
+          const draft = JSON.parse(raw);
+          if (typeof draft.title === 'string') setTitle(draft.title);
+          if (typeof draft.genre === 'string') setGenre(draft.genre);
+          if (typeof draft.keywords === 'string') setKeywords(draft.keywords);
+          if (typeof draft.synopsis === 'string') setSynopsis(draft.synopsis);
+          if (typeof draft.coverUrl === 'string') setCoverUrl(draft.coverUrl);
+        }
+        try {
+          const graw = localStorage.getItem('cc:work-new:gallery');
+          const g = graw ? JSON.parse(graw) : [];
+          if (Array.isArray(g)) setDraftGallery(g);
+        } catch {}
       }
     } catch (_) {}
     setFormRestored(true);
   }, [formRestored]);
 
-  useEffect(() => {
-    const t = setTimeout(() => {
-      try {
-        const draft = { title, genre, keywords, synopsis, coverUrl, galleryExisting };
-        localStorage.setItem('cc:work-new', JSON.stringify(draft));
-      } catch (_) {}
-    }, 1000);
-    return () => clearTimeout(t);
-  }, [title, genre, keywords, synopsis, coverUrl, galleryExisting]);
+  // 자동 저장 비활성화: 임시 저장 눌렀을 때만 보존
+
+  const handleResetForm = () => {
+    if (!window.confirm('입력한 내용을 모두 초기화할까요?')) return;
+    setTitle('');
+    setGenre('');
+    setKeywords('');
+    setSynopsis('');
+    setCoverUrl('');
+    setDraftGallery([]);
+    setEpisodes(Array.from({ length: 3 }, () => ({ id: (crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`), title: '', content: '', expanded: true })));
+    try {
+      localStorage.removeItem('cc:work-new');
+      localStorage.removeItem('cc:work-new:explicit');
+      localStorage.removeItem('cc:episodes:new');
+      localStorage.removeItem('cc:work-new:gallery');
+    } catch (_) {}
+    setHasUnsaved(false);
+    try { window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'success', message: '초기화 완료' } })); } catch (_) {}
+  };
 
   const addEpisode = () => {
     setEpisodes(prev => [...prev, { id: (crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`), title: '', content: '', expanded: true }]);
+    markDirty();
   };
   const updateEpisode = (id, patch) => {
     setEpisodes(prev => prev.map(e => e.id === id ? { ...e, ...patch } : e));
+    markDirty();
   };
   const removeEpisode = (id) => {
     if (!window.confirm('이 회차를 삭제하시겠습니까?')) return;
     setEpisodes(prev => prev.filter(e => e.id !== id));
+    markDirty();
   };
   const startEditTitle = (ep) => {
     setEditingTitleId(ep.id);
@@ -220,73 +263,36 @@ const WorkCreatePage = () => {
       const rest = incoming.slice(idx);
       return rest.length ? [...filled, ...rest] : filled;
     });
+    markDirty();
   };
-  const handleImporterReplace = (parsed) => setEpisodes(mapChaptersToEpisodes(parsed));
+  const handleImporterReplace = (parsed) => { setEpisodes(mapChaptersToEpisodes(parsed)); markDirty(); };
 
-  // 미니 갤러리 핸들러
-  const handleGalleryAddFiles = (files) => {
-    if (!Array.isArray(files) || files.length === 0) return;
-    setGalleryNew(prev => [...prev, ...files]);
-  };
-  const handleGalleryRemoveExisting = (index) => {
-    setGalleryExisting(prev => prev.filter((_, i) => i !== index));
-  };
-  const handleGalleryRemoveNew = (index) => {
-    setGalleryNew(prev => prev.filter((_, i) => i !== index));
-  };
-  const handleGalleryReorder = ({ from, to, isNew }) => {
-    if (isNew) {
-      setGalleryNew(prev => {
-        const arr = [...prev];
-        const item = arr.splice(from, 1)[0];
-        arr.splice(Math.max(0, Math.min(arr.length, to)), 0, item);
-        return arr;
-      });
-    } else {
-      setGalleryExisting(prev => {
-        const arr = [...prev];
-        const item = arr.splice(from, 1)[0];
-        arr.splice(Math.max(0, Math.min(arr.length, to)), 0, item);
-        return arr;
-      });
-    }
-  };
-  const handleGalleryUpload = async (files, onProgress) => {
-    // files: File[] -> 업로드 후 URL 배열 반환
-    const res = await filesAPI.uploadImages(files, onProgress);
-    const urls = Array.isArray(res.data) ? res.data : [res.data];
-    setGalleryExisting(prev => [...prev, ...urls.map(u => ({ url: u }))]);
-    setGalleryNew([]);
-    return urls;
-  };
-
-  // 갤러리의 첫 이미지 = 대표 표지
-  useEffect(() => {
+  // 이미지 선택 모달 결과 처리
+  const handleImageModalClose = (res) => {
+    setOpenImgModal(false);
     try {
-      const raw = galleryExisting[0]?.url || '';
-      // 절대/상대 URL 보정
-      const normalized = (() => {
-        try {
-          if (!raw) return '';
-          if (/^https?:\/\//i.test(raw)) return raw;
-          if (raw.startsWith('/')) {
-            const base = (import.meta.env.VITE_API_URL || 'http://localhost:8000').replace(/\/$/, '');
-            return `${base}${raw}`;
-          }
-          return raw;
-        } catch { return raw; }
-      })();
-      setCoverUrl(normalized);
+      const focus = res?.focusUrl;
+      if (typeof focus === 'string' && focus) setCoverUrl(focus);
+      const g = Array.isArray(res?.gallery) ? res.gallery : [];
+      if (g.length) setDraftGallery(g);
+      // 모달에서 이미지가 늘었는데 대표가 비어있다면 첫 장을 대표로 자동 반영
+      if (!focus && !coverUrl && g.length > 0) setCoverUrl(g[0].url);
+      if (focus || (g && g.length)) markDirty();
     } catch (_) {}
-  }, [galleryExisting]);
+  };
+
+  // 표지 URL은 모달 종료 시 직접 설정
 
   return (
     <div className="min-h-screen bg-gray-900 text-gray-200 p-4 sm:p-6 lg:p-8 pb-28">
       <div className="max-w-5xl mx-auto">
         <header className="mb-6 flex items-center justify-between">
-          <Button variant="ghost" onClick={() => navigate(-1)}>
+          <Button variant="ghost" onClick={() => { if (hasUnsaved) setConfirmLeaveOpen(true); else navigate(-1); }}>
             <ArrowLeft className="w-5 h-5 mr-2" /> 홈으로 돌아가기
           </Button>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" onClick={handleResetForm}>일괄초기화</Button>
+          </div>
         </header>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -303,36 +309,32 @@ const WorkCreatePage = () => {
                   <AlertDescription>{error}</AlertDescription>
                 </Alert>
               )}
-              {/* 이미지 미니 갤러리 (표지 대체) */}
-              {/* 이미지 미니 갤러리 (선택) */}
+              {/* 대표 이미지 미니 스트립 갤러리 */}
               <div>
-                <label className="block text-sm">이미지 미니 갤러리 (선택)</label>
-                <div className="mt-2">
-                  <DropzoneGallery
-                    existingImages={galleryExisting}
-                    newFiles={galleryNew}
-                    onAddFiles={handleGalleryAddFiles}
-                    onRemoveExisting={handleGalleryRemoveExisting}
-                    onRemoveNew={handleGalleryRemoveNew}
-                    onReorder={handleGalleryReorder}
-                    onUpload={handleGalleryUpload}
-                  />
+                <label className="block text-sm">대표 이미지</label>
+                <div className={`mt-2 flex items-center gap-2 overflow-x-auto pb-2 ${ (draftGallery?.length||0) === 0 ? 'justify-center' : 'justify-start' }`}>
+                  {draftGallery.map((g, idx) => (
+                    <div key={`${g.url}-${idx}`} className={`relative w-14 h-20 rounded border ${idx===0?'border-blue-500 ring-2 ring-blue-500':'border-gray-700'} flex-shrink-0 overflow-hidden bg-gray-800`} title={idx===0?'대표 이미지':''}>
+                      {idx===0 && (<div className="absolute top-1 left-1 bg-blue-600 text-white text-[9px] px-1 rounded">대표</div>)}
+                      <img src={g.url} alt={`img-${idx+1}`} className="w-full h-full object-cover" />
+                    </div>
+                  ))}
+                  <button type="button" onClick={()=> setOpenImgModal(true)} className="w-14 h-20 rounded border-2 border-dashed border-gray-600 hover:border-purple-500 hover:bg-purple-500/10 flex items-center justify-center text-gray-400 hover:text-purple-400 flex-shrink-0" aria-label="이미지 추가">
+                    <Plus className="w-5 h-5" />
+                  </button>
                 </div>
-                {coverUrl && (
-                  <div className="mt-3">
-                    <label className="block text-sm">대표 표지</label>
-                    <img src={coverUrl} alt="표지" className="mt-2 w-28 h-40 object-cover rounded border border-gray-700" />
-                  </div>
+                { (draftGallery?.length||0) === 0 && (
+                  <div className="text-xs text-gray-500 text-center">이미지를 추가하려면 +를 클릭하세요</div>
                 )}
               </div>
               <div>
                 <label className="block text-sm">제목</label>
-                <Input value={title} onChange={(e)=>setTitle(e.target.value)} placeholder="작품 제목" className="mt-2" />
+                <Input value={title} onChange={(e)=>{ setTitle(e.target.value); markDirty(); }} placeholder="작품 제목" className="mt-2" />
               </div>
               <div>
                 <label className="block text-sm">장르</label>
                 <div className="mt-2">
-                  <Select value={genre} onValueChange={setGenre}>
+                  <Select value={genre} onValueChange={(v)=>{ setGenre(v); markDirty(); }}>
                     <SelectTrigger>
                       <SelectValue placeholder="장르 선택" />
                     </SelectTrigger>
@@ -348,11 +350,11 @@ const WorkCreatePage = () => {
               </div>
               <div>
                 <label className="block text-sm">키워드(최대 10개, 쉼표로 구분)</label>
-                <Input value={keywords} onChange={(e)=>setKeywords(e.target.value)} placeholder="예: 성장, 히로인, 전투" className="mt-2" />
+                <Input value={keywords} onChange={(e)=>{ setKeywords(e.target.value); markDirty(); }} placeholder="예: 성장, 히로인, 전투" className="mt-2" />
               </div>
               <div>
                 <label className="block text-sm">소개글 (최소 20자)</label>
-                <Textarea value={synopsis} onChange={(e)=>setSynopsis(e.target.value)} rows={10} className="mt-2" />
+                <Textarea value={synopsis} onChange={(e)=>{ setSynopsis(e.target.value); markDirty(); }} rows={10} className="mt-2" />
               </div>
               {/* 등록 버튼은 우측 회차 관리 하단으로 이동 */}
             </CardContent>
@@ -366,6 +368,11 @@ const WorkCreatePage = () => {
                 <div className="flex items-center gap-2">
                   <Button onClick={() => setOpenImporter(true)}>txt로 일괄 업로드</Button>
                   <Button variant="outline" onClick={addEpisode}>+ 회차 추가</Button>
+                  <Button variant="outline" onClick={()=>{
+                    if (!window.confirm('추출/입력한 회차를 초기 상태로 되돌릴까요? (1~3화 기본 슬롯)')) return;
+                    setEpisodes(Array.from({ length: 3 }, () => ({ id: (crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`), title: '', content: '', expanded: true })));
+                    setHasUnsaved(true);
+                  }}>회차 초기화</Button>
                 </div>
               </CardHeader>
               <CardContent className="space-y-3">
@@ -450,6 +457,35 @@ const WorkCreatePage = () => {
           />
         </div>
       </div>
+      {/* 이미지 생성/삽입 모달 */}
+      <ImageGenerateInsertModal open={openImgModal} onClose={handleImageModalClose} entityType={undefined} entityId={undefined} initialGallery={draftGallery} />
+      {/* 나가기 경고 모달 */}
+      <Dialog open={confirmLeaveOpen} onOpenChange={(v)=> setConfirmLeaveOpen(v)}>
+        <DialogContent className="bg-gray-900 text-white border border-gray-800 max-w-md">
+          <DialogHeader>
+            <DialogTitle>저장되지 않은 변경사항</DialogTitle>
+          </DialogHeader>
+          <div className="text-sm text-gray-300">임시 저장하지 않은 정보가 있습니다. 나가면 입력한 내용이 사라질 수 있어요.</div>
+          <div className="mt-4 flex items-center justify-end gap-2">
+            <Button variant="outline" className="bg-gray-800 border-gray-700 text-gray-200" onClick={()=> setConfirmLeaveOpen(false)}>계속 편집</Button>
+            <Button className="bg-red-600 hover:bg-red-700" onClick={()=> { setConfirmLeaveOpen(false); setHasUnsaved(false); navigate(-1); }}>저장 안 하고 나가기</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+      {/* 임시 저장 완료 알림 모달 */}
+      <AlertDialog open={savedModalOpen} onOpenChange={setSavedModalOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>임시 저장 완료</AlertDialogTitle>
+            <AlertDialogDescription>
+              입력하신 내용이 안전하게 임시 저장되었습니다. 계속 편집을 진행하셔도 됩니다.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="flex items-center justify-end gap-2">
+            <AlertDialogAction onClick={()=> setSavedModalOpen(false)}>확인</AlertDialogAction>
+          </div>
+        </AlertDialogContent>
+      </AlertDialog>
       {/* 고정 푸터 바: 항상 화면 하단에 표시 */}
       <footer className="fixed bottom-0 left-0 right-0 bg-gray-900 border-t border-gray-800 py-3 z-50">
         <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -477,5 +513,9 @@ const WorkCreatePage = () => {
 };
 
 export default WorkCreatePage;
+
+// 모달 마운트 (페이지 하단)
+// eslint-disable-next-line react/prop-types
+const WorkCreatePageWithModal = () => null;
 
 

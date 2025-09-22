@@ -17,9 +17,9 @@ const StoryChapterImporterModal = ({ open, onClose, onApplyAppend, onApplyReplac
   // 다양한 회차 헤더 패턴 지원
   // 예: [1화], 작품명-1화, 작품명 : 1화, 1화, 프롤로그, 1. 회차명, Chapter 1: Title
   const headingMatchers = useMemo(() => [
-    // [1화] or [ 12 장 ] Title
+    // [1화] or [ 12 장 ] Title  (반드시 화/장 토큰이 있어야 함: [9] 같은 카운트다운 방지)
     (line) => {
-      const m = line.match(/^\s*\[\s*(?:제\s*)?(\d{1,4})\s*(?:화|장)?\s*\]\s*(.*)$/i);
+      const m = line.match(/^\s*\[\s*(?:제\s*)?(\d{1,4})\s*(?:화|장)\s*\]\s*(.*)$/i);
       return m ? { no: Number(m[1]), tail: m[2] || '' } : null;
     },
     // 제 1 화  /  1화  /  2장  Title  (한글 토큰 뒤 \b 제거)
@@ -71,19 +71,52 @@ const StoryChapterImporterModal = ({ open, onClose, onApplyAppend, onApplyReplac
         if (r) { matched = r; break; }
       }
       if (matched) {
+        // 동일 회차 헤더가 연속해서 나오는 경우(예: "1화" 다음 줄 "1화 제목") 병합 처리
+        const nextNo = matched.no ?? null;
+        let tail = (matched.tail || '').replace(/^[\s:\-\u00A0]+/, '').trim();
+        // tail이 "1화"/"1장"과 같은 중복 토큰이면 무시
+        if (nextNo !== null && (tail === `${nextNo}화` || tail === `${nextNo}장` || /^\d{1,4}\s*(?:화|장)$/.test(tail))) {
+          tail = '';
+        }
+        if (current.no !== null && nextNo !== null && Number(current.no) === Number(nextNo) && current.content.length === 0) {
+          // 직전 헤더와 동일 회차, 아직 본문 시작 전 → 제목 보강만 하고 계속 진행
+          if (tail) current.title = tail;
+          return;
+        }
+        // 새 회차로 전환
         pushCurrent();
-        const no = matched.no ?? null;
-        const tail = matched.tail || '';
-        const title = (tail || (no !== null ? `${no}화` : '')).trim();
-        current = { no: no !== null ? Number(no) : null, title, content: [] };
+        const title = (tail || (nextNo !== null ? `${nextNo}화` : '')).trim();
+        current = { no: nextNo !== null ? Number(nextNo) : null, title, content: [] };
       } else {
         current.content.push(raw);
       }
     });
     pushCurrent();
-    return chapters
+    // 번호가 비어있는 항목은 등장 순서로 보정, 그리고 동일 번호+제목 중복 제거
+    const normalized = chapters
       .map((c, idx) => ({ ...c, no: (c.no === null ? idx + 1 : c.no) }))
       .sort((a, b) => (a.no || 0) - (b.no || 0));
+
+    // 1) 같은 번호 중 제목이 비어있는 항목과 제목이 있는 항목이 함께 있으면, 제목이 있는 항목을 우선
+    //    또한 내용 길이가 더 긴 항목을 우선하여 하나로 병합
+    const byNo = new Map();
+    const score = (c) => ((c.title || '').trim().length > 0 ? 10 : 0) + ((c.content || '').length || 0);
+    for (const c of normalized) {
+      const prev = byNo.get(c.no);
+      if (!prev || score(c) > score(prev)) byNo.set(c.no, c);
+    }
+    const merged = Array.from(byNo.values()).sort((a,b)=> (a.no||0)-(b.no||0));
+
+    // 2) 번호+제목 완전중복 제거 (방어적)
+    const seen = new Set();
+    const dedup = [];
+    for (const c of merged) {
+      const key = `${c.no}||${(c.title || '').trim()}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      dedup.push(c);
+    }
+    return dedup;
   };
 
   const handleFileUpload = async (e) => {
@@ -187,8 +220,8 @@ const StoryChapterImporterModal = ({ open, onClose, onApplyAppend, onApplyReplac
             <CardContent>
               {parsedChapters.length > 0 ? (
                 <ul className="max-h-[420px] overflow-auto divide-y divide-gray-700 rounded-md border border-gray-700">
-                  {parsedChapters.map((ch) => (
-                    <li key={`${ch.no}-${ch.title}`} className="px-3 py-2 bg-gray-800/30">
+                  {parsedChapters.map((ch, idx) => (
+                    <li key={`${ch.no}-${ch.title}-${idx}`} className="px-3 py-2 bg-gray-800/30">
                       <div className="text-sm text-gray-200 truncate">
                         <span className="text-gray-400 mr-2">{ch.no ? `${ch.no}화` : '회차'}</span>
                         <span>{ch.title}</span>

@@ -433,7 +433,10 @@ async def get_characters(
             description=char.description,
             greeting=char.greeting,
             avatar_url=char.avatar_url,
-            image_descriptions=getattr(char, 'image_descriptions', []),
+            image_descriptions=[
+                img for img in (getattr(char, 'image_descriptions', []) or [])
+                if not (isinstance(img, dict) and str(img.get('url','')).startswith('cover:'))
+            ],
             origin_story_id=getattr(char, 'origin_story_id', None),
             chat_count=char.chat_count,
             like_count=char.like_count,
@@ -448,18 +451,39 @@ async def get_characters(
 async def get_my_characters(
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
-    current_user: User = Depends(get_current_active_user),
+    only: Optional[str] = Query(None, description="origchat|regular"),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """내 캐릭터 목록 조회"""
+    """내 캐릭터 목록 조회
+    - 공개/비공개 모두 포함
+    - 응답 스키마로 일관 매핑(creator_username 포함)
+    """
     characters = await get_characters_by_creator(
         db=db,
         creator_id=current_user.id,
         skip=skip,
         limit=limit,
-        include_private=True
+        include_private=True,
+        only=only,
     )
-    return characters
+    return [
+        CharacterListResponse(
+            id=char.id,
+            creator_id=char.creator_id,
+            name=char.name,
+            description=char.description,
+            greeting=char.greeting,
+            avatar_url=char.avatar_url,
+            image_descriptions=getattr(char, 'image_descriptions', []),
+            origin_story_id=getattr(char, 'origin_story_id', None),
+            chat_count=char.chat_count,
+            like_count=char.like_count,
+            is_public=char.is_public,
+            created_at=char.created_at,
+            creator_username=char.creator.username if getattr(char, 'creator', None) else None,
+        ) for char in characters
+    ]
 
 
 # @router.get("/{character_id}", response_model=CharacterWithCreator)

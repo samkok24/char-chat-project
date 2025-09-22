@@ -47,6 +47,8 @@ class StoryResponse(StoryBase):
     comment_count: int
     created_at: datetime
     updated_at: datetime
+    # 태그 슬러그 목록
+    tags: list[str] = Field(default_factory=list)
 
 
 class StoryListItem(BaseModel):
@@ -67,6 +69,8 @@ class StoryListItem(BaseModel):
     cover_url: Optional[str] = None
     # 목록 카드에서 사용할 간단 소개(요약)
     excerpt: Optional[str] = None
+    # 태그 슬러그 목록
+    tags: list[str] = Field(default_factory=list)
 
 
 class StoryListResponse(BaseModel):
