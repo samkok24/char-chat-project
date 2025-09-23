@@ -5,6 +5,26 @@
 from pydantic_settings import BaseSettings
 from typing import Optional, List
 import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+
+"""env 로딩 우선순위
+1) OS 환경변수 (Render 대시보드 Environment 등)
+2) 프로젝트 루트의 .env (repo/.env)
+3) backend-api 디렉터리의 .env (repo/backend-api/.env)
+"""
+
+# .env 사전 로드 (OS 환경변수 우선, override=False)
+_here = Path(__file__).resolve()
+_repo_root_env = _here.parents[3] / ".env"  # repo/.env
+_backend_env = _here.parents[2] / ".env"    # backend-api/.env
+for _p in (_repo_root_env, _backend_env):
+    try:
+        if _p.exists():
+            load_dotenv(dotenv_path=str(_p), override=False)
+    except Exception:
+        pass
 
 
 class Settings(BaseSettings):
