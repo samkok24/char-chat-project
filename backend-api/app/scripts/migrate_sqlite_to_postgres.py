@@ -132,7 +132,20 @@ def _truncate_tables(dst: Engine, tables: List[Table]):
     """
     with dst.begin() as conn:
         for t in reversed(tables):
-            conn.execute(text(f'TRUNCATE TABLE "{t.name}" RESTART IDENTITY CASCADE'))
+            try:
+                conn.execute(text(f'TRUNCATE TABLE "{t.name}" RESTART IDENTITY CASCADE'))
+            except Exception as e:
+                # 대상에 아직 테이블이 없다면 건너뜀
+                _log(f"[warn] TRUNCATE skip {t.name}: {e}")
+
+
+def _ensure_schema(dst: Engine):
+    """대상 DB에 테이블 스키마가 없으면 생성한다."""
+    try:
+        Base.metadata.create_all(dst)
+        _log("target schema ensured (create_all)")
+    except Exception as e:
+        _log(f"[warn] ensure schema failed (continuing): {e}")
 
 
 def _insert_rows(dst: Engine, table: Table, rows: List[Dict[str, Any]]) -> int:
@@ -174,6 +187,7 @@ def migrate(sqlite_path: str, pg_url: str, truncate: bool = False, dry_run: bool
     dst = _connect_postgres(pg_url)
 
     # 대상 스키마가 이미 생성되어 있어야 함 (Alembic/앱 초기화로 생성)
+    _ensure_schema(dst)
     tables = _sorted_tables()
 
     _log(f"총 {len(tables)}개 테이블 복사 시작 (의존 순)")
