@@ -95,14 +95,23 @@ def _get_source_rows(src: Engine, table_name: str, columns: List[str]) -> List[D
 
 
 def _disable_constraints_pg(dst: Engine):
-    # FK/트리거 비활성화 (세션 한정)
-    with dst.begin() as conn:
-        conn.execute(text("SET session_replication_role = replica"))
+    """FK/트리거 비활성화 시도(세션 한정).
+    Render Postgres(Managed)에서는 권한이 없어 실패할 수 있으므로, 실패 시 경고 로그만 남기고 계속 진행한다.
+    """
+    try:
+        with dst.begin() as conn:
+            conn.execute(text("SET session_replication_role = replica"))
+        _log("[warn] session_replication_role=replica 적용")
+    except Exception as e:
+        _log(f"[warn] FK/트리거 비활성화 건너뜀(권한 없음 가능): {e}")
 
 
 def _enable_constraints_pg(dst: Engine):
-    with dst.begin() as conn:
-        conn.execute(text("SET session_replication_role = DEFAULT"))
+    try:
+        with dst.begin() as conn:
+            conn.execute(text("SET session_replication_role = DEFAULT"))
+    except Exception:
+        pass
 
 
 def _truncate_tables(dst: Engine, tables: List[Table]):
@@ -168,7 +177,11 @@ def migrate(sqlite_path: str, pg_url: str, truncate: bool = False, dry_run: bool
                 _log(f"- {t.name}: {len(rows)}건 (드라이런)")
                 copied_total += len(rows)
                 continue
-            inserted = _insert_rows(dst, t, rows)
+            try:
+                inserted = _insert_rows(dst, t, rows)
+            except Exception as e:
+                _log(f"- {t.name}: 삽입 오류 → 건너뜀 ({e})")
+                inserted = 0
             _log(f"- {t.name}: {inserted}건 복사")
             copied_total += inserted
         _log(f"완료: 총 {copied_total}건 복사")
