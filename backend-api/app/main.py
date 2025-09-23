@@ -168,6 +168,10 @@ DEV_ALLOWED_ORIGINS = [
 ]
 ALLOWED_ORIGINS = DEV_ALLOWED_ORIGINS if settings.ENVIRONMENT == "development" else []
 ALLOWED_ORIGIN_REGEX = None if settings.ENVIRONMENT == "development" else r"https?://(localhost|127\.0\.0\.1)(:\\d+)?"
+# 환경변수로 CORS 정규식을 오버라이드할 수 있도록 허용 (예: ".*" 또는 특정 도메인 패턴)
+_env_cors_regex = os.getenv("ALLOW_ORIGIN_REGEX")
+if _env_cors_regex:
+    ALLOWED_ORIGIN_REGEX = _env_cors_regex
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
