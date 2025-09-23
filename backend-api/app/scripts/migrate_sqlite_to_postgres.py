@@ -158,7 +158,16 @@ def _insert_rows(dst: Engine, table: Table, rows: List[Dict[str, Any]]) -> int:
         item = {k: v for k, v in r.items() if k in dst_cols}
         # 간단 UUID 캐스팅(문자열 → uuid.UUID)
         for c in table.columns:
-            if c.name in item and getattr(c.type, "python_type", None) is _uuid.UUID:
+            if c.name not in item:
+                continue
+            needs_uuid = False
+            try:
+                pytype = c.type.python_type  # 일부 타입은 NotImplementedError 발생
+                needs_uuid = (pytype is _uuid.UUID)
+            except Exception:
+                # dialect별 힌트
+                needs_uuid = getattr(c.type, "as_uuid", False) or c.type.__class__.__name__.lower().startswith("uuid")
+            if needs_uuid:
                 val = item[c.name]
                 if isinstance(val, str):
                     try:
