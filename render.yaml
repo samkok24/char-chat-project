@@ -4,19 +4,21 @@ databases:
   - name: charchat-db
     databaseName: char_chat
     user: char
-    plan: free
 
 services:
   # Redis (cache/queues)
-  - type: redis
+  - type: keyvalue
     name: char-redis
-    plan: free
+    plan: starter
     maxmemoryPolicy: allkeys-lru
+    ipAllowList:
+      - source: 0.0.0.0/0
+        description: everywhere
 
   # Backend API (FastAPI)
   - type: web
     name: char-backend
-    env: python
+    runtime: python
     plan: free
     rootDir: backend-api
     buildCommand: pip install -r requirements.txt
@@ -57,8 +59,9 @@ services:
     # postDeployCommand: python -m app.scripts.precise_migration
 
   # Frontend (Vite static site)
-  - type: static_site
+  - type: web
     name: char-frontend
+    runtime: static
     rootDir: frontend/char-chat-frontend
     buildCommand: npm ci && npm run build
     staticPublishPath: dist
