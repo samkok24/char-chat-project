@@ -67,9 +67,6 @@ services:
     staticPublishPath: dist
     envVars:
       - key: VITE_API_URL
-        fromService:
-          name: char-backend
-          type: web
-          property: url
+        sync: false # Render 대시보드에서 백엔드 공개 URL을 입력하세요 (예: https://<backend>.onrender.com)
 
 
