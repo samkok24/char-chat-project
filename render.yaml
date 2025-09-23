@@ -27,6 +27,8 @@ services:
     healthCheckPath: /health
     autoDeploy: true
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
       # Database URL is injected from the managed PostgreSQL
       - key: DATABASE_URL
         fromDatabase:
@@ -40,7 +42,19 @@ services:
           property: connectionString
       # Storage (R2 / S3 compatible). Fill the values before deploying.
       - key: STORAGE_BACKEND
-        value: local
+        value: S3
+      - key: R2_ENDPOINT_URL
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET
+        sync: false
+      - key: R2_PUBLIC_BASE_URL
+        sync: false
+      - key: R2_ADDRESSING_STYLE
+        value: path
       - key: R2_ENDPOINT_URL
         value: https://<your-account-id>.r2.cloudflarestorage.com
       - key: R2_ACCESS_KEY_ID
