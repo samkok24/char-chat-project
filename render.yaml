@@ -56,14 +56,12 @@ services:
     # Optional: run a migration step right after each deploy
     # postDeployCommand: python -m app.scripts.precise_migration
 
-  # (static site는 아래 staticSites 섹션으로 이동)
-
-staticSites:
-  - name: char-frontend
+  # Frontend (Vite static site)
+  - type: static
+    name: char-frontend
     rootDir: frontend/char-chat-frontend
     buildCommand: npm ci && npm run build
-    publishPath: dist
-    # Inject the backend URL into Vite at build time
+    staticPublishPath: dist
     envVars:
       - key: VITE_API_URL
         fromService:
