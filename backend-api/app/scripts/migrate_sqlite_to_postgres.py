@@ -35,6 +35,18 @@ from sqlalchemy.sql import select
 # 애플리케이션 모델 메타데이터
 from app.core.database import Base
 
+# 메타데이터에 테이블을 등록하기 위해 모델 모듈들을 명시적으로 import
+def _import_all_models() -> None:
+    try:
+        from app.models import (
+            user, character, story, story_chapter, tag, media_asset,
+            chat, memory_note, user_persona, payment, like, comment,
+            bookmark, story_extracted_character, story_summary,
+        )  # noqa: F401
+        _log("models imported (Base.metadata populated)")
+    except Exception as e:
+        _log(f"[warn] model import failed: {e}")
+
 
 def _log(msg: str) -> None:
     sys.stdout.write(msg + "\n")
@@ -158,6 +170,7 @@ def _count_rows(engine: Engine, table_name: str) -> int:
 
 
 def migrate(sqlite_path: str, pg_url: str, truncate: bool = False, dry_run: bool = False, best_effort: bool = False):
+    _import_all_models()
     src = _connect_sqlite(sqlite_path)
     dst = _connect_postgres(pg_url)
 
