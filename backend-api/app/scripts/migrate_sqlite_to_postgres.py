@@ -148,7 +148,16 @@ def _insert_rows(dst: Engine, table: Table, rows: List[Dict[str, Any]]) -> int:
     return len(filtered)
 
 
-def migrate(sqlite_path: str, pg_url: str, truncate: bool = False, dry_run: bool = False):
+def _count_rows(engine: Engine, table_name: str) -> int:
+    try:
+        with engine.connect() as conn:
+            res = conn.execute(text(f'SELECT COUNT(*) FROM "{table_name}"'))
+            return int(res.scalar_one())
+    except Exception:
+        return -1
+
+
+def migrate(sqlite_path: str, pg_url: str, truncate: bool = False, dry_run: bool = False, best_effort: bool = False):
     src = _connect_sqlite(sqlite_path)
     dst = _connect_postgres(pg_url)
 
@@ -180,9 +189,14 @@ def migrate(sqlite_path: str, pg_url: str, truncate: bool = False, dry_run: bool
             try:
                 inserted = _insert_rows(dst, t, rows)
             except Exception as e:
-                _log(f"- {t.name}: 삽입 오류 → 건너뜀 ({e})")
+                # 기본은 strict: 즉시 중단하여 데이터 손실을 방지
+                if not best_effort:
+                    raise
+                _log(f"- {t.name}: 삽입 오류 → 건너뜀 (best-effort) ({e})")
                 inserted = 0
-            _log(f"- {t.name}: {inserted}건 복사")
+            # 간단 검증: 대상 건수 로깅(실패 시 -1)
+            dst_cnt = _count_rows(dst, t.name)
+            _log(f"- {t.name}: {inserted}건 복사 (대상 현재 {dst_cnt}건)")
             copied_total += inserted
         _log(f"완료: 총 {copied_total}건 복사")
     finally:
@@ -202,10 +216,11 @@ def main():
     p.add_argument("--sqlite", required=True, help="소스 SQLite 파일 경로 또는 sqlite:/// URL")
     p.add_argument("--pg", required=True, help="대상 PostgreSQL 연결 문자열 (postgresql://...")
     p.add_argument("--truncate", action="store_true", help="복사 전 대상(Postgres) 테이블 비우기 (소스 SQLite는 수정 안 함)")
+    p.add_argument("--best-effort", action="store_true", help="삽입 오류가 발생해도 계속 진행(기본은 오류 시 중단)")
     p.add_argument("--dry-run", action="store_true", help="삽입하지 않고 건수만 출력")
     args = p.parse_args()
 
-    migrate(sqlite_path=args.sqlite, pg_url=args.pg, truncate=bool(args.truncate), dry_run=bool(args.dry_run))
+    migrate(sqlite_path=args.sqlite, pg_url=args.pg, truncate=bool(args.truncate), dry_run=bool(args.dry_run), best_effort=bool(args.best_effort))
 
 
 if __name__ == "__main__":
