@@ -55,18 +55,6 @@ services:
         sync: false
       - key: R2_ADDRESSING_STYLE
         value: path
-      - key: R2_ENDPOINT_URL
-        value: https://<your-account-id>.r2.cloudflarestorage.com
-      - key: R2_ACCESS_KEY_ID
-        value: <fill-me>
-      - key: R2_SECRET_ACCESS_KEY
-        value: <fill-me>
-      - key: R2_BUCKET
-        value: <fill-me>
-      - key: R2_PUBLIC_BASE_URL
-        value: https://<your-public-cdn-domain>
-      - key: R2_ADDRESSING_STYLE
-        value: virtual
       # Optional: allow all origins in dev. For production, restrict properly.
       - key: ALLOW_ORIGIN_REGEX
         value: ".*"
