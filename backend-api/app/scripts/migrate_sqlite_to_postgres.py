@@ -31,6 +31,7 @@ import uuid as _uuid
 from sqlalchemy import create_engine, text, Table, MetaData
 from sqlalchemy.engine import Engine
 from sqlalchemy.sql import select
+from urllib.parse import quote
 
 # 애플리케이션 모델 메타데이터
 from app.core.database import Base
@@ -55,23 +56,21 @@ def _log(msg: str) -> None:
 
 def _connect_sqlite(sqlite_path: str) -> Engine:
     """소스 SQLite를 읽기 전용으로 연결한다.
-    - 파일 경로가 들어오면 URI 모드로 강제하여 mode=ro 적용
+    - 파일 경로가 들어오면 파일 URI 형식(file:/absolute/path)로 변환하고 mode=ro 적용
     - 안전을 위해 세션마다 query_only=ON 설정
     """
     if sqlite_path.startswith("sqlite"):
-        # 이미 URL인 경우: uri=true 가 없다면 붙여준다
+        # 이미 완전한 URL은 신뢰하되, uri=true 누락 시 추가
         url = sqlite_path
-        if "?" in url:
-            if "uri=true" not in url:
-                url += "&uri=true"
-            if "mode=ro" not in url:
-                url += "&mode=ro"
-        else:
-            url += "?uri=true&mode=ro"
+        if "uri=true" not in url:
+            sep = "&" if "?" in url else "?"
+            url = f"{url}{sep}uri=true"
         eng = create_engine(url, connect_args={"uri": True})
     else:
-        # 파일 경로 → sqlite URL (URI 모드 + 읽기전용)
-        url = f"sqlite:///{sqlite_path}?uri=true&mode=ro"
+        # 절대경로를 파일 URI로 인코딩하여 전달 (mode=ro)
+        # 예: sqlite:///file:/app/data/test.db?mode=ro&uri=true
+        enc = quote(sqlite_path)
+        url = f"sqlite:///file:{enc}?mode=ro&uri=true"
         eng = create_engine(url, connect_args={"uri": True})
 
     # 연결 시 읽기 전용 보장 (추가 안전장치)
