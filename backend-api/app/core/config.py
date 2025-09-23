@@ -13,10 +13,10 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = "development"
     DEBUG: bool = True  # DEBUG 필드 추가
     
-    # API 키
-    GEMINI_API_KEY: str
-    CLAUDE_API_KEY: str
-    OPENAI_API_KEY: str
+    # API 키 (없어도 부팅 가능하도록 Optional)
+    GEMINI_API_KEY: str | None = None
+    CLAUDE_API_KEY: str | None = None
+    OPENAI_API_KEY: str | None = None
     IMAGEN_API_KEY: Optional[str] = None
     
     DATABASE_URL: str = "sqlite:///./data/test.db"  # 기본값 추가
@@ -56,8 +56,9 @@ def validate_settings():
         if settings.JWT_SECRET_KEY == "your-super-secret-jwt-key-change-this-in-production":
             raise ValueError("프로덕션 환경에서는 JWT_SECRET_KEY를 변경해야 합니다.")
         
-        if not settings.GEMINI_API_KEY and not settings.CLAUDE_API_KEY:
-            raise ValueError("AI API 키가 설정되지 않았습니다.")
+        # 프로덕션에서는 최소 1개 키 필요
+        if not (settings.GEMINI_API_KEY or settings.CLAUDE_API_KEY or settings.OPENAI_API_KEY):
+            raise ValueError("AI API 키(GEMINI/CLAUDE/OPENAI) 중 최소 1개는 필요합니다.")
     
     return True
 
