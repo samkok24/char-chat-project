@@ -56,10 +56,10 @@ services:
     # Optional: run a migration step right after each deploy
     # postDeployCommand: python -m app.scripts.precise_migration
 
-  # Frontend (Vite static site)
-  - type: static_site
-    name: char-frontend
-    plan: free
+  # (static site는 아래 staticSites 섹션으로 이동)
+
+staticSites:
+  - name: char-frontend
     rootDir: frontend/char-chat-frontend
     buildCommand: npm ci && npm run build
     publishPath: dist
