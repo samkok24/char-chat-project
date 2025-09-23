@@ -1,0 +1,74 @@
+# Render Blueprint for char-chat (Backend FastAPI + PostgreSQL + Redis + Frontend Vite)
+
+databases:
+  - name: charchat-db
+    databaseName: char_chat
+    user: char
+    plan: free
+
+services:
+  # Redis (cache/queues)
+  - type: redis
+    name: char-redis
+    plan: free
+    maxmemoryPolicy: allkeys-lru
+
+  # Backend API (FastAPI)
+  - type: web
+    name: char-backend
+    env: python
+    plan: free
+    rootDir: backend-api
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      # Database URL is injected from the managed PostgreSQL
+      - key: DATABASE_URL
+        fromDatabase:
+          name: charchat-db
+          property: connectionString
+      # Managed Redis connection string
+      - key: REDIS_URL
+        fromService:
+          name: char-redis
+          type: redis
+          property: connectionString
+      # Storage (R2 / S3 compatible). Fill the values before deploying.
+      - key: STORAGE_BACKEND
+        value: S3
+      - key: R2_ENDPOINT_URL
+        value: https://<your-account-id>.r2.cloudflarestorage.com
+      - key: R2_ACCESS_KEY_ID
+        value: <fill-me>
+      - key: R2_SECRET_ACCESS_KEY
+        value: <fill-me>
+      - key: R2_BUCKET
+        value: <fill-me>
+      - key: R2_PUBLIC_BASE_URL
+        value: https://<your-public-cdn-domain>
+      - key: R2_ADDRESSING_STYLE
+        value: virtual
+      # Optional: allow all origins in dev. For production, restrict properly.
+      - key: ALLOW_ORIGIN_REGEX
+        value: ".*"
+    # Optional: run a migration step right after each deploy
+    # postDeployCommand: python -m app.scripts.precise_migration
+
+  # Frontend (Vite static site)
+  - type: static
+    name: char-frontend
+    plan: free
+    rootDir: frontend/char-chat-frontend
+    buildCommand: npm ci && npm run build
+    publishPath: dist
+    # Inject the backend URL into Vite at build time
+    envVars:
+      - key: VITE_API_URL
+        fromService:
+          name: char-backend
+          type: web
+          property: url
+
+
