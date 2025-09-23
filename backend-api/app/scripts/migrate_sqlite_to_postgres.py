@@ -91,7 +91,51 @@ def _connect_postgres(pg_url: str) -> Engine:
 
 
 def _sorted_tables() -> List[Table]:
-    return list(Base.metadata.sorted_tables)
+    base = list(Base.metadata.sorted_tables)
+    # 우선순위: FK 충돌 최소화를 위해 핵심 부모 테이블을 먼저 삽입
+    priority: Dict[str, int] = {
+        # 사용자 먼저
+        "users": 1,
+        # 스토리 다음(캐릭터의 origin_story_id가 참조할 수 있음)
+        "stories": 2,
+        # 캐릭터(creator_id가 users, origin_story_id가 stories)
+        "characters": 3,
+        # 태그 및 기초 참조
+        "tags": 4,
+        # 하위 엔티티들(스토리 관련)
+        "story_chapters": 10,
+        "story_episode_summaries": 11,
+        "story_extracted_characters": 12,
+        "story_comments": 13,
+        "story_likes": 14,
+        "story_tags": 15,
+        # 캐릭터 관련 하위 엔티티
+        "character_settings": 20,
+        "character_example_dialogues": 21,
+        "character_comments": 22,
+        "character_likes": 23,
+        "character_bookmarks": 24,
+        "character_tags": 25,
+        # 채팅 관련(캐릭터/유저 참조)
+        "chat_rooms": 30,
+        "chat_messages": 31,
+        "chat_message_edits": 32,
+        # 기타
+        "custom_modules": 40,
+        "world_settings": 41,
+        "media_assets": 42,
+        "payment_products": 50,
+        "payments": 51,
+        "point_transactions": 52,
+        "user_points": 53,
+        "user_personas": 54,
+        "bookmarks": 60,  # 혹시 존재할 경우 대비
+    }
+    def key(t: Table) -> tuple[int, str]:
+        return (priority.get(t.name, 100), t.name)
+    ordered = sorted(base, key=key)
+    _log("table order: " + ", ".join(t.name for t in ordered))
+    return ordered
 
 
 def _get_source_rows(src: Engine, table_name: str, columns: List[str]) -> List[Dict[str, Any]]:
@@ -224,6 +268,10 @@ def migrate(sqlite_path: str, pg_url: str, truncate: bool = False, dry_run: bool
             try:
                 inserted = _insert_rows(dst, t, rows)
             except Exception as e:
+                # FK 오류인 경우 힌트 출력
+                msg = str(e)
+                if "ForeignKeyViolation" in msg or "violates foreign key constraint" in msg:
+                    _log(f"[hint] FK 충돌: 상위 테이블(예: users/stories)이 먼저 채워졌는지 확인하세요")
                 # 기본은 strict: 즉시 중단하여 데이터 손실을 방지
                 if not best_effort:
                     raise
