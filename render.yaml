@@ -40,7 +40,7 @@ services:
           property: connectionString
       # Storage (R2 / S3 compatible). Fill the values before deploying.
       - key: STORAGE_BACKEND
-        value: S3
+        value: local
       - key: R2_ENDPOINT_URL
         value: https://<your-account-id>.r2.cloudflarestorage.com
       - key: R2_ACCESS_KEY_ID
@@ -64,9 +64,11 @@ services:
     name: char-frontend
     runtime: static
     rootDir: frontend/char-chat-frontend
-    buildCommand: npm ci && npm run build
+    buildCommand: corepack enable && pnpm i --frozen-lockfile && pnpm build
     staticPublishPath: dist
     envVars:
+      - key: NODE_VERSION
+        value: 20.17.0
       - key: VITE_API_URL
         sync: false # Render 대시보드에서 백엔드 공개 URL을 입력하세요 (예: https://<backend>.onrender.com)
 
