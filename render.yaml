@@ -4,12 +4,13 @@ databases:
   - name: charchat-db
     databaseName: char_chat
     user: char
+    plan: free
 
 services:
   # Redis (cache/queues)
   - type: keyvalue
     name: char-redis
-    plan: starter
+    plan: free
     maxmemoryPolicy: allkeys-lru
     ipAllowList:
       - source: 0.0.0.0/0
@@ -35,7 +36,7 @@ services:
       - key: REDIS_URL
         fromService:
           name: char-redis
-          type: redis
+          type: keyvalue
           property: connectionString
       # Storage (R2 / S3 compatible). Fill the values before deploying.
       - key: STORAGE_BACKEND
