@@ -4,6 +4,44 @@
 
 import axios from 'axios';
 
+// ===== Helpers for token refresh & URL parsing =====
+const normalizePath = (rawUrl = '') => {
+  try {
+    if (/^https?:\/\//i.test(rawUrl)) return new URL(rawUrl).pathname.split('?')[0] || '/';
+  } catch (_) {}
+  let p = String(rawUrl || '/');
+  if (!p.startsWith('/')) p = `/${p}`;
+  return p.split('?')[0];
+};
+const parseJwtExpMs = (token) => {
+  try { const payload = JSON.parse(atob(token.split('.')[1] || '')) || {}; const exp = Number(payload.exp || 0); return exp ? exp * 1000 : 0; } catch (_) { return 0; }
+};
+const isExpiringSoon = (token, thresholdSec = 300) => { const expMs = parseJwtExpMs(token); return expMs && (expMs - Date.now() <= thresholdSec * 1000); };
+let refreshInFlight = null;
+const runTokenRefresh = async (API_BASE_URL) => {
+  if (refreshInFlight) return refreshInFlight;
+  const refreshToken = localStorage.getItem('refresh_token');
+  if (!refreshToken) return Promise.reject(new Error('no refresh token'));
+  refreshInFlight = axios.post(`${API_BASE_URL}/auth/refresh`, { refresh_token: refreshToken })
+    .then((res) => {
+      const { access_token, refresh_token: newRefreshToken } = res.data || {};
+      if (!access_token) throw new Error('no access token');
+      localStorage.setItem('access_token', access_token);
+      if (newRefreshToken) localStorage.setItem('refresh_token', newRefreshToken);
+      try { window.dispatchEvent(new CustomEvent('auth:tokenRefreshed', { detail: { access_token, refresh_token: newRefreshToken } })); } catch (_) {}
+      return access_token;
+    })
+    .catch((err) => {
+      localStorage.removeItem('access_token');
+      localStorage.removeItem('refresh_token');
+      try { window.dispatchEvent(new Event('auth:loggedOut')); } catch (_) {}
+      if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) window.location.href = '/login';
+      throw err;
+    })
+    .finally(() => { refreshInFlight = null; });
+  return refreshInFlight;
+};
+
 // API 기본 URL 설정
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:3001';
@@ -22,16 +60,7 @@ api.interceptors.request.use(
   (config) => {
     const token = localStorage.getItem('access_token');
     const isGet = (config.method || 'get').toLowerCase() === 'get';
-    const rawUrl = config.url || '';
-    // 정규화된 path 계산 (절대/상대 URL 모두 지원, 쿼리 제거, 선행 슬래시 보장)
-    let path = rawUrl;
-    try {
-      if (/^https?:\/\//i.test(rawUrl)) {
-        path = new URL(rawUrl).pathname;
-      }
-    } catch (_) {}
-    if (!path.startsWith('/')) path = `/${path}`;
-    path = path.split('?')[0];
+    const path = normalizePath(config.url || '');
     const isPublicCharacters = path === '/characters' || /^\/characters\/[0-9a-fA-F-\-]+$/.test(path);
     const isPublicStories = path === '/stories' || /^\/stories\/\d+$/.test(path);
     const isPublicTags = path.startsWith('/tags');
@@ -51,7 +80,7 @@ api.interceptors.request.use(
   }
 );
 
-// 응답 인터셉터 - 토큰 만료/권한 오류 처리
+// 응답 인터셉터 - 토큰 만료/권한 오류 처리(+경합 방지)
 api.interceptors.response.use(
   (response) => {
     return response;
@@ -59,55 +88,36 @@ api.interceptors.response.use(
   async (error) => {
     const originalRequest = error.config || {};
     const status = error.response?.status;
-
-    // 인증이 필요없는 공개 엔드포인트들
-    const publicEndpoints = [
-      '/characters',
-      '/stories',
-    ];
-    
-    const isPublicEndpoint = publicEndpoints.some(endpoint => 
-      originalRequest.url?.includes(endpoint) && originalRequest.method === 'get'
-    );
+    const path = normalizePath(originalRequest.url || '');
+    const isGet = (originalRequest.method || 'get').toLowerCase() === 'get';
+    const isPublicEndpoint = isGet && (path === '/characters' || /^\/characters\/[0-9a-fA-F\-]+$/.test(path) || path === '/stories' || /^\/stories\/\d+$/.test(path) || path.startsWith('/tags'));
 
     // 401 Unauthorized 또는 403 Forbidden에서 토큰 갱신 시도 (공개 GET 엔드포인트 제외)
     if ((status === 401 || status === 403) && !originalRequest._retry && !isPublicEndpoint) {
       originalRequest._retry = true;
 
       try {
-        const refreshToken = localStorage.getItem('refresh_token');
-        if (refreshToken) {
-          const response = await axios.post(`${API_BASE_URL}/auth/refresh`, {
-            refresh_token: refreshToken,
-          });
-
-          const { access_token, refresh_token: newRefreshToken } = response.data;
-          localStorage.setItem('access_token', access_token);
-          localStorage.setItem('refresh_token', newRefreshToken);
-
-          // 토큰 갱신 이벤트 브로드캐스트 (동일 탭)
-          try {
-            window.dispatchEvent(new CustomEvent('auth:tokenRefreshed', { detail: { access_token, refresh_token: newRefreshToken } }));
-          } catch (_) {}
-
-          // 원래 요청 재시도
-          originalRequest.headers.Authorization = `Bearer ${access_token}`;
-          return api(originalRequest);
-        }
-      } catch (refreshError) {
-        // 리프레시 토큰도 만료된 경우 로그아웃
-        localStorage.removeItem('access_token');
-        localStorage.removeItem('refresh_token');
-        try {
-          window.dispatchEvent(new Event('auth:loggedOut'));
-        } catch (_) {}
-        window.location.href = '/login';
-      }
+        const newAccess = await runTokenRefresh(API_BASE_URL);
+        if (newAccess) originalRequest.headers.Authorization = `Bearer ${newAccess}`;
+        return api(originalRequest);
+      } catch (_) {}
     }
 
     return Promise.reject(error);
   }
 );
+
+// 사전 리프레시: 포커스/가시성/주기적으로 access_token 만료 임박 시 갱신
+const tryProactiveRefresh = async () => {
+  const token = localStorage.getItem('access_token');
+  if (!token) return;
+  if (isExpiringSoon(token, 300)) { try { await runTokenRefresh(API_BASE_URL); } catch (_) {} }
+};
+try {
+  window.addEventListener('focus', tryProactiveRefresh);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') tryProactiveRefresh(); });
+  setInterval(tryProactiveRefresh, 120000);
+} catch (_) {}
 
 // 🔐 인증 관련 API
 export const authAPI = {
