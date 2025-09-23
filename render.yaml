@@ -68,6 +68,10 @@ services:
     rootDir: frontend/char-chat-frontend
     buildCommand: corepack enable && pnpm i --frozen-lockfile && pnpm build
     staticPublishPath: dist
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /
     envVars:
       - key: NODE_VERSION
         value: 20.17.0
