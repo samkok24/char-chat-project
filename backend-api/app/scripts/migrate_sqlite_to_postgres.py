@@ -225,6 +225,71 @@ def _insert_rows(dst: Engine, table: Table, rows: List[Dict[str, Any]]) -> int:
     return len(filtered)
 
 
+def _fetch_id_set(dst: Engine, table_name: str, col: str = "id") -> set[str]:
+    try:
+        with dst.connect() as conn:
+            res = conn.execute(text(f'SELECT "{col}" FROM "{table_name}"'))
+            vals = [str(r[0]) for r in res]
+            return set(vals)
+    except Exception:
+        return set()
+
+
+FK_SPEC: Dict[str, List[tuple[str, str, str]]] = {
+    # story-side
+    "story_chapters": [("story_id", "stories", "id")],
+    "story_episode_summaries": [("story_id", "stories", "id")],
+    "story_extracted_characters": [("story_id", "stories", "id"), ("character_id", "characters", "id")],
+    "story_comments": [("story_id", "stories", "id"), ("user_id", "users", "id")],
+    "story_likes": [("story_id", "stories", "id"), ("user_id", "users", "id")],
+    "story_tags": [("story_id", "stories", "id"), ("tag_id", "tags", "id")],
+    # character-side
+    "character_settings": [("character_id", "characters", "id")],
+    "character_example_dialogues": [("character_id", "characters", "id")],
+    "character_comments": [("character_id", "characters", "id"), ("user_id", "users", "id")],
+    "character_likes": [("character_id", "characters", "id"), ("user_id", "users", "id")],
+    "character_bookmarks": [("character_id", "characters", "id"), ("user_id", "users", "id")],
+    "character_tags": [("character_id", "characters", "id"), ("tag_id", "tags", "id")],
+    # chat-side
+    "chat_rooms": [("user_id", "users", "id"), ("character_id", "characters", "id")],
+    "chat_messages": [("chat_room_id", "chat_rooms", "id")],
+    # user-side
+    "user_points": [("user_id", "users", "id")],
+}
+
+
+def _filter_rows_by_fk(dst: Engine, table_name: str, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """사전에 채워진 상위 테이블 기준으로 FK 무결성을 만족하는 행만 통과시킨다."""
+    spec = FK_SPEC.get(table_name)
+    if not spec or not rows:
+        return rows
+    # 미리 상위 테이블 키셋 조회
+    cache: Dict[str, set[str]] = {}
+    for col, ref_tbl, ref_col in spec:
+        key = f"{ref_tbl}.{ref_col}"
+        if key not in cache:
+            cache[key] = _fetch_id_set(dst, ref_tbl, ref_col)
+    filtered: List[Dict[str, Any]] = []
+    dropped = 0
+    for r in rows:
+        ok = True
+        for col, ref_tbl, ref_col in spec:
+            v = r.get(col)
+            if v is None:
+                ok = False
+                break
+            key = f"{ref_tbl}.{ref_col}"
+            if str(v) not in cache.get(key, set()):
+                ok = False
+                break
+        if ok:
+            filtered.append(r)
+        else:
+            dropped += 1
+    if dropped:
+        _log(f"[warn] {table_name}: FK 불일치 {dropped}건 제외")
+    return filtered
+
 def _count_rows(engine: Engine, table_name: str) -> int:
     try:
         with engine.connect() as conn:
@@ -266,7 +331,8 @@ def migrate(sqlite_path: str, pg_url: str, truncate: bool = False, dry_run: bool
                 copied_total += len(rows)
                 continue
             try:
-                inserted = _insert_rows(dst, t, rows)
+                rows_fk_ok = _filter_rows_by_fk(dst, t.name, rows)
+                inserted = _insert_rows(dst, t, rows_fk_ok)
             except Exception as e:
                 # FK 오류인 경우 힌트 출력
                 msg = str(e)
