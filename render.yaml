@@ -57,7 +57,7 @@ services:
     # postDeployCommand: python -m app.scripts.precise_migration
 
   # Frontend (Vite static site)
-  - type: static
+  - type: static_site
     name: char-frontend
     rootDir: frontend/char-chat-frontend
     buildCommand: npm ci && npm run build
