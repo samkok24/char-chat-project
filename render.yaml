@@ -92,4 +92,37 @@ services:
       - key: VITE_API_URL
         sync: false # Render 대시보드에서 백엔드 공개 URL을 입력하세요 (예: https://<backend>.onrender.com)
 
+  # Realtime Chat Server (Socket.IO)
+  - type: web
+    name: char-socket
+    runtime: node
+    plan: free
+    rootDir: chat-server
+    buildCommand: npm ci
+    startCommand: node src/server.js
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 20.17.0
+      - key: PORT
+        value: 3001
+      - key: REDIS_URL
+        fromService:
+          name: char-redis
+          type: keyvalue
+          property: connectionString
+      - key: BACKEND_API_URL
+        sync: false # 예: https://char-backend.onrender.com
+      - key: JWT_SECRET_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: CLAUDE_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false # 예: https://char-frontend.onrender.com
+
 

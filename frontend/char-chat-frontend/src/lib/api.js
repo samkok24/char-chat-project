@@ -44,7 +44,17 @@ const runTokenRefresh = async (API_BASE_URL) => {
 
 // API 기본 URL 설정
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:3001';
+// SOCKET URL: 우선 VITE_SOCKET_URL, 없으면 API 도메인에 포트만 3001로 교체
+const SOCKET_URL = (() => {
+  const explicit = import.meta.env.VITE_SOCKET_URL;
+  if (explicit) return explicit;
+  try {
+    const u = new URL(API_BASE_URL);
+    return `${u.protocol}//${u.hostname}:3001`;
+  } catch (_) {
+    return 'http://localhost:3001';
+  }
+})();
 
 // Axios 인스턴스 생성
 const api = axios.create({
