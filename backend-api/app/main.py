@@ -168,6 +168,15 @@ DEV_ALLOWED_ORIGINS = [
 ]
 ALLOWED_ORIGINS = DEV_ALLOWED_ORIGINS if settings.ENVIRONMENT == "development" else []
 ALLOWED_ORIGIN_REGEX = None if settings.ENVIRONMENT == "development" else r"https?://(localhost|127\.0\.0\.1)(:\\d+)?"
+# 프로덕션 배포 시 프론트엔드 공개 도메인을 명시적으로 허용 (환경변수 또는 설정)
+FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL") or settings.FRONTEND_BASE_URL
+if settings.ENVIRONMENT != "development" and FRONTEND_BASE_URL:
+    try:
+        # 중복 추가 방지
+        if FRONTEND_BASE_URL not in ALLOWED_ORIGINS:
+            ALLOWED_ORIGINS.append(FRONTEND_BASE_URL)
+    except Exception:
+        pass
 # 환경변수로 CORS 정규식을 오버라이드할 수 있도록 허용 (예: ".*" 또는 특정 도메인 패턴)
 _env_cors_regex = os.getenv("ALLOW_ORIGIN_REGEX")
 if _env_cors_regex:
@@ -185,7 +194,7 @@ app.add_middleware(
 if settings.ENVIRONMENT == "production":
     app.add_middleware(
         TrustedHostMiddleware,
-        allowed_hosts=["localhost", "127.0.0.1", "*.yourdomain.com"]
+        allowed_hosts=["localhost", "127.0.0.1", "*.onrender.com"]
     )
 
 

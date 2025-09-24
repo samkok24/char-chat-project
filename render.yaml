@@ -27,6 +27,8 @@ services:
     healthCheckPath: /health
     autoDeploy: true
     envVars:
+      - key: ENVIRONMENT
+        value: production
       - key: PYTHON_VERSION
         value: 3.11.9
       # Database URL is injected from the managed PostgreSQL
@@ -58,6 +60,8 @@ services:
       # Optional: allow all origins in dev. For production, restrict properly.
       - key: ALLOW_ORIGIN_REGEX
         value: ".*"
+      - key: FRONTEND_BASE_URL
+        sync: false
     # Optional: run a migration step right after each deploy
     # postDeployCommand: python -m app.scripts.precise_migration
 
