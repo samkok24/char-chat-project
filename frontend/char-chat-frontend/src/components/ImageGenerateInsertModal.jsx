@@ -138,13 +138,13 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
           if (entityType === 'character') {
             const r = await charactersAPI.getCharacter(entityId);
             const d = r?.data || {};
-            const urls = [d.avatar_url, ...(Array.isArray(d.image_descriptions) ? d.image_descriptions.map(x => x.url) : [])].filter(Boolean);
+            const urls = [d.avatar_url, ...(Array.isArray(d.image_descriptions) ? d.image_descriptions.map(x => x.url) : [])].filter(Boolean).map(u => `${u}${u.includes('?') ? '&' : '?'}v=${Date.now()}`);
             const legacy = urls.map((u, i) => ({ id: `url:${i}:${u}`, url: u, is_primary: i === 0 }));
             setGallery(legacy);
           } else if (entityType === 'story') {
             const r = await storiesAPI.getStory(entityId);
             const d = r?.data || {};
-            const urls = [d.cover_url].filter(Boolean);
+            const urls = [d.cover_url].filter(Boolean).map(u => `${u}${u.includes('?') ? '&' : '?'}v=${Date.now()}`);
             const legacy = urls.map((u, i) => ({ id: `url:${i}:${u}`, url: u, is_primary: i === 0 }));
             setGallery(legacy);
           } else {
@@ -300,8 +300,11 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
       canvas.height = Math.round(sh);
       const ctx = canvas.getContext('2d');
       ctx.drawImage(imgEl, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
-      const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
-      if (!blob) return;
+      const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png', 0.92));
+      if (!blob) {
+        try { window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', message: '크롭 실패: 원본 이미지를 불러올 수 없습니다 (CORS 확인 필요).' } })); } catch {}
+        return;
+      }
       const file = new File([blob], 'crop.png', { type: 'image/png' });
       const res = await mediaAPI.upload([file]);
       const items = Array.isArray(res.data?.items) ? res.data.items : (res.data?.items ? [res.data.items] : []);
@@ -535,10 +538,12 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
           {cropIndex >= 0 && gallery[cropIndex] && (
             <img
               ref={cropImgRef}
-              src={gallery[cropIndex].url}
+              crossOrigin="anonymous"
+              src={`${gallery[cropIndex].url}${(gallery[cropIndex].url||'').includes('?') ? '&' : '?'}v=${Date.now()}`}
               alt="crop"
               className="absolute inset-0 w-full h-full object-contain"
               onLoad={onCropImgLoad}
+              onError={() => { try { window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', message: '이미지를 불러오지 못했습니다. 공개 URL/CORS를 확인하세요.' } })); } catch {} }}
               draggable={false}
             />
           )}
