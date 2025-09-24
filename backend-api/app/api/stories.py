@@ -419,7 +419,7 @@ async def get_story(
     story_id: uuid.UUID,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
-    current_user: Optional[User] = Depends(get_current_user)
+    current_user: Optional[User] = Depends(get_current_user_optional)
 ):
     """스토리 상세 조회"""
     story = await story_service.get_story_by_id(db, story_id)
