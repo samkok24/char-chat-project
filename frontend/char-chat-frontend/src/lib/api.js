@@ -61,8 +61,8 @@ api.interceptors.request.use(
     const token = localStorage.getItem('access_token');
     const isGet = (config.method || 'get').toLowerCase() === 'get';
     const path = normalizePath(config.url || '');
-    const isPublicCharacters = path === '/characters' || /^\/characters\/[0-9a-fA-F-\-]+$/.test(path);
-    const isPublicStories = path === '/stories' || /^\/stories\/\d+$/.test(path);
+    const isPublicCharacters = (path === '/characters' || path === '/characters/') || /^\/characters\/[0-9a-fA-F\-]+$/.test(path);
+    const isPublicStories = (path === '/stories' || path === '/stories/') || /^\/stories\/[0-9a-fA-F\-]+$/.test(path);
     const isPublicTags = path.startsWith('/tags');
     const isPublicGet = isGet && (isPublicCharacters || isPublicStories || isPublicTags);
     if (token && !isPublicGet) {
@@ -90,7 +90,11 @@ api.interceptors.response.use(
     const status = error.response?.status;
     const path = normalizePath(originalRequest.url || '');
     const isGet = (originalRequest.method || 'get').toLowerCase() === 'get';
-    const isPublicEndpoint = isGet && (path === '/characters' || /^\/characters\/[0-9a-fA-F\-]+$/.test(path) || path === '/stories' || /^\/stories\/\d+$/.test(path) || path.startsWith('/tags'));
+    const isPublicEndpoint = isGet && (
+      (path === '/characters' || path === '/characters/' || /^\/characters\/[0-9a-fA-F\-]+$/.test(path)) ||
+      (path === '/stories' || path === '/stories/' || /^\/stories\/[0-9a-fA-F\-]+$/.test(path)) ||
+      path.startsWith('/tags')
+    );
 
     // 401 Unauthorized 또는 403 Forbidden에서 토큰 갱신 시도 (공개 GET 엔드포인트 제외)
     if ((status === 401 || status === 403) && !originalRequest._retry && !isPublicEndpoint) {
@@ -203,7 +207,7 @@ export const usersAPI = {
 // 🎭 캐릭터 관련 API
 export const charactersAPI = {
   getCharacters: (params = {}) =>
-    api.get('/characters', { params }),
+    api.get('/characters/', { params }),
   
   getMyCharacters: (params = {}) =>
     api.get('/characters/my', { params }),
@@ -361,7 +365,7 @@ export const origChatAPI = {
 // 📖 스토리 관련 API
 export const storiesAPI = {
   getStories: (params = {}) =>
-    api.get('/stories', { params }),
+    api.get('/stories/', { params }),
   
   getMyStories: (params = {}) =>
     api.get('/stories/my', { params }),
