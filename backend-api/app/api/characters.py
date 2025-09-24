@@ -179,12 +179,67 @@ async def get_advanced_character_detail(
 
 async def convert_character_to_detail_response(character: Character, db: AsyncSession) -> CharacterDetailResponse:
     """캐릭터 모델을 상세 응답으로 변환"""
-    
     # 예시 대화 조회
     example_dialogues = await get_character_example_dialogues(db, character.id)
-    
-    # 완전한 상세 정보 구성
-    character_detail = CharacterDetailResponse(
+
+    if settings.ENVIRONMENT == "production":
+        # JSON/기본값 보정 (마이그레이션 데이터 대비)
+        def _parse_json(v):
+            if isinstance(v, str):
+                try:
+                    return json.loads(v)
+                except Exception:
+                    return None
+            return v
+
+        imgs = _parse_json(getattr(character, 'image_descriptions', None)) or []
+        if isinstance(imgs, list):
+            imgs = [img for img in imgs if not (isinstance(img, dict) and str(img.get('url','')).startswith('cover:'))]
+        intro = _parse_json(getattr(character, 'introduction_scenes', None)) or []
+        voice = _parse_json(getattr(character, 'voice_settings', None)) or None
+
+        return CharacterDetailResponse(
+            id=character.id,
+            creator_id=character.creator_id,
+            name=character.name,
+            description=getattr(character, 'description', None),
+            personality=getattr(character, 'personality', None),
+            speech_style=getattr(character, 'speech_style', None),
+            greeting=getattr(character, 'greeting', None),
+            origin_story_id=getattr(character, 'origin_story_id', None),
+            world_setting=getattr(character, 'world_setting', None),
+            user_display_description=getattr(character, 'user_display_description', None),
+            use_custom_description=bool(getattr(character, 'use_custom_description', False)),
+            introduction_scenes=intro,
+            character_type=getattr(character, 'character_type', 'roleplay'),
+            base_language=getattr(character, 'base_language', 'ko'),
+            avatar_url=getattr(character, 'avatar_url', None),
+            image_descriptions=imgs if isinstance(imgs, list) else None,
+            voice_settings=voice,
+            example_dialogues=[
+                CharacterExampleDialogueResponse(
+                    id=d.id,
+                    user_message=d.user_message,
+                    character_response=d.character_response,
+                    order_index=d.order_index
+                ) for d in example_dialogues
+            ],
+            has_affinity_system=bool(getattr(character, 'has_affinity_system', False)),
+            affinity_rules=getattr(character, 'affinity_rules', None),
+            affinity_stages=_parse_json(getattr(character, 'affinity_stages', None)) or [],
+            is_public=bool(getattr(character, 'is_public', True)),
+            is_active=bool(getattr(character, 'is_active', True)),
+            custom_module_id=getattr(character, 'custom_module_id', None),
+            use_translation=bool(getattr(character, 'use_translation', True)),
+            chat_count=int(getattr(character, 'chat_count', 0) or 0),
+            like_count=int(getattr(character, 'like_count', 0) or 0),
+            created_at=(getattr(character, 'created_at', None) or datetime.now(timezone.utc)),
+            updated_at=(getattr(character, 'updated_at', None) or datetime.now(timezone.utc)),
+            creator_username=character.creator.username if character.creator else None,
+        )
+
+    # 개발환경: 기존 로직 유지
+    return CharacterDetailResponse(
         id=character.id,
         creator_id=character.creator_id,
         name=character.name,
@@ -223,8 +278,6 @@ async def convert_character_to_detail_response(character: Character, db: AsyncSe
         updated_at=character.updated_at,
         creator_username=character.creator.username if character.creator else None
     )
-    
-    return character_detail
 
 
 # 🏷️ 캐릭터-태그 관리 API
