@@ -21,7 +21,7 @@ const AppLayout = ({ children, SidebarComponent = Sidebar, sidebarProps }) => {
           title={'메인으로'}
         >
           <img
-            src={'/main.png'}
+            src={onAgentPage ? '/main.png' : '/agent.png'}
             alt="pip"
             className="w-full h-full object-cover" />
           <div className="pointer-events-none absolute inset-0 rounded-lg border-2 border-purple-500/70 shadow-[0_0_20px_rgba(168,85,247,0.45)] animate-pulse"></div>
