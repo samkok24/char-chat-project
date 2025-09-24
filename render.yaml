@@ -98,7 +98,7 @@ services:
     runtime: node
     plan: free
     rootDir: chat-server
-    buildCommand: npm ci
+    buildCommand: npm install --omit=dev
     startCommand: node src/server.js
     healthCheckPath: /health
     autoDeploy: true
