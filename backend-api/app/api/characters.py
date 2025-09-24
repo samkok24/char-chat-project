@@ -8,6 +8,10 @@ from typing import List, Optional
 import uuid
 from datetime import datetime, timezone
 from app.core.config import settings
+import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 from app.core.database import get_db
 from app.core.security import get_current_user, get_current_active_user
@@ -427,26 +431,64 @@ async def get_characters(
         )
 
     # 일관된 응답: creator_username 포함하여 매핑
-    return [
-        CharacterListResponse(
-            id=char.id,
-            creator_id=char.creator_id,
-            name=char.name,
-            description=char.description,
-            greeting=char.greeting,
-            avatar_url=char.avatar_url,
-            image_descriptions=[
-                img for img in (getattr(char, 'image_descriptions', []) or [])
-                if not (isinstance(img, dict) and str(img.get('url','')).startswith('cover:'))
-            ],
-            origin_story_id=getattr(char, 'origin_story_id', None),
-            chat_count=(int(getattr(char, 'chat_count', 0) or 0) if settings.ENVIRONMENT == "production" else char.chat_count),
-            like_count=(int(getattr(char, 'like_count', 0) or 0) if settings.ENVIRONMENT == "production" else char.like_count),
-            is_public=(bool(getattr(char, 'is_public', True)) if settings.ENVIRONMENT == "production" else char.is_public),
-            created_at=((getattr(char, 'created_at', None) or datetime.now(timezone.utc)) if settings.ENVIRONMENT == "production" else char.created_at),
-            creator_username=char.creator.username if getattr(char, 'creator', None) else None,
-        ) for char in characters
-    ]
+    if settings.ENVIRONMENT == "production":
+        items: List[CharacterListResponse] = []
+        for char in characters:
+            try:
+                imgs = getattr(char, 'image_descriptions', None)
+                # normalize image_descriptions to list[dict]
+                if isinstance(imgs, str):
+                    try:
+                        imgs = json.loads(imgs)
+                    except Exception:
+                        imgs = None
+                if imgs and isinstance(imgs, list):
+                    # filter out cover: URLs
+                    imgs = [img for img in imgs if not (isinstance(img, dict) and str(img.get('url','')).startswith('cover:'))]
+                item = CharacterListResponse(
+                    id=char.id,
+                    creator_id=char.creator_id,
+                    name=char.name,
+                    description=getattr(char, 'description', None),
+                    greeting=getattr(char, 'greeting', None),
+                    avatar_url=getattr(char, 'avatar_url', None),
+                    image_descriptions=imgs if isinstance(imgs, list) else None,
+                    origin_story_id=getattr(char, 'origin_story_id', None),
+                    chat_count=int(getattr(char, 'chat_count', 0) or 0),
+                    like_count=int(getattr(char, 'like_count', 0) or 0),
+                    is_public=bool(getattr(char, 'is_public', True)),
+                    created_at=(getattr(char, 'created_at', None) or datetime.now(timezone.utc)),
+                    creator_username=char.creator.username if getattr(char, 'creator', None) else None,
+                )
+                items.append(item)
+            except Exception as e:
+                try:
+                    logger.warning(f"characters list serialization skipped id={getattr(char,'id',None)}: {e}")
+                except Exception:
+                    pass
+                continue
+        return items
+    else:
+        return [
+            CharacterListResponse(
+                id=char.id,
+                creator_id=char.creator_id,
+                name=char.name,
+                description=char.description,
+                greeting=char.greeting,
+                avatar_url=char.avatar_url,
+                image_descriptions=[
+                    img for img in (getattr(char, 'image_descriptions', []) or [])
+                    if not (isinstance(img, dict) and str(img.get('url','')).startswith('cover:'))
+                ],
+                origin_story_id=getattr(char, 'origin_story_id', None),
+                chat_count=char.chat_count,
+                like_count=char.like_count,
+                is_public=char.is_public,
+                created_at=char.created_at,
+                creator_username=char.creator.username if getattr(char, 'creator', None) else None,
+            ) for char in characters
+        ]
 
 
 @router.get("/my", response_model=List[CharacterListResponse])
