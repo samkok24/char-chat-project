@@ -31,6 +31,9 @@ services:
         value: production
       - key: PYTHON_VERSION
         value: 3.11.9
+      # Security
+      - key: JWT_SECRET_KEY
+        sync: false
       # Database URL is injected from the managed PostgreSQL
       - key: DATABASE_URL
         fromDatabase:
@@ -61,6 +64,13 @@ services:
       - key: ALLOW_ORIGIN_REGEX
         value: ".*"
       - key: FRONTEND_BASE_URL
+        sync: false
+      # At least one AI key must be set in production
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: CLAUDE_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
         sync: false
     # Optional: run a migration step right after each deploy
     # postDeployCommand: python -m app.scripts.precise_migration
