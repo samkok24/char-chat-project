@@ -92,7 +92,7 @@ const PublicRoute = ({ children }) => {
     return <PageLoader />;
   }
 
-  return isAuthenticated ? <Navigate to="/" replace /> : children;
+  return isAuthenticated ? <Navigate to="/agent" replace /> : children;
 };
 
 // 메인 앱 라우터
@@ -102,8 +102,8 @@ const AppRouter = () => {
       <Suspense fallback={<PageLoader />}>
         <Routes>
           {/* 🔥 CAVEDUCK 핵심 페이지 (우선 로딩) */}
-          {/* 초기 진입은 메인 탭으로 */}
-          <Route path="/" element={<Navigate to="/dashboard" replace />} />
+          {/* 초기 진입은 에이전트 탭으로 */}
+          <Route path="/" element={<Navigate to="/agent" replace />} />
           <Route path="/agent" element={<AgentPage />} />
           {/* 대시보드 별도 경로 */}
           <Route path="/dashboard" element={<HomePage />} />
@@ -237,8 +237,8 @@ const AppRouter = () => {
             }
           />
 
-          {/* 기본 리다이렉트: 메인 탭 */}
-          <Route path="*" element={<Navigate to="/dashboard" replace />} />
+          {/* 기본 리다이렉트: 에이전트 탭 */}
+          <Route path="*" element={<Navigate to="/agent" replace />} />
         </Routes>
       </Suspense>
     </Router>
