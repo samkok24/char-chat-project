@@ -16,7 +16,7 @@ const AppLayout = ({ children, SidebarComponent = Sidebar, sidebarProps }) => {
         {children}
         {/* PIP 스타일 플로팅 썸네일 */}
         <Link
-          to={onAgentPage ? '/dashboard' : '/dashboard'}
+          to={onAgentPage ? '/agent' : '/dashboard'}
           className="fixed right-8 bottom-5 z-40 block w-80 h-48 rounded-lg overflow-hidden group"
           title={'메인으로'}
         >
