@@ -6,6 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query, Background
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional
 import uuid
+from datetime import datetime, timezone
+from app.core.config import settings
 
 from app.core.database import get_db
 from app.core.security import get_current_user, get_current_active_user
@@ -438,10 +440,10 @@ async def get_characters(
                 if not (isinstance(img, dict) and str(img.get('url','')).startswith('cover:'))
             ],
             origin_story_id=getattr(char, 'origin_story_id', None),
-            chat_count=char.chat_count,
-            like_count=char.like_count,
-            is_public=char.is_public,
-            created_at=char.created_at,
+            chat_count=(int(getattr(char, 'chat_count', 0) or 0) if settings.ENVIRONMENT == "production" else char.chat_count),
+            like_count=(int(getattr(char, 'like_count', 0) or 0) if settings.ENVIRONMENT == "production" else char.like_count),
+            is_public=(bool(getattr(char, 'is_public', True)) if settings.ENVIRONMENT == "production" else char.is_public),
+            created_at=((getattr(char, 'created_at', None) or datetime.now(timezone.utc)) if settings.ENVIRONMENT == "production" else char.created_at),
             creator_username=char.creator.username if getattr(char, 'creator', None) else None,
         ) for char in characters
     ]
