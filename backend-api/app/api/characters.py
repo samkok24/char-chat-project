@@ -221,7 +221,8 @@ async def convert_character_to_detail_response(character: Character, db: AsyncSe
                     id=d.id,
                     user_message=d.user_message,
                     character_response=d.character_response,
-                    order_index=d.order_index
+                    order_index=d.order_index,
+                    created_at=(getattr(d, 'created_at', None) or datetime.now(timezone.utc))
                 ) for d in example_dialogues
             ],
             has_affinity_system=bool(getattr(character, 'has_affinity_system', False)),
@@ -262,7 +263,8 @@ async def convert_character_to_detail_response(character: Character, db: AsyncSe
                 id=dialogue.id,
                 user_message=dialogue.user_message,
                 character_response=dialogue.character_response,
-                order_index=dialogue.order_index
+                order_index=dialogue.order_index,
+                created_at=(getattr(dialogue, 'created_at', None) or datetime.now(timezone.utc))
             ) for dialogue in example_dialogues
         ],
         has_affinity_system=getattr(character, 'has_affinity_system', False),
