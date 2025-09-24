@@ -32,6 +32,7 @@ import AnalyzedCharacterCard from '../components/AnalyzedCharacterCard';
 import StoryExploreCard from '../components/StoryExploreCard';
 import ImageGenerateInsertModal from '../components/ImageGenerateInsertModal';
 import { getReadingProgress } from '../lib/reading';
+import AppLayout from '../components/layout/AppLayout';
 
 const CharacterDetailPage = () => {
   const { characterId } = useParams();
@@ -71,9 +72,9 @@ const CharacterDetailPage = () => {
   const [submittingComment, setSubmittingComment] = useState(false);
   const [tags, setTags] = useState([]);
 
-  // 3. 뒤로가기: 항상 홈(메인 탭)으로 이동
+  // 3. 뒤로가기: 항상 대시보드 메인으로 이동
   const handleGoBack = () => {
-    navigate('/');
+    navigate('/dashboard');
   };
 
   useEffect(() => {
@@ -256,7 +257,7 @@ const CharacterDetailPage = () => {
         queryClient.invalidateQueries({ queryKey: ['liked-characters'] });
         queryClient.invalidateQueries({ queryKey: ['explore-stories'] });
       } catch (_) {}
-      navigate('/');
+      navigate('/dashboard');
     } catch (err) {
       console.error('캐릭터 삭제 실패:', err);
       alert('캐릭터 삭제에 실패했습니다.');
@@ -278,7 +279,7 @@ const CharacterDetailPage = () => {
           <AlertCircle className="w-12 h-12 text-red-500 mx-auto mb-4" />
           <h3 className="text-lg font-medium mb-2">오류</h3>
           <p className="text-gray-400 mb-4">{error}</p>
-          <Button onClick={() => navigate('/')} variant="outline">
+          <Button onClick={() => navigate('/dashboard')} variant="outline">
             홈으로 돌아가기
           </Button>
         </div>
@@ -287,6 +288,7 @@ const CharacterDetailPage = () => {
   }
 
   return (
+    <AppLayout>
     <div className="bg-gray-900 text-white min-h-screen p-4 sm:p-6 lg:p-8">
       <div className="max-w-7xl mx-auto">
         {/* 뒤로가기 버튼 등 헤더 영역 */}
@@ -449,6 +451,7 @@ const CharacterDetailPage = () => {
         </div>
       </div>
     </div>
+    </AppLayout>
   );
 };
 

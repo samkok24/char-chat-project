@@ -188,7 +188,7 @@ const StoryDetailPage = () => {
   const handleDeleteStory = async () => {
     if (!(user && story?.creator_id === user.id)) return;
     if (!window.confirm('작품을 삭제하시겠습니까?')) return;
-    try { await storiesAPI.deleteStory(storyId); navigate('/'); } catch (_) {}
+    try { await storiesAPI.deleteStory(storyId); navigate('/dashboard'); } catch (_) {}
   };
 
   const handleSubmitComment = async (e) => {
@@ -360,7 +360,7 @@ const StoryDetailPage = () => {
       <div className="bg-gray-900 text-white min-h-screen p-4 sm:p-6 lg:p-8">
         <div className="max-w-7xl mx-auto">
           <header className="mb-6">
-            <Button variant="ghost" onClick={() => { navigate('/'); }} className="mb-2">
+            <Button variant="ghost" onClick={() => { navigate('/dashboard'); }} className="mb-2">
               <ArrowLeft className="w-5 h-5 mr-2" /> 뒤로 가기
             </Button>
             {isOwner && (
@@ -378,7 +378,7 @@ const StoryDetailPage = () => {
               <div className="text-center">
                 <AlertCircle className="w-12 h-12 text-red-500 mx-auto mb-4" />
                 <p className="text-gray-400">존재하지 않는 작품입니다.</p>
-                <Button onClick={() => navigate('/')} variant="outline" className="mt-4 bg-white text-black hover:bg-gray-100">홈으로 돌아가기</Button>
+                <Button onClick={() => navigate('/dashboard')} variant="outline" className="mt-4 bg-white text-black hover:bg-gray-100">홈으로 돌아가기</Button>
               </div>
             </div>
           )}
