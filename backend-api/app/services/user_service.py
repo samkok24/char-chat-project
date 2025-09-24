@@ -161,28 +161,27 @@ async def get_recent_characters_for_user(db: AsyncSession, user_id: uuid.UUID, l
         limit = 50
     
     # Subquery: last message timestamp per chat room (PostgreSQL-compatible)
+    # Include a sample of content via aggregate MIN over filtered rows to satisfy GROUP BY
     last_message_subquery = (
         select(
             ChatMessage.chat_room_id,
-            func.max(ChatMessage.created_at).label('last_chat_time')
+            func.max(ChatMessage.created_at).label('last_chat_time'),
+            func.min(func.substring(ChatMessage.content, 1, 100)).label('last_message_snippet')
         )
         .group_by(ChatMessage.chat_room_id)
         .subquery()
     )
-    # Alias of chat_messages to join back and fetch the content of that last message
-    CM = aliased(ChatMessage)
     
     result = await db.execute(
         select(
             Character,
             ChatRoom.id.label('chat_room_id'),
             last_message_subquery.c.last_chat_time,
-            func.substring(CM.content, 1, 100).label('last_message_snippet'),
+            last_message_subquery.c.last_message_snippet,
             Story.title.label('origin_story_title')
         )
         .join(ChatRoom, Character.id == ChatRoom.character_id)
         .outerjoin(last_message_subquery, ChatRoom.id == last_message_subquery.c.chat_room_id)
-        .outerjoin(CM, and_(CM.chat_room_id == ChatRoom.id, CM.created_at == last_message_subquery.c.last_chat_time))
         .outerjoin(Story, Character.origin_story_id == Story.id)
         .where(ChatRoom.user_id == user_id)
         .options(selectinload(Character.creator))

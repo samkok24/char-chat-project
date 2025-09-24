@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query, Body
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional, List
 import uuid
+import json
 
 from app.core.database import get_db
 from app.models.user import User
@@ -46,28 +47,38 @@ async def get_my_recent_characters(
     
     # Character 모델 객체를 CharacterListResponse 스키마에 맞게 변환
     # 서비스 단에서 creator 정보를 미리 join하거나, 여기서 추가 쿼리 없이 간단하게 처리
-    return [
-        RecentCharacterResponse(
-            creator_id=char.creator_id,
-            id=char.id,
-            name=char.name,
-            description=char.description,
-            greeting=char.greeting,
-            avatar_url=char.avatar_url,
-            image_descriptions=getattr(char, 'image_descriptions', []),
-            chat_count=char.chat_count,
-            like_count=char.like_count,
-            origin_story_id=getattr(char, 'origin_story_id', None),
-            is_public=char.is_public,
-            created_at=char.created_at,
-            creator_username=char.creator.username if char.creator else None,
-            chat_room_id=char.chat_room_id,
-            last_chat_time=char.last_chat_time,
-            last_message_snippet=char.last_message_snippet,
-            # 원작 웹소설 표시용 메타(있을 때만)
-            origin_story_title=getattr(char, 'origin_story_title', None)
-        ) for char in characters
-    ]
+    out: List[RecentCharacterResponse] = []
+    for char in characters:
+        imgs = getattr(char, 'image_descriptions', [])
+        if isinstance(imgs, str):
+            try:
+                imgs = json.loads(imgs)
+            except Exception:
+                imgs = []
+        if isinstance(imgs, list):
+            imgs = [img for img in imgs if not (isinstance(img, dict) and str(img.get('url','')).startswith('cover:'))]
+        out.append(
+            RecentCharacterResponse(
+                creator_id=char.creator_id,
+                id=char.id,
+                name=char.name,
+                description=getattr(char, 'description', None),
+                greeting=getattr(char, 'greeting', None),
+                avatar_url=getattr(char, 'avatar_url', None),
+                image_descriptions=imgs if isinstance(imgs, list) else None,
+                chat_count=int(getattr(char, 'chat_count', 0) or 0),
+                like_count=int(getattr(char, 'like_count', 0) or 0),
+                origin_story_id=getattr(char, 'origin_story_id', None),
+                is_public=bool(getattr(char, 'is_public', True)),
+                created_at=getattr(char, 'created_at', None),
+                creator_username=char.creator.username if char.creator else None,
+                chat_room_id=getattr(char, 'chat_room_id', None),
+                last_chat_time=getattr(char, 'last_chat_time', None),
+                last_message_snippet=getattr(char, 'last_message_snippet', None),
+                origin_story_title=getattr(char, 'origin_story_title', None)
+            )
+        )
+    return out
 
 
 @router.get(
@@ -86,22 +97,33 @@ async def get_my_liked_characters(
     characters = await user_service.get_liked_characters_for_user(
         db, user_id=current_user.id, limit=limit, skip=skip
     )
-    return [
-        CharacterListResponse(
-            creator_id=char.creator_id,
-            id=char.id,
-            name=char.name,
-            description=char.description,
-            greeting=char.greeting,
-            avatar_url=char.avatar_url,
-            image_descriptions=getattr(char, 'image_descriptions', []),
-            chat_count=char.chat_count,
-            like_count=char.like_count,
-            is_public=char.is_public,
-            created_at=char.created_at,
-            creator_username=char.creator.username if char.creator else None,
-        ) for char in characters
-    ]
+    out2: List[CharacterListResponse] = []
+    for char in characters:
+        imgs = getattr(char, 'image_descriptions', [])
+        if isinstance(imgs, str):
+            try:
+                imgs = json.loads(imgs)
+            except Exception:
+                imgs = []
+        if isinstance(imgs, list):
+            imgs = [img for img in imgs if not (isinstance(img, dict) and str(img.get('url','')).startswith('cover:'))]
+        out2.append(
+            CharacterListResponse(
+                creator_id=char.creator_id,
+                id=char.id,
+                name=char.name,
+                description=getattr(char, 'description', None),
+                greeting=getattr(char, 'greeting', None),
+                avatar_url=getattr(char, 'avatar_url', None),
+                image_descriptions=imgs if isinstance(imgs, list) else None,
+                chat_count=int(getattr(char, 'chat_count', 0) or 0),
+                like_count=int(getattr(char, 'like_count', 0) or 0),
+                is_public=bool(getattr(char, 'is_public', True)),
+                created_at=getattr(char, 'created_at', None),
+                creator_username=char.creator.username if char.creator else None,
+            )
+        )
+    return out2
 
 @router.get(
     "/users/{user_id}",
