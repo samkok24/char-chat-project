@@ -41,6 +41,7 @@ from app.api.payment import router as payment_router    # ⏳ 나중에: 결제 
 from app.api.point import router as point_router        # ⏳ 나중에: 포인트 API (단순화 예정)
 from app.api.files import router as files_router
 from app.api.tags import router as tags_router
+from app.api.metrics import router as metrics_router
 from app.models.tag import Tag
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
@@ -211,6 +212,7 @@ app.include_router(user_personas_router, prefix="/user-personas", tags=["👤 �
 app.include_router(files_router, prefix="/files", tags=["🗂️ 파일"])
 app.include_router(tags_router, prefix="/tags", tags=["🏷️ 태그"])
 app.include_router(media_router, prefix="/media", tags=["🖼️ 미디어"])
+app.include_router(metrics_router, prefix="/metrics", tags=["📈 메트릭 (임시)"])
 
 
 # ⏳ Phase 3: 콘텐츠 확장 API (향후 개발)

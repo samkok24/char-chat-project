@@ -3,6 +3,7 @@
 - Director/Actor/Guard 실제 구현 전, 최소 동작을 위한 컨텍스트/턴 생성기
 """
 from typing import Optional, Dict, Any, List, Tuple
+from app.core.config import settings
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, update
 import uuid
@@ -12,6 +13,8 @@ from app.models.story_chapter import StoryChapter
 from app.models.story_summary import StoryEpisodeSummary
 from app.models.story_extracted_character import StoryExtractedCharacter
 from app.models.character import Character
+import math
+from typing import Iterable
 
 
 async def build_context_pack(db: AsyncSession, story_id, anchor: int, character_id: Optional[str] = None) -> Dict[str, Any]:
@@ -23,10 +26,11 @@ async def build_context_pack(db: AsyncSession, story_id, anchor: int, character_
         ver_row = ver_res.first()
         ver = (ver_row[0] if ver_row else 1) or 1
         cache_key = f"ctx:pack:{story_id}:{anchor}:v{ver}"
-        cached = await redis_client.get(cache_key)
-        if cached:
-            import json
-            return json.loads(cached)
+        if settings.ORIGCHAT_V2:
+            cached = await redis_client.get(cache_key)
+            if cached:
+                import json
+                return json.loads(cached)
     except Exception:
         pass
     # 총 회차 수 계산
@@ -59,7 +63,6 @@ async def build_context_pack(db: AsyncSession, story_id, anchor: int, character_
         "anchor": anchor,
         "cumulative_summary": cumulative_summary,
         "anchor_excerpt": anchor_excerpt,
-        # 초기 관계 미터는 None(클라이언트 기본값 사용)
         "trust": None,
         "affinity": None,
         "tension": None,
@@ -77,14 +80,18 @@ async def build_context_pack(db: AsyncSession, story_id, anchor: int, character_
         "actor_context": actor_context,
         "director_context": director_context,
         "guard": guard,
+        "initial_choices": propose_choices_from_anchor(anchor_excerpt, cumulative_summary),
     }
     try:
-        from app.core.database import redis_client
-        import json
-        await redis_client.setex(cache_key, 600, json.dumps(pack, ensure_ascii=False))
+        if settings.ORIGCHAT_V2:
+            from app.core.database import redis_client
+            import json
+            await redis_client.setex(cache_key, 600, json.dumps(pack, ensure_ascii=False))
     except Exception:
         pass
     return pack
+
+
 
 
 # --- 캐릭터 자동 보강(성격/말투/인사/세계관/배경) ---
@@ -186,6 +193,154 @@ def simple_delta_from_text(user_text: str) -> Dict[str, int]:
     return {"trust": trust_delta, "affinity": affinity_delta, "tension": tension_delta}
 
 
+def compute_branch_score_from_text(text: str) -> float:
+    """간단 분기 점수: 물음표/생략부호/어휘 다양성 기반 휴리스틱."""
+    if not text:
+        return 0.0
+    t = str(text)
+    qm = t.count('?')
+    dots = 1 if ('…' in t or '...' in t) else 0
+    grams = extract_top_ngrams(t, (1, 2))
+    diversity = min(4, max(0, len(grams)//5))
+    return float(qm + dots + diversity)
+
+
+async def warm_context_basics(db: AsyncSession, story_id, anchor: int) -> List[str]:
+    """비스포일러 컨텍스트 기본 세트 캐시: world_bible/personas/timeline_digest.
+    간이 버전으로 Redis에 저장한다.
+    """
+    updated: List[str] = []
+    try:
+        from app.core.database import redis_client
+        # world_bible: 누적 요약 일부
+        wb = None
+        try:
+            row = await db.execute(
+                select(StoryEpisodeSummary.cumulative_summary)
+                .where(StoryEpisodeSummary.story_id == story_id, StoryEpisodeSummary.no == int(anchor or 1))
+            )
+            wb = ((row.first() or [None])[0] or '')[:1200]
+        except Exception:
+            wb = None
+        if wb:
+            await redis_client.setex(f"ctx:warm:{story_id}:world_bible", 3600, wb)
+            updated.append('world_bible')
+
+        # personas: 추출 캐릭터 요약
+        personas: List[Dict[str, str]] = []
+        try:
+            rows = await db.execute(
+                select(StoryExtractedCharacter.name, StoryExtractedCharacter.description)
+                .where(StoryExtractedCharacter.story_id == story_id)
+                .order_by(StoryExtractedCharacter.order_index)
+                .limit(6)
+            )
+            for n, d in rows.all():
+                n2 = (n or '').strip()
+                d2 = (d or '').strip()[:80]
+                if n2:
+                    personas.append({"name": n2, "desc": d2})
+        except Exception:
+            personas = []
+        if personas:
+            import json as _json
+            await redis_client.setex(
+                f"ctx:warm:{story_id}:personas", 3600, _json.dumps(personas, ensure_ascii=False)
+            )
+            updated.append('personas')
+
+        # timeline_digest: 간단 범위 메타
+        td = {"from": 1, "to": int(anchor or 1)}
+        import json as _json
+        await redis_client.setex(
+            f"ctx:warm:{story_id}:timeline_digest", 3600, _json.dumps(td)
+        )
+        updated.append('timeline_digest')
+
+        return updated
+    except Exception:
+        return updated
+
+
+async def detect_style_profile(
+    db: AsyncSession,
+    story_id,
+    *,
+    upto_anchor: int,
+    max_chars: int = 8000,
+) -> Dict[str, Any]:
+    """LLM으로 원작 문체 프로파일을 감지하고 간결한 스타일 프롬프트를 생성한다.
+    반환: { profile: {...}, style_prompt: str } (실패 시 빈 dict)
+    """
+    try:
+        # 텍스트 수집
+        rows = await db.execute(
+            select(StoryChapter.no, StoryChapter.content)
+            .where(StoryChapter.story_id == story_id, StoryChapter.no <= int(upto_anchor or 1))
+            .order_by(StoryChapter.no.asc())
+            .limit(30)
+        )
+        texts: List[str] = []
+        total = 0
+        for no, content in rows.all():
+            seg = (content or '').strip()
+            if not seg:
+                continue
+            remain = max_chars - total
+            if remain <= 0:
+                break
+            piece = seg[:remain]
+            texts.append(piece)
+            total += len(piece)
+        if not texts:
+            return {}
+        corpus = ("\n\n".join(texts))[:max_chars]
+
+        from app.services.ai_service import get_ai_chat_response
+        import json as _json
+        system = (
+            "당신은 문체 분석 전문가입니다. 주어진 한국어 소설 발췌의 문체를 분석해 JSON으로만 출력하세요.\n"
+            "스키마: {\"narration_pov\": string, \"pacing\": string, \"formality\": string, \"dialogue_ratio\": string, \"sentence_length\": string, \"tone\": string, \"devices\": [string], \"genre_signals\": [string], \"diction\": [string], \"style_prompt\": string, \"negative_rules\": [string]}\n"
+            "제약: style_prompt는 8~12줄의 구체적 지침으로, 표현 방식/리듬/대사 비율/어휘 결을 요약. 표절 금지/직접 인용 회피 포함."
+        )
+        user = "[분석 대상 발췌]\n" + corpus
+        raw = await get_ai_chat_response(
+            character_prompt=system,
+            user_message=user,
+            history=[],
+            preferred_model="claude",
+            preferred_sub_model="claude-3-5-sonnet-20241022",
+            response_length_pref="short",
+        )
+        txt = (raw or '').strip()
+        s = txt.find('{'); e = txt.rfind('}')
+        data = None
+        if s != -1 and e != -1 and e > s:
+            try:
+                data = _json.loads(txt[s:e+1])
+            except Exception:
+                data = None
+        if not isinstance(data, dict):
+            return {}
+        profile = {k: v for k, v in data.items() if k != 'style_prompt'}
+        style_prompt = (data.get('style_prompt') or '').strip()
+        # 캐시 저장
+        try:
+            from app.core.database import redis_client
+            await redis_client.setex(
+                f"ctx:warm:{story_id}:style_profile", 3600, _json.dumps(profile, ensure_ascii=False)
+            )
+            if style_prompt:
+                await redis_client.setex(
+                    f"ctx:warm:{story_id}:style_prompt", 3600, style_prompt[:1200]
+                )
+        except Exception:
+            pass
+        return {"profile": profile, "style_prompt": style_prompt}
+    except Exception:
+        return {}
+
+
 async def recommend_next_chapter(db: AsyncSession, story_id, anchor: int) -> Optional[int]:
     max_no = await db.scalar(select(func.max(StoryChapter.no)).where(StoryChapter.story_id == story_id))
     if not max_no:
@@ -252,6 +407,115 @@ async def upsert_episode_summary_for_chapter(
     await db.commit()
 
 
+async def _llm_summarize(text: str, *, max_chars: int = 300) -> str:
+    """LLM로 장면 요약(스포일러 금지, 고유명 유지). 실패 시 앞부분 절취."""
+    try:
+        from app.services.ai_service import get_ai_chat_response
+        system = (
+            "당신은 한국어 소설 편집자입니다. 아래 본문을 스포일러 없이 해당 회차 범위 내에서만 2~4문장으로 요약하세요.\n"
+            f"총 {max_chars}자 이내, 고유명/관계/사건의 핵심만 유지, 평가나 해설 금지."
+        )
+        user = (text or "").strip()
+        raw = await get_ai_chat_response(
+            character_prompt=system,
+            user_message=user[:6000],
+            history=[],
+            preferred_model="claude",
+            preferred_sub_model="claude-3-5-sonnet-20241022",
+            response_length_pref="short",
+        )
+        s = (raw or "").strip()
+        if not s:
+            return (user[:max_chars]).strip()
+        # 하드 컷
+        return s[:max_chars]
+    except Exception:
+        return (text or "")[:max_chars]
+
+
+async def ensure_episode_summaries(
+    db: AsyncSession,
+    story_id,
+    *,
+    upto_anchor: int | None = None,
+    max_episodes: int = 12,
+    start_no: int | None = None,
+    end_no: int | None = None,
+) -> int:
+    """회차 구간에 대해 LLM 요약을 보장한다. 이미 있으면 건너뜀.
+    반환: 새로 생성/갱신한 회차 수
+    """
+    try:
+        if start_no is None or end_no is None:
+            upto = int(upto_anchor or 1)
+            # 기본: 최근 max_episodes 윈도우
+            s = max(1, upto - max_episodes + 1)
+            e = upto
+        else:
+            s = max(1, int(start_no))
+            e = max(int(s), int(end_no))
+        # 미리 기존 요약 맵
+        rows = await db.execute(
+            select(StoryEpisodeSummary.no).where(StoryEpisodeSummary.story_id == story_id, StoryEpisodeSummary.no >= s, StoryEpisodeSummary.no <= e)
+        )
+        existing = {int(n) for (n,) in rows.all()}
+        updated = 0
+        # 이전 누적 요약 참조용 캐시
+        prev_cum_map: dict[int, str] = {}
+        if s > 1:
+            row_prev = await db.execute(
+                select(StoryEpisodeSummary.no, StoryEpisodeSummary.cumulative_summary)
+                .where(StoryEpisodeSummary.story_id == story_id, StoryEpisodeSummary.no >= s - 1, StoryEpisodeSummary.no <= e - 1)
+                .order_by(StoryEpisodeSummary.no.asc())
+            )
+            for no, cum in row_prev.all():
+                prev_cum_map[int(no)] = (cum or "")
+
+        for no in range(s, e + 1):
+            # 본문 로드
+            r = await db.execute(select(StoryChapter.title, StoryChapter.content).where(StoryChapter.story_id == story_id, StoryChapter.no == no))
+            row = r.first()
+            content = ((row[1] if row else None) or "").strip()
+            if not content:
+                continue
+            brief = await _llm_summarize(content, max_chars=300)
+            anchor_excerpt = content[:600]
+            # 누적 요약 계산
+            prev_cum = prev_cum_map.get(no - 1, "")
+            merged = (prev_cum + ("\n" if prev_cum else "") + brief).strip()
+            if merged and len(merged) > 2000:
+                merged = merged[:2000]
+            # upsert
+            exist = await db.execute(select(StoryEpisodeSummary).where(StoryEpisodeSummary.story_id == story_id, StoryEpisodeSummary.no == no))
+            rec = exist.scalar_one_or_none()
+            if rec:
+                # 이미 있고 내용이 동일하면 스킵
+                if (rec.short_brief or "").strip() == brief.strip() and (rec.anchor_excerpt or "").strip() == anchor_excerpt.strip():
+                    prev_cum_map[no] = rec.cumulative_summary or merged
+                    continue
+                rec.short_brief = brief
+                rec.anchor_excerpt = anchor_excerpt
+                rec.cumulative_summary = merged
+            else:
+                rec = StoryEpisodeSummary(
+                    story_id=story_id,
+                    no=no,
+                    short_brief=brief,
+                    anchor_excerpt=anchor_excerpt,
+                    cumulative_summary=merged,
+                )
+                db.add(rec)
+            try:
+                await db.commit()
+                updated += 1
+            except Exception:
+                await db.rollback()
+            prev_cum_map[no] = merged
+        return updated
+    except Exception:
+        return 0
+
+
 # ---- Director 보조: 앵커 텍스트 기반 선택지 후보 생성 ----
 def extract_top_ngrams(text: str, n_values: Tuple[int, ...] = (1, 2)) -> List[str]:
     if not text:
@@ -315,6 +579,314 @@ def propose_choices_from_anchor(anchor_excerpt: Optional[str], cumulative_summar
     return out[:3]
 
 
+async def generate_what_if_seeds(
+    db: AsyncSession,
+    story_id,
+    *,
+    anchor: int,
+    num_seeds: int = 3,
+) -> List[Dict[str, str]]:
+    """평행세계용 what-if 씨앗을 LLM으로 생성. 실패 시 앵커 텍스트 기반 휴리스틱으로 대체.
+    반환: [{id,label}] 형식
+    """
+    # 앵커 텍스트 확보
+    anchor_excerpt = None
+    cumulative_summary = None
+    try:
+        s = await db.execute(
+            select(StoryEpisodeSummary.short_brief, StoryEpisodeSummary.anchor_excerpt, StoryEpisodeSummary.cumulative_summary)
+            .where(StoryEpisodeSummary.story_id == story_id, StoryEpisodeSummary.no == int(anchor or 1))
+        )
+        row = s.first()
+        if row:
+            anchor_excerpt = row[1] or None
+            cumulative_summary = row[2] or None
+    except Exception:
+        pass
+    if not anchor_excerpt:
+        try:
+            r = await db.execute(
+                select(StoryChapter.content)
+                .where(StoryChapter.story_id == story_id, StoryChapter.no == int(anchor or 1))
+            )
+            rr = r.first()
+            if rr and rr[0]:
+                anchor_excerpt = (rr[0] or '')[:600]
+        except Exception:
+            anchor_excerpt = None
+
+    # LLM 요청
+    try:
+        from app.services.ai_service import get_ai_chat_response
+        import json as _json
+        system = (
+            "당신은 한국어 장르/웹소설 플롯 디자이너입니다.\n"
+            "주어진 세계관/앵커 상황을 바탕으로 스포일러 없이 평행세계용 what-if 씨앗 3개를 생성하세요.\n"
+            "규칙: 각 항목은 20자 내외 한국어 한 문장, 간결·행동 유발형, 고유명 최소화, 세계관/인물 일관성 유지, 후속 전개 여지 제공.\n"
+            "JSON만 출력. 스키마: {\"seeds\":[{\"label\":string}]}"
+        )
+        context = (anchor_excerpt or cumulative_summary or '')
+        user = (
+            f"[앵커 상황]\n{context}\n\n"
+            f"[금지]\n스포일러, 타작품 차용, 세계관 붕괴, 무의미한 선택\n"
+        )
+        raw = await get_ai_chat_response(
+            character_prompt=system,
+            user_message=user,
+            history=[],
+            preferred_model="claude",
+            preferred_sub_model="claude-3-5-sonnet-20241022",
+            response_length_pref="short",
+        )
+        txt = (raw or '').strip()
+        s = txt.find('{'); e = txt.rfind('}')
+        data = None
+        if s != -1 and e != -1 and e > s:
+            try:
+                data = _json.loads(txt[s:e+1])
+            except Exception:
+                data = None
+        items: List[Dict[str,str]] = []
+        if isinstance(data, dict) and isinstance(data.get('seeds'), list):
+            for i, it in enumerate(data['seeds'][:num_seeds]):
+                lab = str((it or {}).get('label') or '').strip()
+                if lab:
+                    items.append({"id": f"seed_{i+1}", "label": lab[:40]})
+        if items:
+            return items
+    except Exception:
+        pass
+
+    # 휴리스틱 폴백: 기존 키워드 기반에서 변주형 템플릿으로 생성
+    grams = extract_top_ngrams((anchor_excerpt or cumulative_summary or '')[:600], (1, 2))
+    base = grams[:3] if len(grams) >= 3 else (grams + ["상황"] * (3 - len(grams)))
+    tmpl = [
+        "{kw}을(를) 다른 선택으로 비틀어 본다",
+        "{kw} 대신 뜻밖의 인물이 개입한다",
+        "{kw}의 숨은 조건이 드러난다",
+    ]
+    out: List[Dict[str,str]] = []
+    for i, kw in enumerate(base[:num_seeds]):
+        t = tmpl[i % len(tmpl)]
+        out.append({"id": f"seed_{i+1}", "label": t.format(kw=kw)[:40]})
+    while len(out) < num_seeds:
+        out.append({"id": f"seed_{len(out)+1}", "label": "뜻밖의 변수로 국면 전환"})
+    return out[:num_seeds]
+
+
+async def generate_backward_weighted_recap(
+    db: AsyncSession,
+    story_id,
+    *,
+    anchor: int,
+    tau: float = 1.2,
+    max_episodes: int = 20,
+    max_chars: int = 1200,
+) -> str:
+    """역진가중 리캡: 앵커까지의 최근 회차 short_brief를 최근일수록 더 큰 가중으로 압축.
+    - 단순 구현: 최근 max_episodes 회차의 short_brief를 최신→과거 순으로 붙이고, 총 길이 제한.
+    - tau는 추후 세밀한 비율 조정에 활용(현 버전은 순서 중심).
+    """
+    try:
+        rows = await db.execute(
+            select(StoryEpisodeSummary.no, StoryEpisodeSummary.short_brief)
+            .where(StoryEpisodeSummary.story_id == story_id, StoryEpisodeSummary.no < int(anchor or 1))
+            .order_by(StoryEpisodeSummary.no.desc())
+            .limit(max_episodes)
+        )
+        episodes = rows.all()
+        # 가중치 계산: 최신일수록 큰 비중
+        weights: List[float] = []
+        for idx, _ in enumerate(episodes):
+            w = 1.0 / ((idx + 1) ** max(0.1, float(tau)))
+            weights.append(w)
+        W = sum(weights) or 1.0
+        quotas: List[int] = [max(40, int((w / W) * max_chars)) for w in weights]
+        lines: List[str] = []
+        used = 0
+        for (no, brief), q in zip(episodes, quotas):
+            seg = (brief or '').strip()
+            if not seg:
+                continue
+            text = seg[: max(1, q - 10)]
+            line = f"{int(no)}화: {text}"
+            if used + len(line) + 1 > max_chars:
+                break
+            lines.append(line)
+            used += len(line) + 1
+        if not lines:
+            # brief가 없으면 챕터 본문으로 폴백
+            row2 = await db.execute(
+                select(StoryChapter.no, StoryChapter.content)
+                .where(StoryChapter.story_id == story_id, StoryChapter.no < int(anchor or 1))
+                .order_by(StoryChapter.no.desc())
+                .limit(5)
+            )
+            chunks = []
+            t = 0
+            for no, content in row2.all():
+                seg = (content or '').strip()[:200]
+                if not seg:
+                    continue
+                sline = f"{int(no)}화: {seg}"
+                if t + len(sline) + 1 > max_chars:
+                    break
+                chunks.append(sline)
+                t += len(sline) + 1
+            return "\n".join(chunks)
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+
+async def get_scene_anchor_text(
+    db: AsyncSession,
+    story_id,
+    *,
+    chapter_no: int,
+    scene_id: str | None,
+    max_len: int = 600,
+) -> str:
+    """start.scene_id 형태(auto-{no}-{i})를 해석해 해당 챕터의 근사 장면 텍스트를 반환한다."""
+    try:
+        row = await db.execute(
+            select(StoryChapter.content)
+            .where(StoryChapter.story_id == story_id, StoryChapter.no == int(chapter_no or 1))
+        )
+        content = (row.first() or [None])[0] or ""
+        content = str(content)
+        if not content:
+            return ""
+        if not scene_id or not scene_id.startswith("auto-"):
+            return content[:max_len]
+        try:
+            parts = scene_id.split("-")
+            # auto-{no}-{i}
+            idx = int(parts[-1])
+        except Exception:
+            idx = 0
+        seg_len = max(1, math.ceil(len(content) / 3))
+        start = max(0, idx * seg_len)
+        excerpt = content[start : start + seg_len]
+        return excerpt[:max_len]
+    except Exception:
+        return ""
+
+
+async def enforce_character_consistency(
+    ai_text: str,
+    *,
+    focus_name: str | None = None,
+    persona: str | None = None,
+    speech_style: str | None = None,
+    style_prompt: str | None = None,
+    world_bible: str | None = None,
+) -> str:
+    """AI 응답을 인물/세계관/문체 일관성에 맞게 미세 재작성한다. 실패 시 원문 반환."""
+    try:
+        from app.services.ai_service import get_ai_chat_response
+        guards = [
+            "인물 일관성 유지(Out-of-Character 금지)",
+            "세계관/설정 모순 금지",
+            "말투·어휘 결 유지",
+            "내용 왜곡 없이 표현만 조정",
+        ]
+        sys_lines = [
+            "당신은 한국어 소설 대사/지문 편집자입니다.",
+            "주어진 응답을 인물/세계관/문체 일관성에 맞게 가볍게 재작성하세요.",
+            "출력은 순수 본문만(메타/주석 금지).",
+            "규칙: " + "; ".join(guards),
+        ]
+        if style_prompt:
+            sys_lines.append("[문체 지침]\n" + style_prompt)
+        if world_bible:
+            sys_lines.append("[세계관]\n" + world_bible[:800])
+        if focus_name or persona or speech_style:
+            fb = []
+            if focus_name:
+                fb.append(f"시점 인물: {focus_name}")
+            if persona:
+                fb.append(f"성격/정서 결: {persona}")
+            if speech_style:
+                fb.append(f"대사 말투: {speech_style}")
+            sys_lines.append("[시점 인물]\n" + " | ".join(fb))
+        system = "\n".join(sys_lines)
+        user = ai_text or ""
+        refined = await get_ai_chat_response(
+            character_prompt=system,
+            user_message=user,
+            history=[],
+            preferred_model="claude",
+            preferred_sub_model="claude-3-5-sonnet-20241022",
+            response_length_pref="medium",
+        )
+        refined = (refined or "").strip()
+        # 너무 짧거나 비어있으면 원문 유지
+        if not refined or len(refined) < 5:
+            return ai_text
+        return refined
+    except Exception:
+        return ai_text
+
+
+# ---- 스피커/대화 일관성 보조 ----
+async def get_story_character_names(
+    db: AsyncSession,
+    story_id,
+    *,
+    limit: int = 8,
+) -> List[str]:
+    try:
+        rows = await db.execute(
+            select(StoryExtractedCharacter.name)
+            .where(StoryExtractedCharacter.story_id == story_id)
+            .order_by(StoryExtractedCharacter.order_index.asc())
+            .limit(limit)
+        )
+        names = [(r[0] or '').strip() for r in rows.all()]
+        return [n for n in names if n]
+    except Exception:
+        return []
+
+
+async def normalize_dialogue_speakers(
+    ai_text: str,
+    *,
+    allowed_names: List[str],
+    focus_name: str | None = None,
+    npc_limit: int = 2,
+) -> str:
+    try:
+        if not ai_text or len(ai_text) < 5:
+            return ai_text
+        from app.services.ai_service import get_ai_chat_response
+        allow_line = ", ".join(allowed_names[:8]) if allowed_names else "(없음)"
+        sys = (
+            "당신은 한국어 소설 대화 편집자입니다. 다음 본문에서 스피커 일관성이 어긋나는 부분만 미세 조정하세요.\n"
+            "규칙:\n"
+            "- 새로운 고유명(사람 이름) 도입 금지. 허용된 이름 외에는 일반화(그/그녀/상대 등)\n"
+            "- 스피커 라벨을 추가하지 말 것. 따옴표 대사/지문만 자연스럽게 유지\n"
+            "- focus 인물이 있다면 화법/지각을 우선 반영\n"
+            "- 의미 왜곡 없이 표현만 조정\n"
+        )
+        if focus_name:
+            sys += f"\n[focus]\n{focus_name}"
+        sys += f"\n[허용 이름]\n{allow_line}"
+        sys += f"\n[npc 제한]\n{int(npc_limit)}"
+        refined = await get_ai_chat_response(
+            character_prompt=sys,
+            user_message=ai_text,
+            history=[],
+            preferred_model="claude",
+            preferred_sub_model="claude-3-5-sonnet-20241022",
+            response_length_pref="medium",
+        )
+        refined = (refined or '').strip()
+        if not refined or len(refined) < 5:
+            return ai_text
+        return refined
+    except Exception:
+        return ai_text
 # ---- 추출 캐릭터 보장(간이 스텁) ----
 async def ensure_extracted_characters_for_story(db: AsyncSession, story_id) -> None:
     """스토리에 추출 캐릭터가 없고 회차가 존재하면 기본 3인을 생성한다(간이)."""

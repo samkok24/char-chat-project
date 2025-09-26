@@ -45,6 +45,7 @@ class ChatMessageResponse(ChatMessageBase):
     id: uuid.UUID
     chat_room_id: uuid.UUID
     sender_type: str
+    message_metadata: Dict[str, Any] | None = None
     created_at: datetime
     upvotes: int | None = 0
     downvotes: int | None = 0
@@ -84,6 +85,8 @@ class SendMessageResponse(BaseModel):
     # continue 모드 등 일부 상황에서 사용자 메시지가 저장되지 않을 수 있어 Optional 허용
     user_message: ChatMessageResponse | None = None
     ai_message: ChatMessageResponse
+    # 선택지/경고/메타데이터 전달용 (프론트는 선택적으로 사용)
+    meta: Dict[str, Any] | None = None
 
 
 class ChatMessageUpdate(BaseModel):

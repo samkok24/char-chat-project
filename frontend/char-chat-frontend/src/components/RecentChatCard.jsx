@@ -10,7 +10,7 @@ import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
 import { formatCount } from '../lib/format';
 import { Badge } from './ui/badge';
 
-export const RecentChatCard = ({ character, onClick }) => {
+export const RecentChatCard = ({ character, onClick, displayTitle }) => {
   const defaultAvatar = DEFAULT_AVATAR_URI;
   
   const safeUrl = (url) => resolveImageUrl(url) || defaultAvatar;
@@ -83,7 +83,7 @@ export const RecentChatCard = ({ character, onClick }) => {
               <div className="relative overflow-hidden h-full w-full pb-6">
                 <div className="pr-1">
                   <p className="mb-[2px] text-base font-medium leading-tight line-clamp-1 text-ellipsis break-anywhere overflow-hidden whitespace-normal text-white">
-                    {character.name}
+                    {displayTitle || character.name}
                   </p>
                   <p className="text-gray-300 font-normal line-clamp-3 text-sm text-ellipsis overflow-hidden whitespace-normal break-anywhere">
                     {character.description || '캐릭터 설명이 없습니다.'}

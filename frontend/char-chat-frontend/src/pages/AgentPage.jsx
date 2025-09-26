@@ -26,13 +26,18 @@ SheetTrigger,
 import { RadioGroup, RadioGroupItem } from '../components/ui/radio-group';
 import { useNavigate, Link, useLocation } from 'react-router-dom';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { storiesAPI, charactersAPI, chatAPI } from '../lib/api';
+import { storiesAPI, charactersAPI, chatAPI, rankingAPI } from '../lib/api';
 // import { generationAPI } from '../lib/generationAPI'; // removed: use existing backend flow
 import { Switch } from '../components/ui/switch';
 import { DEFAULT_SQUARE_URI } from '../lib/placeholder';
-import { Loader2, Plus, Send, Sparkles, Image as ImageIcon, Trash2, ChevronLeft, ChevronRight, X, CornerDownLeft, Copy as CopyIcon, RotateCcw } from 'lucide-react';
+import { Loader2, Plus, Send, Sparkles, Image as ImageIcon, Trash2, ChevronLeft, ChevronRight, X, CornerDownLeft, Copy as CopyIcon, RotateCcw, Settings } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
+import StoryExploreCard from '../components/StoryExploreCard';
+import { CharacterCard } from '../components/CharacterCard';
 import { useQueryClient } from '@tanstack/react-query';
+import ImageGenerateInsertModal from '../components/ImageGenerateInsertModal';
+import Composer from '../components/agent/Composer';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuLabel } from '../components/ui/dropdown-menu';
 
 const LS_SESSIONS = 'agent:sessions';
 const LS_MESSAGES_PREFIX = 'agent:messages:'; // + sessionId
@@ -82,7 +87,7 @@ const id = crypto.randomUUID();
 const session = {
 id,
 title: partial.title || '새 대화',
-model: partial.model || 'claude-sonnet-4-0',
+model: partial.model || 'gemini-2.5-pro',
 createdAt: nowIso(),
 updatedAt: nowIso(),
 type: partial.type || 'chat',
@@ -157,8 +162,8 @@ speaker: '내가',
 };
 
 const STORY_MODELS = [
-{ value: 'claude-sonnet-4-0', label: 'Claude Sonnet 4.0' },
 { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+{ value: 'claude-sonnet-4-0', label: 'Claude Sonnet 4.0' },
 { value: 'gpt-4o', label: 'GPT-4o' },
 { value: 'gpt-4.1', label: 'GPT-4.1' },
 ];
@@ -411,6 +416,12 @@ const applyIfCurrent = useCallback((sid, expectedVersion, fn) => {
   return true;
 }, [getSessionVersion]);
 
+// 세션 변경 시 해당 세션의 생성 상태로 UI 업데이트
+useEffect(() => {
+  const currentGenState = getGenState(activeSessionId);
+  setGenerationStatus(currentGenState?.status || GEN_STATE.IDLE);
+}, [activeSessionId, getGenState]);
+
 // (moved) headlessWatchersRef/startHeadlessWatcher 아래로 이동: updateMessageForSession 선언 이후에 초기화되도록 함
 
 const [images, setImages] = useState(() => loadJson(LS_IMAGES, []));
@@ -418,6 +429,11 @@ const [imageResults, setImageResults] = useState([]);
 const [showChatPanel, setShowChatPanel] = useState(false);
 const [showImagesSheet, setShowImagesSheet] = useState(false);
 const [showStoriesSheet, setShowStoriesSheet] = useState(false);
+// First Frame 선택 상태
+const [firstFrameOpen, setFirstFrameOpen] = useState(false);
+const [firstFrameUrl, setFirstFrameUrl] = useState('');
+const openFirstFramePicker = useCallback(() => setFirstFrameOpen(true), []);
+const clearFirstFrame = useCallback(() => setFirstFrameUrl(''), []);
 const [insertTargetImage, setInsertTargetImage] = useState(null);
 const [insertKind, setInsertKind] = useState('gallery'); // 'cover' | 'gallery'
 const [selectedStoryId, setSelectedStoryId] = useState(null);
@@ -766,7 +782,7 @@ const handleSend = async (preAddedContent = null) => {
     setMessages(curr => [...curr, assistantThinking]);
 
     try {
-      const history = (stableMessages || []).slice(-12).map(m => ({ role: m.role, content: m.content, type: m.type }));
+      const history = (stableMessages || []).slice(-12).map(m => ({ role: m.role, content: (m.type === 'image' ? m.url : m.content), type: m.type }));
       const res = await chatAPI.agentSimulate({
         content: contentToSend,
         history,
@@ -861,7 +877,7 @@ const startHeadlessWatcher = useCallback(async (sid) => {
   }
 }, [getGenState, updateMessageForSession, setGenState]);
 
-const handleGenerate = useCallback(async (overridePrompt = null) => {
+const handleGenerate = useCallback(async (overridePrompt = null, attachedImageUrl = null) => {
     if (turnLimitReached) {
         window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', message: isGuest ? '게스트는 3회까지만 생성할 수 있습니다. 로그인 후 이용해주세요.' : '최대 생성 횟수에 도달했습니다.' } }));
         return;
@@ -921,6 +937,52 @@ const handleGenerate = useCallback(async (overridePrompt = null) => {
 
         // 세션/메시지 업데이트 헬퍼(현재 작업용)
         const updateAssistant = (updater) => updateMessageForSession(sessionIdForJob, assistantThinkingId, updater);
+        
+        // 이미지가 붙은 경우: 비스트리밍 경로로 전환
+        if (attachedImageUrl) {
+            try {
+                setGenState(sessionIdForJob, { status: GEN_STATE.PREVIEW_STREAMING });
+                const historyBase = (stableMessages || []).slice(-10).map(m => ({ role: m.role, content: (m.type === 'image' ? m.url : m.content), type: m.type }));
+                const history = [
+                  ...historyBase,
+                  { role: 'user', content: effectivePrompt, type: undefined },
+                  { role: 'user', content: attachedImageUrl, type: 'image' },
+                ];
+                const res = await chatAPI.agentSimulate({
+                    content: effectivePrompt,
+                    history,
+                    model: storyModel,
+                    sub_model: storyModel,
+                });
+                const aiText = res?.data?.assistant || '...';
+                updateAssistant(m => ({ ...m, content: aiText, thinking: false, streaming: false }));
+                
+                // 추천 카드 메시지 추가 (이미지 대신)
+                const recommendMsg = { 
+                  id: crypto.randomUUID(), 
+                  role: 'assistant', 
+                  type: 'recommendation',
+                  createdAt: nowIso() 
+                };
+                if (isGuest) {
+                    const arr = sessionLocalMessagesRef.current.get(sessionIdForJob) || [];
+                    const next = [...arr, recommendMsg];
+                    sessionLocalMessagesRef.current.set(sessionIdForJob, next);
+                    if (activeSessionId === sessionIdForJob) setMessages(next);
+                } else {
+                    const arr = loadJson(LS_MESSAGES_PREFIX + sessionIdForJob, []);
+                    const next = [...arr, recommendMsg];
+                    saveJson(LS_MESSAGES_PREFIX + sessionIdForJob, next);
+                    if (activeSessionId === sessionIdForJob) setMessages(next);
+                }
+                setGenState(sessionIdForJob, { status: GEN_STATE.COMPLETED, controller: null });
+                return; // 이미지 경로 완료
+            } catch (e) {
+                updateAssistant(m => ({ ...m, content: '응답 실패. 다시 시도해 주세요.', thinking: false, error: true }));
+                setGenState(sessionIdForJob, { status: GEN_STATE.FAILED, controller: null });
+                return;
+            }
+        }
 
         const stream = await storiesAPI.generateStoryStream({
             prompt: effectivePrompt,
@@ -932,7 +994,7 @@ const handleGenerate = useCallback(async (overridePrompt = null) => {
         }, {
             onStart: ({ controller }) => {
                 if ((sessionVersionRef.current.get(sessionIdForJob) || 0) !== sessionVersion) return;
-                setGenState(sessionIdForJob, { controller });
+                setGenState(sessionIdForJob, { controller, status: GEN_STATE.PREVIEW_STREAMING });
                 // P2: 스트리밍 시작 시 하단 여부에 따라 따라가기 결정
                 try {
                   const el = scrollElement;
@@ -990,13 +1052,71 @@ const handleGenerate = useCallback(async (overridePrompt = null) => {
                     try {
                         const finalMessages = loadJson(LS_MESSAGES_PREFIX + sessionIdForJob, []);
                         const finalAssistantMessage = finalMessages.find(m => m.id === assistantThinkingId);
-                        const title = finalAssistantMessage?.fullContent?.slice(0, 40) || '무제';
+                        // AI 응답에서 스토리 제목 자동 생성
+                        const fullText = finalAssistantMessage?.fullContent || finalAssistantMessage?.content || '';
+                        let title = '무제 이야기';
+                        
+                        // 스토리 내용에서 핵심 키워드 추출
+                        const lines = fullText.split('\n').filter(line => 
+                          line.trim() && 
+                          !line.includes('물론입니다') && 
+                          !line.includes('작성하겠습니다') &&
+                          !line.includes('만들어보겠습니다')
+                        );
+                        
+                        if (lines.length > 0) {
+                          const firstLine = lines[0];
+                          // 주인공이나 핵심 상황 찾기
+                          if (firstLine.includes('그녀') || firstLine.includes('여자')) {
+                            title = '그녀의 이야기';
+                          } else if (firstLine.includes('그') || firstLine.includes('남자')) {
+                            title = '그의 이야기';
+                          } else if (firstLine.includes('카페') || firstLine.includes('커피')) {
+                            title = '카페에서 시작된 이야기';
+                          } else if (firstLine.includes('비') || firstLine.includes('비가')) {
+                            title = '비 오는 날의 이야기';
+                          } else if (firstLine.includes('사랑') || firstLine.includes('연인')) {
+                            title = '사랑하는 이야기';
+                          } else if (firstLine.includes('이별') || firstLine.includes('헤어')) {
+                            title = '이별하는 이야기';
+                          } else if (firstLine.includes('꿈')) {
+                            title = '꿈을 꾸는 이야기';
+                          } else if (firstLine.includes('밤') || firstLine.includes('새벽')) {
+                            title = '밤에 일어난 이야기';
+                          } else if (firstLine.includes('아침') || firstLine.includes('햇살')) {
+                            title = '아침의 이야기';
+                          } else {
+                            // 기본: 첫 단어나 구를 활용
+                            const words = firstLine.split(/[\s,\.\!\?]+/).filter(w => w.length > 1);
+                            if (words.length > 0) {
+                              title = `${words[0]}의 이야기`;
+                            }
+                          }
+                        }
+                        
                         const newStory = { id: crypto.randomUUID(), title, sessionId: sessionIdForJob, model: storyModel, is_public: false, createdAt: nowIso(), source: 'local' };
                         setStoriesList(prev => [newStory, ...prev]);
                     } catch {}
                     updateSession(sessionIdForJob, { jobId: null, assistantMessageId: null });
                 }
                 window.dispatchEvent(new Event('agent:sessionsChanged'));
+                // 필요 시 AI 이미지 말풍선 추가
+                try {
+                  if (attachedImageUrl) {
+                    const imgMsg = { id: crypto.randomUUID(), role: 'assistant', type: 'image', url: attachedImageUrl, createdAt: nowIso() };
+                    if (isGuest) {
+                      const arr = sessionLocalMessagesRef.current.get(sessionIdForJob) || [];
+                      const next = [...arr, imgMsg];
+                      sessionLocalMessagesRef.current.set(sessionIdForJob, next);
+                      if (activeSessionId === sessionIdForJob) setMessages(next);
+                    } else {
+                      const arr = loadJson(LS_MESSAGES_PREFIX + sessionIdForJob, []);
+                      const next = [...arr, imgMsg];
+                      saveJson(LS_MESSAGES_PREFIX + sessionIdForJob, next);
+                      if (activeSessionId === sessionIdForJob) setMessages(next);
+                    }
+                  }
+                } catch {}
             },
             onError: (payload) => {
                 if ((sessionVersionRef.current.get(sessionIdForJob) || 0) !== sessionVersion) return;
@@ -1013,8 +1133,7 @@ const handleGenerate = useCallback(async (overridePrompt = null) => {
                 if ((sessionVersionRef.current.get(sessionIdForJob) || 0) === sessionVersion) {
                   setGenState(sessionIdForJob, { status: GEN_STATE.STOPPED, controller: null });
                 }
-                // 백그라운드 완료 감시(헤드리스) 시작
-                try { startHeadlessWatcher(sessionIdForJob); } catch {}
+                // 사용자 중지 시에는 백그라운드 감시를 시작하지 않음
         return;
     }
             throw new Error(stream.error?.message || '스트리밍 중 오류 발생');
@@ -1028,11 +1147,51 @@ const handleGenerate = useCallback(async (overridePrompt = null) => {
 }, [activeSessionId, createSession, setMessages, w5, prompt, storyModel, isPublic, isGuest, messages, updateSession, showStoryViewerSheet, updateMessageForSession, turnLimitReached]);
 
 // 프리뷰 확장: 단순 뷰어 오픈 (서버 재요청 없음)
-const handleExpandCanvas = (fullContent) => {
-  const latestStory = (loadJson(LS_STORIES, []) || [])[0];
+const handleExpandCanvas = (fullContent, relatedImageUrl = null) => {
+  // 스토리 내용에서 제목 자동 생성
+  let title = '무제 이야기';
+  
+  const lines = (fullContent || '').split('\n').filter(line => 
+    line.trim() && 
+    !line.includes('물론입니다') && 
+    !line.includes('작성하겠습니다') &&
+    !line.includes('만들어보겠습니다')
+  );
+  
+  if (lines.length > 0) {
+    const firstLine = lines[0];
+    // 주인공이나 핵심 상황 찾기
+    if (firstLine.includes('그녀') || firstLine.includes('여자')) {
+      title = '그녀의 이야기';
+    } else if (firstLine.includes('그') || firstLine.includes('남자')) {
+      title = '그의 이야기';
+    } else if (firstLine.includes('카페') || firstLine.includes('커피')) {
+      title = '카페에서 시작된 이야기';
+    } else if (firstLine.includes('비') || firstLine.includes('비가')) {
+      title = '비 오는 날의 이야기';
+    } else if (firstLine.includes('사랑') || firstLine.includes('연인')) {
+      title = '사랑하는 이야기';
+    } else if (firstLine.includes('이별') || firstLine.includes('헤어')) {
+      title = '이별하는 이야기';
+    } else if (firstLine.includes('꿈')) {
+      title = '꿈을 꾸는 이야기';
+    } else if (firstLine.includes('밤') || firstLine.includes('새벽')) {
+      title = '밤에 일어난 이야기';
+    } else if (firstLine.includes('아침') || firstLine.includes('햇살')) {
+      title = '아침의 이야기';
+    } else {
+      // 기본: 첫 단어나 구를 활용
+      const words = firstLine.split(/[\s,\.\!\?]+/).filter(w => w.length > 1);
+      if (words.length > 0) {
+        title = `${words[0]}의 이야기`;
+      }
+    }
+  }
+  
   setStoryForViewer({
-    title: latestStory?.title || '생성된 스토리',
-    content: fullContent || ''
+    title,
+    content: fullContent || '',
+    imageUrl: relatedImageUrl // 관련 이미지 URL 추가
   });
   setShowStoryViewerSheet(true);
 };
@@ -1177,6 +1336,16 @@ const handleEnterFromCta = useCallback(async () => {
     }
 }, [quickIdx, quickText, w5, handleGenerate]);
 
+// 프롬프트에 토큰 삽입(액션/이모지)
+const insertToPrompt = useCallback((token) => {
+  try {
+    const t = String(token || '').trim();
+    if (!t) return;
+    setPrompt(prev => (prev ? `${prev} ${t}` : t));
+    try { inputRef.current?.focus(); } catch {}
+  } catch {}
+}, []);
+
 return (
 <AppLayout 
   SidebarComponent={AgentSidebar}
@@ -1240,7 +1409,7 @@ return (
             <section className="px-6 md:px-8">
               <div className="flex flex-col items-center justify-center select-none gap-6">
                 <h1 className="text-4xl md:text-6xl font-semibold tracking-tight bg-gradient-to-r from-purple-400 via-fuchsia-400 to-pink-400 text-transparent bg-clip-text drop-shadow-[0_0_10px_rgba(168,85,247,0.35)] mb-2 md:mb-3">
-                  안녕하세요, {user ? `${user.username}` : '여행자님'}
+                  {user ? `${user.username}님의 일상에, 판타지를 보여줄게요` : '신비한천사60님의 일상에, 판타지를 보여줄게요'}
                 </h1>
                 <div className="mb-4 md:mb-6 flex flex-col md:flex-row items-start md:items-center gap-3">
                   <span className="text-lg md:text-xl text-purple-300/90 drop-shadow-[0_0_6px_rgba(168,85,247,0.25)]">
@@ -1345,11 +1514,35 @@ return (
               </div>
                             </div>
               )}
-              <div className="pb-8">
+              <div className="pb-8 relative">
+                {/* 설정(톱니) 버튼: 우상단 고정, 상단 탭 중앙선과 정렬 */}
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      type="button"
+                      className="hidden md:flex absolute -top-10 right-0 items-center justify-center w-8 h-8 rounded-full border border-gray-600/60 bg-gray-900 text-gray-300 hover:bg-gray-800"
+                      title="설정"
+                      aria-label="설정"
+                    >
+                      <Settings className="w-4 h-4" />
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent className="bg-gray-900 text-gray-100 border border-gray-700">
+                    <DropdownMenuLabel>모델 설정</DropdownMenuLabel>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuRadioGroup value={storyModel} onValueChange={(v)=> setStoryModel(v)}>
+                      {STORY_MODELS.map(m => (
+                        <DropdownMenuRadioItem key={m.value} value={m.value}>{m.label}</DropdownMenuRadioItem>
+                      ))}
+                    </DropdownMenuRadioGroup>
+                  </DropdownMenuContent>
+                </DropdownMenu>
                 {(stableMessages || []).length === 0 ? (
                   <div className="text-gray-400 text-sm p-3 hidden">메시지를 입력해보세요.</div>
                 ) : (
-                <div>
+                <div className="relative pb-36">
+                  {/* 하단 페이드아웃 그라데이션 - 타원 컨테이너로 향하는 블러 효과 */}
+                  <div className="absolute bottom-0 left-0 right-0 h-32 bg-gradient-to-t from-gray-900/95 via-gray-900/75 to-transparent pointer-events-none z-10" />
                   {stableMessages.map((m) => {
                       const text = (m.content || '').toString();
                       const isStreaming = !!(m.streaming || m.thinking);
@@ -1357,11 +1550,17 @@ return (
                       return (
                         <div key={m.id}>
                           <div className={`flex w-full items-start gap-3 my-4 ${m.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
+                              {/* 이미지 메시지가 아닐 때만 프로필 이미지 표시 */}
+                              {m.type !== 'image' && (
                               <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 font-semibold ${m.role === 'user' ? 'bg-gray-700 text-gray-200 ring-2 ring-purple-500/60' : 'bg-gradient-to-br from-purple-600 to-fuchsia-700 text-white/90'}`}>
                                   {m.role === 'user' ? (user ? user.username.charAt(0).toUpperCase() : 'G') : <Sparkles className="w-5 h-5" />}
                             </div>
+                              )}
                               {m.type === 'image' ? (
-                              <img src={m.url} alt="img" className={`max-w-[65%] rounded-2xl shadow-lg`} />
+                              <img src={m.url} alt="img" className={`block h-auto w-auto max-w-full md:max-w-[420px] rounded-2xl shadow-lg ${m.role === 'user' ? 'ml-auto' : 'mr-auto'}`} />
+                              ) : m.type === 'recommendation' ? (
+                                // 탐색 격자에서 상위 조회수 2개를 가져와 카드로 표시
+                                <ExploreRecommendations />
                               ) : m.type === 'story_preview' ? (
                                 <div className="w-full max-w-3xl bg-[#0d1117]/60 border border-gray-700 rounded-lg">
                                     <div className="px-4 py-2 border-b border-gray-700 text-xs text-gray-300 flex items-center justify-between">
@@ -1377,31 +1576,108 @@ return (
                                         {m.content}
                           </div>
                                     <div className="px-4 py-2 border-t border-gray-700 flex justify-end">
-                                        <Button size="sm" variant="ghost" className="text-blue-400 hover:text-blue-300" onClick={() => handleExpandCanvas(m.fullContent)} disabled={generationStatus !== GEN_STATE.AWAITING_CANVAS}>더보기</Button>
+                                        <Button 
+                                          size="sm" 
+                                          variant="ghost" 
+                                          className="rounded-full bg-purple-600/10 hover:bg-purple-600/20 text-purple-300 border border-purple-500/30 px-3 py-1 inline-flex items-center gap-1"
+                                          onClick={() => handleExpandCanvas(m.fullContent)} 
+                                          disabled={!m.fullContent}
+                                        >
+                                          이 이야기 계속보기
+                                        </Button>
                             </div>
                             </div>
                               ) : (
                                 <div className={`group relative max-w-[85%] whitespace-pre-wrap rounded-2xl shadow-lg ${m.role === 'user' 
                                   ? 'bg-purple-950/50 border border-purple-500/40 text-white px-3 py-2 shadow-[0_0_14px_rgba(168,85,247,0.45)]'
-                                  : 'bg-transparent px-0 py-0'}`}>
+                                  : 'bg-gray-900/30 border border-gray-800/50 px-4 py-3'}`}>
                                   {isStreaming ? (
-                                    <div className="inline-flex items-center gap-1">
-                                      <span className="inline-block w-1.5 h-1.5 rounded-full bg-current animate-bounce" style={{ animationDelay: '0ms' }} />
-                                      <span className="inline-block w-1.5 h-1.5 rounded-full bg-current animate-bounce" style={{ animationDelay: '150ms' }} />
-                                      <span className="inline-block w-1.5 h-1.5 rounded-full bg-current animate-bounce" style={{ animationDelay: '300ms' }} />
+                                    <div className="inline-flex items-center gap-1 text-gray-400">
+                                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                      <span className="text-xs">생성 중…</span>
                           </div>
                                   ) : (
                                     <>
-                                      {truncated}
-                                      {m.role === 'assistant' && !m.error && text.length >= 500 ? (
-                                        <div className="mt-2">
-                                          <button
-                                            type="button"
-                                            className="text-xs text-blue-400 hover:text-blue-300 underline"
-                                            onClick={() => handleExpandCanvas(m.fullContent)}
-                                          >더보기</button>
-                      </div>
-                                      ) : null}
+                                      {m.role === 'assistant' && !m.error ? (
+                                        <>
+                                          {(m.fullContent || text.length > 500) ? (
+                                            <>
+                                              {/* 텍스트에 문장 단위 블러 효과 적용 (500자 초과일 때만) */}
+                                              <div className="relative">
+                                                {(() => {
+                                                  // 텍스트를 줄바꿈 기준으로 분리
+                                                  const lines = truncated.split('\n');
+                                                  const totalLines = lines.length;
+                                                  
+                                                  return lines.map((line, idx) => {
+                                                    // 마지막 5줄에 대해 점진적 블러 적용
+                                                    const fromEnd = totalLines - idx;
+                                                    let blurClass = '';
+                                                    let opacity = 1;
+                                                    
+                                                    if (fromEnd === 1) {
+                                                      // 마지막 줄: 강한 블러
+                                                      blurClass = 'blur-[2px]';
+                                                      opacity = 0.3;
+                                                    } else if (fromEnd === 2) {
+                                                      // 마지막에서 두 번째: 중간 블러
+                                                      blurClass = 'blur-[1.5px]';
+                                                      opacity = 0.5;
+                                                    } else if (fromEnd === 3) {
+                                                      // 마지막에서 세 번째: 약한 블러
+                                                      blurClass = 'blur-[1px]';
+                                                      opacity = 0.7;
+                                                    } else if (fromEnd === 4) {
+                                                      // 마지막에서 네 번째: 매우 약한 블러
+                                                      blurClass = 'blur-[0.5px]';
+                                                      opacity = 0.85;
+                                                    }
+                                                    
+                                                    return (
+                                                      <div 
+                                                        key={idx} 
+                                                        className={blurClass}
+                                                        style={{ opacity }}
+                                                      >
+                                                        {line || '\u00A0'}
+                                                      </div>
+                                                    );
+                                                  });
+                                                })()}
+                                              </div>
+                                            </>
+                                          ) : (
+                                            <>{truncated}</>
+                                          )}
+                                          {/* 중앙 정렬된 계속보기 버튼 - 항상 노출 */}
+                                          <div className="mt-4 flex justify-center">
+                                            <button
+                                              type="button"
+                                              className="group relative inline-flex items-center gap-2 px-6 py-2.5 rounded-full bg-gradient-to-r from-purple-600 to-blue-600 text-white font-medium text-sm shadow-lg shadow-purple-500/25 hover:shadow-xl hover:shadow-purple-500/40 transform hover:scale-105 transition-all duration-200"
+                                              onClick={() => {
+                                                // 이전 메시지 중 이미지 찾기
+                                                const msgIndex = stableMessages.findIndex(msg => msg.id === m.id);
+                                                let imageUrl = null;
+                                                // 현재 메시지 이전의 메시지들 중에서 가장 최근 이미지 찾기
+                                                for (let i = msgIndex - 1; i >= 0; i--) {
+                                                  if (stableMessages[i].type === 'image') {
+                                                    imageUrl = stableMessages[i].url;
+                                                    break;
+                                                  }
+                                                }
+                                                handleExpandCanvas(m.fullContent || text, imageUrl);
+                                              }}
+                                            >
+                                              <span>이 이야기 계속보기</span>
+                                              <svg className="w-4 h-4 group-hover:translate-x-0.5 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                                              </svg>
+                                            </button>
+                                          </div>
+                                        </>
+                                      ) : (
+                                        <>{truncated}</>
+                                      )}
                                       {m.role === 'assistant' && !m.error && (
                                         <div className="absolute -top-2 right-2 hidden group-hover:flex gap-1">
                                           <button
@@ -1448,78 +1724,131 @@ return (
         )}
               </div>
     </div>
-       {/* 화면 하단 고정 입력창 */}
+       {/* 화면 하단 고정 입력창 - 새로운 심플 UI */}
        <div className="fixed bottom-0 left-64 right-0 bg-gradient-to-t from-gray-900 to-transparent">
            <div className="w-full max-w-4xl mx-auto p-3">
-           <form onSubmit={(e) => { e.preventDefault();
-               // P1: 전송 직후 자동 스크롤 억제 (사용자 문맥 보존)
-               suppressNextAutoScroll();
-               const content = (prompt || '').trim();
-               if (!content) return; 
-               if (mode === 'char' || mode === 'sim') { handleSend(); }
-               else {
-                 // 사용자 말풍선 먼저 추가 (GPT 스타일)
-                 setMessages(curr => [...curr, { id: crypto.randomUUID(), role: 'user', content, createdAt: nowIso() }]);
-                 handleGenerate(content);
-                 setPrompt('');
-               }
-             }}>
-               <div className="rounded-2xl border border-gray-700 bg-[#0e1014] focus-within:border-purple-500 transition-colors p-3 shadow-2xl">
-                <Textarea
-                  ref={inputRef}
-                  value={prompt}
-                  onChange={(e) => setPrompt(e.target.value)}
-                         onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (turnLimitReached) return; suppressNextAutoScroll(); (mode === 'char' || mode === 'sim') ? handleSend() : handleGenerate(); } }}
-                         placeholder={turnLimitReached ? (isGuest ? '로그인 후 계속 이용해주세요.' : '최대 생성 횟수에 도달했습니다.') : '메시지를 입력하세요...'}
-                  disabled={turnLimitReached}
-                         className="bg-transparent border-0 focus-visible:ring-0 text-white w-full pr-12 resize-none pt-2 pb-1 pl-1"
-                         rows={1}
-                     />
-                   <div className="mt-2 flex items-center justify-between">
-                       <div className="flex items-center gap-2">
-                           <button type="button" className={`${mode==='story' ? 'border-blue-500/70 text-blue-300 hover:bg-blue-700/20' : 'border-gray-600/60 text-gray-300 hover:bg-gray-700/40'} px-3 py-1 rounded-full text-sm border bg-transparent transition-colors`} onClick={() => setMode('story')}>스토리</button>
-                           <button type="button" className={`${mode==='char' ? 'border-emerald-500/70 text-emerald-300 hover:bg-emerald-700/20' : 'border-gray-600/60 text-gray-300 hover:bg-gray-700/40'} px-3 py-1 rounded-full text-sm border bg-transparent transition-colors`} onClick={() => setMode('char')}>캐릭터챗</button>
-                           <button type="button" className={`${mode==='sim' ? 'border-pink-500/70 text-pink-300 hover:bg-pink-700/20' : 'border-gray-600/60 text-gray-300 hover:bg-gray-700/40'} px-3 py-1 rounded-full text-sm border bg-transparent transition-colors`} onClick={() => setMode('sim')}>시뮬레이터</button>
-                           <button type="button" className={`${mode==='image' ? 'border-purple-500/70 text-purple-300 hover:bg-purple-700/20' : 'border-gray-600/60 text-gray-300 hover:bg-gray-700/40'} px-3 py-1 rounded-full text-sm border bg-transparent transition-colors`} onClick={() => setMode('image')}>이미지</button>
-                       </div>
-                       <div className="flex items-center gap-2">
-                           {mode === 'image' ? (
-                           <Select value={imageModel} onValueChange={(v) => setImageModel(v)}>
-                               <SelectTrigger className="h-8 px-2 w-44 bg-gray-900 border-gray-700 text-gray-200"><SelectValue placeholder="이미지 모델" /></SelectTrigger>
-                               <SelectContent className="bg-gray-900 text-white border-gray-700">
-                               {IMAGE_MODELS.map(m => (<SelectItem key={m.value} value={m.value}>{m.label}</SelectItem>))}
-                               </SelectContent>
-                           </Select>
-                           ) : (
-                           <Select value={storyModel} onValueChange={(v) => setStoryModel(v)}>
-                               <SelectTrigger className="h-8 px-2 w-44 bg-gray-900 border-gray-700 text-gray-200"><SelectValue placeholder="모델" /></SelectTrigger>
-                               <SelectContent className="bg-gray-900 text-white border-gray-700">
-                               {STORY_MODELS.map(m => (<SelectItem key={m.value} value={m.value}>{m.label}</SelectItem>))}
-                               </SelectContent>
-                           </Select>
-                           )}
-                           {[GEN_STATE.PREVIEW_STREAMING, GEN_STATE.CANVAS_STREAMING].includes(generationStatus) ? (
-                             <Button 
-                               type="button" 
-                               onClick={handleStopGeneration}
-                               className="p-2 h-8 w-8 rounded-full bg-red-600 text-white hover:bg-red-700 disabled:bg-gray-600 disabled:opacity-50"
-                               title="생성 중단"
-                             >
-                               <X className="h-4 w-4" />
-                             </Button>
-                           ) : (
-                             <Button 
-                               type="submit" 
-                               disabled={!prompt} 
-                               className="p-2 h-8 w-8 rounded-full bg-purple-600 text-white hover:bg-purple-700 disabled:bg-gray-600 disabled:opacity-50"
-                             >
-                               <Send className="h-4 w-4" />
-                             </Button>
-                           )}
-                </div>
-                      </div>
-                    </div>
-           </form>
+             {/* 새로운 Composer UI */}
+             <Composer 
+               onSend={async (payload) => {
+                 try {
+                   // 1. 먼저 사용자 메시지 표시
+                   let userText = '';
+                   let imageUrl = null;
+                   
+                   payload.staged.forEach(item => {
+                     if (item.type === 'image') {
+                       imageUrl = item.url;
+                       if (item.caption) userText += (userText ? ' ' : '') + item.caption;
+                     } else if (item.type === 'text') {
+                       userText += (userText ? ' ' : '') + item.body;
+                     } else if (item.type === 'emoji') {
+                       userText += (userText ? ' ' : '') + item.items.join(' ');
+                     }
+                   });
+                   
+                   // 사용자 메시지 추가 (텍스트와 이미지를 바로 연속으로)
+                   const userMessages = [];
+                   const userMsgId = crypto.randomUUID();
+                   
+                   // 텍스트가 없어도 이미지만 있으면 기본 텍스트 추가
+                   if (imageUrl && !userText) {
+                     userText = '이 이미지로 스토리를 보고 싶어요';
+                   }
+                   
+                   if (userText) {
+                     userMessages.push({ 
+                       id: userMsgId, 
+                       role: 'user', 
+                       content: userText, 
+                       createdAt: nowIso() 
+                     });
+                   }
+                   
+                   if (imageUrl) {
+                     userMessages.push({ 
+                       id: crypto.randomUUID(), 
+                       role: 'user', 
+                       type: 'image', 
+                       url: imageUrl, 
+                       createdAt: nowIso() 
+                     });
+                   }
+                   
+                   // 2. AI thinking 메시지 추가 (스피너 표시)
+                   const assistantId = crypto.randomUUID();
+                   const thinkingMsg = {
+                     id: assistantId,
+                     role: 'assistant',
+                     content: '',
+                     thinking: true,
+                     createdAt: nowIso()
+                   };
+                   
+                   setMessages(curr => [...curr, ...userMessages, thinkingMsg]);
+                   
+                   // 3. 생성 상태 업데이트
+                   setGenState(activeSessionId, { status: GEN_STATE.PREVIEW_STREAMING });
+                   
+                   // 4. 백엔드 호출
+                   const response = await chatAPI.agentSimulate({
+                     staged: payload.staged,
+                     mode: payload.mode || 'micro',
+                     model: storyModel,
+                     sub_model: storyModel
+                   });
+                   
+                   // 5. thinking 메시지를 실제 응답으로 교체
+                   if (response.data?.assistant) {
+                     const assistantText = response.data.assistant;
+                     const generatedImageUrl = response.data?.generated_image; // 새로 생성된 이미지
+                     const isLongText = assistantText.length > 500;
+                     
+                     setMessages(curr => {
+                       const updated = curr.map(msg => 
+                         msg.id === assistantId 
+                           ? { 
+                               ...msg, 
+                               content: isLongText ? assistantText.slice(0, 500) : assistantText,
+                               fullContent: isLongText ? assistantText : undefined,
+                               thinking: false 
+                             }
+                           : msg
+                       );
+                       
+                       // 추천 카드 표시 (이미지가 있을 때만)
+                       if (imageUrl) {
+                         updated.push({
+                           id: crypto.randomUUID(),
+                           role: 'assistant',
+                           type: 'recommendation',
+                           createdAt: nowIso()
+                         });
+                       }
+                       
+                       return updated;
+                     });
+                   }
+                   
+                   // 6. 생성 완료 상태
+                   setGenState(activeSessionId, { status: GEN_STATE.IDLE });
+                   
+                 } catch (error) {
+                   console.error('Failed to generate:', error);
+                   // toast.error('생성 중 오류가 발생했습니다.'); // toast 제거
+                   
+                   // 에러 시 thinking 메시지를 에러 메시지로 변경
+                   setMessages(curr => curr.map(msg => 
+                     msg.thinking 
+                       ? { ...msg, content: '응답 생성에 실패했습니다. 다시 시도해주세요.', thinking: false, error: true }
+                       : msg
+                   ));
+                   setGenState(activeSessionId, { status: GEN_STATE.IDLE });
+                 }
+               }}
+               disabled={turnLimitReached || (activeSessionId && [GEN_STATE.PREVIEW_STREAMING, GEN_STATE.AWAITING_CANVAS, GEN_STATE.CANVAS_STREAMING].includes(getGenState(activeSessionId)?.status))}
+             />
+             
+           {/* 기존 복잡한 입력 UI 완전 제거 - Git에서 복원 가능 */}
                 </div>
       </div>
 
@@ -1543,6 +1872,9 @@ return (
         </div>
       </SheetContent>
     </Sheet>
+
+    {/* First Frame 선택 모달 (업로드/생성 겸용) */}
+    <ImageGenerateInsertModal open={firstFrameOpen} onClose={(res)=>{ setFirstFrameOpen(false); try { if (res && res.focusUrl) setFirstFrameUrl(res.focusUrl); } catch {} }} />
 
     {/* 시트: 스토리 선택 + 커버/갤러리 */}
     <Sheet open={showStoriesSheet} onOpenChange={setShowStoriesSheet}>
@@ -1704,6 +2036,17 @@ return (
            </SheetHeader>
            <div className="mt-4 pr-4">
              <div className="h-[85vh] overflow-auto text-gray-200 whitespace-pre-wrap leading-7">
+               {/* 이미지가 있으면 최상단에 표시 */}
+               {storyForViewer.imageUrl && (
+                 <div className="mb-6">
+                   <img 
+                     src={storyForViewer.imageUrl} 
+                     alt="스토리 이미지" 
+                     className="w-full h-auto rounded-lg shadow-lg"
+                   />
+                 </div>
+               )}
+               {/* 스토리 텍스트 */}
                {storyForViewer.content}
              </div>
            </div>
@@ -1715,6 +2058,63 @@ return (
 };
 
 export default AgentPage;
+
+// 추천 컴포넌트: 인기 캐릭터 1위 + 웹소설 TOP 1,2위
+function ExploreRecommendations() {
+  const [stories, setStories] = React.useState([]);
+  const [characters, setCharacters] = React.useState([]);
+  
+  React.useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const [sRes, cRes] = await Promise.all([
+          // 웹소설 TOP10 (랭킹 API 사용)
+          rankingAPI.getDaily({ kind: 'story' }),
+          // 인기 캐릭터
+          charactersAPI.getCharacters({ sort: 'views', limit: 24 })
+        ]);
+        
+        // 웹소설: 랭킹 API에서 상위 2개
+        const storyItems = Array.isArray(sRes.data?.items) ? sRes.data.items : [];
+        const topStories = storyItems.slice(0, 2);
+        
+        // 캐릭터: 상위 1개
+        const cList = cRes.data || [];
+        const topChars = cList.slice(0, 1);
+        
+        if (!alive) return;
+        setStories(topStories);
+        setCharacters(topChars);
+      } catch (err) {
+        console.error('Failed to fetch recommendations:', err);
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  if (!stories.length && !characters.length) return null;
+
+  return (
+    <div className="w-full max-w-2xl">
+      <div className="mb-3 text-sm text-gray-400">신비한 천사님, 더 완성도 높은 콘텐츠가 있어요.</div>
+      <div className="grid grid-cols-3 gap-2">
+        {/* 웹소설 TOP 2개 먼저 */}
+        {stories.map((story, idx) => (
+          <div key={`rec-s-${story.id || idx}`}>
+            <StoryExploreCard story={story} compact />
+          </div>
+        ))}
+        {/* 캐릭터 1개 마지막 */}
+        {characters[0] && (
+          <div key={`rec-c-${characters[0].id}`} className="transform scale-[0.9] origin-top-left">
+            <CharacterCard character={characters[0]} />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 // 사용자 말풍선용: 육하원칙 + 프롬프트를 한 줄로 정리
 function formatW5AsUserMessage(w5, prompt) {

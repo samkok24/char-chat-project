@@ -16,7 +16,7 @@ import {
   DropdownMenuTrigger,
 } from './ui/dropdown-menu';
 
-export const HistoryChatCard = ({ character, onClick, onPin, onDelete }) => {
+export const HistoryChatCard = ({ character, onClick, onPin, onDelete, displayTitle }) => {
   const defaultAvatar = DEFAULT_AVATAR_URI;
   
   const formatTime = (dateString) => {
@@ -128,7 +128,7 @@ export const HistoryChatCard = ({ character, onClick, onPin, onDelete }) => {
                 <div className="flex-1 mr-2">
                   <div className="h-4 flex items-start gap-1">
                     <h2 className="text-[17px] lg:text-[18px] font-semibold leading-tight cursor-pointer hover:text-gray-300 transition-colors text-white">
-                      {character.name}
+                      {displayTitle || character.name}
                     </h2>
                   </div>
                 </div>

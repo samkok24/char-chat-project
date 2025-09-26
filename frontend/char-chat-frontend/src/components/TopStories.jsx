@@ -5,7 +5,7 @@ import StoryExploreCard from './StoryExploreCard';
 import ErrorBoundary from './ErrorBoundary';
 
 const TopStories = () => {
-  const { data = [], isLoading, isError } = useQuery({
+  const { data = [], isLoading, isError, refetch } = useQuery({
     queryKey: ['top-stories-daily'],
     queryFn: async () => {
       const res = await rankingAPI.getDaily({ kind: 'story' });
@@ -16,6 +16,12 @@ const TopStories = () => {
     refetchOnWindowFocus: true,
     refetchOnMount: 'always',
   });
+
+  React.useEffect(() => {
+    const h = () => { try { refetch(); } catch {} };
+    window.addEventListener('media:updated', h);
+    return () => window.removeEventListener('media:updated', h);
+  }, [refetch]);
   const empty = !isLoading && (!data || data.length === 0);
 
   return (

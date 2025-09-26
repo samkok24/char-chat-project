@@ -7,7 +7,8 @@ import ErrorBoundary from '../components/ErrorBoundary';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useSocket } from '../contexts/SocketContext';
-import { charactersAPI, chatAPI, usersAPI, origChatAPI, mediaAPI } from '../lib/api'; // usersAPI 추가
+import { charactersAPI, chatAPI, usersAPI, origChatAPI, mediaAPI, storiesAPI } from '../lib/api'; // usersAPI 추가
+import { showToastOnce } from '../lib/toastOnce';
 import { resolveImageUrl, getCharacterPrimaryImage, buildPortraitSrcSet } from '../lib/images';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -37,7 +38,8 @@ import {
   ChevronLeft,
   ChevronRight,
   Pin,
-  PinOff
+  PinOff,
+  ListTree
 } from 'lucide-react';
 import { Textarea } from '../components/ui/textarea'; // Textarea 추가
 import {
@@ -102,7 +104,7 @@ const ChatPage = () => {
   const [isPinned, setIsPinned] = useState(false);
   const [pinnedUrl, setPinnedUrl] = useState('');
   // 전역 UI 설정(로컬)
-  const [uiFontSize, setUiFontSize] = useState('base'); // sm|base|lg|xl
+  const [uiFontSize, setUiFontSize] = useState('sm'); // sm|base|lg|xl
   const [uiLetterSpacing, setUiLetterSpacing] = useState('normal'); // tighter|tight|normal|wide|wider
   const [uiOverlay, setUiOverlay] = useState(60); // 0~100
   const [uiFontFamily, setUiFontFamily] = useState('sans'); // sans|serif
@@ -116,6 +118,10 @@ const ChatPage = () => {
   const [typingSpeed, setTypingSpeed] = useState(40);
   // 해상된 테마 상태 (light/dark)
   const [resolvedTheme, setResolvedTheme] = useState('dark');
+  // 원작챗 추가 설정(로직만): postprocess/next_event_len/response_length/prewarm
+  const defaultChatSettings = { postprocess_mode: 'first2', next_event_len: 1, response_length_pref: 'medium', prewarm_on_start: true };
+  const [chatSettings, setChatSettings] = useState(defaultChatSettings);
+  const settingsSyncedRef = useRef(false);
   // 원작챗 상태
   const [isOrigChat, setIsOrigChat] = useState(false);
   const [origAnchor, setOrigAnchor] = useState(null);
@@ -129,7 +135,21 @@ const ChatPage = () => {
   const [relAffinity, setRelAffinity] = useState(50);
   const [relTension, setRelTension] = useState(50);
   const [pendingChoices, setPendingChoices] = useState([]);
+  const [choiceLocked, setChoiceLocked] = useState(false);
+  // 새로운 선택지가 도착하면 다시 활성화
+  useEffect(() => { setChoiceLocked(false); }, [pendingChoices]);
   const [rangeWarning, setRangeWarning] = useState('');
+  // 원작챗 메타(진행도/완료/모드)
+  const [origMeta, setOrigMeta] = useState({ turnCount: null, maxTurns: null, completed: false, mode: null, init_stage: null, intro_ready: null });
+  // 캐시 상태(warmed/warming) 폴링
+  const [ctxWarmed, setCtxWarmed] = useState(null); // true|false|null
+  const [ctxPollCount, setCtxPollCount] = useState(0);
+  const [ctxPollingDone, setCtxPollingDone] = useState(false);
+  // 원작챗 비스트리밍 스테이지 표시
+  const [turnStage, setTurnStage] = useState(null); // 'generating' | 'polishing' | null
+  // 상황 입력 토글/값
+  const [showSituation, setShowSituation] = useState(false);
+  const [situationText, setSituationText] = useState('');
   
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
@@ -137,6 +157,42 @@ const ChatPage = () => {
   const prevScrollHeightRef = useRef(0); // For scroll position restoration
   const isPinnedRef = useRef(false);
   const pinnedUrlRef = useRef('');
+  const genIdemKey = useCallback(() => {
+    try { return `${chatRoomId || 'room'}:${Date.now()}:${Math.random().toString(36).slice(2,8)}`; } catch (_) { return `${Date.now()}`; }
+  }, [chatRoomId]);
+  // 완결 토스트/내레이터 중복 가드
+  const completedNotifiedRef = useRef(false);
+  const finalNarrationInsertedRef = useRef(false);
+
+  const notifyCompletion = (meta) => {
+    if (!chatRoomId) return;
+    try {
+      const key = `cc:orig:completed:${chatRoomId}`;
+      const already = completedNotifiedRef.current || (localStorage.getItem(key) === '1');
+      if (!already) {
+        // 내레이터 말풍선 1회만 삽입
+        if (!finalNarrationInsertedRef.current) {
+          const narrator = {
+            id: `final-narr-${Date.now()}`,
+            roomId: chatRoomId,
+            senderType: 'assistant',
+            content: meta?.final_narration || '이 평행세계 이야기는 여기서 막을 내립니다. 계속하고 싶다면 자유 모드로 이어집니다.',
+            created_at: new Date().toISOString()
+          };
+          setMessages(prev => [...prev, narrator]);
+          finalNarrationInsertedRef.current = true;
+        }
+        // 토스트 1회만 표시
+        const el = document.createElement('div');
+        el.className = 'fixed top-3 left-1/2 -translate-x-1/2 bg-black/80 text-white px-4 py-2 rounded z-[80]';
+        el.textContent = '완결되었습니다. 자유 모드로 전환합니다.';
+        document.body.appendChild(el);
+        setTimeout(() => { try { document.body.removeChild(el); } catch(_) {} }, 3000);
+        localStorage.setItem(key, '1');
+        completedNotifiedRef.current = true;
+      }
+    } catch (_) {}
+  };
 
   // AI 메타 주석(예: "(성향 점수 35...)") 제거
   const sanitizeAiText = useCallback((text) => {
@@ -154,6 +210,24 @@ const ChatPage = () => {
     }
     return lines.join('\n').replace(/^\s+/, '');
   }, []);
+
+  // 설정 변경 적용 유틸(허용 키만 병합 + 저장 + 다음 턴 동기화 플래그)
+  const updateChatSettings = useCallback((patch) => {
+    try {
+      const allowed = ['postprocess_mode','next_event_len','response_length_pref','prewarm_on_start'];
+      const clean = Object.fromEntries(Object.entries(patch || {}).filter(([k]) => allowed.includes(k)));
+      const merged = { ...defaultChatSettings, ...chatSettings, ...clean };
+      // 간단 유효성
+      if (!['always','first2','off'].includes(String(merged.postprocess_mode))) merged.postprocess_mode = 'first2';
+      merged.next_event_len = (merged.next_event_len === 2 ? 2 : 1);
+      if (!['short','medium','long'].includes(String(merged.response_length_pref))) merged.response_length_pref = 'medium';
+      merged.prewarm_on_start = merged.prewarm_on_start !== false;
+      setChatSettings(merged);
+      localStorage.setItem('cc:chat:settings:v1', JSON.stringify(merged));
+      settingsSyncedRef.current = false; // 다음 턴에 settings_patch 포함
+      try { window.dispatchEvent(new CustomEvent('chat:settingsUpdated', { detail: merged })); } catch (_) {}
+    } catch (_) {}
+  }, [chatSettings]);
 
   useEffect(() => {
     // 세션 핀 상태 복원
@@ -188,7 +262,9 @@ const ChatPage = () => {
           const unique = Array.from(new Set([...main, ...gallery, ...fallback]));
           setCharacterImages(unique);
           setCurrentImageIndex(0);
-        } catch (_) {}
+        } catch (_) {
+          showToastOnce({ key: `ctx-warm-fail:${storyIdParam}`, type: 'warning', message: '컨텍스트 준비가 지연되고 있습니다.' });
+        }
 
         // mediaAPI 자산 우선 적용
         try {
@@ -214,33 +290,92 @@ const ChatPage = () => {
         const source = params.get('source');
         const anchorParam = params.get('anchor');
         const storyIdParam = params.get('storyId');
+        const modeParam = params.get('mode');
         const rangeFromParam = params.get('rangeFrom');
         const rangeToParam = params.get('rangeTo');
+        const buildLastRoomKey = (uid, cid, sid) => `cc:lastRoom:${uid || 'anon'}:${cid || 'none'}:${sid || 'none'}:origchat`;
         let roomId = explicitRoom || null;
+        // room 파라미터 유효성 검사
+        if (roomId) {
+          try {
+            const r = await chatAPI.getChatRoom(roomId);
+            if (!(r && r.data && r.data.id)) roomId = null;
+          } catch (_) { roomId = null; }
+        }
 
         if (!roomId) {
-          if (forceNew) {
-            const roomResponse = await chatAPI.startChat(characterId);
-            roomId = roomResponse.data.id;
-          } else {
-            // 최근 대화 방 시도: 서버 세션 목록에서 검색
+          if (source === 'origchat' && storyIdParam) {
+            // 1) 로컬 최근 원작챗 방 시도
             try {
-              const sessionsRes = await chatAPI.getChatSessions();
-              const latest = (Array.isArray(sessionsRes.data) ? sessionsRes.data : []).find(s => String(s.character_id) === String(characterId));
-              if (latest) roomId = latest.id;
+              const k = buildLastRoomKey(user?.id, characterId, storyIdParam);
+              const saved = localStorage.getItem(k);
+              if (saved) {
+                const parsed = JSON.parse(saved);
+                if (parsed?.roomId) {
+                  try {
+                    const r = await chatAPI.getChatRoom(parsed.roomId);
+                    if (r?.data?.id) roomId = r.data.id;
+                  } catch (_) {}
+                }
+              }
             } catch (_) {}
+            // 2) 없으면 전용 start
             if (!roomId) {
+              const a = Number(anchorParam) || 1;
+              const rf = rangeFromParam ? Number(rangeFromParam) : null;
+              const rt = rangeToParam ? Number(rangeToParam) : null;
+              const startRes = await origChatAPI.start({ story_id: storyIdParam, character_id: characterId, mode: (modeParam || 'canon'), start: { chapter: a }, range_from: rf, range_to: rt });
+              roomId = startRes.data?.id || startRes.data?.room_id || startRes.data?.room?.id || null;
+              // 새 방을 만든 직후에는 최근 세션 리스트가 중복갱신되지 않도록 이벤트 브로드캐스트 지연/스킵
+              try { window.dispatchEvent(new CustomEvent('chat:roomsChanged:suppressOnce')); } catch (_) {}
+              if (!roomId) {
+                // 최후 폴백: 일반 시작
+                const roomResponse = await chatAPI.startChat(characterId);
+                roomId = roomResponse.data.id;
+              }
+            }
+          } else {
+            if (forceNew) {
               const roomResponse = await chatAPI.startChat(characterId);
               roomId = roomResponse.data.id;
+            } else {
+              // 최근 대화 방 시도: 서버 세션 목록에서 검색
+              try {
+                const sessionsRes = await chatAPI.getChatSessions();
+                const latest = (Array.isArray(sessionsRes.data) ? sessionsRes.data : []).find(s => String(s.character_id) === String(characterId));
+                if (latest) roomId = latest.id;
+              } catch (_) {}
+              if (!roomId) {
+                const roomResponse = await chatAPI.startChat(characterId);
+                roomId = roomResponse.data.id;
+              }
             }
           }
         }
         
         setChatRoomId(roomId);
+
+        // URL에 확정된 room 반영(새로고침/뒤로가기 시 심리스 복구)
+        try {
+          if (roomId) {
+            const usp = new URLSearchParams(location.search || '');
+            if (usp.get('room') !== String(roomId)) {
+              usp.set('room', String(roomId));
+              navigate(`${location.pathname}?${usp.toString()}`, { replace: true });
+            }
+          }
+        } catch (_) {}
+        // 원작챗이면 로컬 최근 방 저장
+        try {
+          if (source === 'origchat' && storyIdParam && roomId) {
+            const k = buildLastRoomKey(user?.id, characterId, storyIdParam);
+            localStorage.setItem(k, JSON.stringify({ roomId, updatedAt: Date.now() }));
+          }
+        } catch (_) {}
         // 최근 대화 리스트에서 원작챗 표시 정합성을 위해 세션 메타 힌트 브로드캐스트
         try { window.dispatchEvent(new CustomEvent('chat:opened', { detail: { characterId, source } })); } catch(_) {}
 
-        // 원작챗 컨텍스트 프리페치
+    // 원작챗 컨텍스트/메타 프리페치
         if (source === 'origchat' && storyIdParam) {
           try {
             setIsOrigChat(true);
@@ -251,7 +386,45 @@ const ChatPage = () => {
             const rt = rangeToParam ? Number(rangeToParam) : null;
             if (rf) setOrigRangeFrom(rf);
             if (rt) setOrigRangeTo(rt);
-            const ctxRes = await origChatAPI.getContextPack(storyIdParam, { anchor: a, characterId });
+        // 사용자 설정 로드 → 세션 시작 시 1회만 서버에 동기화
+        try {
+          const rawSettings = localStorage.getItem('cc:chat:settings:v1');
+          if (rawSettings) {
+            const parsed = JSON.parse(rawSettings);
+            const s = {
+              postprocess_mode: parsed.postprocess_mode || 'first2',
+              next_event_len: (parsed.next_event_len === 2 ? 2 : 1),
+              response_length_pref: parsed.response_length_pref || 'medium',
+              prewarm_on_start: parsed.prewarm_on_start !== false,
+            };
+            setChatSettings(s);
+            settingsSyncedRef.current = false;
+          } else {
+            setChatSettings(defaultChatSettings);
+            settingsSyncedRef.current = false;
+          }
+        } catch (_) { setChatSettings(defaultChatSettings); settingsSyncedRef.current = false; }
+            // 룸 메타 우선 조회(진행도/완료/모드, 앵커/범위 보정)
+            try {
+              if (roomId) {
+                const metaRes = await chatAPI.getRoomMeta(roomId);
+                const meta = metaRes?.data || {};
+                const tc = Number(meta.turn_count || meta.turnCount || 0) || 0;
+                const mt = Number(meta.max_turns || meta.maxTurns || 500) || 500;
+                setOrigMeta({ turnCount: tc, maxTurns: mt, completed: Boolean(meta.completed), mode: meta.mode || null, narrator_mode: Boolean(meta.narrator_mode), seed_label: meta.seed_label || null, init_stage: meta.init_stage || null, intro_ready: typeof meta.intro_ready === 'boolean' ? meta.intro_ready : null });
+                // 시작점/범위가 URL과 다르면 상태 보정(UI는 후순위)
+                const start = meta.start || {};
+                if (!anchorParam && typeof start.chapter === 'number') setOrigAnchor(Number(start.chapter) || a);
+                if (!rangeFromParam && typeof meta.range_from === 'number') setOrigRangeFrom(Number(meta.range_from));
+                if (!rangeToParam && typeof meta.range_to === 'number') setOrigRangeTo(Number(meta.range_to));
+                // 로컬 최근 방 touch
+                try {
+                  const k = buildLastRoomKey(user?.id, characterId, storyIdParam);
+                  localStorage.setItem(k, JSON.stringify({ roomId, updatedAt: Date.now() }));
+                } catch (_) {}
+              }
+            } catch (_) {}
+            const ctxRes = await origChatAPI.getContextPack(storyIdParam, { anchor: a, characterId, mode: (modeParam || 'canon'), rangeFrom: rf, rangeTo: rt });
             const actor = ctxRes.data?.actor_context || {};
             const director = ctxRes.data?.director_context || {};
             if (typeof actor.trust === 'number') setRelTrust(actor.trust);
@@ -271,6 +444,42 @@ const ChatPage = () => {
       }
     };
     initializeChat();
+
+    // 원작챗 컨텍스트 워밍 상태 폴링 (최대 5회 / 2초 간격)
+    try {
+      const params2 = new URLSearchParams(location.search || '');
+      const source2 = params2.get('source');
+      const storyId2 = params2.get('storyId');
+      if (source2 === 'origchat' && storyId2) {
+        let mounted = true;
+        let attempts = 0;
+        const poll = async () => {
+          try {
+            const res = await storiesAPI.getContextStatus(storyId2);
+            const warmed = Boolean(res?.data?.warmed);
+            if (!mounted) return;
+            setCtxWarmed(warmed);
+            attempts += 1;
+            setCtxPollCount(attempts);
+            if (!warmed && attempts < 5) {
+              setTimeout(poll, 2000);
+            } else {
+              setCtxPollingDone(true);
+            }
+          } catch (_) {
+            if (!mounted) return;
+            setCtxWarmed(false);
+          }
+        };
+        setCtxPollingDone(false);
+        poll();
+        return () => { mounted = false; };
+      } else {
+        setCtxWarmed(null);
+        setCtxPollCount(0);
+        setCtxPollingDone(false);
+      }
+    } catch (_) {}
 
     // 전역 UI 설정 로드
     try {
@@ -394,7 +603,7 @@ const ChatPage = () => {
     if (messages.length > 0) {
       const lastMessage = messages[messages.length - 1];
       // 내가 보낸 메시지거나, 스트리밍이 아닌 AI 메시지일 때만 자동 스크롤
-      if (lastMessage.senderType === 'user' || !lastMessage.isStreaming) {
+      if (!prevScrollHeightRef.current && (lastMessage.senderType === 'user' || !lastMessage.isStreaming)) {
          scrollToBottom();
       }
     }
@@ -409,9 +618,6 @@ const ChatPage = () => {
   }, [messages]);
 
 
-  useEffect(() => {
-    scrollToBottom();
-  }, [messages]);
 
   useEffect(() => {
     // Textarea 높이 자동 조절
@@ -426,19 +632,28 @@ const ChatPage = () => {
   };
   
   const handleScroll = useCallback(() => {
-    if (chatContainerRef.current) {
-      const { scrollTop } = chatContainerRef.current;
-      if (scrollTop === 0 && hasMoreMessages && !historyLoading) {
-        prevScrollHeightRef.current = chatContainerRef.current.scrollHeight;
-        getMessageHistory(chatRoomId, currentPage + 1);
-      }
+    const el = chatContainerRef.current;
+    if (!el) return;
+    const atBottom = el.scrollTop >= el.scrollHeight - el.clientHeight - 2;
+    // 맨 위 도달 시 과거 로드
+    if (el.scrollTop <= 0 && hasMoreMessages && !historyLoading) {
+      prevScrollHeightRef.current = el.scrollHeight;
+      getMessageHistory(chatRoomId, currentPage + 1);
+    }
+    // 사용자가 위로 스크롤 중이면 자동 스크롤 중지(점프 방지)
+    if (!atBottom) {
+      if (prevScrollHeightRef.current === 0) prevScrollHeightRef.current = 1;
+    } else {
+      if (prevScrollHeightRef.current === 1) prevScrollHeightRef.current = 0;
     }
   }, [hasMoreMessages, historyLoading, getMessageHistory, chatRoomId, currentPage]);
 
 
   const handleSendMessage = async (e) => {
     e.preventDefault();
-    if (!newMessage.trim() || !chatRoomId || !connected) return;
+    // 원작챗은 소켓 연결 여부와 무관하게 HTTP로 턴을 보냄
+    if (!newMessage.trim() || !chatRoomId || (!isOrigChat && !connected)) return;
+    // 선택지 노출 중에는 next_event(자동진행)만 제한하고, 일반 입력은 허용(요구사항 반영 시 UI로 전환)
 
     const messageContentRaw = newMessage.trim();
     const isNarration = messageContentRaw.startsWith('*');
@@ -461,7 +676,7 @@ const ChatPage = () => {
     if (isOrigChat && origStoryId) {
       try {
         setOrigTurnLoading(true);
-        const payload = { room_id: chatRoomId, user_text: messageContent };
+        const payload = { room_id: chatRoomId, user_text: messageContent, idempotency_key: genIdemKey(), settings_patch: (settingsSyncedRef.current ? null : chatSettings) };
         setLastOrigTurnPayload(payload);
         const resp = await origChatAPI.turn(payload);
         const assistantText = resp.data?.ai_message?.content || resp.data?.assistant || '';
@@ -474,6 +689,26 @@ const ChatPage = () => {
           created_at: new Date().toISOString()
         };
         setMessages(prev => [...prev, aiMessage]);
+        // 진행도 갱신 + 설정 싱크 플래그 고정
+        try {
+          if (chatRoomId) {
+            const metaRes = await chatAPI.getRoomMeta(chatRoomId);
+            const m = metaRes?.data || {};
+        setOrigMeta({
+              turnCount: Number(m.turn_count || m.turnCount || 0) || 0,
+              maxTurns: Number(m.max_turns || m.maxTurns || 500) || 500,
+              completed: Boolean(m.completed),
+              mode: m.mode || null,
+          narrator_mode: Boolean(m.narrator_mode),
+          seed_label: m.seed_label || null,
+            });
+            settingsSyncedRef.current = true;
+          }
+        } catch (_) {}
+        // 완결 토스트/내레이터 (중복 가드)
+        if (meta && meta.completed && meta.turn_count && meta.max_turns && meta.turn_count >= meta.max_turns) {
+          notifyCompletion(meta);
+        }
         // 관계 미터 업데이트(클램핑)
         const clamp = (v) => Math.max(0, Math.min(100, v));
         const d = meta.deltas || {};
@@ -486,6 +721,7 @@ const ChatPage = () => {
         setRangeWarning(typeof warn === 'string' ? warn : '');
       } catch (err) {
         console.error('원작챗 턴 실패', err);
+        showToastOnce({ key: `turn-fail:${chatRoomId}`, type: 'error', message: '응답 생성에 실패했습니다.' });
         try {
           const retry = window.confirm('응답 생성에 실패했습니다. 다시 시도할까요?');
           if (retry && lastOrigTurnPayload) {
@@ -528,6 +764,8 @@ const ChatPage = () => {
 
   const handleSelectChoice = async (choice) => {
     if (!chatRoomId) return;
+    if (choiceLocked || origTurnLoading) return;
+    setChoiceLocked(true);
     // 사용자 선택을 즉시 UI에 표시
     const tempUser = {
       id: `temp-user-choice-${Date.now()}`,
@@ -541,18 +779,35 @@ const ChatPage = () => {
     setPendingChoices([]);
     try {
       setOrigTurnLoading(true);
-      const payload = { room_id: chatRoomId, choice_id: choice.id, user_text: choice.label };
+      if (isOrigChat) setTurnStage('generating');
+      if (isOrigChat) setTurnStage('generating');
+      const payload = { room_id: chatRoomId, choice_id: choice.id, user_text: choice.label, idempotency_key: genIdemKey(), settings_patch: null };
       setLastOrigTurnPayload(payload);
       const resp = await origChatAPI.turn(payload);
       const assistantText = resp.data?.ai_message?.content || resp.data?.assistant || '';
+      if (isOrigChat && assistantText) {
+        if ((chatSettings?.postprocess_mode||'first2') !== 'off') {
+          setTurnStage('polishing');
+          setTimeout(()=> setTurnStage(null), 300);
+        } else {
+          setTurnStage(null);
+        }
+      }
+      if (isOrigChat && assistantText) {
+        // 보정 모드가 켜졌다면 아주 짧게 '보정 중'을 표시(체감용)
+        if ((chatSettings?.postprocess_mode||'first2') !== 'off') {
+          setTurnStage('polishing');
+          setTimeout(()=> setTurnStage(null), 300);
+        } else {
+          setTurnStage(null);
+        }
+      }
       const meta = resp.data?.meta || {};
-      // 요구사항: 선택 문장에 이어서 말풍선으로 나오기 → 선택 문장 + AI 답변 결합
-      const combined = `${choice.label}\n\n${assistantText}`;
       const aiMessage = {
         id: `temp-ai-${Date.now()}`,
         roomId: chatRoomId,
         senderType: 'assistant',
-        content: combined,
+        content: assistantText,
         created_at: new Date().toISOString()
       };
       setMessages(prev => [...prev, aiMessage]);
@@ -562,6 +817,25 @@ const ChatPage = () => {
       if (typeof d.affinity === 'number') setRelAffinity(prev => clamp((prev ?? 50) + d.affinity));
       if (typeof d.tension === 'number') setRelTension(prev => clamp((prev ?? 50) + d.tension));
       setPendingChoices(Array.isArray(meta.choices) ? meta.choices : []);
+      // 진행도 갱신 + 설정 싱크 플래그 고정(선택지도 첫 턴이면 반영)
+      try {
+        if (chatRoomId) {
+          const metaRes = await chatAPI.getRoomMeta(chatRoomId);
+          const m = metaRes?.data || {};
+          setOrigMeta({
+            turnCount: Number(m.turn_count || m.turnCount || 0) || 0,
+            maxTurns: Number(m.max_turns || m.maxTurns || 500) || 500,
+            completed: Boolean(m.completed),
+            mode: m.mode || null,
+            narrator_mode: Boolean(m.narrator_mode),
+            seed_label: m.seed_label || null,
+          });
+          settingsSyncedRef.current = true;
+        }
+      } catch (_) {}
+      if (meta && meta.completed && meta.turn_count && meta.max_turns && meta.turn_count >= meta.max_turns) {
+        notifyCompletion(meta);
+      }
       const warn = meta.warning;
       setRangeWarning(typeof warn === 'string' ? warn : '');
     } catch (e) {
@@ -572,12 +846,11 @@ const ChatPage = () => {
           const resp = await origChatAPI.turn(lastOrigTurnPayload);
           const assistantText = resp.data?.assistant || '';
           const meta = resp.data?.meta || {};
-          const combined = `${choice.label}\n\n${assistantText}`;
           const aiMessage = {
             id: `temp-ai-${Date.now()}`,
             roomId: chatRoomId,
             senderType: 'assistant',
-            content: combined,
+            content: assistantText,
             created_at: new Date().toISOString()
           };
           setMessages(prev => [...prev, aiMessage]);
@@ -593,8 +866,78 @@ const ChatPage = () => {
       } catch(_) {}
     } finally {
       setOrigTurnLoading(false);
+      setTurnStage(null);
     }
   };
+
+  // 온디맨드: 선택지 요청(쿨다운/중복 방지는 서버/프론트 동시 가드)
+  const requestChoices = useCallback(async () => {
+    if (!isOrigChat || !chatRoomId || origTurnLoading) return;
+    try {
+      setOrigTurnLoading(true);
+      const resp = await origChatAPI.turn({ room_id: chatRoomId, trigger: 'choices', idempotency_key: genIdemKey() });
+      const meta = resp.data?.meta || {};
+      if (Array.isArray(meta.choices)) setPendingChoices(meta.choices);
+      const warn = meta.warning; setRangeWarning(typeof warn === 'string' ? warn : '');
+      // 진행도 갱신
+      try {
+        const metaRes = await chatAPI.getRoomMeta(chatRoomId);
+        const m = metaRes?.data || {};
+          setOrigMeta({
+          turnCount: Number(m.turn_count || m.turnCount || 0) || 0,
+          maxTurns: Number(m.max_turns || m.maxTurns || 500) || 500,
+            completed: Boolean(m.completed),
+            mode: m.mode || null,
+            narrator_mode: Boolean(m.narrator_mode),
+        });
+      } catch (_) {}
+      } catch (e) {
+        console.error('선택지 요청 실패', e);
+        showToastOnce({ key: `choices-fail:${chatRoomId}`, type: 'error', message: '선택지 요청에 실패했습니다.' });
+      } finally {
+      setOrigTurnLoading(false);
+    }
+  }, [isOrigChat, chatRoomId, origTurnLoading, genIdemKey]);
+
+  // 온디맨드: 자동 진행(next_event) — 선택지 표시 중엔 서버/프론트 모두 가드
+  const requestNextEvent = useCallback(async () => {
+    if (!isOrigChat || !chatRoomId || origTurnLoading) return;
+    if (pendingChoices && pendingChoices.length > 0) { setRangeWarning('선택지가 표시 중입니다. 선택 처리 후 진행하세요.'); return; }
+    try {
+      setOrigTurnLoading(true);
+      const resp = await origChatAPI.turn({ room_id: chatRoomId, trigger: 'next_event', idempotency_key: genIdemKey() });
+      const assistantText = resp.data?.ai_message?.content || resp.data?.assistant || '';
+      if (assistantText) {
+        setMessages(prev => [...prev, {
+          id: `temp-ai-${Date.now()}`,
+          roomId: chatRoomId,
+          senderType: 'assistant',
+          content: assistantText,
+          created_at: new Date().toISOString()
+        }]);
+      }
+      const meta = resp.data?.meta || {};
+      if (Array.isArray(meta.choices)) setPendingChoices(meta.choices);
+      const warn = meta.warning; setRangeWarning(typeof warn === 'string' ? warn : '');
+      // 진행도 갱신
+      try {
+        const metaRes = await chatAPI.getRoomMeta(chatRoomId);
+        const m = metaRes?.data || {};
+        setOrigMeta({
+          turnCount: Number(m.turn_count || m.turnCount || 0) || 0,
+          maxTurns: Number(m.max_turns || m.maxTurns || 500) || 500,
+          completed: Boolean(m.completed),
+          mode: m.mode || null,
+        });
+      } catch (_) {}
+    } catch (e) {
+      console.error('자동 진행 실패', e);
+      showToastOnce({ key: `next-fail:${chatRoomId}`, type: 'error', message: '자동 진행에 실패했습니다.' });
+    } finally {
+      setOrigTurnLoading(false);
+      setTurnStage(null);
+    }
+  }, [isOrigChat, chatRoomId, origTurnLoading, pendingChoices, genIdemKey]);
   
   // 대화 초기화
   const handleClearChat = async () => {
@@ -686,7 +1029,8 @@ const ChatPage = () => {
     } catch (_) {}
   }, [currentImageIndex]);
 
-  const canSend = Boolean(newMessage.trim()) && connected;
+  // 원작챗은 소켓 연결 없이도 전송 가능
+  const canSend = Boolean(newMessage.trim()) && (isOrigChat ? true : connected);
   const textSizeClass = uiFontSize==='sm' ? 'text-sm' : uiFontSize==='lg' ? 'text-lg' : uiFontSize==='xl' ? 'text-xl' : 'text-base';
   
   const handleCopy = async (text) => { try { await navigator.clipboard.writeText(text); } catch(_) {} };
@@ -876,6 +1220,20 @@ const ChatPage = () => {
                   {isOrigChat && (
                     <div className="flex items-center gap-2 mt-1">
                       <span className="text-[10px] px-2 py-0.5 rounded-full bg-orange-400 text-black">원작챗</span>
+                      {origMeta?.narrator_mode && (
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-white text-black">관전가</span>
+                      )}
+                      {origMeta?.mode==='parallel' && origMeta?.seed_label && (
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-white text-black">씨앗: {String(origMeta.seed_label).slice(0,20)}</span>
+                      )}
+                  {/* 진행도 배지: turn/max */}
+                  {origMeta && (typeof origMeta.turnCount === 'number') && (
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-white text-black">{String(origMeta.turnCount)}/{String(origMeta.maxTurns || 500)}</span>
+                  )}
+                  {/* 캐시 상태 배지 */}
+                  {ctxWarmed !== null && (
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-white text-black">{ctxWarmed ? 'warmed' : (ctxPollingDone ? 'warming(대기)' : 'warming')}</span>
+                  )}
                       {origAnchor && (
                         <span className="text-[10px] px-2 py-0.5 rounded-full bg-gray-700 text-gray-200">앵커 {origAnchor}화</span>
                       )}
@@ -958,6 +1316,15 @@ const ChatPage = () => {
           </div>
         </div>
       </header>
+      {/* 스테이지 토스트 (우상단, 다크테마) */}
+      {isOrigChat && (turnStage || (origMeta?.init_stage && origMeta.init_stage !== 'ready')) && (
+        <div className="fixed top-4 right-4 z-50">
+          <div className="flex items-center gap-2 bg-black/80 text-white border border-gray-700 rounded-md px-3 py-2 shadow-lg">
+            <Loader2 className="w-3.5 h-3.5 animate-spin text-white" />
+            <span className="text-xs">{origMeta?.init_stage && origMeta.init_stage !== 'ready' ? '초기 준비 중…' : (turnStage==='generating' ? '생성 중…' : '보정 중…')}</span>
+          </div>
+        </div>
+      )}
 
       {/* 본문: 데스크톱 좌측 이미지 패널, 모바일은 배경 이미지 */}
       <div className="flex-1 overflow-hidden bg-[var(--app-bg)] text-[var(--app-fg)]">
@@ -1042,13 +1409,25 @@ const ChatPage = () => {
             </div>
           ) : (
             <ErrorBoundary>
-              {messages.map((message, index) => (
-                <MessageBubble 
-                  key={message.id || `msg-${index}`} 
-                  message={message}
-                  isLast={index === messages.length - 1 && !aiTyping} 
-                />
-              ))}
+              {messages.map((m, index) => {
+                const isIntro = (m.message_metadata && (m.message_metadata.kind === 'intro')) || false;
+                if (isIntro) {
+                  return (
+                    <div key={`intro-${m.id || index}`} className="mt-2 ml-12 max-w-full sm:max-w-[85%] text-left">
+                      <div className="px-4 py-3 rounded-lg border bg-white/5 border-white/10 text-sm text-white whitespace-pre-wrap text-left">
+                        {m.content}
+                      </div>
+                    </div>
+                  );
+                }
+                return (
+                  <MessageBubble
+                    key={m.id || `msg-${index}`}
+                    message={m}
+                    isLast={index === messages.length - 1 && !aiTyping}
+                  />
+                );
+              })}
               {/* 범위 가드 경고 문구 */}
               {isOrigChat && rangeWarning && (
                 <div className="mt-2 ml-12 max-w-full sm:max-w-[85%]">
@@ -1063,14 +1442,31 @@ const ChatPage = () => {
                       <button
                         key={c.id}
                         onClick={() => handleSelectChoice(c)}
-                        className="w-full text-left px-4 py-2 rounded-xl bg-white/10 text-white border border-gray-700 hover:bg-white/15"
+                        disabled={choiceLocked}
+                        className={`group w-full text-left px-4 py-2 rounded-2xl border transition
+                          ${choiceLocked ? 'opacity-60 cursor-not-allowed' : 'hover:translate-y-[1px]'}
+                          ${resolvedTheme==='light' ? 'bg-white border-gray-300 text-gray-900' : 'bg-white/10 border-gray-700 text-white'}`}
                       >
-                        {c.label}
+                        <div className="flex items-start gap-3">
+                          <div className={`min-w-8 h-8 mt-0.5 flex items-center justify-center rounded-full text-xs font-semibold
+                            ${resolvedTheme==='light' ? 'bg-gray-100 text-gray-800 border border-gray-300' : 'bg-white/15 text-white/90 border border-white/20'}`}>
+                            •
+                          </div>
+                          <div className="flex-1">
+                            <div className="text-sm leading-5">{c.label}</div>
+                            <div className={`text-[11px] mt-0.5 ${resolvedTheme==='light' ? 'text-gray-500' : 'text-gray-400'}`}>선택하면 되돌릴 수 없습니다</div>
+                          </div>
+                        </div>
                       </button>
                     ))}
                   </div>
                 </div>
               )}
+              {/* 완결 안내 토스트 + 내레이터 말풍선 */}
+              {isOrigChat && lastOrigTurnPayload && messages.length > 0 && (() => {
+                const last = messages[messages.length - 1];
+                return null;
+              })()}
               {aiTyping && (
                 <div className="flex items-start space-x-3">
                   <Avatar className="w-8 h-8 flex-shrink-0">
@@ -1165,7 +1561,7 @@ const ChatPage = () => {
             {/* 모델 선택 버튼 */}
             <Button
               type="button"
-              className="h-10 w-12 rounded-xl bg-gray-700 hover:bg-gray-600 text-white px-2 leading-tight"
+              className="h-10 w-12 rounded-xl bg-white text-black px-2 leading-tight"
               onClick={() => { setModalInitialTab('model'); setShowModelModal(true); }}
             >
               <span className="block text-[11px] leading-4 text-center">모델<br/>선택</span>
@@ -1179,18 +1575,59 @@ const ChatPage = () => {
               value={newMessage}
               onChange={(e) => setNewMessage(e.target.value)}
               onKeyDown={handleKeyDown}
-                placeholder="대사를 입력하세요. 예) 반가워!"
+                placeholder={isOrigChat && (origMeta?.narrator_mode || origMeta?.mode==='parallel' && false) ? '서술/묘사로 입력하세요. 예) *창밖에는 비가 내리고 있었다.' : '대사를 입력하세요. 예) 반가워!'}
                 className="w-full bg-transparent border-0 focus:border-0 focus:ring-0 outline-none text-sm p-0 pl-3 placeholder:text-gray-500 resize-none"
                 style={{ minHeight: 36 }}
               rows={1}
             />
             </div>
+            {/* 상황 입력 필드 (토글 열림형, 원버튼 제출) */}
+            {isOrigChat && showSituation && (
+              <div className="absolute -top-12 left-0 right-0 flex items-center gap-2">
+                <input
+                  value={situationText}
+                  onChange={(e)=>setSituationText(e.target.value)}
+                  placeholder="상황 한 줄 (선택)"
+                  className="flex-1 bg-[var(--input-bg)] text-[var(--app-fg)] border border-gray-700 rounded-lg px-3 py-2 text-sm"
+                />
+                <Button
+                  type="button"
+                  disabled={origTurnLoading || !chatRoomId}
+                  onClick={async ()=>{
+                    const text = (situationText||'').trim();
+                    if (!text) return;
+                    // 낙관적: 사용자 내레이션 말풍선
+                    setMessages(prev=>[...prev, { id:`temp-user-sit-${Date.now()}`, roomId: chatRoomId, senderType:'user', content:`* ${text}`, isNarration:true, created_at:new Date().toISOString() }]);
+                    try {
+                      setOrigTurnLoading(true);
+                      await origChatAPI.turn({ room_id: chatRoomId, situation_text: text, idempotency_key: genIdemKey() });
+                      setSituationText(''); setShowSituation(false);
+                    } catch (e) { console.error('상황 전송 실패', e); }
+                    finally { setOrigTurnLoading(false); }
+                  }}
+                  className="rounded-full h-10 px-4 bg-white text-black"
+                >적용</Button>
+              </div>
+            )}
+
+            {/* 상황 입력 토글 버튼 */}
+            {isOrigChat && (
+              <Button
+                type="button"
+                onClick={() => setShowSituation((v)=>!v)}
+                className="rounded-full w-10 h-10 p-0 flex-shrink-0 bg-white text-black"
+                size="icon"
+                title="상황 입력"
+              >
+                <Asterisk className="w-5 h-5" />
+              </Button>
+            )}
 
             {/* 애스터리스크 버튼: 입력 컨테이너 밖 (우측) */}
             <Button
               type="button"
               onClick={() => setNewMessage(prev => (prev.startsWith('*') ? prev : (`* ${prev || ''}`).trimEnd()))}
-              className="rounded-full w-10 h-10 p-0 flex-shrink-0 btn-asterisk"
+              className="rounded-full w-10 h-10 p-0 flex-shrink-0 bg-white text-black"
               size="icon"
               variant="ghost"
               title="지문/나레이션 시작"
@@ -1199,14 +1636,45 @@ const ChatPage = () => {
             </Button>
 
             {/* 전송 버튼 */}
-            <Button
-              type="submit"
-              disabled={!canSend}
-              className={`rounded-full w-10 h-10 p-0 flex-shrink-0 ${canSend ? 'btn-brand' : 'bg-gray-700 text-gray-400'}`}
-              size="icon"
-            >
-              <Send className="w-5 h-5" />
-            </Button>
+            <div className="flex items-center gap-2">
+              {/* 선택지 온디맨드 */}
+              {isOrigChat && (
+                <Button
+                  type="button"
+                  disabled={origTurnLoading || (pendingChoices && pendingChoices.length > 0)}
+                  onClick={requestChoices}
+                  className={`rounded-full w-10 h-10 p-0 flex-shrink-0 bg-white text-black ${origTurnLoading ? 'opacity-60 cursor-not-allowed' : ''}`}
+                  size="icon"
+                  title="선택지 요청"
+                >
+                  <ListTree className="w-5 h-5" />
+                </Button>
+              )}
+
+              {/* 자동 진행 >> */}
+              {isOrigChat && (
+                <Button
+                  type="button"
+                  disabled={origTurnLoading || (pendingChoices && pendingChoices.length > 0)}
+                  onClick={requestNextEvent}
+                  className={`rounded-full w-10 h-10 p-0 flex-shrink-0 bg-white text-black ${origTurnLoading ? 'opacity-60 cursor-not-allowed' : ''}`}
+                  size="icon"
+                  title=">> 자동 진행"
+                >
+                  <FastForward className="w-5 h-5" />
+                </Button>
+              )}
+
+              {/* 전송 */}
+              <Button
+                type="submit"
+                disabled={!canSend}
+                className={`rounded-full w-10 h-10 p-0 flex-shrink-0 ${canSend ? 'bg-white text-black' : 'bg-gray-700 text-gray-400'}`}
+                size="icon"
+              >
+                <Send className="w-5 h-5" />
+              </Button>
+            </div>
           </form>
           </ErrorBoundary>
           </div>
@@ -1234,7 +1702,7 @@ const ChatPage = () => {
                 value={newMessage}
                 onChange={(e) => setNewMessage(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder="대사를 입력하세요. 예) 반가워!"
+                placeholder={isOrigChat && (origMeta?.narrator_mode || origMeta?.mode==='parallel' && false) ? '서술/묘사로 입력하세요. 예) *창밖에는 비가 내리고 있었다.' : '대사를 입력하세요. 예) 반가워!'}
                 className="w-full bg-transparent border-0 focus:border-0 focus:ring-0 outline-none text-sm p-0 pl-3 placeholder:text-gray-500 resize-none"
                 style={{ minHeight: 36 }}
                 rows={1}
@@ -1278,6 +1746,7 @@ const ChatPage = () => {
         initialTab={modalInitialTab}
         characterName={character?.name}
         characterId={character?.id}
+        onUpdateChatSettings={updateChatSettings}
       />
       </ErrorBoundary>
 
@@ -1287,7 +1756,7 @@ const ChatPage = () => {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>재생성 지시사항</AlertDialogTitle>
-            <AlertDialogDescription>지시사항을 입력해주세요. (예: “말투를 더 부드럽게”)</AlertDialogDescription>
+            <AlertDialogDescription>지시사항을 입력해주세요. (예: "말투를 더 부드럽게")</AlertDialogDescription>
           </AlertDialogHeader>
           <Textarea rows={4} maxLength={200} value={regenInstruction} onChange={(e)=>setRegenInstruction(e.target.value)} />
           <AlertDialogFooter>

@@ -62,6 +62,7 @@ const StoryDetailPage = React.lazy(() => import('./pages/StoryDetailPage'));
 const StoryEditPage = React.lazy(() => import('./pages/StoryEditPage'));
 const ChapterReaderPage = React.lazy(() => import('./pages/ChapterReaderPage'));
 const CreatorInfoPage = React.lazy(() => import('./pages/CreatorInfoPage'));
+const MetricsSummaryPage = React.lazy(() => import('./pages/MetricsSummaryPage'));
 
 // 로딩 컴포넌트 (CAVEDUCK 스타일 - 심플)
 const PageLoader = () => (
@@ -210,6 +211,8 @@ const AppRouter = () => {
           />
           <Route path="/stories/:storyId" element={<StoryDetailPage />} />
           <Route path="/stories/:storyId/chapters/:chapterNumber" element={<ChapterReaderPage />} />
+          {/* 개발용 메트릭 요약(네비에서 숨김) */}
+          <Route path="/metrics/summary" element={<ProtectedRoute><MetricsSummaryPage /></ProtectedRoute>} />
           <Route
             path="/stories/:storyId/edit"
             element={

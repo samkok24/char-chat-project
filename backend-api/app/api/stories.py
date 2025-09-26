@@ -32,13 +32,224 @@ from app.services.job_service import JobService, get_job_service
 from app.services.origchat_service import (
     ensure_extracted_characters_for_story,
     extract_characters_from_story,
+    build_context_pack,
 )
+from app.schemas.origchat import StartOptionsV2, ContextStatus, ChapterScenes
+from app.core.config import settings
+from sqlalchemy import select, delete, func
 from app.services.origchat_service import _enrich_character_fields
 from app.models.story_chapter import StoryChapter
 from app.models.character import Character
 from sqlalchemy import select, delete
 
 router = APIRouter()
+
+@router.get("/{story_id}/context-pack")
+async def get_context_pack(
+    story_id: uuid.UUID,
+    anchor: int = Query(1, ge=1),
+    characterId: Optional[str] = Query(None),
+    mode: Optional[str] = Query(None),
+    rangeFrom: Optional[int] = Query(None),
+    rangeTo: Optional[int] = Query(None),
+    sceneId: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """경량 컨텍스트 팩: actor/director/guard 필드 반환.
+    - 기존 프론트 호환을 위해 쿼리 파라미터는 유연하게 수용하되 anchor/characterId만 사용.
+    """
+    try:
+        pack = await build_context_pack(db, story_id, int(anchor or 1), characterId)
+        # 백그라운드로 컨텍스트/요약/스타일/인트로 준비
+        try:
+            import asyncio
+            from app.core.database import AsyncSessionLocal, redis_client
+            from app.services.origchat_service import (
+                warm_context_basics,
+                detect_style_profile,
+                ensure_episode_summaries,
+                generate_backward_weighted_recap,
+                get_scene_anchor_text,
+            )
+
+            async def _prepare_all(sid: uuid.UUID, anch: int, cid: Optional[str], scene: Optional[str], r_from: Optional[int], r_to: Optional[int]):
+                async with AsyncSessionLocal() as _db:
+                    try:
+                        await warm_context_basics(_db, sid, int(anch or 1))
+                    except Exception:
+                        pass
+                    try:
+                        await detect_style_profile(_db, sid, upto_anchor=int(anch or 1))
+                    except Exception:
+                        pass
+                    try:
+                        if r_from and r_to:
+                            await ensure_episode_summaries(_db, sid, start_no=int(r_from), end_no=int(r_to))
+                        else:
+                            await ensure_episode_summaries(_db, sid, upto_anchor=int(anch or 1), max_episodes=12)
+                    except Exception:
+                        pass
+                    # 인사말 프리패브 생성
+                    try:
+                        intro_lines: list[str] = []
+                        # 작품 요약 50자
+                        try:
+                            srow = await _db.execute(select(Story.title, Story.summary, Story.content).where(Story.id == sid))
+                            sdata = srow.first()
+                            if sdata:
+                                story_summary = (sdata[1] or "").strip() or (sdata[2] or "").strip()
+                                if story_summary:
+                                    intro_lines.append((" ".join(story_summary.split()))[:50])
+                        except Exception:
+                            pass
+                        # 장면 인용 100자
+                        try:
+                            excerpt = await get_scene_anchor_text(_db, sid, chapter_no=int(anch or 1), scene_id=scene, max_len=100)
+                            if excerpt:
+                                intro_lines.append(f"“{excerpt.strip()}”")
+                        except Exception:
+                            pass
+                        text = "\n\n".join([ln for ln in intro_lines if ln])
+                        key = f"ctx:warm:{sid}:prepared_intro:{cid or 'none'}:{int(anch or 1)}:{scene or 'none'}"
+                        try:
+                            if text:
+                                await redis_client.setex(key, 900, text)
+                            else:
+                                # 준비되었음을 알리되 빈 값으로 표시
+                                await redis_client.setex(key, 300, "")
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
+
+            asyncio.create_task(_prepare_all(story_id, int(anchor or 1), characterId, sceneId, rangeFrom, rangeTo))
+        except Exception:
+            pass
+        return pack
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"context-pack 실패: {e}")
+@router.get("/{story_id}/start-options", response_model=StartOptionsV2)
+async def get_start_options_v2(
+    story_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """시작 옵션(경량): 개요/모드/단순 장면 인덱스/추천 시작점.
+    - 정확한 scene 분할이 없으면 문단 길이 기반 근사로 반환.
+    - 전체 회차를 대상으로 하되, 너무 큰 작품은 안전 상한을 둘 수 있음(프론트에서 페이징 고려).
+    """
+    # 간단 개요(스토리 content 앞 240자)
+    s = await story_service.get_story_by_id(db, story_id)
+    overview = (getattr(s, "content", "") or "").strip().replace("\n", " ")[:240] if s else None
+
+    # 근사 씬 인덱스(각 화 2~3개 placeholder)
+    items: list[ChapterScenes] = []
+    try:
+        # 총 회차 수를 파악하여 과도한 상한을 회피(기본: 전체, 상한 200)
+        last_no = await db.scalar(select(func.max(StoryChapter.no)).where(StoryChapter.story_id == story_id)) or 1
+        limit_n = min(int(last_no), 200)
+        rows = await db.execute(
+            select(StoryChapter.no, StoryChapter.title, StoryChapter.content)
+            .where(StoryChapter.story_id == story_id)
+            .order_by(StoryChapter.no.asc())
+            .limit(limit_n)
+        )
+        for no, title, content in rows.all():
+            txt = (content or "").strip()
+            seg_len = max(1, len(txt) // 3)
+            scenes = []
+            for i in range(3):
+                start = i * seg_len
+                if start >= len(txt):
+                    break
+                scenes.append({
+                    "id": f"auto-{no}-{i}",
+                    "title": (title or "")[:40],
+                    "hint": txt[start:start+80]
+                })
+            items.append({"no": int(no), "scenes": scenes})
+    except Exception:
+        items = []
+
+    # 추천 시작점(최근 화 위주)
+    top_candidates = []
+    try:
+        last = await db.scalar(select(func.max(StoryChapter.no)).where(StoryChapter.story_id == story_id)) or 1
+        for k in range(3):
+            n = max(1, last - k)
+            top_candidates.append({"chapter": int(n), "scene_id": f"auto-{n}-0", "label": f"{n}화 추천 시작"})
+    except Exception:
+        pass
+
+    # 평행 모드용 what-if seeds(초기 후보)
+    try:
+        from app.services.origchat_service import generate_what_if_seeds
+        seeds = await generate_what_if_seeds(db, story_id, anchor=top_candidates[0]['chapter'] if top_candidates else 1)
+    except Exception:
+        seeds = []
+
+    return StartOptionsV2(
+        overview=overview,
+        chapter_scene_index=items,
+        top_candidates=top_candidates,
+        modes=["canon", "parallel"],
+        seeds=[{"chapter": top_candidates[0]['chapter'] if top_candidates else 1, "scene_id": None, "label": it["label"]} for it in (seeds or [])] or None,
+    )
+
+
+@router.get("/{story_id}/context-status", response_model=ContextStatus)
+async def get_context_status_v2(
+    story_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    # 컨텍스트 캐시 상태 조회(간이)
+    try:
+        from app.core.database import redis_client
+        keys = [
+            f"ctx:warm:{story_id}:world_bible",
+            f"ctx:warm:{story_id}:personas",
+            f"ctx:warm:{story_id}:timeline_digest",
+        ]
+        present = []
+        for k in keys:
+            try:
+                v = await redis_client.get(k)
+                if v:
+                    present.append(k.rsplit(":", 1)[-1])
+            except Exception:
+                pass
+        return ContextStatus(warmed=bool(present), updated=present)
+    except Exception:
+        return ContextStatus(warmed=False, updated=[])
+
+
+# ---- 추가: 역진가중 리캡 / 장면 발췌 미리보기 ----
+@router.get("/{story_id}/recap")
+async def get_backward_weighted_recap_endpoint(
+    story_id: uuid.UUID,
+    anchor: int = Query(1, ge=1),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        from app.services.origchat_service import generate_backward_weighted_recap
+        text = await generate_backward_weighted_recap(db, story_id, anchor=int(anchor or 1))
+        return {"recap": text or ""}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"recap 실패: {e}")
+
+
+@router.get("/{story_id}/scene-excerpt")
+async def get_scene_excerpt_endpoint(
+    story_id: uuid.UUID,
+    chapter: int = Query(1, ge=1),
+    sceneId: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        from app.services.origchat_service import get_scene_anchor_text
+        text = await get_scene_anchor_text(db, story_id, chapter_no=int(chapter or 1), scene_id=sceneId)
+        return {"excerpt": text or ""}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"scene-excerpt 실패: {e}")
 
 
 def _story_to_response(story: Story) -> StoryResponse:

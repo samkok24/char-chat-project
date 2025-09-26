@@ -24,7 +24,7 @@ import {
   CollapsibleTrigger,
 } from './ui/collapsible';
 
-const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, onModelChange, initialTab = 'model', characterName = '캐릭터', characterId }) => {
+const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, onModelChange, initialTab = 'model', characterName = '캐릭터', characterId, onUpdateChatSettings }) => {
   const [selectedModel, setSelectedModel] = useState(currentModel || 'gemini');
   const [selectedSubModel, setSelectedSubModel] = useState(currentSubModel || 'gemini-2.5-pro');
   const [activeTab, setActiveTab] = useState(initialTab);
@@ -35,6 +35,10 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
     argo: false
   });
   const [responseLength, setResponseLength] = useState('medium'); // short|medium|long
+  // 원작챗 추가 설정 초기값 바인딩용 상태
+  const [ppModeSel, setPpModeSel] = useState('first2'); // always|first2|off
+  const [nextLenSel, setNextLenSel] = useState(1); // 1|2
+  const [prewarmSel, setPrewarmSel] = useState(true);
   // P0: 전역 UI 설정(로컬 저장)
   const [uiFontSize, setUiFontSize] = useState('base'); // sm|base|lg|xl
   const [uiLetterSpacing, setUiLetterSpacing] = useState('normal'); // tighter|tight|normal|wide|wider
@@ -76,12 +80,23 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
     setActiveTab(initialTab);
   }, [initialTab]);
 
-  // 사용자 현재 길이 선호도 불러오기
+  // 사용자 현재 길이 선호도 및 원작챗 추가 설정 불러오기
   useEffect(() => {
     const load = async () => {
       try {
         const r = await usersAPI.getModelSettings();
         setResponseLength(r.data.response_length_pref || 'medium');
+      } catch (_) {}
+      // 원작챗 추가 설정(로컬) 불러오기
+      try {
+        const rawChat = localStorage.getItem('cc:chat:settings:v1');
+        if (rawChat) {
+          const parsed = JSON.parse(rawChat);
+          if (parsed.postprocess_mode) setPpModeSel(String(parsed.postprocess_mode));
+          if (parsed.next_event_len === 1 || parsed.next_event_len === 2) setNextLenSel(parsed.next_event_len);
+          if (typeof parsed.prewarm_on_start === 'boolean') setPrewarmSel(!!parsed.prewarm_on_start);
+          if (parsed.response_length_pref) setResponseLength(String(parsed.response_length_pref));
+        }
       } catch (_) {}
       // 로컬 UI 설정 로드
       try {
@@ -808,16 +823,49 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
               <div className="text-sm text-gray-700 mb-2">답변 길이</div>
               <div className="flex items-center gap-4">
                 <label className="inline-flex items-center gap-2 cursor-pointer">
-                  <input type="radio" name="respLen" className="accent-purple-600" checked={responseLength==='short'} onChange={()=>setResponseLength('short')} />
+                  <input type="radio" name="respLen" className="accent-purple-600" checked={responseLength==='short'} onChange={()=>{ setResponseLength('short'); try { onUpdateChatSettings && onUpdateChatSettings({ response_length_pref: 'short' }); } catch(_) {} }} />
                   <span className="text-sm">짧게 (-50%)</span>
                 </label>
                 <label className="inline-flex items-center gap-2 cursor-pointer">
-                  <input type="radio" name="respLen" className="accent-purple-600" checked={responseLength==='medium'} onChange={()=>setResponseLength('medium')} />
+                  <input type="radio" name="respLen" className="accent-purple-600" checked={responseLength==='medium'} onChange={()=>{ setResponseLength('medium'); try { onUpdateChatSettings && onUpdateChatSettings({ response_length_pref: 'medium' }); } catch(_) {} }} />
                   <span className="text-sm">중간 (기본)</span>
                 </label>
                 <label className="inline-flex items-center gap-2 cursor-pointer">
-                  <input type="radio" name="respLen" className="accent-purple-600" checked={responseLength==='long'} onChange={()=>setResponseLength('long')} />
+                  <input type="radio" name="respLen" className="accent-purple-600" checked={responseLength==='long'} onChange={()=>{ setResponseLength('long'); try { onUpdateChatSettings && onUpdateChatSettings({ response_length_pref: 'long' }); } catch(_) {} }} />
                   <span className="text-sm">많이 (+50%)</span>
+                </label>
+              </div>
+            </div>
+
+            {/* 원작챗 추가 설정(즉시 저장) */}
+            <div className="mt-2 p-3 rounded-lg border">
+              <div className="text-sm text-gray-700 mb-2">보정 단계</div>
+              <div className="flex items-center gap-4">
+                {['always','first2','off'].map(v => (
+                  <label key={v} className="inline-flex items-center gap-2 cursor-pointer">
+                    <input type="radio" name="ppMode" className="accent-purple-600" checked={ppModeSel===v} onChange={()=>{ setPpModeSel(v); try { onUpdateChatSettings && onUpdateChatSettings({ postprocess_mode: v }); } catch(_) {} }} />
+                    <span className="text-sm">{v==='always'?'항상 ON': v==='first2'?'처음 2턴만 ON':'OFF'}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+            <div className="mt-2 p-3 rounded-lg border">
+              <div className="text-sm text-gray-700 mb-2">자동 진행 길이</div>
+              <div className="flex items-center gap-4">
+                {[1,2].map(v => (
+                  <label key={v} className="inline-flex items-center gap-2 cursor-pointer">
+                    <input type="radio" name="nextLen" className="accent-purple-600" checked={nextLenSel===v} onChange={()=>{ setNextLenSel(v); try { onUpdateChatSettings && onUpdateChatSettings({ next_event_len: v }); } catch(_) {} }} />
+                    <span className="text-sm">{v}장면</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+            <div className="mt-2 p-3 rounded-lg border">
+              <div className="text-sm text-gray-700 mb-2">프리워밍</div>
+              <div className="flex items-center gap-4">
+                <label className="inline-flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" className="accent-purple-600" checked={prewarmSel} onChange={(e)=>{ setPrewarmSel(!!e.target.checked); try { onUpdateChatSettings && onUpdateChatSettings({ prewarm_on_start: !!e.target.checked }); } catch(_) {} }} />
+                  <span className="text-sm">ON</span>
                 </label>
               </div>
             </div>

@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     # 환경 설정 (추가됨)
     ENVIRONMENT: str = "development"
     DEBUG: bool = True  # DEBUG 필드 추가
+    # 기능 플래그
+    ORIGCHAT_V2: bool = False
     
     # API 키 (없어도 부팅 가능하도록 Optional)
     GEMINI_API_KEY: str | None = None

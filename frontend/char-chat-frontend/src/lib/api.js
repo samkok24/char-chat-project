@@ -348,6 +348,8 @@ export const chatAPI = {
     
   deleteChatRoom: (roomId) =>
     api.delete(`/chat/rooms/${roomId}`),
+  // 룸 메타(원작챗 진행도/설정) 조회
+  getRoomMeta: (roomId) => api.get(`/chat/rooms/${roomId}/meta`),
   // 메시지 수정/재생성
   updateMessage: (messageId, content) =>
     api.patch(`/chat/messages/${messageId}`, { content }),
@@ -360,16 +362,16 @@ export const chatAPI = {
 // 💬 원작챗 API (MVP 스텁 연동)
 export const origChatAPI = {
   // 컨텍스트 팩
-  getContextPack: (storyId, { anchor, characterId, mode = 'alt_pov', rangeFrom, rangeTo } = {}) =>
-    api.get(`/stories/${storyId}/context-pack`, { params: { anchor, characterId, mode, rangeFrom, rangeTo } }),
+  getContextPack: (storyId, { anchor, characterId, mode = 'canon', rangeFrom, rangeTo, sceneId } = {}) =>
+    api.get(`/stories/${storyId}/context-pack`, { params: { anchor, characterId, mode, rangeFrom, rangeTo, sceneId } }),
 
   // 세션 시작(기존 채팅방 구조 재사용)
-  start: ({ story_id, character_id, chapter_anchor, timeline_mode = 'fixed', range_from = null, range_to = null }) =>
-    api.post('/chat/origchat/start', { story_id, character_id, chapter_anchor, timeline_mode, range_from, range_to }),
+  start: ({ story_id, character_id, mode = 'canon', start = null, focus_character_id = null, range_from = null, range_to = null }) =>
+    api.post('/chat/origchat/start', { story_id, character_id, mode, start, focus_character_id, range_from, range_to }),
 
   // 턴 진행(스텁 응답)
-  turn: ({ room_id, user_text = null, choice_id = null }) =>
-    api.post('/chat/origchat/turn', { room_id, user_text, choice_id }),
+  turn: ({ room_id, user_text = null, choice_id = null, trigger = null, situation_text = null, idempotency_key = null, settings_patch = null }) =>
+    api.post('/chat/origchat/turn', { room_id, user_text, choice_id, trigger, situation_text, idempotency_key, settings_patch }),
 };
 
 // 📖 스토리 관련 API
@@ -382,6 +384,11 @@ export const storiesAPI = {
   
   getStory: (id) =>
     api.get(`/stories/${id}`),
+  // 시작 옵션(개요/씬 인덱스/추천/모드/씨앗)
+  getStartOptions: (storyId) => api.get(`/stories/${storyId}/start-options`),
+  // 역진가중 리캡, 장면 발췌
+  getBackwardRecap: (storyId, anchor) => api.get(`/stories/${storyId}/recap`, { params: { anchor } }),
+  getSceneExcerpt: (storyId, chapter, sceneId) => api.get(`/stories/${storyId}/scene-excerpt`, { params: { chapter, sceneId } }),
   getExtractedCharacters: (storyId) =>
     api.get(`/stories/${storyId}/extracted-characters`),
   rebuildExtractedCharacters: (storyId) =>
@@ -474,6 +481,9 @@ export const storiesAPI = {
     }
   },
 
+  // 원작챗 컨텍스트 워밍 상태
+  getContextStatus: (storyId) => api.get(`/stories/${storyId}/context-status`),
+
   // Queue: cancel / status / patch
   cancelGenerateJob: (jobId) => api.delete(`/stories/generate/stream/${jobId}`),
   getGenerateJobStatus: (jobId) => api.get(`/stories/generate/stream/${jobId}/status`),
@@ -505,6 +515,12 @@ export const storiesAPI = {
 // 🏆 랭킹 API
 export const rankingAPI = {
   getDaily: (params = {}) => api.get('/rankings/daily', { params }),
+};
+
+// 📈 메트릭(임시 요약) API
+export const metricsAPI = {
+  // params: { day?: 'YYYYMMDD', story_id?, room_id?, mode? }
+  getSummary: (params = {}) => api.get('/metrics/summary', { params }),
 };
 
 // 📖 회차(Chapters) API

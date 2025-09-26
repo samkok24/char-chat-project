@@ -81,12 +81,26 @@ const Sidebar = () => {
     } catch(_) { setRecentStories([]); }
   };
 
+  const [roomMetaById, setRoomMetaById] = React.useState({});
+
   const loadRooms = async () => {
     try {
       setLoading(true);
       const response = await chatAPI.getChatRooms();
       const rooms = response.data || [];
       setChatRooms(rooms);
+      // 룸 메타 동시 조회(모드 파악용)
+      try {
+        const entries = await Promise.all(
+          rooms.map(async (r) => {
+            try {
+              const res = await chatAPI.getRoomMeta(r.id);
+              return [String(r.id), res?.data || {}];
+            } catch (_) { return [String(r.id), {}]; }
+          })
+        );
+        setRoomMetaById(Object.fromEntries(entries));
+      } catch (_) {}
 
       const ids = Array.from(new Set(rooms.map(r => r?.character?.id).filter(Boolean)));
       if (ids.length) {
@@ -140,10 +154,17 @@ const Sidebar = () => {
 
   useEffect(() => {
     if (!isAuthenticated) return;
-    const handler = () => loadRooms();
+    let suppressOnce = false;
+    const handler = () => {
+      if (suppressOnce) { suppressOnce = false; return; }
+      loadRooms();
+    };
+    const handlerSuppress = () => { suppressOnce = true; };
     try { window.addEventListener('chat:roomsChanged', handler); } catch (_) {}
+    try { window.addEventListener('chat:roomsChanged:suppressOnce', handlerSuppress); } catch (_) {}
     return () => {
       try { window.removeEventListener('chat:roomsChanged', handler); } catch (_) {}
+      try { window.removeEventListener('chat:roomsChanged:suppressOnce', handlerSuppress); } catch (_) {}
     };
   }, [isAuthenticated]);
 
@@ -240,15 +261,25 @@ const Sidebar = () => {
             ) : (
               (() => {
                 // 채팅방(캐릭터) + 최근 웹소설을 하나의 리스트로 섞어서 최근성 기준 정렬
-                const chatItems = (chatRooms || []).map((room) => ({
+                const chatItems = (chatRooms || []).map((room) => {
+                  const meta = roomMetaById[String(room.id)] || {};
+                  const isOrig = !!(room?.character?.origin_story_id);
+                  const rawMode = String(meta.mode || '').toLowerCase();
+                  const mode = rawMode || (isOrig ? 'plain' : '');
+                  const suffix = mode === 'parallel' ? ' (평행세계)'
+                    : mode === 'canon' ? ' (원작대로)'
+                    : mode === 'plain' ? ' (일대일)'
+                    : '';
+                  return ({
                   kind: 'chat',
                   id: room.id,
-                  title: room.character?.name || '캐릭터',
+                  title: `${room.character?.name || '캐릭터'}${suffix}`,
                   thumb: characterImageById[room.character?.id] || getCharacterPrimaryImage(room.character || {}),
                   at: new Date(room.last_message_time || room.updated_at || room.created_at || 0).getTime() || 0,
-                  href: `/ws/chat/${room.character?.id}`,
-                  is_origchat: !!(room?.character?.origin_story_id),
-                }));
+                  href: `/ws/chat/${room.character?.id}?room=${room.id}`,
+                  is_origchat: isOrig,
+                });
+                });
                 const storyItems = (recentStories || []).map((s) => ({
                   kind: 'story',
                   id: s.id,

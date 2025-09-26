@@ -5,7 +5,7 @@ import { CharacterCard } from './CharacterCard';
 import ErrorBoundary from './ErrorBoundary';
 
 const TopOrigChat = () => {
-  const { data = [], isLoading, isError } = useQuery({
+  const { data = [], isLoading, isError, refetch } = useQuery({
     queryKey: ['top-origchat-daily'],
     queryFn: async () => {
       const res = await rankingAPI.getDaily({ kind: 'origchat' });
@@ -16,6 +16,12 @@ const TopOrigChat = () => {
     refetchOnWindowFocus: true,
     refetchOnMount: 'always',
   });
+
+  React.useEffect(() => {
+    const h = () => { try { refetch(); } catch {} };
+    window.addEventListener('media:updated', h);
+    return () => window.removeEventListener('media:updated', h);
+  }, [refetch]);
 
   const empty = !isLoading && (!data || data.length === 0);
 

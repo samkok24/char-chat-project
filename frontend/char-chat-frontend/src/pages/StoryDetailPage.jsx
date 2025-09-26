@@ -97,6 +97,25 @@ const StoryDetailPage = () => {
     refetchOnMount: 'always',
   });
 
+  // 전역 media:updated 발생 시 스토리/캐릭터 연관 뷰 새로고침
+  useEffect(() => {
+    const h = (e) => {
+      const d = e?.detail || {};
+      // 이 스토리 관련 업데이트면 미디어/상세/그리드 즉시 갱신
+      if (d?.entityType === 'story' && String(d?.entityId) === String(storyId)) {
+        try { refetchMedia(); } catch {}
+        try { queryClient.invalidateQueries({ queryKey: ['story', storyId] }); } catch {}
+        try { fetchExtracted(); } catch {}
+      }
+      // 이 스토리의 등장인물(캐릭터) 업데이트도 반영
+      if (d?.entityType === 'character') {
+        try { fetchExtracted(); } catch {}
+      }
+    };
+    window.addEventListener('media:updated', h);
+    return () => window.removeEventListener('media:updated', h);
+  }, [storyId, queryClient]);
+
   // 갤러리 이미지 구성: mediaAssets 우선, 없으면 cover_url + keywords의 cover: 항목들
   useEffect(() => {
     try {
@@ -865,7 +884,19 @@ const ExtractedCharactersGrid = ({ storyId, itemsOverride = null, onStart, maxNo
             <div className="relative bg-gray-800/40 border border-gray-700 rounded-md p-3 text-left hover:bg-gray-700/40">
               <div className="flex items-center gap-3">
                 {c.avatar_url ? (
-                  <img src={(c.avatar_url || '') + ((c.avatar_url||'').includes('?') ? '&' : '?') + 'v=' + Date.now()} alt={c.name} className="w-10 h-10 rounded-full object-cover" />
+                  <img
+                    src={(() => {
+                      try {
+                        const pv = c.character_id ? previewMap[c.character_id] : null;
+                        const main = pv?.avatar_url || c.avatar_url || '';
+                        const resolved = resolveImageUrl(main) || main;
+                        if (!resolved) return '';
+                        return `${resolved}${resolved.includes('?') ? '&' : '?'}v=${Date.now()}`;
+                      } catch (_) { return c.avatar_url; }
+                    })()}
+                    alt={c.name}
+                    className="w-10 h-10 rounded-full object-cover"
+                  />
                 ) : (
                   <div className="w-10 h-10 rounded-full bg-blue-600 text-white flex items-center justify-center text-sm font-bold">
                     {c.initial || (c.name||'')[0] || 'C'}
@@ -1032,13 +1063,34 @@ const ExtractedCharactersGrid = ({ storyId, itemsOverride = null, onStart, maxNo
       <ImageGenerateInsertModal
         open={!!imgModalFor}
         onClose={(e)=>{
+          const targetCharId = imgModalFor?.entityId;
           setImgModalFor(null);
           if (e && e.attached) {
             (async ()=>{
               try {
+                // 1) 추출 목록 갱신
                 const r = await storiesAPI.getExtractedCharacters(storyId);
                 const items = Array.isArray(r.data?.items) ? r.data.items : [];
-                setItems(items);
+                // focusUrl을 즉시 UI에 반영
+                const fu = e?.focusUrl || '';
+                setItems(prev => {
+                  if (!fu || !targetCharId) return items;
+                  try {
+                    return (Array.isArray(items) ? items : []).map(it => it?.character_id === targetCharId ? { ...it, avatar_url: fu } : it);
+                  } catch(_) { return items; }
+                });
+
+                // 2) 프리뷰 캐시 갱신
+                if (targetCharId) {
+                  try {
+                    const cr = await charactersAPI.getCharacter(targetCharId);
+                    const ch = cr?.data || {};
+                    const patched = fu ? { ...ch, avatar_url: fu } : ch;
+                    setPreviewMap(m => ({ ...m, [targetCharId]: patched }));
+                  } catch(_) {
+                    if (fu) setPreviewMap(m => ({ ...m, [targetCharId]: { ...(m?.[targetCharId]||{}), avatar_url: fu } }));
+                  }
+                }
               } catch(_) {}
             })();
           }

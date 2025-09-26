@@ -49,6 +49,24 @@ async def get_or_create_chat_room(
         
     return chat_room
 
+async def create_chat_room(
+    db: AsyncSession, user_id: uuid.UUID, character_id: uuid.UUID
+) -> ChatRoom:
+    """채팅방을 무조건 새로 생성한다."""
+    character_result = await db.execute(select(Character).where(Character.id == character_id))
+    character = character_result.scalar_one()
+    chat_room = ChatRoom(
+        user_id=user_id,
+        character_id=character_id,
+        title=f"{character.name}와의 대화"
+    )
+    db.add(chat_room)
+    await db.commit()
+    await db.refresh(chat_room)
+    # character 관계 보장
+    chat_room.character = character
+    return chat_room
+
 async def save_message(
     db: AsyncSession,
     chat_room_id: uuid.UUID,
