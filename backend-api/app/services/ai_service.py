@@ -75,7 +75,9 @@ async def tag_image_keywords(image_url: str, model: str = 'claude') -> dict:
             "  \"temperature\": \"체감 온도\",\n"
             "  \"movement\": \"움직임이나 동적 요소\",\n"
             "  \"focal_point\": \"시선이 집중되는 곳\",\n"
-            "  \"story_hooks\": [\"스토리 전개 가능한 요소들\"]\n"
+            "  \"story_hooks\": [\"스토리 전개 가능한 요소들\"],\n"
+            "  \"in_image_text\": [\"이미지 안에 보이는 모든 텍스트를 원문 그대로(오탈자 포함)\"],\n"
+            "  \"numeric_phrases\": [\"숫자+단위가 함께 있는 문구(예: '500키로', '500원')\"]\n"
             "}"
         )
         
@@ -240,8 +242,14 @@ def build_image_grounding_block(tags: dict, pov: str | None = None, style_prompt
     focal_point = _as_text(tags.get("focal_point")).strip()
     story_hooks = tags.get("story_hooks") or []
     
+    # 이미지 내 텍스트(최우선 사실)
+    in_texts = [str(x) for x in (tags.get("in_image_text") or []) if str(x).strip()]
+    numeric_phrases = [str(x) for x in (tags.get("numeric_phrases") or []) if str(x).strip()]
+
     lines = [
         "[고정 조건 - 이미지 그라운딩]",
+        ("[최우선 사실 - 이미지 내 텍스트] " + "; ".join(in_texts)) if in_texts else None,
+        ("[수치/단위 문구] " + "; ".join(numeric_phrases)) if numeric_phrases else None,
         f"장소: {place}" if place else None,
         f"오브젝트: {objects}" if objects else None,
         f"조명/시간대: {lighting}" if lighting else None,
@@ -255,6 +263,7 @@ def build_image_grounding_block(tags: dict, pov: str | None = None, style_prompt
         f"움직임/동적 요소: {movement}" if movement else None,
         f"시선 집중점: {focal_point}" if focal_point else None,
         "",
+        "규칙: 이미지에 포함된 텍스트(위 최우선 사실)를 1순위로 반영하라. 숫자/단위를 절대 왜곡하지 말라.",
         "규칙: 위 모든 요소들을 자연스럽게 녹여내어 생생한 장면을 만들어라.",
         "규칙: 오감을 활용해 독자가 그 공간에 있는 듯한 몰입감을 제공하라.",
         "규칙: 이미지에 존재하지 않는 요소를 추가하지 말라.",
@@ -349,7 +358,14 @@ async def write_story_from_image_grounded(image_url: str, user_hint: str = "", p
     # Stage-2 advanced tags (Claude Vision 우선)
     tags = await tag_image_keywords(image_url, model='claude')
     ctx = await extract_image_narrative_context(image_url, model='claude')
-    block = build_image_grounding_block(tags, pov=pov, style_prompt=style_prompt, ctx=ctx, username=username)
+    # 스냅 모드에서는 개인정보 보호를 위해 이름 주입 금지
+    block = build_image_grounding_block(
+        tags,
+        pov=pov,
+        style_prompt=style_prompt,
+        ctx=ctx,
+        username=None if story_mode == "snap" else username
+    )
     if kw2:
         block += "\n스냅 키워드(경량 태깅): " + ", ".join(kw2)
     if caption:
@@ -369,8 +385,13 @@ async def write_story_from_image_grounded(image_url: str, user_hint: str = "", p
         required_tokens.append(str(extra))
     for extra in (ctx.get('genre_cues') or [])[:1]:
         required_tokens.append(str(extra))
-    # 최대 8개로 제한
-    required_tokens = [x for x in required_tokens if x][:8]
+    # 이미지 내 텍스트/수치 문구를 우선 포함
+    for t in (tags.get('numeric_phrases') or [])[:2]:
+        required_tokens.append(str(t))
+    for t in (tags.get('in_image_text') or [])[:2]:
+        required_tokens.append(str(t))
+    # 최대 10개로 제한
+    required_tokens = [x for x in required_tokens if x][:10]
 
     # 금지 키워드(일반 + 장소 충돌)
     ban_general = {"현관", "복도", "교실", "운동장", "해변", "바닷가", "사막", "정오의 햇살", "한낮의 태양"}
@@ -391,18 +412,25 @@ async def write_story_from_image_grounded(image_url: str, user_hint: str = "", p
 
     # 고정 블록에 필수/금지 명시 추가
     if required_tokens:
-        block += "\n필수 키워드: " + ", ".join(required_tokens)
+        block += "\n필수 키워드(이미지 텍스트 우선): " + ", ".join(required_tokens)
     if ban_tokens:
         block += "\n금지 키워드: " + ", ".join(sorted(ban_tokens))
     # 시점에 따른 지시사항 조정
     pov_instruction = ""
-    if "1인칭" in block:
-        pov_instruction = "\n시점: 1인칭 '나'로 서술. 내면 묘사와 감각을 생생하게."
-        # username이 block에 포함되어 있으면 추가 지시
-        if username and username in block:
-            pov_instruction += f"\n화자 '나'의 이름은 {username}. 대화나 상황에서 자연스럽게 이름이 드러나게 하라."
-    elif "3인칭" in block:
-        pov_instruction = "\n시점: 3인칭 관찰자로 서술. 인물들의 행동과 표정을 객관적으로 묘사."
+    if story_mode == "snap":
+        # 일상: 실명/닉네임 회피. 1인칭이면 '나', 3인칭이면 '그/그녀'만 사용
+        if "1인칭" in block:
+            pov_instruction = "\n시점: 1인칭 '나'. 사람 이름(고유명) 사용 금지. 대명사는 '나'만 사용."
+        else:
+            pov_instruction = "\n시점: 3인칭. 인물 지칭은 '그' 또는 '그녀'만 사용. 사람 이름(고유명) 사용 금지."
+    else:
+        if "1인칭" in block:
+            pov_instruction = "\n시점: 1인칭 '나'로 서술. 내면 묘사와 감각을 생생하게."
+            # username이 block에 포함되어 있으면 추가 지시
+            if username and username in block:
+                pov_instruction += f"\n화자 '나'의 이름은 {username}. 대화나 상황에서 자연스럽게 이름이 드러나게 하라."
+        elif "3인칭" in block:
+            pov_instruction = "\n시점: 3인칭 관찰자로 서술. 인물들의 행동과 표정을 객관적으로 묘사."
     
     # 스토리 모드별 시스템 지시사항
     if story_mode == "snap":
@@ -413,6 +441,15 @@ async def write_story_from_image_grounded(image_url: str, user_hint: str = "", p
             "독자가 '나도 그런 적 있어'라고 공감할 수 있는 순간을 포착하라."
             + pov_instruction
         )
+        # 인스타 공유 효능감 강화 지시
+        sys_instruction += (
+            "\n특기: 인스타 캡션처럼 자연스럽고 간결하게. 과장 금지, 일상 감성 유지."
+            "\n스타일: 짧은 호흡(문장 평균 10~18자), 쉼표 최소, 마침표 자주."
+            "\n문단: 1~2문장 단락, 줄바꿈으로 리듬 살리기."
+            "\n어휘: 담백하고 위트 있게. 해시태그/이모지 사용 금지."
+            "\n톤: 20~30대 여성 취향의 소소한 위안/힐링 느낌."
+            "\n개인정보: 사람 이름(고유명) 사용 금지. 인물 지칭은 '그' 또는 '그녀'만 사용."
+        )
     elif story_mode == "genre":
         sys_instruction = (
             "당신은 20년차 장르/웹소설 작가다. 이미지를 장르적 상상력으로 재해석한다.\n"
@@ -420,6 +457,13 @@ async def write_story_from_image_grounded(image_url: str, user_hint: str = "", p
             "중요: 첫 문장부터 독자를 사로잡고, 다음이 궁금해지는 여운을 남겨라.\n"
             "독자가 그 세계에 빠져들 수 있는 생생한 장면을 만들어라."
             + pov_instruction
+        )
+        # 하이라이트 후킹 강화 지시
+        sys_instruction += (
+            "\n특기: 첫 2문장에 강력한 후킹. 시각적 장면성이 뚜렷하게 드러나게 써라."
+            "\n스타일: 웹소설 톤. 짧은 호흡(문장 평균 12~20자), 쉼표 최소, 빠른 템포."
+            "\n대사: 전체의 40~60% 비중. 줄바꿈을 자주 사용해 박자감 유지."
+            "\n문단: 1~3문장 단락. 장황한 비유/설명체 금지. show-don't-tell."
         )
     else:
         sys_instruction = (
@@ -621,6 +665,33 @@ async def write_story_from_image_grounded(image_url: str, user_hint: str = "", p
             sub_model="claude-sonnet-4-20250514", 
             max_tokens=1800
         )
+
+    # 이미지 내 텍스트/수치 문구 커버리지 검증 및 1회 보정
+    try:
+        must_phrases: list[str] = []
+        for p in (tags.get('numeric_phrases') or [])[:2]:
+            if isinstance(p, str) and p.strip():
+                must_phrases.append(p.strip())
+        for p in (tags.get('in_image_text') or [])[:2]:
+            if isinstance(p, str) and p.strip():
+                must_phrases.append(p.strip())
+        missing = [p for p in must_phrases if p and (p not in text)]
+        if missing:
+            fix_prompt = (
+                "아래 초안에서 이미지 속 텍스트를 그대로 반영하여 고쳐 쓰세요.\n"
+                "- 다음 문구(숫자/단위 포함)는 철자 그대로 포함: " + ", ".join(missing) + "\n"
+                "- 의미를 바꾸지 말 것, 금지: 수정/해석/가격으로 오인.\n"
+                "- 출력은 한국어 소설 문단만. 지시를 설명하지 말 것.\n\n"
+                "[초안]\n" + text
+            )
+            text = await get_ai_completion(
+                fix_prompt,
+                model="claude",
+                sub_model="claude-sonnet-4-20250514",
+                max_tokens=1800
+            )
+    except Exception:
+        pass
     return text
 async def get_gemini_completion(prompt: str, temperature: float = 0.7, max_tokens: int = 1024, model: str= 'gemini-2.5-pro') -> str:
     """

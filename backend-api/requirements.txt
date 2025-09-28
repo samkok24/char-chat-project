@@ -41,6 +41,8 @@ email-validator==2.1.0
 python-slugify==8.0.4
 pillow==11.0.0
 boto3==1.35.36
+backoff==2.2.1
+fal-client
 
 # 개발 도구
 pytest==7.4.3

@@ -4,6 +4,11 @@ CAVEDUCK 스타일: 채팅 중심 최적화
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+try:
+    from app.core.logger import logger
+except Exception:
+    import logging as _logging
+    logger = _logging.getLogger(__name__)
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 from typing import List, Optional, Dict, Any
@@ -35,6 +40,12 @@ from app.schemas.chat import (
     RegenerateRequest,
     MessageFeedback,
 )
+try:
+    from app.core.logger import logger
+except Exception:
+    import logging
+    logger = logging.getLogger(__name__)
+
 
 router = APIRouter()
 
@@ -287,21 +298,25 @@ async def agent_simulate(
                 # 이미지 생성 실패해도 스토리는 반환
             """
         else:
-            # 스토리 모드가 있으면 프롬프트 조정
+            # 스토리 모드가 있으면 프롬프트 조정 후 텍스트 생성
             if story_mode:
                 # 모드별 시스템 프롬프트 생성
                 if story_mode == "snap":
-                    character_prompt = """당신은 일상의 순간을 포착하는 작가입니다.
-- 200-300자 분량의 짧고 공감가는 일상 스토리
-- SNS 피드에 올릴 법한 친근한 문체
-- 따뜻하거나 위트있는 톤
-- 오글거리지 않고 자연스럽게"""
+                    character_prompt = (
+                        "당신은 일상의 순간을 포착하는 작가입니다.\n"
+                        "- 200-300자 분량의 짧고 공감가는 일상 스토리\n"
+                        "- SNS 피드에 올릴 법한 친근한 문체\n"
+                        "- 따뜻하거나 위트있는 톤\n"
+                        "- 오글거리지 않고 자연스럽게"
+                    )
                 elif story_mode == "genre":
-                    character_prompt = """당신은 장르소설 전문 작가입니다.
-- 500-800자 분량의 몰입감 있는 장르 스토리
-- 긴장감 있는 전개와 생생한 묘사
-- 장르 관습을 따르되 신선하게
-- 다음이 궁금해지는 마무리"""
+                    character_prompt = (
+                        "당신은 장르소설 전문 작가입니다.\n"
+                        "- 500-800자 분량의 몰입감 있는 장르 스토리\n"
+                        "- 긴장감 있는 전개와 생생한 묘사\n"
+                        "- 장르 관습을 따르되 신선하게\n"
+                        "- 다음이 궁금해지는 마무리"
+                    )
                 else:
                     character_prompt = ""
             else:
@@ -318,20 +333,88 @@ async def agent_simulate(
         
         response = {"assistant": text}
         
-        # 생성된 이미지가 있으면 응답에 포함
-        if image_url and generated_image_url:
-            response["generated_image"] = generated_image_url
+        # 하이라이트는 별도 엔드포인트에서 비동기로 처리
             
         return response
     except Exception as e:
-        # 안전 가드: 에러를 로깅하고, 원인 문자열을 함께 전달(임시 진단 목적)
+        # 안전 가드: 에러 로깅(전역 logger 사용) 후 500 반환
         try:
-            from app.core.logger import logger
             logger.exception(f"/chat/agent/simulate failed: {e}")
         except Exception:
             print(f"/chat/agent/simulate failed: {e}")
         from fastapi import HTTPException
         raise HTTPException(status_code=500, detail=f"agent_simulate_error: {e}")
+@router.post("/agent/generate-highlights")
+async def agent_generate_highlights(payload: dict):
+    """텍스트와 원본 이미지 URL을 받아 하이라이트 이미지를 3장 생성하여 반환"""
+    try:
+        text = (payload.get("text") or "").strip()
+        image_url = (payload.get("image_url") or "").strip()
+        story_mode = (payload.get("story_mode") or "auto").strip()
+        if not text or not image_url:
+            raise HTTPException(status_code=400, detail="text and image_url are required")
+
+        from app.services.story_extractor import StoryExtractor
+        from app.services.scene_prompt_builder import ScenePromptBuilder
+        from app.services.seedream_client import SeedreamClient, SeedreamConfig
+        from app.services.image_composer import ImageComposer
+        from app.services.storage import get_storage
+
+        extractor = StoryExtractor(min_scenes=2, max_scenes=4)
+        scenes = extractor.extract_scenes(text, story_mode)
+        # 최대 3장으로 제한
+        scenes = scenes[:3]
+
+        prompt_builder = ScenePromptBuilder(base_style=story_mode or "genre")
+        scene_prompts = [
+            prompt_builder.build_from_scene(
+                sentence=s.sentence,
+                keywords=s.keywords,
+                stage=s.stage.value,
+                story_mode=story_mode
+            )
+            for s in scenes
+        ]
+
+        seedream = SeedreamClient()
+        configs = [
+            SeedreamConfig(
+                prompt=sp.positive,
+                negative_prompt=sp.negative,
+                image_size="1024x1024"
+            ) for sp in scene_prompts
+        ]
+        results = await seedream.generate_batch(configs, max_concurrent=2)
+
+        composer = ImageComposer()
+        storage = get_storage()
+        story_highlights = []
+        for i, (scene, result) in enumerate(zip(scenes[:len(results)], results)):
+            if result and result.image_url:
+                composed = await composer.compose_with_letterbox(
+                    image_url=result.image_url,
+                    subtitle=scene.subtitle
+                )
+                final_url = storage.save_bytes(
+                    composed.image_bytes,
+                    content_type=composed.content_type,
+                    key_hint=f"story_scene_{i}.jpg"
+                )
+                story_highlights.append({
+                    "imageUrl": final_url,
+                    "subtitle": scene.subtitle,
+                    "stage": scene.stage.value,
+                    "sceneOrder": i + 1
+                })
+        return { "story_highlights": story_highlights }
+    except HTTPException:
+        raise
+    except Exception as e:
+        try:
+            logger.exception(f"/chat/agent/generate-highlights failed: {e}")
+        except Exception:
+            print(f"/chat/agent/generate-highlights failed: {e}")
+        raise HTTPException(status_code=500, detail=f"highlight_error: {e}")
 
 # 🔥 CAVEDUCK 스타일 핵심 채팅 API (4개)
 

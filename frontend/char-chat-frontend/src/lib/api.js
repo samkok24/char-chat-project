@@ -319,6 +319,8 @@ export const chatAPI = {
   // 에이전트 탭용 간단 시뮬레이터(캐릭터 없이)
   agentSimulate: (data) =>
     api.post('/chat/agent/simulate', data),
+  agentGenerateHighlights: (data) =>
+    api.post('/chat/agent/generate-highlights', data),
   
   getChatHistory: (sessionId) =>
     api.get(`/chat/history/${sessionId}`),
