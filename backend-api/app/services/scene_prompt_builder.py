@@ -24,14 +24,15 @@ class ScenePromptBuilder:
         "저해상도, 흐릿한 얼굴, 텍스트, 워터마크, 로고, 서명, 글자, 문자,"
         " lowres, blurry, text, watermark, logo, signature,"
         " deformed hands, extra fingers, extra limbs, bad anatomy,"
-        " person, people, human, face, portrait, selfie"
+        " person, people, human, face, portrait, selfie, profile, character, figure, body, silhouette, crowd,"
+        " poster, movie poster, title, subtitles, caption, typography, korean text, hangul text"
     )
     
     # 스타일 프리셋
     STYLE_PRESETS = {
         "snap": {
-            "tags": ["일상적인", "따뜻한", "부드러운 조명", "자연스러운"],
-            "suffix": ", 일상 스냅샷, 따뜻한 색감, 소프트 포커스, muted tones, subtle composition"
+            "tags": ["일상적인", "따뜻한", "부드러운 조명", "자연스러운", "필름 감성", "빈티지"],
+            "suffix": ", 일상 스냅샷, 필름 카메라 감성, soft contrast, muted colors, natural white balance, film grain, 35mm, Kodak Portra 400 look, Fuji Superia palette, subtle light leak, slight vignette, soft focus, subtle composition"
         },
         "genre": {
             "tags": ["드라마틱한", "영화적인", "강렬한", "몰입감 있는"],
@@ -100,8 +101,8 @@ class ScenePromptBuilder:
             if elements.get("subject") and self.allow_people:
                 positive_parts.append(elements["subject"])
                 
-            # 행동/상황
-            if elements.get("action"):
+            # 행동/상황 (스냅에서는 인물 행동 암시를 피하기 위해 제외)
+            if elements.get("action") and style != "snap":
                 positive_parts.append(elements["action"])
                 
             # 배경/장소
@@ -119,6 +120,10 @@ class ScenePromptBuilder:
             # 단계 분위기
             if stage_mood:
                 positive_parts.append(stage_mood)
+
+            # 스냅 전용: 인물 배제 유도(정물/풍경/사물 중심)
+            if style == "snap":
+                positive_parts.append("still life, everyday objects, landscape only")
 
             # 스테이지별 카메라/구도/시간대 토큰
             camera_tokens = self._get_stage_camera_tokens(stage, sentence, keywords)
@@ -147,7 +152,7 @@ class ScenePromptBuilder:
             positive_prompt = self._enhance_korean_elements(positive_prompt)
             
             # 네거티브 프롬프트
-            negative_prompt = self._build_negative_prompt(sentence)
+            negative_prompt = self._build_negative_prompt(sentence, story_mode=style)
             
             return ScenePrompt(
                 positive=positive_prompt,
@@ -250,18 +255,32 @@ class ScenePromptBuilder:
 
         tod = time_of_day_default()
 
+        snap_mode = (self.base_style or "").lower() == "snap"
+
         if s in ("기", "intro"):
-            tokens.extend(["wide establishing shot", "rule of thirds", "35mm", "natural light", tod if tod else "morning"])
+            if snap_mode:
+                tokens.extend(["wide establishing shot", "overhead shot", "35mm", "natural light", "still life arrangement", tod if tod else "morning"])
+            else:
+                tokens.extend(["wide establishing shot", "rule of thirds", "35mm", "natural light", tod if tod else "morning"])
         elif s in ("승", "development"):
-            tokens.extend(["mid shot", "dynamic angle", "leading lines", "motion blur", tod])
+            if snap_mode:
+                tokens.extend(["wide shot", "table-top", "leading lines", "soft focus", tod])
+            else:
+                tokens.extend(["mid shot", "dynamic angle", "leading lines", "motion blur", tod])
         elif s in ("전", "climax"):
-            tokens.extend(["close-up", "high contrast", "cinematic lighting", "spotlight effect", "shallow depth of field"])
+            if snap_mode:
+                tokens.extend(["macro shot of object texture", "high contrast", "natural vignette", "shallow depth of field"])  # 오브젝트 중심
+            else:
+                tokens.extend(["close-up", "high contrast", "cinematic lighting", "spotlight effect", "shallow depth of field"])
             if has_night():
                 tokens.append("night")
             if has_rain():
                 tokens.append("rain")
         elif s in ("결", "resolution"):
-            tokens.extend(["medium-wide", "soft bokeh", "symmetry", "golden hour" if tod == "golden hour" else tod])
+            if snap_mode:
+                tokens.extend(["medium-wide", "soft bokeh", "symmetry", "empty background", "golden hour" if tod == "golden hour" else tod])
+            else:
+                tokens.extend(["medium-wide", "soft bokeh", "symmetry", "golden hour" if tod == "golden hour" else tod])
 
         # 중복 제거
         out: List[str] = []
@@ -297,13 +316,27 @@ class ScenePromptBuilder:
                 
         return enhanced
         
-    def _build_negative_prompt(self, sentence: str) -> str:
+    def _build_negative_prompt(self, sentence: str, story_mode: Optional[str] = None) -> str:
         """네거티브 프롬프트 생성"""
         negative_parts = [self.DEFAULT_NEGATIVE]
         
         # 인물 전면 금지(요청 반영)
-        negative_parts.append("no person, no people, no human, no face, no portrait")
+        negative_parts.append("no person, no people, no human, no face, no portrait, no character, no figure, no body, no silhouette, no crowd")
         
+        # SNAP 모드에서는 인물 제거 강도 추가
+        try:
+            mode = (story_mode or self.base_style or "").strip().lower()
+        except Exception:
+            mode = ""
+        if mode == "snap":
+            negative_parts.append("no hands, no arms, no legs, no skin, no selfie, no profile, no model, no subject, no close-up of a person")
+            # 대상은 사물/풍경 중심으로 유도
+            negative_parts.append("object-only, background-only, still life, empty scene")
+            # 상업/스튜디오/HDR 톤 억제
+            negative_parts.append("hdr, hyper-realistic, overly saturated, glossy, commercial, advertising, studio lighting, product shot, neon colors, overly sharp")
+            # 가시적 인물 완전 금지(모델에 따라 더 잘 듣는 표현)
+            negative_parts.append("no visible people, no visible human")
+            
         # 과도한 밝기/암부 클리핑 방지(문맥 따라 보정)
         if "밝" not in sentence:
             negative_parts.append("overexposed")

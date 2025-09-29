@@ -249,30 +249,58 @@ class StoryExtractor:
                     
         return list(set(keywords))[:5]  # 중복 제거, 최대 5개
         
-    def _create_subtitle(self, sentence: str, story_mode: Optional[str] = None, max_length: int = 25) -> str:
+    def _create_subtitle(self, sentence: str, story_mode: Optional[str] = None, max_length: int = 40) -> str:
         """자막용 텍스트 생성 (축약)"""
+        # 모드별 최대 글자수(이미지당 카피를 짧게 유지)
+        if story_mode == "snap":
+            max_length = 18  # 1~2행 내에서 크게 보이도록 짧게
+        elif story_mode == "genre":
+            max_length = 24  # 장르 후킹용 약간 여유
+        else:
+            max_length = 22
+
+        def _shorten_copy(s: str, max_len: int) -> str:
+            import re as _re
+            t = (s or "").strip()
+            # 따옴표/괄호 제거
+            t = _re.sub(r"[\"'“”‘’]", "", t)
+            t = _re.sub(r"[\(\)\[\]\{\}]", "", t)
+            # 군더더기 어미/부사 축소(가벼운 휴리스틱)
+            t = _re.sub(r"(하겠|했|하였|이었다|이었|였|였습니다)$", "", t)
+            t = _re.sub(r"(같았|같아|같다|같은 느낌|같은 순간)$", "", t)
+            t = _re.sub(r"(있었다|있다|되어버렸다|되어 간다)$", "", t)
+            # 선행/후행 구두점 제거
+            t = _re.sub(r"^[\s~·•\-–—]+", "", t)
+            t = _re.sub(r"[\s~….!?]+$", "", t)
+            if len(t) <= max_len:
+                return t
+            # 구분자 기준으로 짧은 구절 우선 추출
+            parts = _re.split(r"[,·ㆍ/\\|]| 그리고 | 하지만 | 그런데 | 그래서 | 그러면 |\s{2,}", t)
+            parts = [p.strip() for p in parts if p and p.strip()]
+            for p in parts:
+                if len(p) <= max_len:
+                    return p
+            # 마지막 수단: 자르기(줄임표 없이)
+            return t[:max_len]
+
         # 대사가 있으면 대사 우선
         dialogue_match = self.DIALOGUE_PATTERN.search(sentence)
         if dialogue_match:
             dialogue = dialogue_match.group(1) or dialogue_match.group(2) or dialogue_match.group(3)
-            if dialogue and len(dialogue) <= max_length:
-                return dialogue
-            elif dialogue:
-                return dialogue[:max_length-2] + "…"
-                
+            if dialogue:
+                return _shorten_copy(dialogue, max_length)
+         
         # 모드별 축약 전략
         s = sentence.strip()
         if len(s) <= max_length:
-            return s
+            return _shorten_copy(s, max_length)
         # SNAP: 첫 구절 위주(인스타 캡션 톤)
         if story_mode == "snap":
             # 쉼표/접속어 기준으로 첫 구절 선택
             import re as _re
             parts = _re.split(r"[,…—\-]|그리고|하지만|그런데", s)
             head = (parts[0] if parts else s).strip()
-            if len(head) <= max_length:
-                return head
-            return head[:max_length-2] + "…"
+            return _shorten_copy(head, max_length)
         # GENRE: 후킹감 있는 말미/전환 구간을 사용
         if story_mode == "genre":
             # 클라이맥스 신호어 이후를 우선 사용
@@ -280,19 +308,17 @@ class StoryExtractor:
                 idx = s.find(sig)
                 if idx != -1:
                     tail = s[idx:]
-                    return tail[:max_length-2] + ("…" if len(tail) > max_length else "")
+                    return _shorten_copy(tail, max_length)
             # 마지막 구절 사용
             import re as _re
             parts = _re.split(r"[,…—\-]", s)
             tail = (parts[-1] if parts else s).strip()
-            if len(tail) <= max_length:
-                return tail
-            return tail[:max_length-2] + "…"
+            return _shorten_copy(tail, max_length)
         # 기본: 첫 문장 후 축약
         first_sentence = self.SENTENCE_PATTERN.split(s)[0]
-        if first_sentence and len(first_sentence) <= max_length:
-            return first_sentence
-        return s[:max_length-2] + "…"
+        if first_sentence:
+            return _shorten_copy(first_sentence, max_length)
+        return _shorten_copy(s, max_length)
         
     def _fallback_extraction(self, text: str, story_mode: Optional[str] = None) -> List[SceneExtract]:
         """폴백: 균등 분할"""

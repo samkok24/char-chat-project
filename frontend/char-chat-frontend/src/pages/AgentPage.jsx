@@ -467,7 +467,8 @@ const [editingMessageId, setEditingMessageId] = useState(null);
 const [editedContent, setEditedContent] = useState('');
 // Remix 선택 상태: messageId -> string[]
 const [remixSelected, setRemixSelected] = useState({});
-const SNAP_REMIX_TAGS = ['위트있게','빵터지게','따뜻하게','힐링이되게','잔잔하게','여운있게','진지하게','차갑게'];
+// 스냅 태그: 상단 4, 하단 3만 노출(순서 중요)
+const SNAP_REMIX_TAGS = ['위트있게','빵터지게','밈스럽게','따뜻하게','힐링이되게','잔잔하게','여운있게','진지하게','차갑게'];
 const GENRE_REMIX_TAGS = ['남성향판타지','로맨스','로코','성장물','미스터리','추리','스릴러','호러','느와르'];
 
 const toggleRemixTag = useCallback((msgId, tag) => {
@@ -487,9 +488,34 @@ const handleRemixGenerate = useCallback(async (msg, assistantText) => {
     for (let i = msgIndex - 1; i >= 0; i--) {
       if (messages[i].type === 'image') { imageUrl = messages[i].url; break; }
     }
-    const tags = (remixSelected[msg.id] || []).join(', ');
-    const styleHint = tags ? `[감정/분위기: ${tags}]` : '';
-    const remixPrompt = `${styleHint} 아래 초안을 같은 사실로 리믹스해줘(사진 사실/수치/텍스트 불변, 톤만 전환):\n\n${assistantText}`.trim();
+    const selected = remixSelected[msg.id] || [];
+    const tags = selected.join(', ');
+    const styleDict = {
+      '위트있게': '10~30대 커뮤니티 밈 문법을 약하게 반영: 의외성/반전, 은근한 자조, 짤 캡션 톤의 단문(예: ~하는 나, ~했다가 ~함). 과한 신조어/초성 남발·비속어는 금지. 마지막에 짤로 쓰기 좋은 한 줄을 남길 것',
+      '빵터지게': '10~30대 커뮤니티 밈 문법을 강하게 반영: 과장된 비유 1~2개, 설의/반어 드립, 박자감 있는 단문, 타이밍 코미디. 의성어/효과음 1개까지 허용. 마지막 문장은 짤 캡션처럼 강한 펀치로 마무리',
+      '밈스럽게': '커뮤니티 짤/캡션 문법 적극 사용: "~함, ~임, ~아님?" 같은 종결, 상황극 괄호체(소량), 신조어 과감히 허용. 다만 비속어/혐오 표현은 금지. 1~2문단, 각 문단 1~2문장 단문으로, 마지막은 짤 텍스트로 바로 쓸 수 있게',
+      '따뜻하게': '부드러운 어휘, 온기/위로, 여운 남기는 마무리',
+      '힐링이되게': '편안한 리듬, 자연/호흡/쉼의 이미지, 긴장감 최소화',
+      '잔잔하게': '차분한 묘사, 작은 사건, 낮은 대비, 은은한 감정',
+      '여운있게': '마지막 문장에 비유/반복 구조로余韻, 직접 결론 금지',
+      '진지하게': '담백·단정한 어휘, 농담 금지, 의미 중심',
+      '차갑게': '건조한 관찰체, 감정 최소, 단문 위주',
+      '남성향판타지': '과감한 파워·스킬 묘사, 전개 속도 빠르게, 결단형 주인공',
+      '로맨스': '감정선/미묘한 제스처 강조, 설렘 포인트, 서정적 어휘',
+      '로코': '경쾌한 티키타카, 오해/해프닝, 위트 있는 비유',
+      '성장물': '결심·노력·변화 단계, 자기 성찰 내적 독백 포함',
+      '미스터리': '단서/복선 암시, 의문형 문장, 분위기 긴장',
+      '추리': '논리적 연결, 단서 재배치, 결론 암시',
+      '스릴러': '촉박한 시간감, 위기 고조, 동사 위주 단문',
+      '호러': '감각적 공포, 보이지 않는 위협, 불길한 전조',
+      '느와르': '거친 사실주의, 냉소적 톤, 어두운 이미지'
+    };
+    const tagDesc = selected.map(t => styleDict[t] || `${t} 느낌을 강하게`).join('; ');
+    const memeNote = (selected.includes('위트있게') || selected.includes('빵터지게'))
+      ? `\n- (밈) 10~30대 커뮤니티 밈 문법을 반영: 의외성/반전, 템플릿형 표현(예: ~하는 나, ~했다가 ~함) 단문. 초성 남발/비속어 금지. 마지막에 짤 캡션으로 바로 쓰기 좋은 한 줄 포함.`
+      : '';
+    const rules = selected.length > 0 ? `\n[리믹스 규칙 - 반드시 준수]\n- 선택 태그를 매우 강하게 반영: ${tags}\n- 태그 해석: ${tagDesc}${memeNote}\n- 초안과 톤/어휘/리듬/문장 구조가 눈에 띄게 달라야 한다 (문장 유사 반복 최소화).\n- 사실/숫자/이미지 내 텍스트는 절대 변경하지 말 것.\n- 메타발언/설명 금지(예: "태그 반영" 같은 문구 금지).` : '';
+    const remixPrompt = `${rules}\n\n아래 초안을 같은 사실로 리믹스해줘. 스타일만 태그에 맞게 강하게 전환할 것:\n\n${assistantText}`.trim();
 
     const assistantId = crypto.randomUUID();
     const thinkingMsg = { id: assistantId, role: 'assistant', content: '', thinking: true, createdAt: nowIso(), storyMode: msg.storyMode || 'auto' };
@@ -893,6 +919,75 @@ const updateMessageForSession = useCallback((targetSessionId, targetMessageId, u
         return updatedList;
     } catch { return; }
 }, [isGuest, setMessages]);
+
+// 특정 어시스턴트 메시지 리런: 태그/하이라이트/추천 제거 → 스피너 → 재생성
+const handleRerun = useCallback(async (msg) => {
+  try {
+    const sid = activeSessionIdRef.current;
+    if (!sid || !msg || msg.role !== 'assistant') return;
+    // 1) 태그 초기화
+    setRemixSelected(prev => ({ ...prev, [msg.id]: [] }));
+    // 2) 아래에 붙은 하이라이트/로딩/추천 제거
+    const list = isGuest ? (sessionLocalMessagesRef.current.get(sid) || []) : loadJson(LS_MESSAGES_PREFIX + sid, []);
+    const idx = list.findIndex(m => m.id === msg.id);
+    if (idx === -1) return;
+    const head = list.slice(0, idx + 1);
+    const tail = list.slice(idx + 1).filter(m => !(m.type === 'story_highlights' || m.type === 'story_highlights_loading' || m.type === 'recommendation'));
+    const cleaned = [...head, ...tail];
+    if (isGuest) sessionLocalMessagesRef.current.set(sid, cleaned); else saveJson(LS_MESSAGES_PREFIX + sid, cleaned);
+    if (activeSessionId === sid) setMessages(cleaned);
+    // 3) 메시지를 스피너로 전환
+    updateMessageForSession(sid, msg.id, (m) => ({ ...m, thinking: true, streaming: false, content: '', fullContent: '' }));
+    setGenState(sid, { status: GEN_STATE.PREVIEW_STREAMING, controller: null, assistantId: msg.id });
+    // 4) 직전 사용자 입력(텍스트/이미지) 묶음 복원
+    let userText = '';
+    let imageUrl = null;
+    for (let i = idx - 1; i >= 0; i--) {
+      const it = cleaned[i];
+      if (it.role === 'user' && !it.type && !userText) userText = (it.content || '').toString();
+      if (it.role === 'user' && it.type === 'image' && !imageUrl) imageUrl = it.url;
+      if (userText && imageUrl) break;
+    }
+    const staged = [];
+    if (imageUrl) staged.push({ type: 'image', url: imageUrl });
+    if (userText) staged.push({ type: 'text', body: userText });
+    // 5) 백엔드 호출(텍스트 생성)
+    const res = await chatAPI.agentSimulate({ staged, story_mode: msg.storyMode || 'auto', model: storyModel, sub_model: storyModel });
+    const assistantText = res?.data?.assistant || '';
+    updateMessageForSession(sid, msg.id, (m) => ({ ...m, thinking: false, streaming: false, content: assistantText.slice(0,500), fullContent: assistantText }));
+    // 6) 하이라이트 로딩 추가 → 생성 후 교체
+    const loadingId = crypto.randomUUID();
+    const afterText = isGuest ? (sessionLocalMessagesRef.current.get(sid) || []) : loadJson(LS_MESSAGES_PREFIX + sid, []);
+    const withLoading = [...afterText.slice(0, idx + 1), { id: loadingId, type: 'story_highlights_loading', createdAt: nowIso() }, ...afterText.slice(idx + 1)];
+    if (isGuest) sessionLocalMessagesRef.current.set(sid, withLoading); else saveJson(LS_MESSAGES_PREFIX + sid, withLoading);
+    if (activeSessionId === sid) setMessages(withLoading);
+    try {
+      const hiRes = await chatAPI.agentGenerateHighlights({ text: assistantText, image_url: imageUrl || '', story_mode: msg.storyMode || 'auto' });
+      const scenes = (hiRes?.data?.story_highlights || []).map((s, i) => ({ ...s, id: crypto.randomUUID() }));
+      const list2 = isGuest ? (sessionLocalMessagesRef.current.get(sid) || []) : loadJson(LS_MESSAGES_PREFIX + sid, []);
+      const idx2 = list2.findIndex(m => m.id === loadingId);
+      const replaced = [...list2.slice(0, idx2), { id: crypto.randomUUID(), type: 'story_highlights', scenes, createdAt: nowIso() }, ...list2.slice(idx2 + 1)];
+      if (isGuest) sessionLocalMessagesRef.current.set(sid, replaced); else saveJson(LS_MESSAGES_PREFIX + sid, replaced);
+      if (activeSessionId === sid) setMessages(replaced);
+    } catch (_) {
+      // 하이라이트 실패 시 로딩 제거만
+      const list3 = isGuest ? (sessionLocalMessagesRef.current.get(sid) || []) : loadJson(LS_MESSAGES_PREFIX + sid, []);
+      const idx3 = list3.findIndex(m => m.id === loadingId);
+      const reduced = idx3 >= 0 ? [...list3.slice(0, idx3), ...list3.slice(idx3 + 1)] : list3;
+      if (isGuest) sessionLocalMessagesRef.current.set(sid, reduced); else saveJson(LS_MESSAGES_PREFIX + sid, reduced);
+      if (activeSessionId === sid) setMessages(reduced);
+    }
+    // 7) 추천 카드 재삽입(하이라이트 뒤)
+    const finalList = isGuest ? (sessionLocalMessagesRef.current.get(sid) || []) : loadJson(LS_MESSAGES_PREFIX + sid, []);
+    const insertAt = finalList.findIndex(m => m.type === 'story_highlights' && finalList.indexOf(m) > idx);
+    const recMsg = { id: crypto.randomUUID(), role: 'assistant', type: 'recommendation', createdAt: nowIso() };
+    let injected;
+    if (insertAt !== -1) injected = [...finalList.slice(0, insertAt + 1), recMsg, ...finalList.slice(insertAt + 1)];
+    else injected = [...finalList, recMsg];
+    if (isGuest) sessionLocalMessagesRef.current.set(sid, injected); else saveJson(LS_MESSAGES_PREFIX + sid, injected);
+    if (activeSessionId === sid) setMessages(injected);
+  } catch {}
+}, [activeSessionId, isGuest, setMessages, storyModel, updateMessageForSession, setGenState]);
 
 // 백그라운드 완료 감시자 (세션별 1개)
 const headlessWatchersRef = useRef(new Map()); // sid -> true(동작중)
@@ -1479,7 +1574,7 @@ return (
     <div className="flex-1 min-h-0">
       <div className="overflow-y-auto pb-40 relative" ref={messagesContainerRef} style={{ maxHeight: 'calc(100vh - 160px)' }}>
         {!showChatPanel ? (
-            <section className="px-6 md:px-8">
+            <div className="px-6 md:px-8">
               <div className="flex flex-col items-center justify-center select-none gap-6">
                 <h1 className="text-4xl md:text-6xl font-semibold tracking-tight bg-gradient-to-r from-purple-400 via-fuchsia-400 to-pink-400 text-transparent bg-clip-text drop-shadow-[0_0_10px_rgba(168,85,247,0.35)] mb-2 md:mb-3">
                   {user ? `${user.username}님의 일상에, 판타지를 보여줄게요` : '신비한천사60님의 일상에, 판타지를 보여줄게요'}
@@ -1496,79 +1591,10 @@ return (
                   >보러가기 &gt;</button>
               </div>
                 <div className="w-full max-w-5xl">
-                  <div className="mt-4 md:mt-6 space-y-4">
-                    {/* 요구된 육하원칙 문구: 입력 가능한 드롭다운 + 기본값 플레이스홀더 */}
-                    {quickIdx === -1 ? (
-                    <div className="space-y-2 mb-4 md:mb-6 text-[15px] md:text-base leading-7 text-gray-200">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <div className="flex items-center gap-2">
-                          <EditableSelect data-w5-input="background" className="w-20 sm:w-24" inputClassName="truncate" value={w5.background} onChange={(v) => setW5(p => ({ ...p, background: v }))} options={W5_BACKGROUND_OPTS} placeholder="현대" onEnter={handleEnterFromCta} />
-                          <span>배경,</span>
+                  <div className="mt-4 md:mt-6 space-y-4" />
+                </div>
+              </div>
             </div>
-                        <div className="flex items-center gap-2">
-                          <EditableSelect className="w-20 sm:w-24" inputClassName="truncate" value={w5.place} onChange={(v) => setW5(p => ({ ...p, place: v }))} options={W5_PLACE_OPTS} placeholder="회사" onEnter={handleEnterFromCta} />
-                          <span>에서,</span>
-                </div>
-                        <div className="flex items-center gap-2">
-                          <EditableSelect className="w-24 sm:w-28" inputClassName="truncate" value={w5.role} onChange={(v) => setW5(p => ({ ...p, role: v }))} options={W5_ROLE_OPTS} placeholder="말단" onEnter={handleEnterFromCta} />
-                          <span>인,</span>
-              </div>
-                        <div className="flex items래center gap-2">
-                          <EditableSelect className="w-16 sm:w-20" inputClassName="truncate" value={w5.speaker} onChange={(v) => setW5(p => ({ ...p, speaker: v }))} options={W5_SPEAKER_OPTS} placeholder="내가" onEnter={handleEnterFromCta} />
-                          <span>,</span>
-                </div>
-                        <div className="flex items-center gap-2">
-                          <EditableSelect className="w-20 sm:w-24" inputClassName="truncate" value={w5.mutation} onChange={(v) => setW5(p => ({ ...p, mutation: v }))} options={W5_MUTATION_OPTS} placeholder="각성" onEnter={handleEnterFromCta} />
-                          <span>해,</span>
-                </div>
-                        <div className="flex items-center gap-2">
-                          <EditableSelect className="w-28 sm:w-32" inputClassName="truncate" value={w5.goal} onChange={(v) => setW5(p => ({ ...p, goal: v }))} options={W5_GOAL_OPTS} placeholder="먼치킨" onEnter={handleEnterFromCta} />
-                          <span>로,</span>
-                          <EditableSelect className="w-28 sm:w-32" inputClassName="truncate" value={w5.become || '되는'} onChange={(v) => setW5(p => ({ ...p, become: v }))} options={W5_BECOME_OPTS} placeholder="되는(연애하는)" onEnter={handleEnterFromCta} />
-                          <button type="button" className="ml-1 p-0.5 text-gray-400 hover:text-white cursor-pointer relative z-10" title="템플릿 순환" onMouseDown={(e)=>e.preventDefault()} onClick={handleCycleQuick}>
-                             <RotateCcw className="w-3.5 h-3.5" />
-                           </button>
-                        </div>
-                      </div>
-                      <div className="flex items-center justify-end gap-2">
-                        <span className="text-purple-300/90 drop-shadow-[0_0_6px_rgba(168,85,247,0.25)]">이야기 바로 써 드릴까요?</span>
-                  <button
-                          type="button"
-                          className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-transparent text-gray-400 hover:text-white hover:border-gray-600 bg-transparent transition-colors"
-                          title="실행"
-                          onClick={handleEnterFromCta}
-                        >
-                          <CornerDownLeft className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </div>
-                    ) : (
-                      <div className="space-y-2 mb-4 md:mb-6 w-full">
-                        <div className="mb-4 md:mb-6 w-full">
-                          <div className="rounded-lg border border-gray-700 bg-gray-900/60 px-4 py-3 text-purple-200 whitespace-pre-wrap flex items-center justify-between gap-3">
-                            <span className="flex-1">{quickText}</span>
-                            <button type="button" className="p-0.5 text-gray-400 hover:text-white cursor-pointer relative z-10" title="템플릿 순환" onMouseDown={(e)=>e.preventDefault()} onClick={handleCycleQuick}>
-                               <RotateCcw className="w-4 h-4" />
-                             </button>
-              </div>
-                </div>
-                        <div className="flex items-center justify-end gap-2">
-                          <span className="text-purple-300/90 drop-shadow-[0_0_6px_rgba(168,85,247,0.25)]">이야기 바로 써 드릴까요?</span>
-                          <button
-                            type="button"
-                            className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-transparent text-gray-400 hover:text-white hover:border-gray-600 bg-transparent transition-colors"
-                            title="실행"
-                            onClick={handleEnterFromCta}
-                          >
-                            <CornerDownLeft className="w-4 h-4" />
-                          </button>
-                </div>
-              </div>
-                    )}
-      </div>
-                    </div>
-            </div>
-            </section>
           ) : (
           <div className="w-full max-w-4xl mx-auto h-full flex flex-col px-3">
               {(mode === 'char' || mode === 'sim') && (
@@ -1670,11 +1696,11 @@ return (
                                   : (editingMessageId === m.id 
                                       ? 'bg-gray-900/30 border border-gray-800/50 px-4 py-3 ring-2 ring-purple-500/70 shadow-[0_0_24px_rgba(168,85,247,0.55)] bg-gradient-to-br from-purple-900/15 to-fuchsia-700/10'
                                       : 'bg-gray-900/30 border border-gray-800/50 px-4 py-3')}`}>
-                                  {isStreaming ? (
+                                  { m.thinking ? (
                                     <div className="inline-flex items-center gap-1 text-gray-400">
                                       <Loader2 className="w-3.5 h-3.5 animate-spin" />
                                       <span className="text-xs">생성 중…</span>
-                          </div>
+                                    </div>
                                   ) : (
                                     <>
                                       {m.role === 'assistant' && !m.error ? (
@@ -1689,44 +1715,12 @@ return (
                                                 onInput={(e) => { if (editingMessageId === m.id) setEditedContent(e.currentTarget.textContent || ''); }}
                                               >
                                                 {(() => {
-                                                  // 텍스트를 줄바꿈 기준으로 분리
                                                   const lines = truncated.split('\n');
-                                                  const totalLines = lines.length;
-                                                  
-                                                  return lines.map((line, idx) => {
-                                                    // 마지막 5줄에 대해 점진적 블러 적용
-                                                    const fromEnd = totalLines - idx;
-                                                    let blurClass = '';
-                                                    let opacity = 1;
-                                                    
-                                                    if (fromEnd === 1) {
-                                                      // 마지막 줄: 강한 블러
-                                                      blurClass = 'blur-[2px]';
-                                                      opacity = 0.3;
-                                                    } else if (fromEnd === 2) {
-                                                      // 마지막에서 두 번째: 중간 블러
-                                                      blurClass = 'blur-[1.5px]';
-                                                      opacity = 0.5;
-                                                    } else if (fromEnd === 3) {
-                                                      // 마지막에서 세 번째: 약한 블러
-                                                      blurClass = 'blur-[1px]';
-                                                      opacity = 0.7;
-                                                    } else if (fromEnd === 4) {
-                                                      // 마지막에서 네 번째: 매우 약한 블러
-                                                      blurClass = 'blur-[0.5px]';
-                                                      opacity = 0.85;
-                                                    }
-                                                    
-                                                    return (
-                                                      <div 
-                                                        key={idx} 
-                                                        className={blurClass}
-                                                        style={{ opacity }}
-                                                      >
-                                                        {line || '\u00A0'}
-                                                      </div>
-                                                    );
-                                                  });
+                                                  return lines.map((line, idx) => (
+                                                    <div key={idx}>
+                                                      {line || '\u00A0'}
+                                                    </div>
+                                                  ));
                                                 })()}
                                               </div>
                                             </>
@@ -1746,70 +1740,61 @@ return (
                                         <>{truncated}</>
                                       )}
                                       {m.role === 'assistant' && !m.error && (
-                                        <>
-                                          {/* 하단 액션 바: 텍스트 박스 우측 하단 경계선 바깥에 표시 */}
-                                          <div className="absolute -bottom-3 -right-3 translate-y-full md:translate-y-0 md:bottom-2 md:right-2 flex items-center gap-1 z-10">
-                                            <div className="flex items-center gap-1 px-1.5 py-1 rounded-full bg-gray-900/70 border border-gray-700 backdrop-blur-sm shadow">
-                                              <button
-                                                type="button"
-                                                className="p-1 rounded hover:bg-gray-800 text-gray-300 hover:text-white"
-                                                title="복사"
-                                                onClick={() => { try { navigator.clipboard.writeText(m.fullContent || text); window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'success', message: '복사됨' } })); } catch {} }}
-                                              >
-                                                <CopyIcon className="w-4 h-4" />
-                                              </button>
-                                              <button
-                                                type="button"
-                                                className="p-1 rounded hover:bg-gray-800 text-gray-300 hover:text-white"
-                                                title="다시 생성"
-                                                onClick={() => { try { handleGenerate(); } catch {} }}
-                                              >
-                                                <RotateCcw className="w-4 h-4" />
-                                              </button>
-                                              {editingMessageId === m.id ? (
-                                                <>
-                                                  <button
-                                                    type="button"
-                                                    className="p-1 rounded hover:bg-gray-800 text-gray-300 hover:text-white"
-                                                    title="편집 완료"
-                                                    onClick={() => {
-                                                      const newText = editedContent || text;
-                                                      setMessages(curr => curr.map(msg => msg.id === m.id ? { ...msg, content: newText, fullContent: newText } : msg));
-                                                      try { saveJson(LS_MESSAGES_PREFIX + activeSessionId, (messages||[]).map(msg => msg.id === m.id ? { ...msg, content: newText, fullContent: newText } : msg)); } catch {}
-                                                      setEditingMessageId(null);
-                                                      setEditedContent('');
-                                                    }}
-                                                  >
-                                                    <Check className="w-4 h-4" />
-                                                  </button>
-                                                  <button
-                                                    type="button"
-                                                    className="p-1 rounded hover:bg-gray-800 text-gray-300 hover:text-white"
-                                                    title="편집 취소"
-                                                    onClick={() => {
-                                                      setEditingMessageId(null);
-                                                      setEditedContent('');
-                                                    }}
-                                                  >
-                                                    <X className="w-4 h-4" />
-                                                  </button>
-                                                </>
-                                              ) : (
-                                                <button
-                                                  type="button"
-                                                  className="p-1 rounded hover:bg-gray-800 text-gray-300 hover:text-white"
-                                                  title={'편집'}
-                                                  onClick={() => {
-                                                    setEditingMessageId(m.id);
-                                                    setEditedContent(m.fullContent || text);
-                                                  }}
-                                                >
-                                                  <Pencil className="w-4 h-4" />
-                                                </button>
-                                              )}
-                                            </div>
-                                          </div>
-                                        </>
+                                        <div className="absolute right-0 -bottom-px translate-y-full flex items-center gap-1 z-20">
+                                          <div className="flex items-center gap-1 px-2 py-1 bg-gray-900/85 border border-gray-700 shadow-lg">
+                                             <button
+                                               type="button"
+                                               className="p-1 hover:bg-gray-800 text-gray-300 hover:text-white"
+                                               title="복사"
+                                               onClick={() => { try { navigator.clipboard.writeText(m.fullContent || text); window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'success', message: '복사됨' } })); } catch {} }}
+                                             >
+                                               <CopyIcon className="w-4 h-4" />
+                                             </button>
+                                             <button
+                                               type="button"
+                                               className="p-1 hover:bg-gray-800 text-gray-300 hover:text-white"
+                                               title="다시 생성"
+                                               onClick={() => { try { handleRerun(m); } catch {} }}
+                                             >
+                                               <RotateCcw className="w-4 h-4" />
+                                             </button>
+                                             {editingMessageId === m.id ? (
+                                               <>
+                                                 <button
+                                                   type="button"
+                                                   className="p-1 hover:bg-gray-800 text-gray-300 hover:text-white"
+                                                   title="편집 완료"
+                                                   onClick={() => {
+                                                     const newText = editedContent || text;
+                                                     setMessages(curr => curr.map(msg => msg.id === m.id ? { ...msg, content: newText, fullContent: newText } : msg));
+                                                     try { saveJson(LS_MESSAGES_PREFIX + activeSessionId, (messages||[]).map(msg => msg.id === m.id ? { ...msg, content: newText, fullContent: newText } : msg)); } catch {}
+                                                     setEditingMessageId(null);
+                                                     setEditedContent('');
+                                                   }}
+                                                 >
+                                                   <Check className="w-4 h-4" />
+                                                 </button>
+                                                 <button
+                                                   type="button"
+                                                   className="p-1 hover:bg-gray-800 text-gray-300 hover:text-white"
+                                                   title="편집 취소"
+                                                   onClick={() => { setEditingMessageId(null); setEditedContent(''); }}
+                                                 >
+                                                   <X className="w-4 h-4" />
+                                                 </button>
+                                               </>
+                                             ) : (
+                                               <button
+                                                 type="button"
+                                                 className="p-1 hover:bg-gray-800 text-gray-300 hover:text-white"
+                                                 title={'편집'}
+                                                 onClick={() => { setEditingMessageId(m.id); setEditedContent(m.fullContent || text); }}
+                                               >
+                                                 <Pencil className="w-4 h-4" />
+                                               </button>
+                                             )}
+                                           </div>
+                                        </div>
                                       )}
                                     </>
                                   )}
@@ -1831,8 +1816,21 @@ return (
                                   {/* 태그 그룹: 4개 / 3개 두 줄 구성, 가운데 정렬 */}
                                   {(() => {
                                     const all = ((m.storyMode || 'auto') === 'genre' ? GENRE_REMIX_TAGS : SNAP_REMIX_TAGS);
-                                    const top = all.slice(0, 4);
-                                    const bottom = all.slice(4, 7);
+                                    // 요청: '밈스럽게'는 '따뜻하게' 좌측에 노출되도록 재정렬
+                                    let ordered = all;
+                                    if ((m.storyMode || 'auto') !== 'genre') {
+                                      const idxWarm = ordered.indexOf('따뜻하게');
+                                      const idxMeme = ordered.indexOf('밈스럽게');
+                                      if (idxWarm > -1 && idxMeme > -1 && idxMeme > idxWarm) {
+                                        // 밈스럽게를 따뜻하게 바로 앞 위치로 이동
+                                        const arr = [...ordered];
+                                        const [tag] = arr.splice(idxMeme, 1);
+                                        arr.splice(idxWarm, 0, tag);
+                                        ordered = arr;
+                                      }
+                                    }
+                                    const top = ordered.slice(0, 4);
+                                    const bottom = ordered.slice(4, 7);
                                     const Chip = (tag) => {
                                       const selected = (remixSelected[m.id] || []).includes(tag);
                                       return (
@@ -1904,8 +1902,18 @@ return (
               </div>
     </div>
        {/* 화면 하단 고정 입력창 - 새로운 심플 UI */}
-       <div className="fixed bottom-0 left-64 right-0 bg-gradient-to-t from-gray-900 to-transparent">
-           <div className="w-full max-w-4xl mx-auto p-3">
+      <div className="fixed bottom-0 left-64 right-0 bg-gradient-to-t from-gray-900 to-transparent">
+          <div className="w-full max-w-4xl mx-auto p-3">
+            {(stableMessages || []).length === 0 && (
+              <div className="mb-1 text-center select-none">
+                <div className="text-sm sm:text-base text-purple-300 font-medium drop-shadow-[0_0_12px_rgba(168,85,247,0.65)]">
+                  좋아하는 순간을 찍은 사진이나, 생성한 이미지를 올려보세요. 바로 거기서부터 모든 스토리가 시작됩니다.
+                </div>
+                <div className="mt-1 text-[11px] sm:text-xs text-gray-400">
+                  이모지와 텍스트를 추가하면 스토리가 더 풍부해져요.
+                </div>
+              </div>
+            )}
              {/* 새로운 Composer UI */}
              <Composer 
                onSend={async (payload) => {

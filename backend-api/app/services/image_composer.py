@@ -28,13 +28,13 @@ class ImageComposer:
     CANVAS_HEIGHT = 1024
     
     # 레터박스 높이 (상하 각각)
-    LETTERBOX_HEIGHT = 128
+    LETTERBOX_HEIGHT = 140
     
     # 자막 설정
-    SUBTITLE_FONT_SIZE = 24
+    SUBTITLE_FONT_SIZE = 28
     SUBTITLE_COLOR = (255, 255, 255)  # 흰색
     SUBTITLE_SHADOW_COLOR = (0, 0, 0)  # 검정 그림자
-    SUBTITLE_PADDING = 20
+    SUBTITLE_PADDING = 16
     
     def __init__(self, font_path: Optional[str] = None):
         """
@@ -164,37 +164,44 @@ class ImageComposer:
         draw = ImageDraw.Draw(canvas)
         font = self._get_font()
         
-        # 텍스트 크기 계산
-        bbox = draw.textbbox((0, 0), text, font=font)
-        text_width = bbox[2] - bbox[0]
-        text_height = bbox[3] - bbox[1]
-        
-        # 위치 계산
-        x = (self.CANVAS_WIDTH - text_width) // 2
-        
+        # 렌더 영역 계산(가로 폭 제한)
+        max_width = self.CANVAS_WIDTH - self.SUBTITLE_PADDING * 2
+        # 단어 기반 래핑(한글은 공백 적으니 글자 단위 폴백 포함)
+        lines = []
+        current = ""
+        for ch in text:
+            test = current + ch
+            w = draw.textlength(test, font=font)
+            if w <= max_width:
+                current = test
+            else:
+                if current:
+                    lines.append(current)
+                current = ch
+        if current:
+            lines.append(current)
+
+        # 총 텍스트 높이
+        _, _, _, line_h = draw.textbbox((0,0), "김Ag", font=font)
+        line_height = line_h
+        total_height = line_height * len(lines)
+
+        # Y 위치(레터박스 중앙 정렬)
         if position == "bottom":
-            # 하단 레터박스 중앙
-            y = self.CANVAS_HEIGHT - self.LETTERBOX_HEIGHT // 2 - text_height // 2
+            area_center = self.CANVAS_HEIGHT - self.LETTERBOX_HEIGHT // 2
         else:
-            # 상단 레터박스 중앙
-            y = self.LETTERBOX_HEIGHT // 2 - text_height // 2
-            
-        # 그림자 효과 (약간 오프셋)
+            area_center = self.LETTERBOX_HEIGHT // 2
+        start_y = area_center - total_height // 2
+
+        # 중앙 정렬로 줄단위 렌더
         shadow_offset = 2
-        draw.text(
-            (x + shadow_offset, y + shadow_offset),
-            text,
-            font=font,
-            fill=self.SUBTITLE_SHADOW_COLOR
-        )
-        
-        # 본 텍스트
-        draw.text(
-            (x, y),
-            text,
-            font=font,
-            fill=self.SUBTITLE_COLOR
-        )
+        y = start_y
+        for line in lines:
+            line_w = draw.textlength(line, font=font)
+            x = (self.CANVAS_WIDTH - line_w) // 2
+            draw.text((x + shadow_offset, y + shadow_offset), line, font=font, fill=self.SUBTITLE_SHADOW_COLOR)
+            draw.text((x, y), line, font=font, fill=self.SUBTITLE_COLOR)
+            y += line_height
         
     async def _download_image(self, url: str) -> bytes:
         """이미지 다운로드"""
