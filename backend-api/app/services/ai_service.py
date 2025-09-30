@@ -11,9 +11,17 @@ from .vision_service import stage1_keywords_from_image_url, stage1_keywords_from
 import mimetypes
 import logging
 import imghdr
+from io import BytesIO
+from PIL import Image
 import base64
+import asyncio
 
 logger = logging.getLogger(__name__)
+
+# Claude 모델명 상수 (전역 참조용)
+CLAUDE_MODEL_PRIMARY = 'claude-sonnet-4-5-20250929'
+# CLAUDE_MODEL_PRIMARY = 'claude-sonnet-4-20250514'
+CLAUDE_MODEL_LEGACY = 'claude-sonnet-4-20250514'  # 폴백/호환용
 
 # 안전 문자열 변환 유틸
 def _as_text(val) -> str:
@@ -29,6 +37,92 @@ def _as_text(val) -> str:
 # --- Gemini AI 설정 ---
 genai.configure(api_key=settings.GEMINI_API_KEY)
 claude_client = anthropic.AsyncAnthropic(api_key=settings.CLAUDE_API_KEY)
+# --- OCR 제거: 기존 PaddleOCR 경량 사용 구간을 완전 비활성화 ---
+def _extract_numeric_phrases_ocr_bytes(img_bytes: bytes) -> list[str]:
+    # PaddleOCR 제거로 더 이상 실행하지 않음
+    return []
+
+def _parse_user_intent(user_hint: str) -> dict:
+    """자연어 입력에서 간단한 의도/톤/시점/속도 등을 휴리스틱으로 추출(추가 호출 없이).
+    반환: { intent, stance, tone, pace, continue, remix, constraints, transform_tags }
+    """
+    hint = (user_hint or "").strip().lower()
+    # 기본값
+    intent = None
+    stance = None
+    tone = None
+    pace = None
+    want_continue = False
+    want_remix = False
+    constraints: list[str] = []
+    tags: list[str] = []
+
+    # 한국어 키워드(소문자 변환 전제 → 한글엔 영향 없음)
+    def _has(*keys: str) -> bool:
+        return any(k in user_hint for k in keys)
+
+    # intent
+    if _has("연애", "사랑", "데이트", "썸"):
+        intent = "romance"
+        tone = tone or "설렘/서정"
+    if _has("복수", "응징", "통수"):
+        intent = intent or "revenge"
+    if _has("스릴러", "공포", "호러", "미스터리", "추리", "느와르"):
+        intent = intent or "thriller"
+
+    # stance
+    if _has("1인칭", "일인칭", "나로"):
+        stance = "first"
+    if _has("3인칭", "삼인칭", "그녀", "그로"):
+        stance = stance or "third"
+
+    # tone
+    if _has("잔잔", "따뜻", "힐링"):
+        tone = tone or "잔잔/따뜻"
+    if _has("후킹", "몰입", "자극"):
+        tone = tone or "후킹/강렬"
+
+    # pace
+    if _has("빠르게", "속도감", "템포 빠"):
+        pace = "fast"
+    if _has("천천히", "느리게"):
+        pace = pace or "slow"
+
+    # control flags
+    if _has("이어줘", "이어 써", "계속 써"):
+        want_continue = True
+    if _has("바꿔줘", "다르게", "느낌으로 바꿔"):
+        want_remix = True
+
+    # transform tags(UI 태그와 접점)
+    if _has("로맨스"):
+        tags.append("로맨스")
+    if _has("잔잔"):
+        tags.append("잔잔하게")
+    if _has("위트", "밈"):
+        tags.append("밈스럽게")
+    if stance == "first":
+        tags.append("1인칭시점")
+    if stance == "third":
+        tags.append("3인칭시점")
+
+    # constraints
+    if _has("회사", "직장", "상사"):
+        constraints.append("실명/회사명/직함 금지")
+
+    return {
+        "intent": intent,
+        "stance": stance,
+        "tone": tone,
+        "pace": pace,
+        "continue": want_continue,
+        "remix": want_remix,
+        "constraints": constraints,
+        "transform_tags": tags,
+    }
+
+# (프리워밍 롤백) 업로드 프리워밍 유틸 제거
+
 
 # OpenAI 설정
 import openai
@@ -59,6 +153,49 @@ async def tag_image_keywords(image_url: str, model: str = 'claude') -> dict:
         # 이미지 다운로드 및 base64 인코딩 + MIME 탐지
         response = requests.get(image_url, timeout=10)
         img_bytes = response.content
+
+        # --- pHash 캐시 조회(경량 average hash) ---
+        try:
+            from app.core.database import redis_client as _redis
+            def _avg_hash(bytes_data: bytes, hash_size: int = 8) -> str:
+                img = Image.open(BytesIO(bytes_data)).convert('L').resize((hash_size, hash_size), Image.BILINEAR)
+                pixels = list(img.getdata())
+                avg = sum(pixels) / len(pixels)
+                bits = ''.join('1' if p > avg else '0' for p in pixels)
+                return hex(int(bits, 2))[2:].rjust((hash_size*hash_size)//4, '0')
+            ahash = _avg_hash(img_bytes)
+            cache_key = f"vision:ahash:{ahash}:tags"
+            # URL 기반 키(쿼리 제거)
+            cache_key_url = None
+            try:
+                p = urlparse(image_url)
+                url_no_q = urlunparse((p.scheme, p.netloc, p.path, '', '', ''))
+                cache_key_url = f"vision:url:{url_no_q}:tags"
+                cached_url = await _redis.get(cache_key_url)
+                if cached_url:
+                    try:
+                        txt = cached_url.decode('utf-8') if isinstance(cached_url, (bytes, bytearray)) else str(cached_url)
+                        data = json.loads(txt)
+                        if isinstance(data, dict):
+                            logging.info("Vision tags cache hit")
+                            return data
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            cached = await _redis.get(cache_key)
+            if cached:
+                try:
+                    txt = cached.decode('utf-8') if isinstance(cached, (bytes, bytearray)) else str(cached)
+                    data = json.loads(txt)
+                    if isinstance(data, dict):
+                        logging.info("Vision tags cache hit")
+                        return data
+                except Exception:
+                    pass
+        except Exception:
+            ahash = None
+            cache_key_url = None
         image_data = base64.b64encode(img_bytes).decode('utf-8')
         # 우선순위: 응답 헤더 → 바이트 시그니처 → 기본값
         ct = (response.headers.get('Content-Type') or '').lower()
@@ -100,7 +237,7 @@ async def tag_image_keywords(image_url: str, model: str = 'claude') -> dict:
                 txt = await get_claude_completion(
                     prompt,
                     max_tokens=1000,
-                    model='claude-3-5-sonnet-20241022',
+                    model=CLAUDE_MODEL_PRIMARY,
                     image_base64=image_data,
                     image_mime=image_mime
                 )
@@ -114,6 +251,14 @@ async def tag_image_keywords(image_url: str, model: str = 'claude') -> dict:
                 data = json.loads(txt)
                 if isinstance(data, dict):
                     logging.info("Claude Vision tagging successful")
+                    # 캐시 저장
+                    try:
+                        if cache_key_url:
+                            await _redis.setex(cache_key_url, 86400, json.dumps(data, ensure_ascii=False))
+                        if ahash:
+                            await _redis.setex(cache_key, 86400, json.dumps(data, ensure_ascii=False))
+                    except Exception:
+                        pass
                     return data
             except Exception as e:
                 logging.error(f"Claude Vision tagging failed: {e}")
@@ -141,6 +286,13 @@ async def tag_image_keywords(image_url: str, model: str = 'claude') -> dict:
             data = json.loads(txt)
             if isinstance(data, dict):
                 logging.info("Gemini Vision tagging successful")
+                try:
+                    if cache_key_url:
+                        await _redis.setex(cache_key_url, 86400, json.dumps(data, ensure_ascii=False))
+                    if ahash:
+                        await _redis.setex(cache_key, 86400, json.dumps(data, ensure_ascii=False))
+                except Exception:
+                    pass
                 return data
                 
         except Exception as e:
@@ -171,6 +323,30 @@ async def extract_image_narrative_context(image_url: str, model: str = 'claude')
         # 이미지 다운로드 및 base64 인코딩 + MIME 탐지
         response = requests.get(image_url, timeout=10)
         img_bytes = response.content
+
+        # --- pHash 캐시 조회(컨텍스트) ---
+        try:
+            from app.core.database import redis_client as _redis
+            def _avg_hash(bytes_data: bytes, hash_size: int = 8) -> str:
+                img = Image.open(BytesIO(bytes_data)).convert('L').resize((hash_size, hash_size), Image.BILINEAR)
+                pixels = list(img.getdata())
+                avg = sum(pixels) / len(pixels)
+                bits = ''.join('1' if p > avg else '0' for p in pixels)
+                return hex(int(bits, 2))[2:].rjust((hash_size*hash_size)//4, '0')
+            ahash = _avg_hash(img_bytes)
+            cache_key = f"vision:ahash:{ahash}:ctx"
+            cached = await _redis.get(cache_key)
+            if cached:
+                try:
+                    txt = cached.decode('utf-8') if isinstance(cached, (bytes, bytearray)) else str(cached)
+                    data = json.loads(txt)
+                    if isinstance(data, dict):
+                        logging.info("Vision ctx cache hit")
+                        return data
+                except Exception:
+                    pass
+        except Exception:
+            ahash = None
         image_data = base64.b64encode(img_bytes).decode('utf-8')
         ct = (response.headers.get('Content-Type') or '').lower()
         if ct.startswith('image/'):
@@ -188,6 +364,9 @@ async def extract_image_narrative_context(image_url: str, model: str = 'claude')
             "- 상상/추측 금지, 보이는 단서 위주. 암시는 narrative_axes에서 'hint'로 간단히.\n"
             "- is_selfie: 셀카인지 판단 (거울 셀카, 팔 뻗어 찍기, 셀카봉 등 모두 포함)\n"
             "- person_count: 보이는 인물 수 (0=인물없음)\n"
+            "- style_mode: 장면의 스타일을 'snap' 또는 'genre' 중 하나로 제안.\n"
+            "- confidence: 0~1 실수로 판단 신뢰도. 0.5는 중립.\n"
+            "- cues: 판단에 사용한 근거 키워드 배열(예: selfie, weapon, magic, everyday, cafe 등).\n"
             "스키마: {\n"
             "  subjects:[{role?:string, age_range?:string, gender?:string, attire?:string, emotion?:string, pose?:string}],\n"
             "  relations:[{a_idx:int, b_idx:int, relation:string, evidence:string}],\n"
@@ -195,7 +374,10 @@ async def extract_image_narrative_context(image_url: str, model: str = 'claude')
             "  palette:[string], genre_cues:[string],\n"
             "  narrative_axes:{desire?:string, conflict?:string, stakes?:string},\n"
             "  tone:{mood_words?:[string], pace?:string},\n"
-            "  person_count:int\n"
+            "  person_count:int,\n"
+            "  style_mode?:string,\n"
+            "  confidence?:number,\n"
+            "  cues?:[string]\n"
             "}"
         )
         
@@ -205,7 +387,7 @@ async def extract_image_narrative_context(image_url: str, model: str = 'claude')
                 txt = await get_claude_completion(
                     schema_prompt,
                     max_tokens=800,
-                    model='claude-3-5-sonnet-20241022',
+                    model=CLAUDE_MODEL_PRIMARY,
                     image_base64=image_data,
                     image_mime=image_mime
                 )
@@ -219,6 +401,11 @@ async def extract_image_narrative_context(image_url: str, model: str = 'claude')
                 data = json.loads(txt)
                 if isinstance(data, dict):
                     logging.info("Claude Vision narrative context successful")
+                    try:
+                        if ahash:
+                            await _redis.setex(cache_key, 86400, json.dumps(data, ensure_ascii=False))
+                    except Exception:
+                        pass
                     return data
             except Exception as e:
                 logging.error(f"Claude Vision narrative context failed: {e}")
@@ -228,6 +415,11 @@ async def extract_image_narrative_context(image_url: str, model: str = 'claude')
             txt = await get_gemini_completion(schema_prompt + f"\nimage_url: {image_url}", max_tokens=600, model='gemini-2.5-pro')
             data = json.loads(txt)
             if isinstance(data, dict):
+                try:
+                    if ahash:
+                        await _redis.setex(cache_key, 86400, json.dumps(data, ensure_ascii=False))
+                except Exception:
+                    pass
                 return data
         except Exception:
             pass
@@ -235,22 +427,93 @@ async def extract_image_narrative_context(image_url: str, model: str = 'claude')
     except Exception:
         return {}
 
-def build_image_grounding_block(tags: dict, pov: str | None = None, style_prompt: str | None = None, ctx: dict | None = None, username: str | None = None) -> str:
+async def analyze_image_tags_and_context(image_url: str, model: str = 'claude') -> tuple[dict, dict]:
+    """단일 Vision 호출로 태그(tags)와 컨텍스트(context)를 동시에 추출합니다.
+    실패 시 호출자가 폴백을 사용하도록 예외를 던집니다.
+    """
+    try:
+        logging.info("Vision combine: start (unified tags+context)")
+        import requests, base64, json
+        # 이미지 다운로드 및 MIME 추정
+        resp = requests.get(image_url, timeout=10)
+        img_bytes = resp.content
+        ct = (resp.headers.get('Content-Type') or '').lower()
+        if ct.startswith('image/'):
+            image_mime = ct.split(';')[0].strip()
+        else:
+            kind = imghdr.what(None, h=img_bytes)
+            image_mime = {
+                'jpeg': 'image/jpeg', 'jpg': 'image/jpeg', 'png': 'image/png',
+                'gif': 'image/gif', 'webp': 'image/webp', 'bmp': 'image/bmp'
+            }.get(kind, 'image/jpeg')
+        image_b64 = base64.b64encode(img_bytes).decode('utf-8')
+        # 통합 스키마 프롬프트(건조/사실 전용)
+        prompt = (
+            "이미지를 사실적으로만 기술하라. 추측/비유/감탄 금지. 장르/무드 형용사 금지(fantasy/noir/surreal/mysterious/cinematic 등). 모르면 'unknown'.\n"
+            "JSON 으로만 출력하라.\n"
+            "{\n"
+            "  \"tags\": {\n"
+            "    \"place\": one_of['cafe','street','park','campus','indoor','home','office','store','beach','mountain','unknown'],\n"
+            "    \"objects\": [noun-only strings],\n"
+            "    \"lighting\": one_of['daylight','indoor','night','overcast','sunset','unknown'],\n"
+            "    \"weather\": one_of['clear','cloudy','rain','snow','unknown'],\n"
+            "    \"colors\": [basic color words],\n"
+            "    \"textures\": [noun-only],\n"
+            "    \"sounds_implied\": [noun-only],\n"
+            "    \"smells_implied\": [noun-only],\n"
+            "    \"temperature\": one_of['warm','cool','neutral','unknown'],\n"
+            "    \"movement\": one_of['still','slight','visible','unknown'],\n"
+            "    \"focal_point\": string,\n"
+            "    \"story_hooks\": [noun phrases],\n"
+            "    \"in_image_text\": [exact text], \"numeric_phrases\": [string]\n"
+            "  },\n"
+            "  \"context\": {\n"
+            "    \"person_count\": number,\n"
+            "    \"camera\": {angle:one_of['eye','overhead','low','unknown'], distance:one_of['wide','medium','close','unknown'], is_selfie:boolean},\n"
+            "    \"style_mode\": one_of['snap','genre'], \"confidence\": number\n"
+            "  }\n"
+            "}"
+        )
+        # Claude 우선 호출(건조 모드: 낮은 온도/탑P, 토큰 축소)
+        txt = await get_claude_completion(
+            prompt,
+            temperature=0.1,
+            max_tokens=700,
+            model=CLAUDE_MODEL_PRIMARY,
+            image_base64=image_b64,
+            image_mime=image_mime
+        )
+        if '```json' in txt:
+            txt = txt.split('```json')[1].split('```')[0].strip()
+        elif '```' in txt:
+            txt = txt.split('```')[1].split('```')[0].strip()
+        data = json.loads(txt)
+        if not isinstance(data, dict):
+            raise ValueError("combined response is not dict")
+        logging.info("Vision combine: success (provider=Claude)")
+        return data.get('tags') or {}, data.get('context') or {}
+    except Exception:
+        # 호출자 폴백
+        raise
+
+def build_image_grounding_block(tags: dict, pov: str | None = None, style_prompt: str | None = None, ctx: dict | None = None, username: str | None = None, story_mode: str | None = None) -> str:
     # 시점 자동 결정 로직
     if ctx and not pov:
-        person_count = ctx.get('person_count', 0)
-        camera = ctx.get('camera', {})
-        is_selfie = camera.get('is_selfie', False)
-        
-        if person_count == 0:
-            # 인물이 없으면 1인칭
-            pov = "1인칭 '나'"
-        elif is_selfie:
-            # 셀카면 1인칭
+        # SNAP 모드: 모든 사진은 유저 본인의 경험/순간 → 무조건 1인칭
+        if story_mode == "snap":
             pov = "1인칭 '나'"
         else:
-            # 그 외는 3인칭
-            pov = "3인칭 관찰자"
+            # GENRE 모드: 기존 로직 유지
+            person_count = ctx.get('person_count', 0)
+            camera = ctx.get('camera', {})
+            is_selfie = camera.get('is_selfie', False)
+            
+            if person_count == 0:
+                pov = "1인칭 '나'"
+            elif is_selfie:
+                pov = "1인칭 '나'"
+            else:
+                pov = "3인칭 관찰자"
     
     place = _as_text(tags.get("place")).strip()
     objects = ", ".join([str(x) for x in (tags.get("objects") or []) if str(x).strip()])
@@ -369,7 +632,7 @@ async def generate_image_prompt_from_story(story_text: str, original_tags: dict 
             if original_tags.get('mood'):
                 prompt += f"\n분위기: {original_tags['mood']}"
 
-        response = await get_claude_completion(prompt, temperature=0.7)
+        response = await get_claude_completion(prompt, temperature=0.2)
         return response.strip()[:200]  # 최대 200자
     except Exception as e:
         logger.error(f"Failed to generate image prompt: {e}")
@@ -381,16 +644,20 @@ async def write_story_from_image_grounded(image_url: str, user_hint: str = "", p
     """이미지 태깅→고정조건 프롬프트→집필(자가검증은 1패스 내장)"""
     # Stage-1 lightweight grounding (fallback-friendly)
     kw2, caption = stage1_keywords_from_image_url(image_url)
-    # Stage-2 advanced tags (Claude Vision 우선)
-    tags = await tag_image_keywords(image_url, model='claude')
-    ctx = await extract_image_narrative_context(image_url, model='claude')
+    # Stage-2: 통합 Vision 호출(태그+컨텍스트) → 실패 시 기존 분리 호출로 폴백
+    try:
+        tags, ctx = await analyze_image_tags_and_context(image_url, model='claude')
+    except Exception:
+        tags = await tag_image_keywords(image_url, model='claude')
+        ctx = await extract_image_narrative_context(image_url, model='claude')
     # 스냅 모드에서는 개인정보 보호를 위해 이름 주입 금지
     block = build_image_grounding_block(
         tags,
         pov=pov,
         style_prompt=style_prompt,
         ctx=ctx,
-        username=None if story_mode == "snap" else username
+        username=None if story_mode == "snap" else username,
+        story_mode=story_mode
     )
     if kw2:
         block += "\n스냅 키워드(경량 태깅): " + ", ".join(kw2)
@@ -411,10 +678,19 @@ async def write_story_from_image_grounded(image_url: str, user_hint: str = "", p
         required_tokens.append(str(extra))
     for extra in (ctx.get('genre_cues') or [])[:1]:
         required_tokens.append(str(extra))
-    # 이미지 내 텍스트/수치 문구를 우선 포함
-    for t in (tags.get('numeric_phrases') or [])[:2]:
+    # 이미지 내 텍스트/수치 문구를 우선 포함 + OCR 보강
+    numeric_phrases = list(tags.get('numeric_phrases') or [])[:2]
+    in_texts_tag = list(tags.get('in_image_text') or [])[:2]
+    # OCR로 숫자/단위만 보강(없는 경우에만)
+    try:
+        if not numeric_phrases:
+            more = _extract_numeric_phrases_ocr_bytes(_http_get_bytes(image_url))
+            numeric_phrases = more[:2] if more else []
+    except Exception:
+        pass
+    for t in numeric_phrases:
         required_tokens.append(str(t))
-    for t in (tags.get('in_image_text') or [])[:2]:
+    for t in in_texts_tag:
         required_tokens.append(str(t))
     # 최대 10개로 제한
     required_tokens = [x for x in required_tokens if x][:10]
@@ -470,14 +746,15 @@ async def write_story_from_image_grounded(image_url: str, user_hint: str = "", p
         # 인스타 공유 효능감 강화 지시
         sys_instruction += (
             "\n특기: 인스타 캡션처럼 자연스럽고 간결하게. 과장 금지, 일상 감성 유지."
-            "\n스타일: 짧은 호흡(문장 평균 10~18자), 쉼표 최소, 마침표 자주."
-            "\n문단: 1~2문장 단락, 줄바꿈으로 리듬 살리기."
+            "\n스타일: 적당한 호흡(문장 평균 15~25자), 쉼표 적절히, 마침표로 리듬."
+            "\n문단: 2~3문장 단락, 줄바꿈으로 리듬 살리기."
             "\n어휘: 담백하고 위트 있게. 해시태그/이모지 사용 금지."
             "\n톤: 20~30대 여성 취향의 소소한 위안/힐링 느낌."
             "\n개인정보: 사람 이름(고유명) 사용 금지. 인물 지칭은 '그' 또는 '그녀'만 사용."
             "\n역할: 당신은 트렌디하고 감성적인 인스타 인플루언서다. 군더더기 없이 핵심을 잡고,"
             " 읽는 즉시 스크롤을 멈추게 하는 한 줄의 후킹을 초반에 배치하라."
             " 텍스트에 담긴 느낌은 과하지 않게, 그러나 분명하게 전달하라."
+            "\n금지: 제목(#, 별표 등), 메타텍스트, 부제, 챕터명 일절 금지. 첫 문장부터 바로 이야기로 시작."
         )
     elif story_mode == "genre":
         sys_instruction = (
@@ -490,9 +767,10 @@ async def write_story_from_image_grounded(image_url: str, user_hint: str = "", p
         # 하이라이트 후킹 강화 지시
         sys_instruction += (
             "\n특기: 첫 2문장에 강력한 후킹. 시각적 장면성이 뚜렷하게 드러나게 써라."
-            "\n스타일: 웹소설 톤. 짧은 호흡(문장 평균 12~20자), 쉼표 최소, 빠른 템포."
+            "\n스타일: 웹소설 톤. 적당한 호흡(문장 평균 18~30자), 쉼표 적절히, 빠른 템포 유지."
             "\n대사: 전체의 40~60% 비중. 줄바꿈을 자주 사용해 박자감 유지."
-            "\n문단: 1~3문장 단락. 장황한 비유/설명체 금지. show-don't-tell."
+            "\n문단: 2~4문장 단락. 장황한 비유/설명체 금지. show-don't-tell."
+            "\n금지: 제목(#, 별표 등), 메타텍스트, 부제, 챕터명 일절 금지. 첫 문장부터 바로 이야기로 시작."
         )
     else:
         sys_instruction = (
@@ -503,6 +781,12 @@ async def write_story_from_image_grounded(image_url: str, user_hint: str = "", p
             + pov_instruction
         )
     
+    # 사용자 의도(자연어) 해석을 경량 반영
+    try:
+        intent_info = _parse_user_intent(user_hint)
+    except Exception:
+        intent_info = {}
+
     # 스타일 힌트 추가
     if style_prompt:
         sys_instruction += f"\n스타일: {style_prompt}"
@@ -520,9 +804,16 @@ async def write_story_from_image_grounded(image_url: str, user_hint: str = "", p
         # 감정 힌트가 있으면 추가 지시사항 생성
         emotion_instruction = "\n- 지정된 감정과 분위기를 스토리 전반에 녹여내라"
     
-    # 스토리 모드별 글자 수 설정
+    # 스토리 모드별 글자 수 설정(+의도 보정)
     if story_mode == "snap":
         length_guide = "200~300자"
+        # 이어쓰기 의도 시 길이 고정 가이드
+        if intent_info.get("continue"):
+            length_guide = "200~300자"
+        if intent_info.get("transform_tags") and "글더길게" in intent_info.get("transform_tags", []):
+            length_guide = "260~360자"
+        if intent_info.get("transform_tags") and "글더짧게" in intent_info.get("transform_tags", []):
+            length_guide = "150~220자"
         extra_instructions = (
             "\n[추가 지시]\n"
             "- 일상의 작은 순간을 특별하게 포착하라\n"
@@ -531,13 +822,19 @@ async def write_story_from_image_grounded(image_url: str, user_hint: str = "", p
             "- 짧지만 여운이 남는 마무리"
         )
     elif story_mode == "genre":
-        length_guide = "1000~1200자"
+        length_guide = "650~750자"
+        if intent_info.get("continue"):
+            length_guide = "280~320자"
+        if intent_info.get("transform_tags") and "글더길게" in intent_info.get("transform_tags", []):
+            length_guide = "720~850자"
+        if intent_info.get("transform_tags") and "글더짧게" in intent_info.get("transform_tags", []):
+            length_guide = "400~500자"
         extra_instructions = (
             "\n[추가 지시]\n"
-            "- 첫 문장부터 독자의 시선을 사로잡아라\n"
-            "- 오감을 모두 활용하여 공간감을 살려라\n"
-            "- 인물이 있다면 그들의 미묘한 감정과 관계를 드러내라\n"
-            "- 다음 장면이 궁금해지도록 여운을 남겨라"
+            "- 첫 문장부터 훅을 걸되, 사건은 예열~중반까지만 진행\n"
+            "- 기승전결을 한 번에 끝내지 말 것(도파민 리듬 유지)\n"
+            "- 700자 내에서는 인물/공간/첫 갈등을 심고, 클라이맥스는 금지\n"
+            "- 이어쓰기(300자)마다 작은 훅/반전/미끼를 하나씩 추가"
         )
     else:
         length_guide = "400~600자"
@@ -549,9 +846,31 @@ async def write_story_from_image_grounded(image_url: str, user_hint: str = "", p
             "- 다음 장면이 궁금해지도록 여운을 남겨라"
         )
     
+    # 시점/톤/속도/제약 보강(의도)
+    intent_lines = []
+    if intent_info.get("stance") == "first":
+        intent_lines.append("시점: 1인칭 '나'로 서술")
+    if intent_info.get("stance") == "third":
+        intent_lines.append("시점: 3인칭 관찰자로 서술. 인물 지칭은 '그/그녀'만 사용")
+    if intent_info.get("tone"):
+        intent_lines.append(f"톤: {intent_info.get('tone')}")
+    if intent_info.get("pace") == "fast":
+        intent_lines.append("템포: 빠르게, 군더더기 제거")
+    if intent_info.get("constraints"):
+        for c in intent_info.get("constraints", []):
+            intent_lines.append(f"제약: {c}")
+    if intent_info.get("transform_tags"):
+        intent_lines.append("태그: " + ", ".join(intent_info.get("transform_tags", [])[:6]))
+    if intent_info.get("continue"):
+        intent_lines.append("정책: 이어쓰기 — 직전 톤/시점/리듬 유지, 새 사건 1개")
+    if intent_info.get("remix"):
+        intent_lines.append("정책: 리믹스 — transform_tags를 강하게 적용, 사실/숫자/이미지 텍스트는 유지")
+
+    intent_block = ("\n[의도 반영]\n" + "\n".join(intent_lines)) if intent_lines else ""
+
     grounding_text = (
         f"[지시]\n아래 고정 조건을 반드시 반영하여 첫 장면({length_guide})을 한국어로 작성하라.\n\n"
-        f"{block}\n\n"
+        f"{block}{intent_block}\n\n"
         f"[사용자 힌트]\n{user_hint.strip()}\n"
         + extra_instructions
         + emotion_instruction
@@ -628,10 +947,13 @@ async def write_story_from_image_grounded(image_url: str, user_hint: str = "", p
                 f"{grounding_text}"
             )
             
+            # 디버그: sys_instruction 확인
+            logging.info(f"[DEBUG] story_mode={story_mode}, sys_instruction_len={len(sys_instruction)}, sys_start={sys_instruction[:80]}")
+            
             message = await claude_client.messages.create(
-                model='claude-sonnet-4-20250514',
+                model=CLAUDE_MODEL_PRIMARY,
                 max_tokens=1800,
-                temperature=0.8,
+                temperature=0.7,
                 system=sys_instruction,  # 시스템 프롬프트 별도 전달
                 messages=[{
                     "role":"user",
@@ -657,9 +979,9 @@ async def write_story_from_image_grounded(image_url: str, user_hint: str = "", p
                         f"{grounding_text}"
                     )
                     retry_msg = await claude_client.messages.create(
-                        model='claude-sonnet-4-20250514',
+                        model=CLAUDE_MODEL_PRIMARY,
                         max_tokens=1800,
-                        temperature=0.8,
+                        temperature=0.7,
                         messages=[{
                             "role":"user",
                             "content":[
@@ -682,7 +1004,7 @@ async def write_story_from_image_grounded(image_url: str, user_hint: str = "", p
     #     text = await _gemini_mm(image_url)
     if not text:
         # 최종 폴백(텍스트-only) - Claude 사용
-        text = await get_ai_completion("[텍스트 폴백]\n" + grounding_text, model="claude", sub_model="claude-sonnet-4-20250514", max_tokens=1800)
+        text = await get_ai_completion("[텍스트 폴백]\n" + grounding_text, model="claude", sub_model=CLAUDE_MODEL_PRIMARY, max_tokens=1800)
     # 자가 검증 스킵 (Claude Vision은 이미 충분히 정확함)
     # 필요시 간단한 체크만
     if not text or len(text) < 100:
@@ -690,17 +1012,17 @@ async def write_story_from_image_grounded(image_url: str, user_hint: str = "", p
         text = await get_ai_completion(
             f"{sys_instruction}\n\n{grounding_text}", 
             model="claude", 
-            sub_model="claude-sonnet-4-20250514", 
+            sub_model=CLAUDE_MODEL_PRIMARY, 
             max_tokens=1800
         )
 
     # 이미지 내 텍스트/수치 문구 커버리지 검증 및 1회 보정
     try:
         must_phrases: list[str] = []
-        for p in (tags.get('numeric_phrases') or [])[:2]:
+        for p in numeric_phrases[:2]:
             if isinstance(p, str) and p.strip():
                 must_phrases.append(p.strip())
-        for p in (tags.get('in_image_text') or [])[:2]:
+        for p in in_texts_tag[:2]:
             if isinstance(p, str) and p.strip():
                 must_phrases.append(p.strip())
         missing = [p for p in must_phrases if p and (p not in text)]
@@ -715,7 +1037,7 @@ async def write_story_from_image_grounded(image_url: str, user_hint: str = "", p
             text = await get_ai_completion(
                 fix_prompt,
                 model="claude",
-                sub_model="claude-sonnet-4-20250514",
+                sub_model=CLAUDE_MODEL_PRIMARY,
                 max_tokens=1800
             )
     except Exception:
@@ -834,7 +1156,7 @@ async def get_claude_completion(
     prompt: str,
     temperature: float = 0.7,
     max_tokens: int = 1800,
-    model: str = "claude-sonnet-4-20250514",
+    model: str = CLAUDE_MODEL_PRIMARY,
     image_base64: str | None = None,
     image_mime: str | None = None
 ) -> str:
@@ -968,7 +1290,7 @@ async def get_ai_completion(
         model_name = sub_model or 'gemini-2.5-pro'
         return await get_gemini_completion(prompt, temperature, max_tokens, model=model_name)
     elif model == "claude":
-        model_name = sub_model or 'claude-sonnet-4-20250514'
+        model_name = sub_model or CLAUDE_MODEL_PRIMARY
         return await get_claude_completion(prompt, temperature, max_tokens, model=model_name)
     elif model == "gpt":
         model_name = sub_model or 'gpt-4o'
@@ -990,7 +1312,7 @@ async def get_ai_completion_stream(
         async for chunk in get_gemini_completion_stream(prompt, temperature, max_tokens, model=model_name):
             yield chunk
     elif model == "claude":
-        model_name = sub_model or 'claude-sonnet-4-20250514'
+        model_name = sub_model or CLAUDE_MODEL_PRIMARY
         async for chunk in get_claude_completion_stream(prompt, temperature, max_tokens, model=model_name):
             yield chunk
     elif model == "gpt":
@@ -1011,9 +1333,32 @@ async def get_ai_chat_response(
     response_length_pref: str = 'medium'
 ) -> str:
     """사용자가 선택한 모델로 AI 응답 생성"""
-    
-    # 프롬프트와 사용자 메시지 결합
-    full_prompt = f"{character_prompt}\n\nUser: {user_message}\nAssistant:"
+    # 사용자 자연어 의도 경량 파싱(추가 API 호출 없음)
+    try:
+        intent_info = _parse_user_intent(user_message)
+    except Exception:
+        intent_info = {}
+
+    # 의도 블록 구성
+    intent_lines = []
+    if intent_info.get("intent"):
+        intent_lines.append(f"의도: {intent_info.get('intent')}")
+    if intent_info.get("stance") == "first":
+        intent_lines.append("시점: 1인칭 '나'")
+    if intent_info.get("stance") == "third":
+        intent_lines.append("시점: 3인칭(인물 지칭은 '그/그녀')")
+    if intent_info.get("tone"):
+        intent_lines.append(f"톤: {intent_info.get('tone')}")
+    if intent_info.get("pace"):
+        intent_lines.append(f"템포: {intent_info.get('pace')}")
+    for c in intent_info.get("constraints", []):
+        intent_lines.append(f"제약: {c}")
+    if intent_info.get("transform_tags"):
+        intent_lines.append("태그: " + ", ".join(intent_info.get("transform_tags", [])[:6]))
+    intent_block = ("\n[의도 반영]\n" + "\n".join(intent_lines)) if intent_lines else ""
+
+    # 프롬프트와 사용자 메시지 결합(+의도 블록)
+    full_prompt = f"{character_prompt}{intent_block}\n\nUser: {user_message}\nAssistant:"
 
     # 응답 길이 선호도 → 최대 토큰 비율 조정 (중간 기준 1.0)
     base_max_tokens = 1800
@@ -1035,14 +1380,14 @@ async def get_ai_chat_response(
     elif preferred_model == 'claude':
         # 프론트의 가상 서브모델명을 실제 Anthropic 모델 ID로 매핑
         # 유효하지 않은 값이 들어오면 최신 안정 버전으로 폴백
-        claude_default = 'claude-sonnet-4-20250514'
+        claude_default = CLAUDE_MODEL_PRIMARY
         claude_mapping = {
             # UI 표기 → 실제 모델 ID (모두 최신 Sonnet 4로 통일)
             'claude-4-sonnet': claude_default,
             'claude-3.7-sonnet': claude_default,
             'claude-3.5-sonnet-v2': claude_default,
             'claude-3-5-sonnet-20241022': claude_default,
-            'claude-sonnet-4-20250514': 'claude-sonnet-4-20250514',
+            'claude-sonnet-4-20250514': CLAUDE_MODEL_PRIMARY,
         }
 
         model_name = claude_mapping.get(preferred_sub_model, claude_default)

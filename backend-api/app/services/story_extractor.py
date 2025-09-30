@@ -191,13 +191,8 @@ class StoryExtractor:
         story_mode: Optional[str] = None
     ) -> List[SceneExtract]:
         """상위 N개 장면 선택 (단계 균형 고려)"""
-        # 스토리 모드별 선택 개수 조정
-        if story_mode == "snap":
-            target_count = min(3, len(scenes))  # 일상: 3장면으로 상향
-        elif story_mode == "genre":
-            target_count = min(4, len(scenes))  # 장르: 4장면
-        else:
-            target_count = min(3, len(scenes))  # 기본: 3장면
+        # 항상 3장 고정 (부족 시 호출 측에서 대체컷 보충)
+        target_count = min(3, len(scenes))
             
         # 단계별로 그룹화
         by_stage = {stage: [] for stage in StoryStage}
@@ -283,42 +278,85 @@ class StoryExtractor:
             # 마지막 수단: 자르기(줄임표 없이)
             return t[:max_len]
 
-        # 대사가 있으면 대사 우선
+        import re as _re
+        s = sentence.strip()
+        
+        # 1) 대사 우선 (가장 임팩트 높음)
         dialogue_match = self.DIALOGUE_PATTERN.search(sentence)
         if dialogue_match:
-            dialogue = dialogue_match.group(1) or dialogue_match.group(2) or dialogue_match.group(3)
-            if dialogue:
-                return _shorten_copy(dialogue, max_length)
-         
-        # 모드별 축약 전략
-        s = sentence.strip()
-        if len(s) <= max_length:
-            return _shorten_copy(s, max_length)
-        # SNAP: 첫 구절 위주(인스타 캡션 톤)
-        if story_mode == "snap":
-            # 쉼표/접속어 기준으로 첫 구절 선택
-            import re as _re
-            parts = _re.split(r"[,…—\-]|그리고|하지만|그런데", s)
-            head = (parts[0] if parts else s).strip()
-            return _shorten_copy(head, max_length)
-        # GENRE: 후킹감 있는 말미/전환 구간을 사용
+            dialogue = (dialogue_match.group(1) or dialogue_match.group(2) or dialogue_match.group(3) or "").strip()
+            if dialogue and len(dialogue) <= max_length:
+                return self._polish_subtitle(dialogue)
+            elif dialogue:
+                # 대사가 길면 핵심 구절만
+                parts = _re.split(r'[,…]', dialogue)
+                best = max(parts, key=lambda p: len(p.strip())) if parts else dialogue
+                return self._polish_subtitle(best[:max_length])
+        
+        # 2) 의문문 (후킹 강함)
+        question_parts = _re.findall(r'[^.!?]*\?', s)
+        for q in question_parts:
+            q = q.strip()
+            if q and len(q) <= max_length:
+                return self._polish_subtitle(q)
+        
+        # 3) 반전/클라이맥스 신호어 포함 구문 (장르 우선)
         if story_mode == "genre":
-            # 클라이맥스 신호어 이후를 우선 사용
-            for sig in ["갑자기", "순간", "마침내", "드디어", "결국"]:
+            for sig in ["갑자기", "순간", "그때", "하지만", "마침내", "드디어", "결국"]:
                 idx = s.find(sig)
                 if idx != -1:
                     tail = s[idx:]
-                    return _shorten_copy(tail, max_length)
-            # 마지막 구절 사용
-            import re as _re
-            parts = _re.split(r"[,…—\-]", s)
+                    # 문장 경계까지
+                    tail_sent = _re.split(r'[.!?]', tail)[0].strip()
+                    if tail_sent and len(tail_sent) <= max_length:
+                        return self._polish_subtitle(tail_sent)
+                    elif tail_sent:
+                        # 길면 앞부분만
+                        return self._polish_subtitle(tail_sent[:max_length])
+        
+        # 4) 짧은 완결 구문 찾기 (완결 어미로 끝나는 짧은 문장)
+        sentences = _re.split(r'[.!?]', s)
+        for sent in sentences:
+            sent = sent.strip()
+            if 8 <= len(sent) <= max_length and _re.search(r'(다|요|지|네|어|까)$', sent):
+                return self._polish_subtitle(sent)
+        
+        # 5) SNAP: 첫 구절 (쉼표 기준)
+        if story_mode == "snap":
+            parts = _re.split(r'[,…—]', s)
+            head = (parts[0] if parts else s).strip()
+            if len(head) <= max_length:
+                return self._polish_subtitle(head)
+        
+        # 6) 폴백: 마지막 구절 또는 앞부분
+        if story_mode == "genre":
+            parts = _re.split(r'[,…—]', s)
             tail = (parts[-1] if parts else s).strip()
-            return _shorten_copy(tail, max_length)
-        # 기본: 첫 문장 후 축약
-        first_sentence = self.SENTENCE_PATTERN.split(s)[0]
-        if first_sentence:
-            return _shorten_copy(first_sentence, max_length)
-        return _shorten_copy(s, max_length)
+            if len(tail) <= max_length:
+                return self._polish_subtitle(tail)
+        
+        # 최종: 어절 단위로 자연스럽게
+        words = s[:max_length+5].split()
+        cut = " ".join(words[:-1]) if len(words) > 1 else s[:max_length]
+        return self._polish_subtitle(cut)
+    
+    def _polish_subtitle(self, text: str) -> str:
+        """자막 후처리: 불완전 어미 제거, 조사 회피, 완결형 보장"""
+        import re as _re
+        t = text.strip()
+        # 조사로 끝나면 바로 앞 어절까지만
+        if _re.search(r'[을를은는이가의에게와과도만]$', t):
+            words = t.split()
+            t = " ".join(words[:-1]) if len(words) > 1 else t
+        # 불완전 어미 → 완결형
+        t = _re.sub(r'했는$', '했다', t)
+        t = _re.sub(r'가는$', '간다', t)
+        t = _re.sub(r'하는$', '한다', t)
+        t = _re.sub(r'되는$', '된다', t)
+        t = _re.sub(r'인$', '이다', t)
+        # 말줄임표 제거
+        t = t.rstrip('.…')
+        return t.strip()
         
     def _fallback_extraction(self, text: str, story_mode: Optional[str] = None) -> List[SceneExtract]:
         """폴백: 균등 분할"""

@@ -28,10 +28,10 @@ class ImageComposer:
     CANVAS_HEIGHT = 1024
     
     # 레터박스 높이 (상하 각각)
-    LETTERBOX_HEIGHT = 140
+    LETTERBOX_HEIGHT = 128
     
     # 자막 설정
-    SUBTITLE_FONT_SIZE = 28
+    SUBTITLE_FONT_SIZE = 36
     SUBTITLE_COLOR = (255, 255, 255)  # 흰색
     SUBTITLE_SHADOW_COLOR = (0, 0, 0)  # 검정 그림자
     SUBTITLE_PADDING = 16
@@ -161,6 +161,9 @@ class ImageComposer:
         position: str = "bottom"
     ):
         """캔버스에 자막 렌더링"""
+        # 개행 제거 (한 줄로 강제)
+        text = text.replace('\n', ' ').replace('\r', ' ').strip()
+        
         draw = ImageDraw.Draw(canvas)
         font = self._get_font()
         

@@ -107,7 +107,7 @@ class SeedreamClient:
                 if "User is locked" in msg or "403" in msg:
                     logger.warning(f"fal_client quota/forbidden: {e}")
                     return None  # type: ignore
-                logger.error(f"fal_client subscribe failed, fallback to REST: {e}")
+                logger.debug(f"fal_client subscribe failed, fallback to REST: {e}")
                 # 폴백으로 REST 호출 시도
 
         # 2) REST 폴백 경로
@@ -137,11 +137,17 @@ class SeedreamClient:
                         return None  # type: ignore
                     if resp.status >= 400:
                         error_text = await resp.text()
-                        logger.error(f"Seedream API error {resp.status}: {error_text}")
+                        # INFO 최소화: 상세는 DEBUG
+                        logger.debug(f"Seedream API error {resp.status}: {error_text}")
                         if resp.status == 429:
                             raise SeedreamQuotaError("API quota exceeded")
                         if resp.status == 400:
                             raise SeedreamValidationError(f"Invalid parameters: {error_text}")
+                        # 422(policy) 한정 1회 정제 재시도
+                        if resp.status == 422:
+                            cleaned = self._soft_sanitize_prompt(merged_prompt)
+                            if cleaned and cleaned != merged_prompt:
+                                return await self._retry_once_with_clean_prompt(session, cleaned, size_obj, config)
                         raise SeedreamAPIError(f"API error {resp.status}: {error_text}")
 
                     data = await resp.json()
@@ -158,10 +164,10 @@ class SeedreamClient:
                         request_id=data.get("requestId") or data.get("request_id")
                     )
             except asyncio.TimeoutError:
-                logger.error("Seedream request timeout")
+                logger.debug("Seedream request timeout")
                 raise SeedreamTimeoutError("Request timeout after 120s")
             except aiohttp.ClientError as e:
-                logger.error(f"Seedream connection error: {e}")
+                logger.debug(f"Seedream connection error: {e}")
                 raise SeedreamConnectionError(f"Connection failed: {e}")
                 
     async def generate_batch(
@@ -238,6 +244,43 @@ class SeedreamClient:
             return pos
         # 간단한 억제 구문으로 결합
         return f"{pos}, without: {neg}"
+    
+    def _soft_sanitize_prompt(self, merged_prompt: str) -> Optional[str]:
+        """422(policy) 대비 약한 정제: 금칙 가능성 높은 토큰 제거/축소.
+        과도한 변경은 피하고, 인물/텍스트/타이포 관련 금칙만 정리.
+        """
+        try:
+            p = merged_prompt
+            # 지나치게 강한 금지 토큰 축소
+            for bad in ["movie poster", "poster", "title", "typography", "subtitles", "caption", "text", "hangul text", "korean text"]:
+                p = p.replace(bad, "")
+            # 쉼표 중복 정리
+            while ", ," in p:
+                p = p.replace(", ,", ",")
+            return p.strip(", ") or merged_prompt
+        except Exception:
+            return merged_prompt
+    
+    async def _retry_once_with_clean_prompt(self, session: aiohttp.ClientSession, cleaned_prompt: str, size_obj: dict, config: SeedreamConfig) -> Optional[SeedreamResult]:
+        payload = {"input": {"prompt": cleaned_prompt, "image_size": size_obj, "num_images": 1, "seed": int(config.seed) if config.seed is not None else None, "enable_safety_checker": True}}
+        payload["input"] = {k: v for k, v in payload["input"].items() if v is not None}
+        async with session.post(self.BASE_URL, headers=self.headers, json=payload, timeout=aiohttp.ClientTimeout(total=120)) as resp2:
+            if resp2.status >= 400:
+                logger.debug(f"Seedream retry failed {resp2.status}: {await resp2.text()}")
+                return None
+            data = await resp2.json()
+            body = data.get("data") if isinstance(data, dict) and "data" in data else data
+            images = (body or {}).get("images", []) if isinstance(body, dict) else []
+            if not images:
+                return None
+            image_data = images[0]
+            return SeedreamResult(
+                image_url=image_data.get("url"),
+                prompt=cleaned_prompt,
+                seed=(body or {}).get("seed"),
+                latency=(data.get("timings", {}) if isinstance(data, dict) else {}).get("inference"),
+                request_id=data.get("requestId") or data.get("request_id")
+            )
         
     async def generate_story_scenes(
         self,

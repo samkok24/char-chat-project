@@ -30,7 +30,7 @@ import { storiesAPI, charactersAPI, chatAPI, rankingAPI } from '../lib/api';
 // import { generationAPI } from '../lib/generationAPI'; // removed: use existing backend flow
 import { Switch } from '../components/ui/switch';
 import { DEFAULT_SQUARE_URI } from '../lib/placeholder';
-import { Loader2, Plus, Send, Sparkles, Image as ImageIcon, Trash2, ChevronLeft, ChevronRight, X, CornerDownLeft, Copy as CopyIcon, RotateCcw, Settings, Pencil, Check } from 'lucide-react';
+import { Loader2, Plus, Send, Sparkles, Image as ImageIcon, Trash2, ChevronLeft, ChevronRight, X, CornerDownLeft, Copy as CopyIcon, RotateCcw, Settings, Pencil, Check, RefreshCcw } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import StoryExploreCard from '../components/StoryExploreCard';
 import { CharacterCard } from '../components/CharacterCard';
@@ -467,9 +467,11 @@ const [editingMessageId, setEditingMessageId] = useState(null);
 const [editedContent, setEditedContent] = useState('');
 // Remix 선택 상태: messageId -> string[]
 const [remixSelected, setRemixSelected] = useState({});
+// 태그 뷰 토글: 'auto'일 땐 현재 스토리 모드에 맞춰 시작, 아이콘으로 일시 토글
+const [tagViewMode, setTagViewMode] = useState('auto'); // 'auto' | 'snap' | 'genre'
 // 스냅 태그: 상단 4, 하단 3만 노출(순서 중요)
-const SNAP_REMIX_TAGS = ['위트있게','빵터지게','밈스럽게','따뜻하게','힐링이되게','잔잔하게','여운있게','진지하게','차갑게'];
-const GENRE_REMIX_TAGS = ['남성향판타지','로맨스','로코','성장물','미스터리','추리','스릴러','호러','느와르'];
+const SNAP_REMIX_TAGS = ['위트있게','빵터지게','밈스럽게','따뜻하게','힐링이되게','잔잔하게','여운있게','진지하게','차갑게','글더길게','글더짧게','3인칭시점'];
+const GENRE_REMIX_TAGS = ['남성향판타지','로맨스','로코','성장물','미스터리','추리','스릴러','호러','느와르','글더길게','글더짧게','1인칭시점','3인칭시점'];
 
 const toggleRemixTag = useCallback((msgId, tag) => {
   setRemixSelected(prev => {
@@ -491,9 +493,9 @@ const handleRemixGenerate = useCallback(async (msg, assistantText) => {
     const selected = remixSelected[msg.id] || [];
     const tags = selected.join(', ');
     const styleDict = {
-      '위트있게': '10~30대 커뮤니티 밈 문법을 약하게 반영: 의외성/반전, 은근한 자조, 짤 캡션 톤의 단문(예: ~하는 나, ~했다가 ~함). 과한 신조어/초성 남발·비속어는 금지. 마지막에 짤로 쓰기 좋은 한 줄을 남길 것',
-      '빵터지게': '10~30대 커뮤니티 밈 문법을 강하게 반영: 과장된 비유 1~2개, 설의/반어 드립, 박자감 있는 단문, 타이밍 코미디. 의성어/효과음 1개까지 허용. 마지막 문장은 짤 캡션처럼 강한 펀치로 마무리',
-      '밈스럽게': '커뮤니티 짤/캡션 문법 적극 사용: "~함, ~임, ~아님?" 같은 종결, 상황극 괄호체(소량), 신조어 과감히 허용. 다만 비속어/혐오 표현은 금지. 1~2문단, 각 문단 1~2문장 단문으로, 마지막은 짤 텍스트로 바로 쓸 수 있게',
+      '위트있게': '일상 언어로 쓰되 재치/반전 1개 포함. 밈체 금지, 자연스러운 문장. 마지막 한 줄에 여운 있는 펀치라인',
+      '빵터지게': '상황 자체를 웃기게: 황당한 실수/어이없는 반전/예상 밖 행동. 밈체·과장 표현 금지. 사건의 타이밍과 전개로 웃김을 만들어라. 마지막은 "이게 뭐람" 같은 자조로 마무리',
+      '밈스럽게': '말투를 밈체로: "~함, ~임, ~아님?" 종결, 괄호체(소량), 신조어 과감히. 넷플릭스·코스프레·퐁당 같은 밈 단어 허용. 비속어 금지. 마지막은 짤 캡션으로 바로 쓸 수 있게',
       '따뜻하게': '부드러운 어휘, 온기/위로, 여운 남기는 마무리',
       '힐링이되게': '편안한 리듬, 자연/호흡/쉼의 이미지, 긴장감 최소화',
       '잔잔하게': '차분한 묘사, 작은 사건, 낮은 대비, 은은한 감정',
@@ -511,10 +513,20 @@ const handleRemixGenerate = useCallback(async (msg, assistantText) => {
       '느와르': '거친 사실주의, 냉소적 톤, 어두운 이미지'
     };
     const tagDesc = selected.map(t => styleDict[t] || `${t} 느낌을 강하게`).join('; ');
-    const memeNote = (selected.includes('위트있게') || selected.includes('빵터지게'))
-      ? `\n- (밈) 10~30대 커뮤니티 밈 문법을 반영: 의외성/반전, 템플릿형 표현(예: ~하는 나, ~했다가 ~함) 단문. 초성 남발/비속어 금지. 마지막에 짤 캡션으로 바로 쓰기 좋은 한 줄 포함.`
-      : '';
-    const rules = selected.length > 0 ? `\n[리믹스 규칙 - 반드시 준수]\n- 선택 태그를 매우 강하게 반영: ${tags}\n- 태그 해석: ${tagDesc}${memeNote}\n- 초안과 톤/어휘/리듬/문장 구조가 눈에 띄게 달라야 한다 (문장 유사 반복 최소화).\n- 사실/숫자/이미지 내 텍스트는 절대 변경하지 말 것.\n- 메타발언/설명 금지(예: "태그 반영" 같은 문구 금지).` : '';
+    
+    // 특수 태그 강화 노트 (밈스럽게, 위트있게, 빵터지게)
+    let specialNotes = '';
+    if (selected.includes('밈스럽게')) {
+      specialNotes += `\n- (밈체 필수) 10~30대 커뮤니티 밈 문법 적극 사용: "~함, ~임, ~아님?" 종결, 괄호체, 신조어/밈 단어(넷플릭스 로딩, 코스프레, 퐁당 등). 비속어 금지. 말투를 완전히 밈체로 전환.`;
+    }
+    if (selected.includes('위트있게')) {
+      specialNotes += `\n- (위트 필수) 의외성/반전을 최소 1개 포함. 자연스러운 일상 언어 유지하되, 마지막 문장은 반드시 여운 있는 펀치라인으로. 과장 금지, 재치로 승부.`;
+    }
+    if (selected.includes('빵터지게')) {
+      specialNotes += `\n- (코미디 필수) 상황 자체를 황당하게: 실수/반전/예상 밖 행동을 중심 사건으로. 밈체 금지, 사건의 타이밍과 전개로만 웃김 유도. 마지막은 자조적 한 줄로.`;
+    }
+    
+    const rules = selected.length > 0 ? `\n[리믹스 규칙 - 반드시 준수]\n- 선택 태그를 매우 강하게 반영: ${tags}\n- 태그 해석: ${tagDesc}${specialNotes}\n- 초안과 톤/어휘/리듬/문장 구조가 눈에 띄게 달라야 한다 (문장 유사 반복 최소화).\n- 사실/숫자/이미지 내 텍스트는 절대 변경하지 말 것.\n- 메타발언/설명 금지(예: "태그 반영" 같은 문구 금지).` : '';
     const remixPrompt = `${rules}\n\n아래 초안을 같은 사실로 리믹스해줘. 스타일만 태그에 맞게 강하게 전환할 것:\n\n${assistantText}`.trim();
 
     const assistantId = crypto.randomUUID();
@@ -526,7 +538,8 @@ const handleRemixGenerate = useCallback(async (msg, assistantText) => {
     if (imageUrl) staged.push({ type: 'image', url: imageUrl });
     staged.push({ type: 'text', body: remixPrompt });
 
-    const response = await chatAPI.agentSimulate({ staged, mode: 'micro', storyMode: msg.storyMode || 'auto', model: storyModel, sub_model: storyModel });
+    const effectiveModeForRemix = (tagViewMode === 'auto' ? (msg.storyMode || 'auto') : tagViewMode);
+    const response = await chatAPI.agentSimulate({ staged, mode: 'micro', storyMode: effectiveModeForRemix, model: storyModel, sub_model: storyModel });
     const text = response.data?.assistant || '';
     const decidedMode = response.data?.story_mode || (msg.storyMode || 'auto');
 
@@ -1396,7 +1409,7 @@ const handleContinueInline = useCallback(async (msg) => {
     const mode = msg.storyMode || 'auto';
     const continueHint = (
       mode === 'genre'
-        ? "아래 본문을 즉시 이어서 400~600자 분량으로 써줘. 같은 시점/톤/속도 유지, 메타 금지, 중복 줄이기.\n[이어서] "
+        ? "아래 본문을 즉시 이어서 300자 내외로 써줘. 같은 시점/톤/속도 유지, 메타 금지, 중복 줄이기. 다음 장면을 궁금하게 만드는 작은 훅을 포함해.\n[이어서] "
         : "아래 본문을 즉시 이어서 200~300자 분량으로 써줘. 같은 시점/톤/호흡 유지, 메타 금지, 중복 줄이기.\n[이어서] "
     ) + recent;
 
@@ -1804,11 +1817,11 @@ return (
                             </div>
                             </div>
                               ) : (
-                                <div className={`group relative max-w-[85%] whitespace-pre-wrap rounded-2xl shadow-lg ${m.role === 'user' 
-                                  ? 'bg-purple-950/50 border border-purple-500/40 text-white px-3 py-2 shadow-[0_0_14px_rgba(168,85,247,0.45)]'
+                                <div className={`group relative whitespace-pre-wrap rounded-2xl shadow-lg ${m.role === 'user' 
+                                  ? 'max-w-[85%] bg-purple-950/50 border border-purple-500/40 text-white px-3 py-2 shadow-[0_0_14px_rgba(168,85,247,0.45)]'
                                   : (editingMessageId === m.id 
-                                      ? 'bg-gray-900/30 border border-gray-800/50 px-4 py-3 ring-2 ring-purple-500/70 shadow-[0_0_24px_rgba(168,85,247,0.55)] bg-gradient-to-br from-purple-900/15 to-fuchsia-700/10'
-                                      : 'bg-gray-900/30 border border-gray-800/50 px-4 py-3')}`}>
+                                      ? 'w-full max-w-3xl bg-gray-900/30 border border-gray-800/50 px-4 py-3 ring-2 ring-purple-500/70 shadow-[0_0_24px_rgba(168,85,247,0.55)] bg-gradient-to-br from-purple-900/15 to-fuchsia-700/10'
+                                      : 'w-full max-w-3xl bg-gray-900/30 border border-gray-800/50 px-4 py-3')}`}>
                                   { m.thinking ? (
                                     <div className="inline-flex items-center gap-1 text-gray-400">
                                       <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -1828,7 +1841,8 @@ return (
                                                 onInput={(e) => { if (editingMessageId === m.id) setEditedContent(e.currentTarget.textContent || ''); }}
                                               >
                                                 {(() => {
-                                                  const renderText = (isStreaming || m.continued || m.expanded) ? (m.content || '') : truncated;
+                                                  // 어시스턴트 문장은 생성 완료 후에도 절대 미리보기로 잘라내지 않음
+                                                  const renderText = (m.role === 'assistant' || isStreaming || m.continued || m.expanded) ? (m.content || '') : truncated;
                                                   const lines = renderText.split('\n');
                                                   return lines.map((line, idx) => (
                                                     <div key={idx}>
@@ -1845,7 +1859,7 @@ return (
                                               suppressContentEditableWarning
                                               onInput={(e) => { if (editingMessageId === m.id) setEditedContent(e.currentTarget.textContent || ''); }}
                                             >
-                                              {(isStreaming || m.continued || m.expanded) ? (m.content || '') : truncated}
+                                              {(m.role === 'assistant' || isStreaming || m.continued || m.expanded) ? (m.content || '') : truncated}
                                             </div>
                                           )}
                                           {/* 계속보기 버튼은 텍스트 박스 바깥으로 이동 */}
@@ -1930,26 +1944,54 @@ return (
                                 <div className="mt-4 mb-2 flex flex-col items-center gap-3">
                                   {/* 안내 문구 (가운데 정렬, 조금 크게) */}
                                   {!(isStreaming || m.continued) && (
-                                    <div className="text-base text-gray-100">이런 느낌으로 다시 보여드릴까요?</div>
+                                    <div className="text-base text-gray-100 flex items-center gap-2">
+                                      <span>이런 느낌으로 다시 보여드릴까요?</span>
+                                      <button
+                                        type="button"
+                                        className="p-1 rounded hover:bg-gray-800/60 text-gray-200"
+                                        title="태그 그룹 바꾸기"
+                                        onClick={() => {
+                                          // 현재 메시지의 선택 태그 초기화
+                                          setRemixSelected(prev => ({ ...prev, [m.id]: [] }));
+                                          // 토글: auto→상대 모드, snap↔genre
+                                          setTagViewMode(prev => {
+                                            const base = prev === 'auto' ? ((m.storyMode || 'auto') === 'genre' ? 'genre' : 'snap') : prev;
+                                            return base === 'snap' ? 'genre' : 'snap';
+                                          });
+                                        }}
+                                      >
+                                        <RefreshCcw className="w-4 h-4" />
+                                      </button>
+                                    </div>
                                   )}
                                   {/* 태그 그룹: 4개 / 3개 두 줄 구성, 가운데 정렬 */}
                                   {(() => {
-                                    const all = ((m.storyMode || 'auto') === 'genre' ? GENRE_REMIX_TAGS : SNAP_REMIX_TAGS);
-                                    // 요청: '밈스럽게'는 '따뜻하게' 좌측에 노출되도록 재정렬
+                                    const effectiveMode = tagViewMode === 'auto' ? ((m.storyMode || 'auto') === 'genre' ? 'genre' : 'snap') : tagViewMode;
+                                    const all = (effectiveMode === 'genre' ? GENRE_REMIX_TAGS : SNAP_REMIX_TAGS);
+                                    // 요청: '밈스럽게'는 '따뜻하게' 좌측에 노출되도록 재정렬 (스냅)
                                     let ordered = all;
                                     if ((m.storyMode || 'auto') !== 'genre') {
                                       const idxWarm = ordered.indexOf('따뜻하게');
                                       const idxMeme = ordered.indexOf('밈스럽게');
                                       if (idxWarm > -1 && idxMeme > -1 && idxMeme > idxWarm) {
-                                        // 밈스럽게를 따뜻하게 바로 앞 위치로 이동
                                         const arr = [...ordered];
                                         const [tag] = arr.splice(idxMeme, 1);
                                         arr.splice(idxWarm, 0, tag);
                                         ordered = arr;
                                       }
                                     }
-                                    const top = ordered.slice(0, 4);
-                                    const bottom = ordered.slice(4, 7);
+                                    // 총 10개 노출(상단 5, 하단 5) + 필수 태그 3종 보장
+                                    const ensure = ['글더길게','글더짧게','1인칭시점','3인칭시점'];
+                                    const visible = [];
+                                    for (const p of ensure) {
+                                      if (ordered.includes(p) && !visible.includes(p)) visible.push(p);
+                                    }
+                                    for (const t of ordered) {
+                                      if (visible.length >= 10) break;
+                                      if (!visible.includes(t)) visible.push(t);
+                                    }
+                                    const top = visible.slice(0, 5);
+                                    const bottom = visible.slice(5, 10);
                                     const Chip = (tag) => {
                                       const selected = (remixSelected[m.id] || []).includes(tag);
                                       return (

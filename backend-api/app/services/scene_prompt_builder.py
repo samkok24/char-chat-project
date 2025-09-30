@@ -19,13 +19,15 @@ class ScenePrompt:
 class ScenePromptBuilder:
     """장면별 프롬프트 생성기"""
     
-    # 기본 네거티브 프롬프트
+    # 기본 네거티브 프롬프트 (인물/텍스트 강력 제거)
     DEFAULT_NEGATIVE = (
-        "저해상도, 흐릿한 얼굴, 텍스트, 워터마크, 로고, 서명, 글자, 문자,"
-        " lowres, blurry, text, watermark, logo, signature,"
+        "저해상도, 흐릿한 얼굴, 텍스트, 워터마크, 로고, 서명, 글자, 문자, 한글, 영문,"
+        " lowres, blurry, text, watermark, logo, signature, letters, words, numbers, digits,"
         " deformed hands, extra fingers, extra limbs, bad anatomy,"
         " person, people, human, face, portrait, selfie, profile, character, figure, body, silhouette, crowd,"
-        " poster, movie poster, title, subtitles, caption, typography, korean text, hangul text"
+        " man, woman, boy, girl, child, adult, elderly, teen, hands, arms, legs, feet, skin, hair, eyes, nose, mouth,"
+        " poster, movie poster, album cover, book cover, title, subtitles, caption, typography, korean text, hangul text, english text,"
+        " human presence, humanoid, anthropomorphic"
     )
     
     # 스타일 프리셋
@@ -94,8 +96,27 @@ class ScenePromptBuilder:
             # 3. 단계별 분위기 조정
             stage_mood = self._get_stage_mood(stage)
             
-            # 4. 프롬프트 조립
+            # 4. 프롬프트 조립 (원본 이미지 태그 최우선 배치)
             positive_parts = []
+            
+            # [최우선] 원본 이미지의 핵심 요소로 시작 (정합성 확보)
+            if original_image_tags:
+                orig_place = (original_image_tags.get("place") or "").strip()
+                orig_objects = [str(x).strip() for x in (original_image_tags.get("objects") or []) if str(x).strip()]
+                orig_colors = [str(x).strip() for x in (original_image_tags.get("colors") or []) if str(x).strip()]
+                orig_lighting = (original_image_tags.get("lighting") or "").strip()
+                orig_mood = (original_image_tags.get("mood") or "").strip()
+                
+                if orig_place and orig_place != "unknown":
+                    positive_parts.append(orig_place)
+                if orig_objects:
+                    positive_parts.append(", ".join(orig_objects[:3]))
+                if orig_colors:
+                    positive_parts.append(f"{', '.join(orig_colors[:2])} color palette")
+                if orig_lighting and orig_lighting != "unknown":
+                    positive_parts.append(f"{orig_lighting} lighting")
+                if orig_mood and orig_mood != "unknown":
+                    positive_parts.append(f"{orig_mood} atmosphere")
             
             # 주요 피사체: 사람 금지
             if elements.get("subject") and self.allow_people:
@@ -105,8 +126,8 @@ class ScenePromptBuilder:
             if elements.get("action") and style != "snap":
                 positive_parts.append(elements["action"])
                 
-            # 배경/장소
-            if elements.get("location"):
+            # 배경/장소 (원본 태그와 중복 아닐 때만)
+            if elements.get("location") and not (original_image_tags and original_image_tags.get("place")):
                 positive_parts.append(elements["location"])
                 
             # 감정/분위기
@@ -123,18 +144,12 @@ class ScenePromptBuilder:
 
             # 스냅 전용: 인물 배제 유도(정물/풍경/사물 중심)
             if style == "snap":
-                positive_parts.append("still life, everyday objects, landscape only")
+                positive_parts.append("still life, everyday objects, landscape only, no people, object photography, scenic view, empty space")
 
             # 스테이지별 카메라/구도/시간대 토큰
             camera_tokens = self._get_stage_camera_tokens(stage, sentence, keywords)
             if camera_tokens:
                 positive_parts.extend(camera_tokens)
-                
-            # 원본 이미지 스타일 참조
-            if original_image_tags:
-                lighting = original_image_tags.get("lighting")
-                if lighting:
-                    positive_parts.append(f"{lighting} 조명")
                     
             # 스타일 접미사
             positive_parts.append(style_preset["suffix"])
@@ -330,12 +345,15 @@ class ScenePromptBuilder:
             mode = ""
         if mode == "snap":
             negative_parts.append("no hands, no arms, no legs, no skin, no selfie, no profile, no model, no subject, no close-up of a person")
+            negative_parts.append("no fingers, no limbs, no torso, no head, no shoulder, no back, no any body part")
             # 대상은 사물/풍경 중심으로 유도
-            negative_parts.append("object-only, background-only, still life, empty scene")
+            negative_parts.append("object-only, background-only, still life, empty scene, unpopulated")
             # 상업/스튜디오/HDR 톤 억제
             negative_parts.append("hdr, hyper-realistic, overly saturated, glossy, commercial, advertising, studio lighting, product shot, neon colors, overly sharp")
             # 가시적 인물 완전 금지(모델에 따라 더 잘 듣는 표현)
-            negative_parts.append("no visible people, no visible human")
+            negative_parts.append("no visible people, no visible human, no person in frame, no human silhouette")
+            # 텍스트 추가 억제
+            negative_parts.append("no text overlay, no captions, no labels, no signs, no writing, no alphabet, no numerals")
             
         # 과도한 밝기/암부 클리핑 방지(문맥 따라 보정)
         if "밝" not in sentence:

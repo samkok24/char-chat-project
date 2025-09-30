@@ -116,6 +116,9 @@ async def agent_simulate(
     응답: { assistant: string }
     """
     try:
+        character_prompt = ""
+        text = ""
+
         # 새로운 staged 형식 처리
         if "staged" in payload:
             # 새로운 Composer UI에서 온 요청
@@ -128,6 +131,7 @@ async def agent_simulate(
             image_url = None
             image_style = None
             emojis = []
+            keyword_tags = []  # 새로 추가: 키워드 태그 수집
             
             for item in staged:
                 if item.get("type") == "image":
@@ -139,6 +143,19 @@ async def agent_simulate(
                     content += (" " if content else "") + item.get("body", "")
                 elif item.get("type") == "emoji":
                     emojis.extend(item.get("items", []))
+                elif item.get("type") == "mode_tag":
+                    # 명시적 모드 선택: 우선순위 최상위
+                    explicit_mode = item.get("value")  # 'snap' | 'genre'
+                    if explicit_mode in ("snap", "genre"):
+                        story_mode = explicit_mode
+                elif item.get("type") == "keyword_tag":
+                    # 키워드 태그: 텍스트 힌트로 활용
+                    keyword_tags.extend(item.get("items", []))
+            
+            # 키워드 태그를 텍스트에 병합 (프롬프트 보강용)
+            if keyword_tags:
+                tag_hint = " ".join([f"#{tag}" for tag in keyword_tags])
+                content = (content + " " + tag_hint).strip() if content else tag_hint
             
             # 스토리 모드 자동 감지 (auto인 경우)
             if story_mode == "auto":
@@ -150,21 +167,90 @@ async def agent_simulate(
 
                 # 2) 텍스트 힌트(간단)
                 low = (content or "").lower()
-                if any(k in low for k in ["cafe", "coffee", "brunch", "walk", "daily", "snapshot"]):
+                # 스냅 키워드 확장(ko/en) — 인스타/일상 빈출 단어 다수 반영
+                snap_kw = [
+                    # en basics
+                    "cafe","coffee","brunch","walk","daily","snapshot","morning","lunch","sunset","sky","rain","weekend","everyday","home","room","desk","plant","street","vibe","mood","today","cozy","minimal",
+                    # en insta/daily vibes
+                    "instadaily","vibes","lifelog","aesthetic","ootd","outfit","lookbook","minimal","streetstyle","fashion",
+                    "foodstagram","foodie","dessert","coffeetime","reels","reelsdaily","vlog","iphonephotography","streetphotography",
+                    "makeup","motd","skincare","fragrance","nails","hair","workout","fit","gym","running","pilates","yoga","hiking","mealprep",
+                    "travel","traveldiaries","weekendgetaway","roadtrip","landscape","reading","movie","journal","drawing","photography","hobby",
+                    "studygram","study","productivity","workfromhome","notion","dogsofinstagram","catsofinstagram","petstagram","family",
+                    "weekend","friday","sunset","rainyday","seasonalvibes","mindfulness","selfcare","healing","thoughts",
+                    # ko(소문자화 영향 없음)
+                    "카페","커피","브런치","산책","일상","점심","저녁","아침","출근","하늘","노을","비","주말","평일","오늘","하루","집","방","책상","식탁","화분","거리","골목","감성","분위기","아늑","미니멀","소소","작은행복","캡션",
+                    # ko sns common
+                    "인스타","일상그램","데일리그램","소확행","기록","기록생활","일상기록","오늘기록","감성사진","감성글","감성스타그램",
+                    # food/cafe
+                    "먹스타그램","맛집","맛집탐방","오늘뭐먹지","집밥","요리스타그램","디저트","빵스타그램","카페투어",
+                    # fashion/lookbook
+                    "오오티디","데일리룩","코디","패션스타그램","스트릿패션","미니멀룩","캐주얼룩","봄코디","신발스타그램",
+                    # beauty/grooming
+                    "뷰티스타그램","데일리메이크업","메이크업","스킨케어","향수추천","네일","헤어스타일",
+                    # fitness/health
+                    "헬스","운동기록","홈트","러닝","필라테스","요가","등산","체지방감량","식단관리",
+                    # travel/outdoor
+                    "여행","여행기록","국내여행","해외여행","주말나들이","드라이브","풍경사진","감성여행","벚꽃","사쿠라","봄","봄날","꽃놀이","꽃길","봄꽃","캠퍼스","교정",
+                    # hobby/self-dev
+                    "북스타그램","독서기록","영화추천","일기","그림","사진연습","취미생활","공방","캘리그라피",
+                    # study/work
+                    "공스타그램","스터디플래너","시험공부","자기계발","회사원","재택근무","노션템플릿",
+                    # pets/family
+                    "멍스타그램","냥스타그램","반려견","반려묘","댕댕이","고양이","육아","가족일상",
+                    # season/weather/weekend
+                    "불금","퇴근길","출근길","봄감성","여름감성","가을감성","겨울감성","오늘날씨","비오는날",
+                    # mind/communication
+                    "오늘의생각","공감","위로","힐링","마음일기","자기돌봄","멘탈케어",
+                    # photo/reels format
+                    "필름감성","필름사진","아이폰사진","갤럭시로찍음","리일스","리일스추천","브이로그",
+                    # with hashtags (lower() preserves #)
+                    "#일상","#데일리","#일상기록","#오늘기록","#소소한행복","#하루하루","#기록생활","#감성사진","#감성글","#감성스타그램",
+                    "#instadaily","#daily","#vibes","#mood","#lifelog","#aesthetic",
+                    "#먹스타그램","#맛집","#맛집탐방","#오늘뭐먹지","#집밥","#요리스타그램","#브런치","#디저트","#빵스타그램","#카페","#카페투어",
+                    "#foodstagram","#foodie","#brunch","#dessert","#coffee","#coffeetime",
+                    "#오오티디","#데일리룩","#코디","#패션스타그램","#스트릿패션","#미니멀룩","#캐주얼룩","#봄코디","#신발스타그램",
+                    "#ootd","#outfit","#lookbook","#minimal","#streetstyle","#fashion",
+                    "#뷰티스타그램","#데일리메이크업","#메이크업","#스킨케어","#향수추천","#네일","#헤어스타일",
+                    "#makeup","#motd","#skincare","#fragrance","#nails","#hair",
+                    "#헬스","#운동기록","#홈트","#러닝","#필라테스","#요가","#등산","#체지방감량","#식단관리",
+                    "#workout","#fit","#gym","#running","#pilates","#yoga","#hiking","#mealprep",
+                    "#여행","#여행기록","#국내여행","#해외여행","#주말나들이","#드라이브","#산책","#풍경사진","#감성여행",
+                    "#travel","#traveldiaries","#weekendgetaway","#roadtrip","#walk","#landscape",
+                    "#북스타그램","#독서기록","#영화추천","#일기","#그림","#사진연습","#취미생활","#공방","#캘리그라피",
+                    "#reading","#movie","#journal","#drawing","#photography","#hobby",
+                    "#공스타그램","#스터디플래너","#시험공부","#자기계발","#회사원","#재택근무","#노션템플릿",
+                    "#studygram","#study","#productivity","#workfromhome","#notion",
+                    "#멍스타그램","#냥스타그램","#반려견","#반려묘","#댕댕이","#고양이","#육아","#가족일상",
+                    "#dogsofinstagram","#catsofinstagram","#petstagram","#family",
+                    "#주말","#불금","#퇴근길","#출근길","#봄감성","#여름감성","#가을감성","#겨울감성","#오늘날씨","#비오는날","#노을",
+                    "#weekend","#friday","#sunset","#rainyday","#seasonalvibes",
+                    "#오늘의생각","#공감","#위로","#힐링","#마음일기","#자기돌봄","#멘탈케어",
+                    "#mindfulness","#selfcare","#healing","#thoughts",
+                    "#필름감성","#필름사진","#아이폰사진","#갤럭시로찍음","#리일스","#리일스추천","#브이로그",
+                    "#reels","#reelsdaily"
+                ]
+                if any(k in low for k in snap_kw):
                     snap_score += 1
                 if any(k in low for k in ["dark", "fantasy", "sword", "magic", "noir", "mystery", "horror", "thriller"]):
                     genre_score += 1
 
                 # 3) 이미지 컨텍스트/태그 기반 보정 (Claude Vision)
+                strong_genre_match = False
                 if image_url:
+                    # 통합 함수 우선 호출(건조/사실 모드), 실패 시 개별 호출 폴백
                     try:
-                        ctx = await ai_service.extract_image_narrative_context(image_url, model='claude') or {}
+                        tags2, ctx = await ai_service.analyze_image_tags_and_context(image_url, model='claude')
                     except Exception:
-                        ctx = {}
-                    try:
-                        tags2 = await ai_service.tag_image_keywords(image_url, model='claude') or {}
-                    except Exception:
-                        tags2 = {}
+                        # 폴백: 개별 호출
+                        try:
+                            ctx = await ai_service.extract_image_narrative_context(image_url, model='claude') or {}
+                        except Exception:
+                            ctx = {}
+                        try:
+                            tags2 = await ai_service.tag_image_keywords(image_url, model='claude') or {}
+                        except Exception:
+                            tags2 = {}
 
                     # 사람 수/셀카 여부: 인물 0이거나 셀카면 스냅 가산
                     try:
@@ -193,18 +279,59 @@ async def agent_simulate(
                     text_bag = set(
                         [w.lower() for w in genre_cues + mood_words + objects + [mood]]
                     )
-                    # 장르 강한 신호
-                    if any(any(k in w for k in genre_kw) for w in text_bag):
+                    # 이미지 추출 결과에도 스냅 키워드 반영
+                    try:
+                        snap_kw_lc = [str(k).lower() for k in snap_kw]
+                    except Exception:
+                        snap_kw_lc = []
+                    if any(any(k in w for k in snap_kw_lc) for w in text_bag):
+                        snap_score += 1
+                    # 장르 강한 신호: 하드/소프트 키워드 분리
+                    hard_genre_kw = {
+                        "검","칼","sword","blade","마법","spell","ritual","용","dragon","악마","demon","괴물","monster",
+                        "갑옷","armor","성","castle","폐허","ruins","해골","skull","피","blood","유혈","총","gun","권총","pistol"
+                    }
+                    soft_genre_kw = {
+                        "판타지","fantasy","느와르","noir","미스터리","mystery","스릴러","thriller","호러","horror","dark"
+                    }
+                    hard_hit = any(any(k in w for k in hard_genre_kw) for w in text_bag)
+                    soft_count = 0
+                    for w in text_bag:
+                        for k in soft_genre_kw:
+                            if k in w:
+                                soft_count += 1
+                    if hard_hit or soft_count >= 2:
                         genre_score += 2
+                        strong_genre_match = True
                     # 영화적 톤은 소량 가산
                     if any(any(k in w for k in cinematic_kw) for w in text_bag):
-                        genre_score += 1
+                        genre_score += 0.5
 
-                # 4) 최종 결정: 장르 신호가 우세하면 genre, 아니면 snap
-                if genre_score >= snap_score + 1 or genre_score >= 2:
-                    story_mode = "genre"
-                else:
-                    story_mode = "snap"
+                # 4) LLM 스타일 판단 가산점(style_mode, confidence)
+                try:
+                    ctx_style = (ctx or {}).get('style_mode') if isinstance(ctx, dict) else None
+                    ctx_conf = float((ctx or {}).get('confidence') or 0.0) if isinstance(ctx, dict) else 0.0
+                except Exception:
+                    ctx_style, ctx_conf = None, 0.0
+                if ctx_style:
+                    if ctx_conf >= 0.6:
+                        if ctx_style == 'snap':
+                            snap_score += 0.5
+                        elif ctx_style == 'genre':
+                            genre_score += 0.5
+                    elif ctx_conf >= 0.45:
+                        if ctx_style == 'snap':
+                            snap_score += 0.25
+                        elif ctx_style == 'genre':
+                            genre_score += 0.25
+
+                # 5) 최종 결정: 모델이 판타지(장르)라고 명확히 판단하거나, 강력한 장르 단서가 있으면 genre, 그 외에는 snap
+                genre_flag = False
+                if ctx_style == 'genre' and ctx_conf >= 0.9:
+                    genre_flag = True
+                if strong_genre_match:
+                    genre_flag = True
+                story_mode = "genre" if genre_flag else "snap"
                 # logger.info(f"Auto-detected story mode(v2): {story_mode} (snap:{snap_score}, genre:{genre_score})")
             
             # 이모지를 텍스트에 추가 (감정 힌트로 활용)
@@ -267,8 +394,9 @@ async def agent_simulate(
 
         # UI 모델명을 ai_service 기대 형식으로 매핑
         # [임시] GPT와 Gemini 비활성화 - 모든 요청을 Claude로 강제 전환
+        from app.services.ai_service import CLAUDE_MODEL_PRIMARY
         preferred_model = "claude"
-        preferred_sub_model = "claude-sonnet-4-20250514"
+        preferred_sub_model = CLAUDE_MODEL_PRIMARY
         
         # 원래 로직 (임시 비활성화)
         # if "claude" in ui_model or "claude" in ui_sub:
@@ -345,28 +473,22 @@ async def agent_simulate(
             """
         else:
             # 스토리 모드가 있으면 프롬프트 조정 후 텍스트 생성
-            if story_mode:
-                # 모드별 시스템 프롬프트 생성
-                if story_mode == "snap":
-                    character_prompt = (
-                        "당신은 일상의 순간을 포착하는 작가입니다.\n"
-                        "- 200-300자 분량의 짧고 공감가는 일상 스토리\n"
-                        "- SNS 피드에 올릴 법한 친근한 문체\n"
-                        "- 따뜻하거나 위트있는 톤\n"
-                        "- 오글거리지 않고 자연스럽게"
-                    )
-                elif story_mode == "genre":
-                    character_prompt = (
-                        "당신은 장르소설 전문 작가입니다.\n"
-                        "- 500-800자 분량의 몰입감 있는 장르 스토리\n"
-                        "- 긴장감 있는 전개와 생생한 묘사\n"
-                        "- 장르 관습을 따르되 신선하게\n"
-                        "- 다음이 궁금해지는 마무리"
-                    )
-                else:
-                    character_prompt = ""
-            else:
-                character_prompt = ""
+            if story_mode == "snap":
+                character_prompt = (
+                    "당신은 일상의 순간을 포착하는 작가입니다.\n"
+                    "- 200-300자 분량의 짧고 공감가는 일상 스토리\n"
+                    "- SNS 피드에 올릴 법한 친근한 문체\n"
+                    "- 따뜻하거나 위트있는 톤\n"
+                    "- 오글거리지 않고 자연스럽게"
+                )
+            elif story_mode == "genre":
+                character_prompt = (
+                    "당신은 장르소설 전문 작가입니다.\n"
+                    "- 500-800자 분량의 몰입감 있는 장르 스토리\n"
+                    "- 긴장감 있는 전개와 생생한 묘사\n"
+                    "- 장르 관습을 따르되 신선하게\n"
+                    "- 다음이 궁금해지는 마무리"
+                )
 
             text = await ai_service.get_ai_chat_response(
                 character_prompt=character_prompt,
@@ -400,14 +522,37 @@ async def agent_generate_highlights(payload: dict):
         if not text or not image_url:
             raise HTTPException(status_code=400, detail="text and image_url are required")
 
-        from app.services.story_extractor import StoryExtractor
+        from app.services.story_extractor import StoryExtractor, StoryStage, SceneExtract
         from app.services.scene_prompt_builder import ScenePromptBuilder
         from app.services.seedream_client import SeedreamClient, SeedreamConfig
         from app.services.image_composer import ImageComposer
         from app.services.storage import get_storage
 
-        extractor = StoryExtractor(min_scenes=2, max_scenes=4)
+        extractor = StoryExtractor(min_scenes=3, max_scenes=4)
         scenes = extractor.extract_scenes(text, story_mode)
+        # 항상 3장 확보: 부족 시 대체 컷 채움
+        if len(scenes) < 3:
+            # 간단한 대체 컷 프리셋(스냅/장르 공통으로 무인물 위주 묘사 가능한 문구)
+            fillers = [
+                (StoryStage.INTRO, "공간을 넓게 잡은 설정샷. 공기와 빛이 보이는 구도.", 0.08),
+                (StoryStage.CLIMAX, "주요 오브젝트를 가까이 잡은 클로즈업. 결을 보여준다.", 0.52),
+                (StoryStage.RESOLUTION, "빛과 색이 남기는 잔상처럼 조용히 마무리되는 구도.", 0.92),
+            ]
+            for stage, sentence, pos in fillers:
+                if len(scenes) >= 3:
+                    break
+                try:
+                    subtitle = extractor._create_subtitle(sentence, story_mode)
+                except Exception:
+                    subtitle = sentence[:20]
+                scenes.append(SceneExtract(
+                    stage=stage,
+                    sentence=sentence,
+                    subtitle=subtitle,
+                    position=pos,
+                    confidence=0.4,
+                    keywords=[]
+                ))
         # 최대 3장으로 제한
         scenes = scenes[:3]
 
@@ -435,23 +580,54 @@ async def agent_generate_highlights(payload: dict):
         composer = ImageComposer()
         storage = get_storage()
         story_highlights = []
-        for i, (scene, result) in enumerate(zip(scenes[:len(results)], results)):
-            if result and result.image_url:
-                composed = await composer.compose_with_letterbox(
-                    image_url=result.image_url,
-                    subtitle=scene.subtitle
-                )
-                final_url = storage.save_bytes(
-                    composed.image_bytes,
-                    content_type=composed.content_type,
-                    key_hint=f"story_scene_{i}.jpg"
-                )
-                story_highlights.append({
-                    "imageUrl": final_url,
-                    "subtitle": scene.subtitle,
-                    "stage": scene.stage.value,
-                    "sceneOrder": i + 1
-                })
+        # 결과 수가 부족할 수 있으므로 인덱스 기준으로 처리
+        for i in range(len(scenes)):
+            scene = scenes[i]
+            result = results[i] if i < len(results) else None
+            # 1차: 배치 결과 사용
+            image_url_candidate = result.image_url if (result and getattr(result, 'image_url', None)) else None
+            # 2차: 실패 시 단건 재시도
+            if not image_url_candidate:
+                try:
+                    single = await seedream.generate_single(SeedreamConfig(
+                        prompt=configs[i].prompt,
+                        negative_prompt=configs[i].negative_prompt,
+                        image_size=configs[i].image_size,
+                    ))
+                    if single and getattr(single, 'image_url', None):
+                        image_url_candidate = single.image_url
+                except Exception:
+                    image_url_candidate = None
+            # 3차: 여전히 없으면, 직전 성공 이미지로 중복 채우기(자막은 해당 장면 것 사용)
+            if not image_url_candidate and story_highlights:
+                image_url_candidate = story_highlights[-1]["imageUrl"]
+            # 이미지가 전혀 없으면 스킵(최소 1장은 있다고 가정)
+            if not image_url_candidate:
+                continue
+            composed = await composer.compose_with_letterbox(
+                image_url=image_url_candidate,
+                subtitle=scene.subtitle
+            )
+            final_url = storage.save_bytes(
+                composed.image_bytes,
+                content_type=composed.content_type,
+                key_hint=f"story_scene_{i}.jpg"
+            )
+            story_highlights.append({
+                "imageUrl": final_url,
+                "subtitle": scene.subtitle,
+                "stage": scene.stage.value,
+                "sceneOrder": i + 1
+            })
+        # 보수: 혹시라도 3장 미만이면 마지막 이미지를 복제하여 3장 맞춤
+        while len(story_highlights) < 3 and len(story_highlights) > 0:
+            last = story_highlights[-1]
+            story_highlights.append({
+                "imageUrl": last["imageUrl"],
+                "subtitle": last["subtitle"],
+                "stage": last["stage"],
+                "sceneOrder": len(story_highlights) + 1
+            })
         return { "story_highlights": story_highlights }
     except HTTPException:
         raise
