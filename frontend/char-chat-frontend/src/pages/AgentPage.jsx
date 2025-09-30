@@ -528,9 +528,10 @@ const handleRemixGenerate = useCallback(async (msg, assistantText) => {
 
     const response = await chatAPI.agentSimulate({ staged, mode: 'micro', storyMode: msg.storyMode || 'auto', model: storyModel, sub_model: storyModel });
     const text = response.data?.assistant || '';
+    const decidedMode = response.data?.story_mode || (msg.storyMode || 'auto');
 
     // 타이핑 출력
-    setMessages(curr => curr.map(m => m.id === assistantId ? { ...m, content: '', thinking: false, streaming: true, storyMode: msg.storyMode || 'auto' } : m));
+    setMessages(curr => curr.map(m => m.id === assistantId ? { ...m, content: '', thinking: false, streaming: true, storyMode: decidedMode } : m));
     let idx = 0; const total = text.length; const steps = 120; const step = Math.max(2, Math.ceil(total / steps)); const intervalMs = 20;
     const timer = setInterval(() => {
       idx = Math.min(total, idx + step);
@@ -545,7 +546,7 @@ const handleRemixGenerate = useCallback(async (msg, assistantText) => {
           setMessages(curr => ([...curr, { id: placeholderId, type: 'story_highlights_loading', createdAt: nowIso() }, { id: crypto.randomUUID(), role: 'assistant', type: 'recommendation', createdAt: nowIso() }]));
           (async () => {
             try {
-              const hiRes = await chatAPI.agentGenerateHighlights({ text, image_url: imageUrl, story_mode: msg.storyMode || 'auto' });
+              const hiRes = await chatAPI.agentGenerateHighlights({ text, image_url: imageUrl, story_mode: decidedMode || 'auto' });
               const scenes = hiRes.data?.story_highlights || [];
               setMessages(curr2 => curr2.map(mm => mm.id === placeholderId ? { id: crypto.randomUUID(), type: 'story_highlights', scenes, createdAt: nowIso() } : mm));
             } catch (_) {
@@ -931,9 +932,9 @@ const handleRerun = useCallback(async (msg) => {
     const list = isGuest ? (sessionLocalMessagesRef.current.get(sid) || []) : loadJson(LS_MESSAGES_PREFIX + sid, []);
     const idx = list.findIndex(m => m.id === msg.id);
     if (idx === -1) return;
-    const head = list.slice(0, idx + 1);
+    const headList = list.slice(0, idx + 1);
     const tail = list.slice(idx + 1).filter(m => !(m.type === 'story_highlights' || m.type === 'story_highlights_loading' || m.type === 'recommendation'));
-    const cleaned = [...head, ...tail];
+    const cleaned = [...headList, ...tail];
     if (isGuest) sessionLocalMessagesRef.current.set(sid, cleaned); else saveJson(LS_MESSAGES_PREFIX + sid, cleaned);
     if (activeSessionId === sid) setMessages(cleaned);
     // 3) 메시지를 스피너로 전환
@@ -952,8 +953,9 @@ const handleRerun = useCallback(async (msg) => {
     if (imageUrl) staged.push({ type: 'image', url: imageUrl });
     if (userText) staged.push({ type: 'text', body: userText });
     // 5) 백엔드 호출(텍스트 생성)
-    const res = await chatAPI.agentSimulate({ staged, story_mode: msg.storyMode || 'auto', model: storyModel, sub_model: storyModel });
+    const res = await chatAPI.agentSimulate({ staged, storyMode: msg.storyMode || 'auto', model: storyModel, sub_model: storyModel });
     const assistantText = res?.data?.assistant || '';
+    const decidedMode = res?.data?.story_mode || (msg.storyMode || 'auto');
     updateMessageForSession(sid, msg.id, (m) => ({ ...m, thinking: false, streaming: false, content: assistantText.slice(0,500), fullContent: assistantText }));
     // 6) 하이라이트 로딩 추가 → 생성 후 교체
     const loadingId = crypto.randomUUID();
@@ -962,7 +964,7 @@ const handleRerun = useCallback(async (msg) => {
     if (isGuest) sessionLocalMessagesRef.current.set(sid, withLoading); else saveJson(LS_MESSAGES_PREFIX + sid, withLoading);
     if (activeSessionId === sid) setMessages(withLoading);
     try {
-      const hiRes = await chatAPI.agentGenerateHighlights({ text: assistantText, image_url: imageUrl || '', story_mode: msg.storyMode || 'auto' });
+      const hiRes = await chatAPI.agentGenerateHighlights({ text: assistantText, image_url: imageUrl || '', story_mode: decidedMode || 'auto' });
       const scenes = (hiRes?.data?.story_highlights || []).map((s, i) => ({ ...s, id: crypto.randomUUID() }));
       const list2 = isGuest ? (sessionLocalMessagesRef.current.get(sid) || []) : loadJson(LS_MESSAGES_PREFIX + sid, []);
       const idx2 = list2.findIndex(m => m.id === loadingId);
@@ -1364,6 +1366,117 @@ const handleExpandCanvas = (fullContent, relatedImageUrl = null) => {
   setShowStoryViewerSheet(true);
 };
 
+// 계속보기(인라인 이어쓰기) - 태그/하이라이트/추천 제거 → 스피너 → 동일 말풍선 타이핑
+const handleContinueInline = useCallback(async (msg) => {
+  try {
+    const sid = activeSessionId;
+    if (!sid) return;
+
+    // 1) 아래 붙은 하이라이트/로딩/추천 제거
+    const list = isGuest ? (sessionLocalMessagesRef.current.get(sid) || []) : loadJson(LS_MESSAGES_PREFIX + sid, []);
+    const idx = list.findIndex(m => m.id === msg.id);
+    if (idx === -1) return;
+    const head = list.slice(0, idx + 1);
+    const tail = list.slice(idx + 1).filter(m => !(m.type === 'story_highlights' || m.type === 'story_highlights_loading' || m.type === 'recommendation'));
+    const cleaned = [...head, ...tail];
+    if (isGuest) sessionLocalMessagesRef.current.set(sid, cleaned); else saveJson(LS_MESSAGES_PREFIX + sid, cleaned);
+    if (activeSessionId === sid) setMessages(cleaned);
+
+    // 2) 버튼 스피너 표시: 메시지 텍스트는 유지, continued 플래그만 세팅
+    updateMessageForSession(sid, msg.id, (m) => ({ ...m, continued: true }));
+
+    // 3) 이전 유저 이미지/텍스트 맥락 복원
+    let imageUrl = null;
+    for (let i = idx - 1; i >= 0; i--) {
+      const it = cleaned[i];
+      if (it.role === 'user' && it.type === 'image' && it.url) { imageUrl = it.url; break; }
+    }
+    const baseText = (msg.fullContent || msg.content || '').toString();
+    const recent = baseText.slice(Math.max(0, baseText.length - 800)); // 최근 800자만 맥락으로
+    const mode = msg.storyMode || 'auto';
+    const continueHint = (
+      mode === 'genre'
+        ? "아래 본문을 즉시 이어서 400~600자 분량으로 써줘. 같은 시점/톤/속도 유지, 메타 금지, 중복 줄이기.\n[이어서] "
+        : "아래 본문을 즉시 이어서 200~300자 분량으로 써줘. 같은 시점/톤/호흡 유지, 메타 금지, 중복 줄이기.\n[이어서] "
+    ) + recent;
+
+    // 4) 백엔드 호출(같은 파이프라인)
+    const staged = [];
+    if (imageUrl) staged.push({ type: 'image', url: imageUrl });
+    staged.push({ type: 'text', body: continueHint });
+    const res = await chatAPI.agentSimulate({ staged, mode: 'micro', storyMode: mode, model: storyModel, sub_model: storyModel });
+    const appended = (res?.data?.assistant || '').toString();
+    // 헤드와 구분 개행: 기존 본문이 개행으로 끝나지 않고, 추가 텍스트가 개행으로 시작하지 않으면 공백 줄 추가
+    const headText = (msg.content || '').toString();
+    const needSep = !(/\n\s*$/.test(headText)) && !(/^\s*\n/.test(appended));
+    const sep = needSep ? "\n\n" : "";
+
+    // 5) 스피너(버튼) → 스트리밍 전환 후, 동일 말풍선에 이어 타이핑
+    const startText = headText + sep;
+    updateMessageForSession(sid, msg.id, (m) => ({ ...m, streaming: true, continued: true }));
+    let i = 0;
+    const total = appended.length;
+    const steps = 120;
+    const step = Math.max(2, Math.ceil(total / steps));
+    const timer = setInterval(() => {
+      i = Math.min(total, i + step);
+      const slice = startText + appended.slice(0, i);
+      updateMessageForSession(sid, msg.id, (m) => ({ ...m, content: slice, fullContent: slice }));
+      if (i >= total) {
+        clearInterval(timer);
+        // 타이핑 종료 + 확장 표시 유지(expanded=true)
+        updateMessageForSession(sid, msg.id, (m) => ({ ...m, streaming: false, continued: false, expanded: true }));
+
+        // 6) 하이라이트 재생성(로딩 → 교체) 및 추천 재삽입
+        const combinedText = startText + appended;
+        const placeholderId = crypto.randomUUID();
+        setMessages(curr => {
+          const pos = curr.findIndex(mm => mm.id === msg.id);
+          if (pos === -1) return curr;
+          const next = [
+            ...curr.slice(0, pos + 1),
+            { id: placeholderId, type: 'story_highlights_loading', createdAt: nowIso() },
+            ...curr.slice(pos + 1)
+          ];
+          try { if (!isGuest) saveJson(LS_MESSAGES_PREFIX + sid, next); else sessionLocalMessagesRef.current.set(sid, next); } catch {}
+          return next;
+        });
+        (async () => {
+          try {
+            const hiRes = await chatAPI.agentGenerateHighlights({ text: combinedText, image_url: imageUrl || '', story_mode: mode || 'auto' });
+            const scenes = (hiRes?.data?.story_highlights || []).map((s, i) => ({ ...s, id: crypto.randomUUID() }));
+            setMessages(curr => {
+              const pIdx = curr.findIndex(x => x.id === placeholderId);
+              const replaced = pIdx >= 0 ? [
+                ...curr.slice(0, pIdx),
+                { id: crypto.randomUUID(), type: 'story_highlights', scenes, createdAt: nowIso() },
+                ...curr.slice(pIdx + 1)
+              ] : curr;
+              const final = [
+                ...replaced,
+                { id: crypto.randomUUID(), role: 'assistant', type: 'recommendation', createdAt: nowIso() }
+              ];
+              try { if (!isGuest) saveJson(LS_MESSAGES_PREFIX + sid, final); else sessionLocalMessagesRef.current.set(sid, final); } catch {}
+              return final;
+            });
+          } catch (e) {
+            // 로딩 제거만
+            setMessages(curr => {
+              const pIdx = curr.findIndex(x => x.id === placeholderId);
+              const reduced = pIdx >= 0 ? [...curr.slice(0, pIdx), ...curr.slice(pIdx + 1)] : curr;
+              try { if (!isGuest) saveJson(LS_MESSAGES_PREFIX + sid, reduced); else sessionLocalMessagesRef.current.set(sid, reduced); } catch {}
+              return reduced;
+            });
+          }
+        })();
+      }
+    }, 20);
+  } catch (e) {
+    // 실패 시 스피너 해제
+    try { updateMessageForSession(activeSessionId, msg.id, (m) => ({ ...m, streaming: false, continued: false })); } catch {}
+  }
+}, [activeSessionId, isGuest, setMessages, updateMessageForSession, storyModel]);
+
 const handleStopGeneration = async () => {
   try {
     // 현재 세션의 job/controller만 취소
@@ -1533,8 +1646,8 @@ return (
        <button
         type="button"
         aria-label="대시보드로"
-        onClick={() => navigate('/dashboard')}
-        className="hidden md:flex fixed left-72 top-1/2 -translate-y-1/2 z-20 items-center justify-center w-8 h-8 rounded-full bg-transparent text-gray-200 opacity-80 hover:opacity-100 hover:bg-gray-800/40"
+        onClick={(e) => e.preventDefault()}
+        className="hidden"
        >
         <span className="rotate-180 block">
           <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="w-6 h-6">
@@ -1545,8 +1658,8 @@ return (
        <button
         type="button"
         aria-label="입력으로 이동"
-        onClick={() => { try { inputRef.current?.focus(); if (messagesContainerRef.current) { messagesContainerRef.current.scrollTo({ top: messagesContainerRef.current.scrollHeight, behavior: 'smooth' }); } } catch {} }}
-        className="hidden md:flex fixed right-6 top-1/2 -translate-y-1/2 z-20 items-center justify-center w-8 h-8 rounded-full bg-transparent text-gray-200 opacity-80 hover:opacity-100 hover:bg-gray-800/40"
+        onClick={(e) => e.preventDefault()}
+        className="hidden"
        >
         <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="w-6 h-6">
           <path d="M8 5l8 7-8 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
@@ -1683,7 +1796,7 @@ return (
                                           size="sm" 
                                           variant="ghost" 
                                           className="rounded-full bg-purple-600/10 hover:bg-purple-600/20 text-purple-300 border border-purple-500/30 px-3 py-1 inline-flex items-center gap-1"
-                                          onClick={() => handleExpandCanvas(m.fullContent)} 
+                                          onClick={() => handleContinueInline(m)} 
                                           disabled={!m.fullContent}
                                         >
                                           이 이야기 계속보기
@@ -1715,7 +1828,8 @@ return (
                                                 onInput={(e) => { if (editingMessageId === m.id) setEditedContent(e.currentTarget.textContent || ''); }}
                                               >
                                                 {(() => {
-                                                  const lines = truncated.split('\n');
+                                                  const renderText = (isStreaming || m.continued || m.expanded) ? (m.content || '') : truncated;
+                                                  const lines = renderText.split('\n');
                                                   return lines.map((line, idx) => (
                                                     <div key={idx}>
                                                       {line || '\u00A0'}
@@ -1731,7 +1845,7 @@ return (
                                               suppressContentEditableWarning
                                               onInput={(e) => { if (editingMessageId === m.id) setEditedContent(e.currentTarget.textContent || ''); }}
                                             >
-                                              {truncated}
+                                              {(isStreaming || m.continued || m.expanded) ? (m.content || '') : truncated}
                                             </div>
                                           )}
                                           {/* 계속보기 버튼은 텍스트 박스 바깥으로 이동 */}
@@ -1808,11 +1922,16 @@ return (
                                 const hasLaterAssistantText = stableMessages.slice(msgIndex + 1).some(mm => ((!mm.type || mm.type === 'text') && mm.role === 'assistant'));
                                 const isLastAssistantText = isAssistantText && !hasLaterAssistantText;
                                 const isFullShown = !isStreaming && (!m.fullContent || ((m.content || '').toString().length >= (m.fullContent || '').toString().length));
-                                if (!(isLastAssistantText && isFullShown)) return null;
+                                // 기본: 전체 텍스트가 보이면 노출. 계속보기 진행 중일 때는 스트리밍 중에만 노출하고 완료되면 숨김
+                                // 계속보기 클릭 직후(streaming 전)에도 버튼이 남도록 continued=true면 항상 보이게
+                                const showBlock = isLastAssistantText && ((isFullShown && !m.continued) || m.continued);
+                                if (!showBlock) return null;
                                 return (
                                 <div className="mt-4 mb-2 flex flex-col items-center gap-3">
                                   {/* 안내 문구 (가운데 정렬, 조금 크게) */}
-                                  <div className="text-base text-gray-100">이런 느낌으로 다시 보여드릴까요?</div>
+                                  {!(isStreaming || m.continued) && (
+                                    <div className="text-base text-gray-100">이런 느낌으로 다시 보여드릴까요?</div>
+                                  )}
                                   {/* 태그 그룹: 4개 / 3개 두 줄 구성, 가운데 정렬 */}
                                   {(() => {
                                     const all = ((m.storyMode || 'auto') === 'genre' ? GENRE_REMIX_TAGS : SNAP_REMIX_TAGS);
@@ -1843,6 +1962,8 @@ return (
                                         </button>
                                       );
                                     };
+                                    // 계속보기 인라인 진행 중 또는 완료된 후에는 태그 숨김
+                                    if (isStreaming || m.continued) return null;
                                     return (
                                       <div className="flex flex-col items-center gap-2">
                                         <div className="flex flex-wrap items-center justify-center gap-2">{top.map(Chip)}</div>
@@ -1852,7 +1973,7 @@ return (
                                   })()}
                                   {/* 액션 버튼: 태그 선택 여부에 따라 라벨 변경 */}
                                   <div className="mt-1 flex justify-center">
-                                    {((remixSelected[m.id] || []).length > 0) ? (
+                                    {((remixSelected[m.id] || []).length > 0) && !(isStreaming || m.continued) ? (
                                       <button
                                         type="button"
                                         className="inline-flex items-center gap-2 px-7 py-3 rounded-full bg-gradient-to-r from-purple-600 to-fuchsia-700 text-white font-medium text-base shadow-lg shadow-purple-500/25 hover:shadow-xl hover:shadow-purple-500/40 transform hover:scale-105 transition-all duration-200"
@@ -1864,16 +1985,12 @@ return (
                                       <button
                                         type="button"
                                         className="inline-flex items-center gap-2 px-7 py-3 rounded-full bg-gradient-to-r from-purple-600 to-blue-600 text-white font-medium text-base shadow-lg shadow-purple-500/25 hover:shadow-xl hover:shadow-purple-500/40 transform hover:scale-105 transition-all duration-200"
-                                        onClick={() => {
-                                          const msgIndex = stableMessages.findIndex(msg => msg.id === m.id);
-                                          let imageUrl = null;
-                                          for (let i = msgIndex - 1; i >= 0; i--) {
-                                            if (stableMessages[i].type === 'image') { imageUrl = stableMessages[i].url; break; }
-                                          }
-                                          handleExpandCanvas(m.fullContent || (m.content || '').toString(), imageUrl);
-                                        }}
+                                        onClick={() => handleContinueInline(m)}
                                       >
-                                        <span>이 이야기 계속보기</span>
+                                        {(isStreaming || m.continued) ? <>
+                                          <svg className="animate-spin h-4 w-4 mr-2 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path></svg>
+                                          <span>계속 생성 중...</span>
+                                        </> : <span>이 이야기 계속보기</span>}
                                       </button>
                                     )}
                                   </div>
@@ -1889,16 +2006,14 @@ return (
                 </div>
         )}
         {/* Scroll to Bottom Button (P1) */}
-        {showScrollDown && (
-          <button
-            type="button"
-            onClick={() => { isFollowingRef.current = true; setShowScrollDown(false); scrollToBottom(); }}
-            className="absolute bottom-4 right-6 z-10 w-10 h-10 rounded-full bg-blue-600 text-white shadow-lg hover:bg-blue-700"
-            title="맨 아래로"
-          >
-            ↓
-          </button>
-        )}
+        <button
+          type="button"
+          onClick={() => navigate('/dashboard')}
+          className="absolute bottom-4 right-6 z-10 w-10 h-10 rounded-full bg-blue-600 text-white shadow-lg hover:bg-blue-700"
+          title="메인으로"
+        >
+          ↓
+        </button>
               </div>
     </div>
        {/* 화면 하단 고정 입력창 - 새로운 심플 UI */}
@@ -1984,12 +2099,13 @@ return (
                      model: storyModel,
                      sub_model: storyModel
                    });
+                   const decidedMode = response.data?.story_mode || (payload.storyMode || 'auto');
                    
                    // 5. thinking 메시지를 실제 응답으로 교체 (타이핑 효과로 점진 출력)
                    if (response.data?.assistant) {
                      const assistantText = response.data.assistant;
                      // 타이핑 시작: 우선 빈 내용으로 스트리밍 플래그 설정
-                     setMessages(curr => curr.map(msg => msg.id === assistantId ? { ...msg, content: '', fullContent: undefined, thinking: false, streaming: true } : msg));
+                     setMessages(curr => curr.map(msg => msg.id === assistantId ? { ...msg, content: '', fullContent: undefined, thinking: false, streaming: true, storyMode: decidedMode } : msg));
 
                      // 타이핑 루프
                      let idx = 0;
@@ -2015,7 +2131,7 @@ return (
                            ]));
                            (async () => {
                              try {
-                               const hiRes = await chatAPI.agentGenerateHighlights({ text: assistantText, image_url: imageUrl, story_mode: payload.storyMode || 'auto' });
+                               const hiRes = await chatAPI.agentGenerateHighlights({ text: assistantText, image_url: imageUrl, story_mode: decidedMode || 'auto' });
                                const scenes = hiRes.data?.story_highlights || [];
                                setMessages(curr2 => curr2.map(msg => msg.id === placeholderId ? { id: crypto.randomUUID(), type: 'story_highlights', scenes, createdAt: nowIso() } : msg));
                              } catch (e) {

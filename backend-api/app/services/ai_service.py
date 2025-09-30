@@ -10,6 +10,7 @@ from app.core.config import settings
 from .vision_service import stage1_keywords_from_image_url, stage1_keywords_from_image_url as _stage1, _http_get_bytes
 import mimetypes
 import logging
+import imghdr
 import base64
 
 logger = logging.getLogger(__name__)
@@ -55,9 +56,21 @@ async def tag_image_keywords(image_url: str, model: str = 'claude') -> dict:
         import base64
         import json
         
-        # 이미지 다운로드 및 base64 인코딩
+        # 이미지 다운로드 및 base64 인코딩 + MIME 탐지
         response = requests.get(image_url, timeout=10)
-        image_data = base64.b64encode(response.content).decode('utf-8')
+        img_bytes = response.content
+        image_data = base64.b64encode(img_bytes).decode('utf-8')
+        # 우선순위: 응답 헤더 → 바이트 시그니처 → 기본값
+        ct = (response.headers.get('Content-Type') or '').lower()
+        if ct.startswith('image/'):
+            image_mime = ct.split(';')[0].strip()
+        else:
+            kind = imghdr.what(None, h=img_bytes)
+            mime_map = {
+                'jpeg': 'image/jpeg', 'jpg': 'image/jpeg', 'png': 'image/png',
+                'gif': 'image/gif', 'webp': 'image/webp', 'bmp': 'image/bmp'
+            }
+            image_mime = mime_map.get(kind, 'image/jpeg')
         
         prompt = (
             "이미지를 매우 자세히 분석해서 스토리텔링에 필요한 모든 정보를 추출하세요.\n"
@@ -88,7 +101,8 @@ async def tag_image_keywords(image_url: str, model: str = 'claude') -> dict:
                     prompt,
                     max_tokens=1000,
                     model='claude-3-5-sonnet-20241022',
-                    image_base64=image_data
+                    image_base64=image_data,
+                    image_mime=image_mime
                 )
                 
                 # JSON 추출
@@ -154,9 +168,20 @@ async def extract_image_narrative_context(image_url: str, model: str = 'claude')
         import base64
         import json
         
-        # 이미지 다운로드 및 base64 인코딩
+        # 이미지 다운로드 및 base64 인코딩 + MIME 탐지
         response = requests.get(image_url, timeout=10)
-        image_data = base64.b64encode(response.content).decode('utf-8')
+        img_bytes = response.content
+        image_data = base64.b64encode(img_bytes).decode('utf-8')
+        ct = (response.headers.get('Content-Type') or '').lower()
+        if ct.startswith('image/'):
+            image_mime = ct.split(';')[0].strip()
+        else:
+            kind = imghdr.what(None, h=img_bytes)
+            mime_map = {
+                'jpeg': 'image/jpeg', 'jpg': 'image/jpeg', 'png': 'image/png',
+                'gif': 'image/gif', 'webp': 'image/webp', 'bmp': 'image/bmp'
+            }
+            image_mime = mime_map.get(kind, 'image/jpeg')
         
         schema_prompt = (
             "이미지를 분석해 아래 스키마의 JSON으로만 응답하세요.\n"
@@ -181,7 +206,8 @@ async def extract_image_narrative_context(image_url: str, model: str = 'claude')
                     schema_prompt,
                     max_tokens=800,
                     model='claude-3-5-sonnet-20241022',
-                    image_base64=image_data
+                    image_base64=image_data,
+                    image_mime=image_mime
                 )
                 
                 # JSON 추출
@@ -580,7 +606,6 @@ async def write_story_from_image_grounded(image_url: str, user_hint: str = "", p
             mime, _ = mimetypes.guess_type(url)
             if not mime:
                 try:
-                    import imghdr
                     kind = imghdr.what(None, h=img_bytes)
                     mime_map = {
                         'jpeg': 'image/jpeg',
@@ -810,7 +835,8 @@ async def get_claude_completion(
     temperature: float = 0.7,
     max_tokens: int = 1800,
     model: str = "claude-sonnet-4-20250514",
-    image_base64: str | None = None
+    image_base64: str | None = None,
+    image_mime: str | None = None
 ) -> str:
     """
     주어진 프롬프트로 Anthropic Claude 모델을 호출하여 응답을 반환합니다.
@@ -824,7 +850,7 @@ async def get_claude_completion(
                     "type": "image",
                     "source": {
                         "type": "base64",
-                        "media_type": "image/jpeg",
+                        "media_type": (image_mime or "image/jpeg"),
                         "data": image_base64
                     }
                 },

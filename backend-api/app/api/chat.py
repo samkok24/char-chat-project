@@ -142,24 +142,70 @@ async def agent_simulate(
             
             # 스토리 모드 자동 감지 (auto인 경우)
             if story_mode == "auto":
-                # 일상 이모지와 장르 이모지 분류
+                # 1) 이모지 기반 기초 점수
                 snap_emojis = {"😊", "☕", "🌸", "💼", "🌧️", "😢", "💤", "🎉"}
                 genre_emojis = {"🔥", "⚔️", "💀", "😱", "🔪", "🌙", "✨", "😎"}
-                
                 snap_score = sum(1 for e in emojis if e in snap_emojis)
                 genre_score = sum(1 for e in emojis if e in genre_emojis)
-                
-                # 이미지 분석 추가 (나중에 태그 기반으로 보강 가능)
+
+                # 2) 텍스트 힌트(간단)
+                low = (content or "").lower()
+                if any(k in low for k in ["cafe", "coffee", "brunch", "walk", "daily", "snapshot"]):
+                    snap_score += 1
+                if any(k in low for k in ["dark", "fantasy", "sword", "magic", "noir", "mystery", "horror", "thriller"]):
+                    genre_score += 1
+
+                # 3) 이미지 컨텍스트/태그 기반 보정 (Claude Vision)
                 if image_url:
-                    # 간단한 휴리스틱 (실제로는 이미지 태그 분석 필요)
-                    if "cafe" in (content or "").lower() or "coffee" in (content or "").lower():
-                        snap_score += 2
-                    if "dark" in (content or "").lower() or "fantasy" in (content or "").lower():
+                    try:
+                        ctx = await ai_service.extract_image_narrative_context(image_url, model='claude') or {}
+                    except Exception:
+                        ctx = {}
+                    try:
+                        tags2 = await ai_service.tag_image_keywords(image_url, model='claude') or {}
+                    except Exception:
+                        tags2 = {}
+
+                    # 사람 수/셀카 여부: 인물 0이거나 셀카면 스냅 가산
+                    try:
+                        person_count = int(ctx.get('person_count') or 0)
+                    except Exception:
+                        person_count = 0
+                    camera = ctx.get('camera') or {}
+                    is_selfie = bool(camera.get('is_selfie') or False)
+                    if person_count == 0 or is_selfie:
+                        snap_score += 1
+
+                    # 장르 단서/톤/오브젝트 기반 가산
+                    genre_cues = [str(x) for x in (ctx.get('genre_cues') or []) if str(x).strip()]
+                    tone = ctx.get('tone') or {}
+                    mood_words = [str(x) for x in (tone.get('mood_words') or []) if str(x).strip()]
+                    objects = [str(x) for x in (tags2.get('objects') or []) if str(x).strip()]
+                    mood = str(tags2.get('mood') or "")
+
+                    genre_kw = {
+                        # 한국어/영문 혼용 키워드
+                        "판타지", "검", "칼", "마법", "주술", "용", "괴물", "악마", "느와르", "미스터리", "추리", "스릴러", "호러", "범죄", "전투", "갑옷", "성", "폐허", "어둠", "피", "유혈", "공포",
+                        "fantasy", "sword", "blade", "magic", "spell", "ritual", "dragon", "demon", "noir", "mystery", "thriller", "horror", "crime", "battle", "armor", "castle", "ruins", "dark", "blood"
+                    }
+                    cinematic_kw = {"cinematic", "dramatic", "film", "neon", "night", "storm"}
+
+                    text_bag = set(
+                        [w.lower() for w in genre_cues + mood_words + objects + [mood]]
+                    )
+                    # 장르 강한 신호
+                    if any(any(k in w for k in genre_kw) for w in text_bag):
                         genre_score += 2
-                
-                # 최종 모드 결정
-                story_mode = "snap" if snap_score > genre_score else "genre" if genre_score > 0 else "snap"
-                # logger.info(f"Auto-detected story mode: {story_mode} (snap:{snap_score}, genre:{genre_score})")
+                    # 영화적 톤은 소량 가산
+                    if any(any(k in w for k in cinematic_kw) for w in text_bag):
+                        genre_score += 1
+
+                # 4) 최종 결정: 장르 신호가 우세하면 genre, 아니면 snap
+                if genre_score >= snap_score + 1 or genre_score >= 2:
+                    story_mode = "genre"
+                else:
+                    story_mode = "snap"
+                # logger.info(f"Auto-detected story mode(v2): {story_mode} (snap:{snap_score}, genre:{genre_score})")
             
             # 이모지를 텍스트에 추가 (감정 힌트로 활용)
             emoji_hint = ""
@@ -331,7 +377,7 @@ async def agent_simulate(
                 response_length_pref="short" if story_mode == "snap" else "medium",
             )
         
-        response = {"assistant": text}
+        response = {"assistant": text, "story_mode": story_mode}
         
         # 하이라이트는 별도 엔드포인트에서 비동기로 처리
             
