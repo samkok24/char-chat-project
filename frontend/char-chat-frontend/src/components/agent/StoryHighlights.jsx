@@ -1,10 +1,12 @@
 import React from 'react';
-import { Download, X, Share2, Loader2 } from 'lucide-react';
+import { Download, X, Share2, Loader2, Link, Instagram, Twitter } from 'lucide-react';
 
 export default function StoryHighlights({ highlights = [], loading = false }) {
   const [currentIndex, setCurrentIndex] = React.useState(0);
   const [showModal, setShowModal] = React.useState(false);
   const [modalIndex, setModalIndex] = React.useState(0);
+  const [showShareModal, setShowShareModal] = React.useState(false);
+  const [shareImageUrl, setShareImageUrl] = React.useState('');
   const DURATION_MS = 10000; // 10초
   const [progress, setProgress] = React.useState(0); // 0..1
   const [modalProgress, setModalProgress] = React.useState(0); // 0..1
@@ -71,16 +73,37 @@ export default function StoryHighlights({ highlights = [], loading = false }) {
   };
 
   const shareImage = async (url) => {
+    setShareImageUrl(url);
+    setShowShareModal(true);
+  };
+
+  const copyLink = async () => {
     try {
-      if (navigator.share) {
-        await navigator.share({ url });
-        return;
-      }
-    } catch {}
-    try {
-      await navigator.clipboard.writeText(url);
+      await navigator.clipboard.writeText(shareImageUrl);
       window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'success', message: '링크 복사됨' } }));
+      setShowShareModal(false);
     } catch {}
+  };
+
+  const shareToInstagram = () => {
+    window.open(`https://www.instagram.com/`, '_blank', 'noopener');
+    setShowShareModal(false);
+  };
+
+  const shareToTikTok = () => {
+    window.open(`https://www.tiktok.com/`, '_blank', 'noopener');
+    setShowShareModal(false);
+  };
+
+  const shareToTwitter = () => {
+    const text = encodeURIComponent('AI가 만든 하이라이트 🎬');
+    window.open(`https://twitter.com/intent/tweet?text=${text}&url=${encodeURIComponent(shareImageUrl)}`, '_blank', 'noopener');
+    setShowShareModal(false);
+  };
+
+  const shareToThreads = () => {
+    window.open(`https://www.threads.net/`, '_blank', 'noopener');
+    setShowShareModal(false);
   };
 
   // 메인 뷰 진행 게이지 및 자동 넘어가기
@@ -376,6 +399,57 @@ export default function StoryHighlights({ highlights = [], loading = false }) {
           {[1, 2, 3, 4].map((i) => (
             <div key={i} className="aspect-[3/4] rounded-lg bg-gray-800 animate-pulse" />
           ))}
+        </div>
+      )}
+
+      {/* 공유 모달 */}
+      {showShareModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={() => setShowShareModal(false)}>
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl p-6 w-full max-w-md mx-4 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-5">
+              <h3 className="text-lg font-semibold text-white">공유하기</h3>
+              <button onClick={() => setShowShareModal(false)} className="text-gray-400 hover:text-white">
+                <X size={20} />
+              </button>
+            </div>
+            <div className="space-y-3">
+              <button
+                onClick={copyLink}
+                className="w-full flex items-center gap-3 px-4 py-3 rounded-xl bg-gray-800 hover:bg-gray-750 border border-gray-700 text-white transition-colors"
+              >
+                <Link size={20} className="text-purple-400" />
+                <span>링크 복사</span>
+              </button>
+              <button
+                onClick={shareToInstagram}
+                className="w-full flex items-center gap-3 px-4 py-3 rounded-xl bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-white transition-all"
+              >
+                <Instagram size={20} />
+                <span>Instagram에 공유</span>
+              </button>
+              <button
+                onClick={shareToTikTok}
+                className="w-full flex items-center gap-3 px-4 py-3 rounded-xl bg-gray-800 hover:bg-gray-750 border border-gray-700 text-white transition-colors"
+              >
+                <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor"><path d="M19.59 6.69a4.83 4.83 0 01-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 01-5.2 1.74 2.89 2.89 0 012.31-4.64 2.93 2.93 0 01.88.13V9.4a6.84 6.84 0 00-1-.05A6.33 6.33 0 005 20.1a6.34 6.34 0 0010.86-4.43v-7a8.16 8.16 0 004.77 1.52v-3.4a4.85 4.85 0 01-1-.1z"/></svg>
+                <span>TikTok에 공유</span>
+              </button>
+              <button
+                onClick={shareToTwitter}
+                className="w-full flex items-center gap-3 px-4 py-3 rounded-xl bg-gray-800 hover:bg-gray-750 border border-gray-700 text-white transition-colors"
+              >
+                <Twitter size={20} className="text-blue-400" />
+                <span>Twitter에 공유</span>
+              </button>
+              <button
+                onClick={shareToThreads}
+                className="w-full flex items-center gap-3 px-4 py-3 rounded-xl bg-gray-800 hover:bg-gray-750 border border-gray-700 text-white transition-colors"
+              >
+                <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-1-13h2v6h-2zm0 8h2v2h-2z"/></svg>
+                <span>Threads에 공유</span>
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

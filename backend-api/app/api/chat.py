@@ -394,9 +394,13 @@ async def agent_simulate(
 
         # UI 모델명을 ai_service 기대 형식으로 매핑
         # [임시] GPT와 Gemini 비활성화 - 모든 요청을 Claude로 강제 전환
-        from app.services.ai_service import CLAUDE_MODEL_PRIMARY
-        preferred_model = "claude"
-        preferred_sub_model = CLAUDE_MODEL_PRIMARY
+        # from app.services.ai_service import CLAUDE_MODEL_PRIMARY
+        # preferred_model = "claude"
+        # preferred_sub_model = CLAUDE_MODEL_PRIMARY
+        from app.services.ai_service import GPT_MODEL_PRIMARY
+        preferred_model = "gpt"  # Claude → GPT 전환
+        preferred_sub_model = GPT_MODEL_PRIMARY
+
         
         # 원래 로직 (임시 비활성화)
         # if "claude" in ui_model or "claude" in ui_sub:
@@ -432,14 +436,19 @@ async def agent_simulate(
             if current_user:
                 username = current_user.username or current_user.email.split('@')[0]
             
+            vision_tags = locals().get('tags2', None) if image_url else None
+            vision_ctx = locals().get('ctx', None) if image_url else None
+
             text = await ai_service.write_story_from_image_grounded(
                 image_url=image_url,
                 user_hint=content,
                 model=preferred_model,
                 sub_model=preferred_sub_model,
                 style_prompt=style_prompt,
-                story_mode=story_mode,  # 'snap' | 'genre' | 'auto'
-                username=username,  # 1인칭 시점에서 사용
+                story_mode=story_mode,
+                username=username,
+                vision_tags=vision_tags,  # 추가
+                vision_ctx=vision_ctx,    # 추가
             )
             
             # 2. 생성된 스토리를 바탕으로 새 이미지 프롬프트 생성 (일시적으로 비활성화)
@@ -512,6 +521,55 @@ async def agent_simulate(
             print(f"/chat/agent/simulate failed: {e}")
         from fastapi import HTTPException
         raise HTTPException(status_code=500, detail=f"agent_simulate_error: {e}")
+
+@router.post("/agent/classify-intent")
+async def classify_intent(payload: dict):
+    """유저 입력의 의도를 LLM으로 분류"""
+    try:
+        user_text = (payload.get("text") or "").strip()
+        has_context = bool(payload.get("has_last_message"))
+        
+        if not user_text:
+            return {"intent": "new", "constraint": ""}
+        
+        # 짧은 프롬프트로 빠르게 분류
+        prompt = f"""사용자 입력: "{user_text}"
+직전 AI 메시지: {"있음" if has_context else "없음"}
+
+다음 중 하나로 분류하고 JSON만 응답:
+- continue: 이어쓰기 (계속, 이어서, 다음, 그다음)
+- remix: 전체 바꿔보기 (~느낌으로, 톤, 스타일, 바꿔)
+- modify: 부분 수정 (추가, 더, 빼줘, 넣어줘, ~했으면)
+- new: 새 스토리
+- chat: 일반 대화
+
+{{"intent": "...", "constraint": "구체적 요청 내용"}}"""
+        
+        from app.services.ai_service import CLAUDE_MODEL_PRIMARY
+        result = await ai_service.get_claude_completion(
+            prompt, 
+            temperature=0.1, 
+            max_tokens=150, 
+            model=CLAUDE_MODEL_PRIMARY
+        )
+        
+        # JSON 파싱
+        if '```json' in result:
+            result = result.split('```json')[1].split('```')[0].strip()
+        elif '```' in result:
+            result = result.split('```')[1].split('```')[0].strip()
+        
+        data = json.loads(result)
+        return {
+            "intent": data.get("intent", "new"), 
+            "constraint": data.get("constraint", "")
+        }
+    except Exception as e:
+        logger.error(f"Intent classification failed: {e}")
+        # 폴백: 새 스토리로 처리
+        return {"intent": "new", "constraint": ""}
+
+
 @router.post("/agent/generate-highlights")
 async def agent_generate_highlights(payload: dict):
     """텍스트와 원본 이미지 URL을 받아 하이라이트 이미지를 3장 생성하여 반환"""
@@ -575,7 +633,7 @@ async def agent_generate_highlights(payload: dict):
                 image_size="1024x1024"
             ) for sp in scene_prompts
         ]
-        results = await seedream.generate_batch(configs, max_concurrent=2)
+        results = await seedream.generate_batch(configs, max_concurrent=3)
 
         composer = ImageComposer()
         storage = get_storage()

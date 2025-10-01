@@ -321,6 +321,8 @@ export const chatAPI = {
     api.post('/chat/agent/simulate', data),
   agentGenerateHighlights: (data) =>
     api.post('/chat/agent/generate-highlights', data),
+  classifyIntent: (data) =>
+    api.post('/chat/agent/classify-intent', data),
   
   getChatHistory: (sessionId) =>
     api.get(`/chat/history/${sessionId}`),

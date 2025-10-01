@@ -19,9 +19,12 @@ import asyncio
 logger = logging.getLogger(__name__)
 
 # Claude 모델명 상수 (전역 참조용)
-CLAUDE_MODEL_PRIMARY = 'claude-sonnet-4-5-20250929'
-# CLAUDE_MODEL_PRIMARY = 'claude-sonnet-4-20250514'
+# CLAUDE_MODEL_PRIMARY = 'claude-sonnet-4-5-20250929'
+CLAUDE_MODEL_PRIMARY = 'claude-sonnet-4-20250514'
+# CLAUDE_MODEL_PRIMARY = 'claude-3-7-sonnet-20250219'
 CLAUDE_MODEL_LEGACY = 'claude-sonnet-4-20250514'  # 폴백/호환용
+
+GPT_MODEL_PRIMARY = 'gpt-5'
 
 # 안전 문자열 변환 유틸
 def _as_text(val) -> str:
@@ -125,8 +128,9 @@ def _parse_user_intent(user_hint: str) -> dict:
 
 
 # OpenAI 설정
+from openai import AsyncOpenAI
 import openai
-openai.api_key = settings.OPENAI_API_KEY
+client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 
 
 # -------------------------------
@@ -236,7 +240,7 @@ async def tag_image_keywords(image_url: str, model: str = 'claude') -> dict:
             try:
                 txt = await get_claude_completion(
                     prompt,
-                    max_tokens=1000,
+                    max_tokens=1800,
                     model=CLAUDE_MODEL_PRIMARY,
                     image_base64=image_data,
                     image_mime=image_mime
@@ -386,7 +390,7 @@ async def extract_image_narrative_context(image_url: str, model: str = 'claude')
             try:
                 txt = await get_claude_completion(
                     schema_prompt,
-                    max_tokens=800,
+                    max_tokens=1800,
                     model=CLAUDE_MODEL_PRIMARY,
                     image_base64=image_data,
                     image_mime=image_mime
@@ -478,7 +482,7 @@ async def analyze_image_tags_and_context(image_url: str, model: str = 'claude') 
         txt = await get_claude_completion(
             prompt,
             temperature=0.1,
-            max_tokens=700,
+            max_tokens=1000,
             model=CLAUDE_MODEL_PRIMARY,
             image_base64=image_b64,
             image_mime=image_mime
@@ -640,16 +644,33 @@ async def generate_image_prompt_from_story(story_text: str, original_tags: dict 
 
 async def write_story_from_image_grounded(image_url: str, user_hint: str = "", pov: str | None = None, style_prompt: str | None = None,
                                           story_mode: str | None = None, username: str | None = None,
-                                          model: Literal["gemini","claude","gpt"] = "gemini", sub_model: str | None = "gemini-2.5-pro") -> str:
+                                          model: Literal["gemini","claude","gpt"] = "gemini", sub_model: str | None = "gemini-2.5-pro",
+                                          vision_tags: dict | None = None, vision_ctx: dict | None = None) -> str:
     """이미지 태깅→고정조건 프롬프트→집필(자가검증은 1패스 내장)"""
+    import time
+    t0 = time.time()
+    
     # Stage-1 lightweight grounding (fallback-friendly)
     kw2, caption = stage1_keywords_from_image_url(image_url)
-    # Stage-2: 통합 Vision 호출(태그+컨텍스트) → 실패 시 기존 분리 호출로 폴백
-    try:
-        tags, ctx = await analyze_image_tags_and_context(image_url, model='claude')
-    except Exception:
-        tags = await tag_image_keywords(image_url, model='claude')
-        ctx = await extract_image_narrative_context(image_url, model='claude')
+    t1 = time.time()
+    logging.info(f"[PERF] Stage-1 grounding: {(t1-t0)*1000:.0f}ms")
+    
+    # Stage-2: Vision 결과 (전달받았으면 재사용, 없으면 호출)
+    if vision_tags and vision_ctx:
+        tags, ctx = vision_tags, vision_ctx
+        t2 = time.time()
+        logging.info(f"[PERF] Vision reused from auto detection: 0ms")
+    else:
+        try:
+            tags, ctx = await analyze_image_tags_and_context(image_url, model='claude')
+            t2 = time.time()
+            logging.info(f"[PERF] Vision combined: {(t2-t1)*1000:.0f}ms")
+        except Exception as e:
+            logging.warning(f"[PERF] Vision combined failed, fallback: {e}")
+            tags = await tag_image_keywords(image_url, model='claude')
+            ctx = await extract_image_narrative_context(image_url, model='claude')
+            t2 = time.time()
+            logging.info(f"[PERF] Vision fallback (2 calls): {(t2-t1)*1000:.0f}ms")
     # 스냅 모드에서는 개인정보 보호를 위해 이름 주입 금지
     block = build_image_grounding_block(
         tags,
@@ -737,24 +758,24 @@ async def write_story_from_image_grounded(image_url: str, user_hint: str = "", p
     # 스토리 모드별 시스템 지시사항
     if story_mode == "snap":
         sys_instruction = (
-            "당신은 일상의 순간을 포착하는 에세이스트다. 이미지의 평범한 순간을 특별하게 만든다.\n"
-            "규칙: 200-300자 분량, SNS 피드 스타일, 공감가는 일상 언어, 따뜻하거나 위트있게.\n"
-            "중요: 오글거리지 않게, 과장하지 않게, 진솔하고 담백하게.\n"
-            "독자가 '나도 그런 적 있어'라고 공감할 수 있는 순간을 포착하라."
+            "당신은 일상을 재치있게 기록하는 20대다. 평범한 순간에서 웃긴 포인트를 찾아.\n"
+            "규칙: 200-300자, SNS 글, 일상 말투, 쉬운 단어만.\n"
+            "중요: 너무 오글거리지 않게. 적당히 웃기게. 솔직하게. 위트있게.\n"
+            "일반인들이 '어 나도 그랬는데 ㅋㅋ' 싶게. 있는 그대로 + 재치 살짝."
             + pov_instruction
         )
         # 인스타 공유 효능감 강화 지시
         sys_instruction += (
-            "\n특기: 인스타 캡션처럼 자연스럽고 간결하게. 과장 금지, 일상 감성 유지."
-            "\n스타일: 적당한 호흡(문장 평균 15~25자), 쉼표 적절히, 마침표로 리듬."
-            "\n문단: 2~3문장 단락, 줄바꿈으로 리듬 살리기."
-            "\n어휘: 담백하고 위트 있게. 해시태그/이모지 사용 금지."
-            "\n톤: 20~30대 여성 취향의 소소한 위안/힐링 느낌."
-            "\n개인정보: 사람 이름(고유명) 사용 금지. 인물 지칭은 '그' 또는 '그녀'만 사용."
-            "\n역할: 당신은 트렌디하고 감성적인 인스타 인플루언서다. 군더더기 없이 핵심을 잡고,"
-            " 읽는 즉시 스크롤을 멈추게 하는 한 줄의 후킹을 초반에 배치하라."
-            " 텍스트에 담긴 느낌은 과하지 않게, 그러나 분명하게 전달하라."
-            "\n금지: 제목(#, 별표 등), 메타텍스트, 부제, 챕터명 일절 금지. 첫 문장부터 바로 이야기로 시작."
+            "\n특기: 인스타 캡션처럼. 간단하게. 평범한 일상이지만 웃긴 포인트 살려."
+            "\n스타일: 문장 짧게(10~18자). 쉼표 많이. 마침표로 끊어."
+            "\n문단: 1~2문장. 줄 자주 바꿔."
+            "\n어휘: 쉬운 말만. 한국인 특유의 위트/유머(의성어, 의태어, 과장 비유, 자기비하). 너무 웃기려고 하지는 마. #, 이모지, ㅋㅋ, ㅎㅎ 같은 채팅 표현 금지."
+            "\n톤: 친구한테 '야 이거 봐봐 ㅋㅋ' 하듯. 재치있게. 한국식 센스."
+            "\n개인정보: 이름 쓰지 마. '걔', '그 사람', '나' 정도만."
+            "\n역할: 당신은 일상을 관찰력 있게 보는 20대 SNS 유저다. 어려운 말 쓰지 마."
+            " 첫 문장은 '어 이거 뭐야 ㅋㅋ' 싶게. 상황의 웃긴 점이나 아이러니를 포착."
+            " 감정은 과하지 않게. '웃기다', '황당하다', '귀엽다' 같은 솔직한 반응."
+            "\n금지: 제목, #, *, ㅋㅋ, ㅎㅎ, 이모지, 설명 금지. 첫 문장부터 바로 장면 시작. 억지 개그 금지."
         )
     elif story_mode == "genre":
         sys_instruction = (
@@ -766,11 +787,13 @@ async def write_story_from_image_grounded(image_url: str, user_hint: str = "", p
         )
         # 하이라이트 후킹 강화 지시
         sys_instruction += (
-            "\n특기: 첫 2문장에 강력한 후킹. 시각적 장면성이 뚜렷하게 드러나게 써라."
-            "\n스타일: 웹소설 톤. 적당한 호흡(문장 평균 18~30자), 쉼표 적절히, 빠른 템포 유지."
-            "\n대사: 전체의 40~60% 비중. 줄바꿈을 자주 사용해 박자감 유지."
-            "\n문단: 2~4문장 단락. 장황한 비유/설명체 금지. show-don't-tell."
-            "\n금지: 제목(#, 별표 등), 메타텍스트, 부제, 챕터명 일절 금지. 첫 문장부터 바로 이야기로 시작."
+            "\n특기: 첫 문장은 웃긴 상황이나 의외의 장면. 두 번째 문장은 반응이나 생각."
+            "\n스타일: 친구한테 카톡하듯. 문장 짧게(10~15자). 쉬운 말만. 재치있게."
+            "\n대사: 많이 넣어. 대사에 위트 담아. 대사마다 줄바꿈."
+            "\n문단: 1~2문장씩 끊어. 한 문장도 OK. 비유 쓰지 마. 있는 그대로 + 관찰의 재미."
+            "\n개행: 2문장마다 무조건 엔터. 읽기 편하게."
+            "\n유머: 한국인 특유의 센스. 자기비하, 과장된 비유(예: '냉장고 코스프레', '로딩 걸린 사람'), 의성어/의태어, '~인 척', '~당하는 기분' 같은 표현. 영어권 유머 스타일 금지."
+            "\n금지: 제목, #, *, ㅋㅋ, ㅎㅎ, 이모지, 설명 금지. 바로 장면 시작."
         )
     else:
         sys_instruction = (
@@ -816,10 +839,12 @@ async def write_story_from_image_grounded(image_url: str, user_hint: str = "", p
             length_guide = "150~220자"
         extra_instructions = (
             "\n[추가 지시]\n"
-            "- 일상의 작은 순간을 특별하게 포착하라\n"
-            "- 독자가 공감할 수 있는 감정을 담아라\n"
-            "- 과장하지 말고 진솔하게 써라\n"
-            "- 짧지만 여운이 남는 마무리"
+            "- 누구나 겪는 평범한 순간에서 웃긴 포인트 찾기. 상황의 아이러니나 귀여운 디테일.\n"
+            "- 일반인 입장에서 '나도 저래 ㅋㅋ' 싶게. 공감 + 재미.\n"
+            "- 한국인 유머 센스: 의성어/의태어 활용(웅웅, 쏙쏙), 과장 비유(~코스프레, ~당하는 나), 자기비하. 영어권 표현(갱스터, 바이브 등) 금지.\n"
+            "- 줄 자주 바꿔. 한눈에 읽히게.\n"
+            "- 솔직하게 + 위트.\n"
+            "- 끝은 한 번 더 웃기거나, 담백하게. 억지로 여운 만들지 마."
         )
     elif story_mode == "genre":
         length_guide = "650~750자"
@@ -883,40 +908,6 @@ async def write_story_from_image_grounded(image_url: str, user_hint: str = "", p
                 return True
         return False
 
-    async def _gemini_mm(url: str) -> str:
-        try:
-            img = _http_get_bytes(url)
-            mime, _ = mimetypes.guess_type(url)
-            mime = mime or "image/jpeg"
-            mm = genai.GenerativeModel(sub_model or 'gemini-2.5-pro', system_instruction=sys_instruction)
-            cfg = genai.types.GenerationConfig(temperature=0.7, max_output_tokens=1200)
-            resp = await mm.generate_content_async([
-                {"mime_type": mime, "data": img},
-                grounding_text
-            ], generation_config=cfg, safety_settings=DEFAULT_SAFETY_OPEN)
-            if hasattr(resp, 'text') and resp.text:
-                logging.info(f"Gemini MM ok: bytes={len(img)} mime={mime} model={sub_model or 'gemini-2.5-pro'}")
-                return resp.text
-            # soft retry: finish_reason=2 또는 text 없음
-            try:
-                cand0 = (getattr(resp, 'candidates', []) or [None])[0]
-                finish = getattr(cand0, 'finish_reason', None)
-            except Exception:
-                finish = None
-            soft_sys = sys_instruction + "\n(안전한 표현을 사용하여 부드럽고 절제된 어휘로 작성)"
-            mm2 = genai.GenerativeModel(sub_model or 'gemini-2.5-pro', system_instruction=soft_sys)
-            cfg2 = genai.types.GenerationConfig(temperature=0.3, max_output_tokens=1200)
-            resp2 = await mm2.generate_content_async([
-                {"mime_type": mime, "data": img},
-                grounding_text
-            ], generation_config=cfg2, safety_settings=DEFAULT_SAFETY_OPEN)
-            if hasattr(resp2, 'text') and resp2.text:
-                logging.info("Gemini MM retry ok")
-                return resp2.text
-        except Exception as e:
-            logging.warning(f"Gemini MM fail: {e}")
-        return ""
-
     async def _claude_mm(url: str) -> str:
         try:
             # 이미지를 직접 다운로드하여 base64로 인코딩
@@ -947,14 +938,14 @@ async def write_story_from_image_grounded(image_url: str, user_hint: str = "", p
                 f"{grounding_text}"
             )
             
-            # 디버그: sys_instruction 확인
-            logging.info(f"[DEBUG] story_mode={story_mode}, sys_instruction_len={len(sys_instruction)}, sys_start={sys_instruction[:80]}")
+            # 디버그: sys_instruction 및 모델 확인
+            logging.info(f"[DEBUG] story_mode={story_mode}, model={model}/{sub_model or 'default'}, sys_instruction_len={len(sys_instruction)}, sys_start={sys_instruction[:80]}")
             
             message = await claude_client.messages.create(
                 model=CLAUDE_MODEL_PRIMARY,
                 max_tokens=1800,
                 temperature=0.7,
-                system=sys_instruction,  # 시스템 프롬프트 별도 전달
+                system=sys_instruction,
                 messages=[{
                     "role":"user",
                     "content":[
@@ -963,6 +954,7 @@ async def write_story_from_image_grounded(image_url: str, user_hint: str = "", p
                     ]
                 }]
             )
+            
             result = ""
             if hasattr(message, 'content') and message.content:
                 result = getattr(message.content[0], 'text', '') or ""
@@ -971,7 +963,6 @@ async def write_story_from_image_grounded(image_url: str, user_hint: str = "", p
                 # 결과가 평가/분석인지 체크
                 if any(word in result[:100] for word in ["수정된 버전", "효과적으로 표현", "보완을 제안", "분석", "평가"]):
                     logging.warning("Claude returned analysis instead of story, retrying...")
-                    # 재시도 with stronger prompt
                     retry_prompt = (
                         "이미지를 보고 즉시 이야기를 시작하세요.\n"
                         "첫 문장부터 소설이어야 합니다. 분석이나 평가는 절대 금지.\n"
@@ -982,6 +973,7 @@ async def write_story_from_image_grounded(image_url: str, user_hint: str = "", p
                         model=CLAUDE_MODEL_PRIMARY,
                         max_tokens=1800,
                         temperature=0.7,
+                        system=sys_instruction,
                         messages=[{
                             "role":"user",
                             "content":[
@@ -992,19 +984,19 @@ async def write_story_from_image_grounded(image_url: str, user_hint: str = "", p
                     )
                     if hasattr(retry_msg, 'content') and retry_msg.content:
                         result = getattr(retry_msg.content[0], 'text', '') or ""
-                
-                return result
+            
+            return result
         except Exception as e:
             logging.warning(f"Claude MM fail: {e}")
         return ""
 
-    # [임시] GPT와 Gemini 비활성화 - Claude Vision만 사용
+    # Claude Vision으로 스토리 생성
     text = await _claude_mm(image_url)
-    # if not text:
-    #     text = await _gemini_mm(image_url)
+    
     if not text:
         # 최종 폴백(텍스트-only) - Claude 사용
-        text = await get_ai_completion("[텍스트 폴백]\n" + grounding_text, model="claude", sub_model=CLAUDE_MODEL_PRIMARY, max_tokens=1800)
+        text = await get_ai_completion("[텍스트 폴백]\n" + grounding_text, model="claude", sub_model=CLAUDE_MODEL_PRIMARY, max_tokens=1800)        
+
     # 자가 검증 스킵 (Claude Vision은 이미 충분히 정확함)
     # 필요시 간단한 체크만
     if not text or len(text) < 100:

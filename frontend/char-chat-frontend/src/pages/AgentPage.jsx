@@ -467,6 +467,8 @@ const [editingMessageId, setEditingMessageId] = useState(null);
 const [editedContent, setEditedContent] = useState('');
 // Remix 선택 상태: messageId -> string[]
 const [remixSelected, setRemixSelected] = useState({});
+// 생성 중 경과 시간 표시용
+const [elapsedSeconds, setElapsedSeconds] = useState(0);
 // 태그 뷰 토글: 'auto'일 땐 현재 스토리 모드에 맞춰 시작, 아이콘으로 일시 토글
 const [tagViewMode, setTagViewMode] = useState('auto'); // 'auto' | 'snap' | 'genre'
 // 스냅 태그: 상단 4, 하단 3만 노출(순서 중요)
@@ -545,7 +547,7 @@ const handleRemixGenerate = useCallback(async (msg, assistantText) => {
 
     // 타이핑 출력
     setMessages(curr => curr.map(m => m.id === assistantId ? { ...m, content: '', thinking: false, streaming: true, storyMode: decidedMode } : m));
-    let idx = 0; const total = text.length; const steps = 120; const step = Math.max(2, Math.ceil(total / steps)); const intervalMs = 20;
+    let idx = 0; const total = text.length; const steps = 80; const step = Math.max(2, Math.ceil(total / steps)); const intervalMs = 15;
     const timer = setInterval(() => {
       idx = Math.min(total, idx + step);
       const slice = text.slice(0, idx);
@@ -613,6 +615,22 @@ useEffect(() => {
 useEffect(() => { if (!isGuest) saveJson(LS_IMAGES, images); }, [images, isGuest]);
 useEffect(() => { if (!isGuest) saveJson(LS_STORIES, storiesList); }, [storiesList, isGuest]);
 useEffect(() => { if (!isGuest) saveJson(LS_CHARACTERS, charactersList); }, [charactersList, isGuest]);
+
+// 생성 중 경과 시간 타이머
+useEffect(() => {
+  const thinkingMsg = stableMessages.find(m => m.thinking);
+  if (!thinkingMsg) {
+    setElapsedSeconds(0);
+    return;
+  }
+  setElapsedSeconds(0);
+  const startTime = new Date(thinkingMsg.createdAt).getTime();
+  const timer = setInterval(() => {
+    const elapsed = Math.floor((Date.now() - startTime) / 1000);
+    setElapsedSeconds(elapsed);
+  }, 1000);
+  return () => clearInterval(timer);
+}, [stableMessages]);
 
 // UI 상태 로컬 복원/저장
 useEffect(() => {
@@ -1429,7 +1447,7 @@ const handleContinueInline = useCallback(async (msg) => {
     updateMessageForSession(sid, msg.id, (m) => ({ ...m, streaming: true, continued: true }));
     let i = 0;
     const total = appended.length;
-    const steps = 120;
+    const steps = 80;
     const step = Math.max(2, Math.ceil(total / steps));
     const timer = setInterval(() => {
       i = Math.min(total, i + step);
@@ -1483,7 +1501,7 @@ const handleContinueInline = useCallback(async (msg) => {
           }
         })();
       }
-    }, 20);
+    }, 15);
   } catch (e) {
     // 실패 시 스피너 해제
     try { updateMessageForSession(activeSessionId, msg.id, (m) => ({ ...m, streaming: false, continued: false })); } catch {}
@@ -1823,9 +1841,12 @@ return (
                                       ? 'w-full max-w-3xl bg-gray-900/30 border border-gray-800/50 px-4 py-3 ring-2 ring-purple-500/70 shadow-[0_0_24px_rgba(168,85,247,0.55)] bg-gradient-to-br from-purple-900/15 to-fuchsia-700/10'
                                       : 'w-full max-w-3xl bg-gray-900/30 border border-gray-800/50 px-4 py-3')}`}>
                                   { m.thinking ? (
-                                    <div className="inline-flex items-center gap-1 text-gray-400">
+                                    <div className="inline-flex items-center gap-2 text-gray-400">
                                       <Loader2 className="w-3.5 h-3.5 animate-spin" />
                                       <span className="text-xs">생성 중…</span>
+                                      {elapsedSeconds > 0 && (
+                                        <span className="text-xs text-purple-400">{elapsedSeconds}s</span>
+                                      )}
                                     </div>
                                   ) : (
                                     <>
@@ -2090,6 +2111,29 @@ return (
                      }
                    });
                    
+                   // 의도 분석: 텍스트만 있고 이미지 없으며, 직전 AI 응답이 있을 때
+                   const lastAssistant = stableMessages.findLast(m => m.role === 'assistant' && !m.error && !m.thinking && m.content);
+                   if (userText && !imageUrl && lastAssistant) {
+                     try {
+                       const intentRes = await chatAPI.classifyIntent({
+                         text: userText,
+                         has_last_message: true
+                       });
+                       
+                       if (intentRes.data?.intent === 'continue') {
+                         return handleContinueInline(lastAssistant);
+                       }
+                       if (intentRes.data?.intent === 'remix') {
+                         setRemixSelected(prev => ({ ...prev, [lastAssistant.id]: [] }));
+                         return handleRemixGenerate(lastAssistant, lastAssistant.fullContent || lastAssistant.content);
+                       }
+                       // modify, new, chat는 아래 일반 플로우로
+                     } catch (e) {
+                       console.error('Intent analysis failed:', e);
+                       // 폴백: 일반 플로우로
+                     }
+                   }
+                   
                    // 사용자 메시지 추가 (텍스트와 이미지를 바로 연속으로)
                    const userMessages = [];
                    const userMsgId = crypto.randomUUID();
@@ -2152,9 +2196,9 @@ return (
                      // 타이핑 루프
                      let idx = 0;
                      const total = assistantText.length;
-                     const steps = 120; // 약 120 스텝
+                     const steps = 80;
                      const step = Math.max(2, Math.ceil(total / steps));
-                     const intervalMs = 20;
+                     const intervalMs = 15;
                      const timer = setInterval(() => {
                        idx = Math.min(total, idx + step);
                        const slice = assistantText.slice(0, idx);
