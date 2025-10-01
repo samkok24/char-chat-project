@@ -74,14 +74,26 @@ function saveJson(key, value) {
 try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
 }
 
-function useAgentSessions(persist = true) {
-const [sessions, setSessions] = useState(() => persist ? loadJson(LS_SESSIONS, []) : []);
+function useAgentSessions(persist = true, useSessionStorage = false) {
+const [sessions, setSessions] = useState(() => {
+  if (persist) return loadJson(LS_SESSIONS, []);
+  if (useSessionStorage) {
+    try {
+      const raw = sessionStorage.getItem(LS_SESSIONS);
+      return raw ? JSON.parse(raw) : [];
+    } catch { return []; }
+  }
+  return [];
+});
 
 useEffect(() => { 
-if (!persist) return;
+if (persist) {
 saveJson(LS_SESSIONS, sessions);
+} else if (useSessionStorage) {
+  try { sessionStorage.setItem(LS_SESSIONS, JSON.stringify(sessions)); } catch {}
+}
 try { window.dispatchEvent(new Event('agent:sessionsChanged')); } catch {}
-}, [sessions, persist]);
+}, [sessions, persist, useSessionStorage]);
 
 const createSession = (partial = {}) => {
 const id = crypto.randomUUID();
@@ -97,6 +109,8 @@ const next = [session, ...sessions];
 setSessions(next);
 if (persist) {
   saveJson(LS_MESSAGES_PREFIX + id, []);
+} else if (useSessionStorage) {
+  try { sessionStorage.setItem(LS_MESSAGES_PREFIX + id, JSON.stringify([])); } catch {}
 }
 try { window.dispatchEvent(new CustomEvent('analytics', { detail: { name: 'agent_create_session', props: { id } } })); } catch {}
 return session;
@@ -110,6 +124,8 @@ const removeSession = (id) => {
 setSessions(prev => prev.filter(s => s.id !== id));
 if (persist) {
   try { localStorage.removeItem(LS_MESSAGES_PREFIX + id); } catch {}
+} else if (useSessionStorage) {
+  try { sessionStorage.removeItem(LS_MESSAGES_PREFIX + id); } catch {}
 }
 try { window.dispatchEvent(new Event('agent:sessionsChanged')); } catch {}
 };
@@ -117,8 +133,17 @@ try { window.dispatchEvent(new Event('agent:sessionsChanged')); } catch {}
 return { sessions, setSessions, createSession, updateSession, removeSession };
 }
 
-function useSessionMessages(sessionId, persist = true) {
-const [messages, setMessages] = useState(() => persist ? loadJson(LS_MESSAGES_PREFIX + sessionId, []) : []);
+function useSessionMessages(sessionId, persist = true, useSessionStorage = false) {
+const [messages, setMessages] = useState(() => {
+  if (persist) return loadJson(LS_MESSAGES_PREFIX + sessionId, []);
+  if (useSessionStorage) {
+    try {
+      const raw = sessionStorage.getItem(LS_MESSAGES_PREFIX + sessionId);
+      return raw ? JSON.parse(raw) : [];
+    } catch { return []; }
+  }
+  return [];
+});
 const prevSessionIdRef = useRef(sessionId);
 const isSessionChangingRef = useRef(false);
 
@@ -127,10 +152,21 @@ if (!sessionId) return;
 if (persist) {
     // When session ID changes, load new messages
     if (sessionId !== prevSessionIdRef.current) {
-        isSessionChangingRef.current = true; // Mark that we're changing sessions
+        isSessionChangingRef.current = true;
         setMessages(loadJson(LS_MESSAGES_PREFIX + sessionId, []));
         prevSessionIdRef.current = sessionId;
-        // Allow saving after a brief delay to ensure state has settled
+        setTimeout(() => {
+            isSessionChangingRef.current = false;
+        }, 100);
+    }
+} else if (useSessionStorage) {
+    if (sessionId !== prevSessionIdRef.current) {
+        isSessionChangingRef.current = true;
+        try {
+          const raw = sessionStorage.getItem(LS_MESSAGES_PREFIX + sessionId);
+          setMessages(raw ? JSON.parse(raw) : []);
+        } catch { setMessages([]); }
+        prevSessionIdRef.current = sessionId;
         setTimeout(() => {
             isSessionChangingRef.current = false;
         }, 100);
@@ -138,7 +174,7 @@ if (persist) {
 } else {
     setMessages([]);
 }
-}, [sessionId, persist]);
+}, [sessionId, persist, useSessionStorage]);
 
 useEffect(() => { 
   // Only save if we're not in the middle of a session change
@@ -147,8 +183,10 @@ useEffect(() => {
   }
   if (persist && sessionId) {
       saveJson(LS_MESSAGES_PREFIX + sessionId, messages); 
+  } else if (useSessionStorage && sessionId) {
+      try { sessionStorage.setItem(LS_MESSAGES_PREFIX + sessionId, JSON.stringify(messages)); } catch {}
   }
-}, [sessionId, messages, persist]);
+}, [sessionId, messages, persist, useSessionStorage]);
 
 return { messages, setMessages };
 }
@@ -224,13 +262,14 @@ const todayLabel = React.useMemo(() => {
 }, []);
 const { user } = useAuth();
 const isGuest = !user;
-const { sessions, createSession, updateSession, removeSession } = useAgentSessions(!isGuest === true);
+const { sessions, createSession, updateSession, removeSession } = useAgentSessions(!isGuest === true, isGuest === true);
 const [activeSessionId, setActiveSessionId] = useState((!isGuest ? (sessions[0]?.id || null) : null));
-const { messages, setMessages } = useSessionMessages(activeSessionId || '', !isGuest === true);
+const { messages, setMessages } = useSessionMessages(activeSessionId || '', !isGuest === true, isGuest === true);
 const queryClient = useQueryClient();
 const [scrollElement, setScrollElement] = useState(null);
 // P0: activeSessionIdRef/sessionLocalMessagesRef for live updates
 const activeSessionIdRef = useRef(activeSessionId);
+const sessionTypingTimersRef = useRef(new Map()); // sessionId -> [timer]
 useEffect(() => { activeSessionIdRef.current = activeSessionId; }, [activeSessionId]);
 const sessionLocalMessagesRef = useRef(new Map());
 const messagesContainerRef = useCallback(node => {
@@ -544,33 +583,94 @@ const handleRemixGenerate = useCallback(async (msg, assistantText) => {
     const response = await chatAPI.agentSimulate({ staged, mode: 'micro', storyMode: effectiveModeForRemix, model: storyModel, sub_model: storyModel });
     const text = response.data?.assistant || '';
     const decidedMode = response.data?.story_mode || (msg.storyMode || 'auto');
-
     // 타이핑 출력
+    const currentSessionId = activeSessionId; // ✅ 시작 시점 세션 캡처
     setMessages(curr => curr.map(m => m.id === assistantId ? { ...m, content: '', thinking: false, streaming: true, storyMode: decidedMode } : m));
-    let idx = 0; const total = text.length; const steps = 80; const step = Math.max(2, Math.ceil(total / steps)); const intervalMs = 15;
+
+    let idx = 0; 
+    const total = text.length; 
+    const steps = 80; 
+    const step = Math.max(2, Math.ceil(total / steps)); 
+    const intervalMs = 15;
     const timer = setInterval(() => {
       idx = Math.min(total, idx + step);
       const slice = text.slice(0, idx);
-      setMessages(curr => curr.map(m => m.id === assistantId ? { ...m, content: slice } : m));
+      
+      // ✅ 저장소 항상 업데이트 (타이핑 중에도)
+      const saved = loadJson(LS_MESSAGES_PREFIX + currentSessionId, []);
+      const updated = saved.map(m => m.id === assistantId ? { 
+        ...m, 
+        content: slice,
+        fullContent: text, // 전체 텍스트는 항상 저장
+        streaming: idx < total,
+        thinking: false,
+        storyMode: decidedMode
+      } : m);
+      saveJson(LS_MESSAGES_PREFIX + currentSessionId, updated);
+      
+      // ✅ 현재 보고 있는 세션일 때만 UI 업데이트
+      if (activeSessionIdRef.current === currentSessionId) {
+        setMessages(updated);
+      }
+      
       if (idx >= total) {
         clearInterval(timer);
-        setMessages(curr => curr.map(m => m.id === assistantId ? { ...m, streaming: false } : m));
-        // 하이라이트 로딩/추천
+        const timers = sessionTypingTimersRef.current.get(currentSessionId) || [];
+        sessionTypingTimersRef.current.set(currentSessionId, timers.filter(t => t !== timer));
+        
+        // ✅ 하이라이트/추천 추가
         if (imageUrl) {
+          const finalSaved = loadJson(LS_MESSAGES_PREFIX + currentSessionId, []);
           const placeholderId = crypto.randomUUID();
-          setMessages(curr => ([...curr, { id: placeholderId, type: 'story_highlights_loading', createdAt: nowIso() }, { id: crypto.randomUUID(), role: 'assistant', type: 'recommendation', createdAt: nowIso() }]));
+          const withExtras = [...finalSaved, 
+            { id: placeholderId, type: 'story_highlights_loading', createdAt: nowIso() }, 
+            { id: crypto.randomUUID(), role: 'assistant', type: 'recommendation', createdAt: nowIso() }
+          ];
+          saveJson(LS_MESSAGES_PREFIX + currentSessionId, withExtras);
+          
+          if (activeSessionIdRef.current === currentSessionId) {
+            setMessages(withExtras);
+          }
+          
+          // ✅ 하이라이트 생성 (백그라운드, 세션 무관)
           (async () => {
             try {
               const hiRes = await chatAPI.agentGenerateHighlights({ text, image_url: imageUrl, story_mode: decidedMode || 'auto' });
               const scenes = hiRes.data?.story_highlights || [];
-              setMessages(curr2 => curr2.map(mm => mm.id === placeholderId ? { id: crypto.randomUUID(), type: 'story_highlights', scenes, createdAt: nowIso() } : mm));
+              
+              const currentMsgs = loadJson(LS_MESSAGES_PREFIX + currentSessionId, []);
+              const placeholder = currentMsgs.find(m => m.type === 'story_highlights_loading');
+              if (!placeholder) return;
+              
+              const savedAfterHL = loadJson(LS_MESSAGES_PREFIX + currentSessionId, []);
+              const updatedHL = savedAfterHL.map(mm => mm.id === placeholder.id ? { 
+                id: crypto.randomUUID(), 
+                type: 'story_highlights', 
+                scenes, 
+                createdAt: nowIso() 
+              } : mm);
+              
+              saveJson(LS_MESSAGES_PREFIX + currentSessionId, updatedHL);
+              
+              if (activeSessionIdRef.current === currentSessionId) {
+                setMessages(updatedHL);
+              }
             } catch (_) {
-              setMessages(curr2 => curr2.filter(mm => mm.id !== placeholderId));
+              const savedErr = loadJson(LS_MESSAGES_PREFIX + currentSessionId, []);
+              const filtered = savedErr.filter(mm => mm.type !== 'story_highlights_loading');
+              saveJson(LS_MESSAGES_PREFIX + currentSessionId, filtered);
+              
+              if (activeSessionIdRef.current === currentSessionId) {
+                setMessages(filtered);
+              }
             }
           })();
         }
       }
     }, intervalMs);
+    // ✅ 타이머 등록
+    const timers = sessionTypingTimersRef.current.get(currentSessionId) || [];
+    sessionTypingTimersRef.current.set(currentSessionId, [...timers, timer]);
   } catch (e) {
     setMessages(curr => curr.map(m => m.thinking ? { ...m, content: '응답 생성에 실패했습니다. 다시 시도해주세요.', thinking: false, error: true } : m));
     setGenState(activeSessionId, { status: GEN_STATE.IDLE });
@@ -992,33 +1092,55 @@ const handleRerun = useCallback(async (msg) => {
     const loadingId = crypto.randomUUID();
     const afterText = isGuest ? (sessionLocalMessagesRef.current.get(sid) || []) : loadJson(LS_MESSAGES_PREFIX + sid, []);
     const withLoading = [...afterText.slice(0, idx + 1), { id: loadingId, type: 'story_highlights_loading', createdAt: nowIso() }, ...afterText.slice(idx + 1)];
-    if (isGuest) sessionLocalMessagesRef.current.set(sid, withLoading); else saveJson(LS_MESSAGES_PREFIX + sid, withLoading);
+    if (isGuest) {
+      sessionLocalMessagesRef.current.set(sid, withLoading);
+      try { sessionStorage.setItem(LS_MESSAGES_PREFIX + sid, JSON.stringify(withLoading)); } catch {}
+    } else {
+      saveJson(LS_MESSAGES_PREFIX + sid, withLoading);
+    }
     if (activeSessionId === sid) setMessages(withLoading);
+    
+    const originalSessionId = sid; // 세션 캡처
     try {
       const hiRes = await chatAPI.agentGenerateHighlights({ text: assistantText, image_url: imageUrl || '', story_mode: decidedMode || 'auto' });
       const scenes = (hiRes?.data?.story_highlights || []).map((s, i) => ({ ...s, id: crypto.randomUUID() }));
-      const list2 = isGuest ? (sessionLocalMessagesRef.current.get(sid) || []) : loadJson(LS_MESSAGES_PREFIX + sid, []);
+      const list2 = isGuest ? (sessionLocalMessagesRef.current.get(originalSessionId) || []) : loadJson(LS_MESSAGES_PREFIX + originalSessionId, []);
       const idx2 = list2.findIndex(m => m.id === loadingId);
       const replaced = [...list2.slice(0, idx2), { id: crypto.randomUUID(), type: 'story_highlights', scenes, createdAt: nowIso() }, ...list2.slice(idx2 + 1)];
-      if (isGuest) sessionLocalMessagesRef.current.set(sid, replaced); else saveJson(LS_MESSAGES_PREFIX + sid, replaced);
-      if (activeSessionId === sid) setMessages(replaced);
+      if (isGuest) {
+        sessionLocalMessagesRef.current.set(originalSessionId, replaced);
+        try { sessionStorage.setItem(LS_MESSAGES_PREFIX + originalSessionId, JSON.stringify(replaced)); } catch {}
+      } else {
+        saveJson(LS_MESSAGES_PREFIX + originalSessionId, replaced);
+      }
+      if (activeSessionIdRef.current === originalSessionId) setMessages(replaced);
     } catch (_) {
       // 하이라이트 실패 시 로딩 제거만
-      const list3 = isGuest ? (sessionLocalMessagesRef.current.get(sid) || []) : loadJson(LS_MESSAGES_PREFIX + sid, []);
+      const list3 = isGuest ? (sessionLocalMessagesRef.current.get(originalSessionId) || []) : loadJson(LS_MESSAGES_PREFIX + originalSessionId, []);
       const idx3 = list3.findIndex(m => m.id === loadingId);
       const reduced = idx3 >= 0 ? [...list3.slice(0, idx3), ...list3.slice(idx3 + 1)] : list3;
-      if (isGuest) sessionLocalMessagesRef.current.set(sid, reduced); else saveJson(LS_MESSAGES_PREFIX + sid, reduced);
-      if (activeSessionId === sid) setMessages(reduced);
+      if (isGuest) {
+        sessionLocalMessagesRef.current.set(originalSessionId, reduced);
+        try { sessionStorage.setItem(LS_MESSAGES_PREFIX + originalSessionId, JSON.stringify(reduced)); } catch {}
+      } else {
+        saveJson(LS_MESSAGES_PREFIX + originalSessionId, reduced);
+      }
+      if (activeSessionIdRef.current === originalSessionId) setMessages(reduced);
     }
     // 7) 추천 카드 재삽입(하이라이트 뒤)
-    const finalList = isGuest ? (sessionLocalMessagesRef.current.get(sid) || []) : loadJson(LS_MESSAGES_PREFIX + sid, []);
+    const finalList = isGuest ? (sessionLocalMessagesRef.current.get(originalSessionId) || []) : loadJson(LS_MESSAGES_PREFIX + originalSessionId, []);
     const insertAt = finalList.findIndex(m => m.type === 'story_highlights' && finalList.indexOf(m) > idx);
     const recMsg = { id: crypto.randomUUID(), role: 'assistant', type: 'recommendation', createdAt: nowIso() };
     let injected;
     if (insertAt !== -1) injected = [...finalList.slice(0, insertAt + 1), recMsg, ...finalList.slice(insertAt + 1)];
     else injected = [...finalList, recMsg];
-    if (isGuest) sessionLocalMessagesRef.current.set(sid, injected); else saveJson(LS_MESSAGES_PREFIX + sid, injected);
-    if (activeSessionId === sid) setMessages(injected);
+    if (isGuest) {
+      sessionLocalMessagesRef.current.set(originalSessionId, injected);
+      try { sessionStorage.setItem(LS_MESSAGES_PREFIX + originalSessionId, JSON.stringify(injected)); } catch {}
+    } else {
+      saveJson(LS_MESSAGES_PREFIX + originalSessionId, injected);
+    }
+    if (activeSessionIdRef.current === originalSessionId) setMessages(injected);
   } catch {}
 }, [activeSessionId, isGuest, setMessages, storyModel, updateMessageForSession, setGenState]);
 
@@ -1449,59 +1571,100 @@ const handleContinueInline = useCallback(async (msg) => {
     const total = appended.length;
     const steps = 80;
     const step = Math.max(2, Math.ceil(total / steps));
+    const currentSessionId = sid; // ✅ 시작 시점 세션 캡처
+// ... existing code ...
+
     const timer = setInterval(() => {
       i = Math.min(total, i + step);
       const slice = startText + appended.slice(0, i);
-      updateMessageForSession(sid, msg.id, (m) => ({ ...m, content: slice, fullContent: slice }));
+      const fullText = startText + appended;
+
+      // ✅ 저장소 항상 업데이트
+      const saved = loadJson(LS_MESSAGES_PREFIX + currentSessionId, []);
+      const updated = saved.map(m => m.id === msg.id ? { 
+        ...m, 
+        content: slice, 
+        fullContent: fullText,
+        streaming: i < total,
+        continued: i < total,
+        expanded: i >= total
+      } : m);
+      saveJson(LS_MESSAGES_PREFIX + currentSessionId, updated);
+
+      // ✅ 현재 세션일 때만 UI 업데이트
+      if (activeSessionIdRef.current === currentSessionId) {
+        setMessages(updated);
+      }
+
       if (i >= total) {
         clearInterval(timer);
-        // 타이핑 종료 + 확장 표시 유지(expanded=true)
-        updateMessageForSession(sid, msg.id, (m) => ({ ...m, streaming: false, continued: false, expanded: true }));
+        const timers = sessionTypingTimersRef.current.get(currentSessionId) || [];
+        sessionTypingTimersRef.current.set(currentSessionId, timers.filter(t => t !== timer));
 
-        // 6) 하이라이트 재생성(로딩 → 교체) 및 추천 재삽입
+        // ✅ 하이라이트 재생성
         const combinedText = startText + appended;
         const placeholderId = crypto.randomUUID();
-        setMessages(curr => {
-          const pos = curr.findIndex(mm => mm.id === msg.id);
-          if (pos === -1) return curr;
-          const next = [
-            ...curr.slice(0, pos + 1),
-            { id: placeholderId, type: 'story_highlights_loading', createdAt: nowIso() },
-            ...curr.slice(pos + 1)
-          ];
-          try { if (!isGuest) saveJson(LS_MESSAGES_PREFIX + sid, next); else sessionLocalMessagesRef.current.set(sid, next); } catch {}
-          return next;
-        });
+        
+        const afterContinue = loadJson(LS_MESSAGES_PREFIX + currentSessionId, []);
+        const pos = afterContinue.findIndex(mm => mm.id === msg.id);
+        const withLoading = pos > -1 ? [
+          ...afterContinue.slice(0, pos + 1),
+          { id: placeholderId, type: 'story_highlights_loading', createdAt: nowIso() },
+          ...afterContinue.slice(pos + 1)
+        ] : afterContinue;
+        
+        saveJson(LS_MESSAGES_PREFIX + currentSessionId, withLoading);
+        
+        if (activeSessionIdRef.current === currentSessionId) {
+          setMessages(withLoading);
+        }
+
+        // ✅ 하이라이트 생성
         (async () => {
+          const originalSessionId = currentSessionId;
           try {
             const hiRes = await chatAPI.agentGenerateHighlights({ text: combinedText, image_url: imageUrl || '', story_mode: mode || 'auto' });
             const scenes = (hiRes?.data?.story_highlights || []).map((s, i) => ({ ...s, id: crypto.randomUUID() }));
-            setMessages(curr => {
-              const pIdx = curr.findIndex(x => x.id === placeholderId);
-              const replaced = pIdx >= 0 ? [
-                ...curr.slice(0, pIdx),
+            
+            const saved = loadJson(LS_MESSAGES_PREFIX + originalSessionId, []);
+            const pIdx = saved.findIndex(x => x.id === placeholderId);
+            let replaced = saved;
+            if (pIdx > -1) {
+              replaced = [
+                ...saved.slice(0, pIdx),
                 { id: crypto.randomUUID(), type: 'story_highlights', scenes, createdAt: nowIso() },
-                ...curr.slice(pIdx + 1)
-              ] : curr;
-              const final = [
-                ...replaced,
-                { id: crypto.randomUUID(), role: 'assistant', type: 'recommendation', createdAt: nowIso() }
+                ...saved.slice(pIdx + 1)
               ];
-              try { if (!isGuest) saveJson(LS_MESSAGES_PREFIX + sid, final); else sessionLocalMessagesRef.current.set(sid, final); } catch {}
-              return final;
-            });
+            }
+            
+            const final = [
+              ...replaced,
+              { id: crypto.randomUUID(), role: 'assistant', type: 'recommendation', createdAt: nowIso() }
+            ];
+            
+            saveJson(LS_MESSAGES_PREFIX + originalSessionId, final);
+            
+            if (activeSessionIdRef.current === originalSessionId) {
+              setMessages(final);
+            }
           } catch (e) {
-            // 로딩 제거만
-            setMessages(curr => {
-              const pIdx = curr.findIndex(x => x.id === placeholderId);
-              const reduced = pIdx >= 0 ? [...curr.slice(0, pIdx), ...curr.slice(pIdx + 1)] : curr;
-              try { if (!isGuest) saveJson(LS_MESSAGES_PREFIX + sid, reduced); else sessionLocalMessagesRef.current.set(sid, reduced); } catch {}
-              return reduced;
-            });
+            const saved = loadJson(LS_MESSAGES_PREFIX + originalSessionId, []);
+            const pIdx = saved.findIndex(x => x.id === placeholderId);
+            const reduced = pIdx >= 0 ? [...saved.slice(0, pIdx), ...saved.slice(pIdx + 1)] : saved;
+            
+            saveJson(LS_MESSAGES_PREFIX + originalSessionId, reduced);
+            
+            if (activeSessionIdRef.current === originalSessionId) {
+              setMessages(reduced);
+            }
           }
         })();
       }
     }, 15);
+
+    // ✅ 타이머 등록
+    const timers = sessionTypingTimersRef.current.get(currentSessionId) || [];
+    sessionTypingTimersRef.current.set(currentSessionId, [...timers, timer]);
   } catch (e) {
     // 실패 시 스피너 해제
     try { updateMessageForSession(activeSessionId, msg.id, (m) => ({ ...m, streaming: false, continued: false })); } catch {}
@@ -1736,9 +1899,9 @@ return (
               </div>
                 <div className="w-full max-w-5xl">
                   <div className="mt-4 md:mt-6 space-y-4" />
-                </div>
-              </div>
             </div>
+                      </div>
+                    </div>
           ) : (
           <div className="w-full max-w-4xl mx-auto h-full flex flex-col px-3">
               {(mode === 'char' || mode === 'sim') && (
@@ -1847,7 +2010,7 @@ return (
                                       {elapsedSeconds > 0 && (
                                         <span className="text-xs text-purple-400">{elapsedSeconds}s</span>
                                       )}
-                                    </div>
+                          </div>
                                   ) : (
                                     <>
                                       {m.role === 'assistant' && !m.error ? (
@@ -1868,7 +2031,7 @@ return (
                                                   return lines.map((line, idx) => (
                                                     <div key={idx}>
                                                       {line || '\u00A0'}
-                                                    </div>
+                      </div>
                                                   ));
                                                 })()}
                                               </div>
@@ -1891,22 +2054,22 @@ return (
                                       {m.role === 'assistant' && !m.error && (
                                         <div className="absolute right-0 -bottom-px translate-y-full flex items-center gap-1 z-20">
                                           <div className="flex items-center gap-1 px-2 py-1 bg-gray-900/85 border border-gray-700 shadow-lg">
-                                             <button
-                                               type="button"
+                                          <button
+                                            type="button"
                                                className="p-1 hover:bg-gray-800 text-gray-300 hover:text-white"
-                                               title="복사"
+                                            title="복사"
                                                onClick={() => { try { navigator.clipboard.writeText(m.fullContent || text); window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'success', message: '복사됨' } })); } catch {} }}
-                                             >
+                                          >
                                                <CopyIcon className="w-4 h-4" />
-                                             </button>
-                                             <button
-                                               type="button"
+                                          </button>
+                                          <button
+                                            type="button"
                                                className="p-1 hover:bg-gray-800 text-gray-300 hover:text-white"
-                                               title="다시 생성"
+                                            title="다시 생성"
                                                onClick={() => { try { handleRerun(m); } catch {} }}
-                                             >
+                                          >
                                                <RotateCcw className="w-4 h-4" />
-                                             </button>
+                                          </button>
                                              {editingMessageId === m.id ? (
                                                <>
                                                  <button
@@ -1943,8 +2106,8 @@ return (
                                                </button>
                                              )}
                                            </div>
-                                        </div>
-                                      )}
+                </div>
+              )}
                                     </>
                                   )}
                                   </div>
@@ -2069,28 +2232,28 @@ return (
                 </div>
         )}
         {/* Scroll to Bottom Button (P1) */}
-        <button
-          type="button"
+          <button
+            type="button"
           onClick={() => navigate('/dashboard')}
-          className="absolute bottom-4 right-6 z-10 w-10 h-10 rounded-full bg-blue-600 text-white shadow-lg hover:bg-blue-700"
+            className="absolute bottom-4 right-6 z-10 w-10 h-10 rounded-full bg-blue-600 text-white shadow-lg hover:bg-blue-700"
           title="메인으로"
-        >
-          ↓
-        </button>
+          >
+            ↓
+          </button>
               </div>
     </div>
        {/* 화면 하단 고정 입력창 - 새로운 심플 UI */}
-      <div className="fixed bottom-0 left-64 right-0 bg-gradient-to-t from-gray-900 to-transparent">
-          <div className="w-full max-w-4xl mx-auto p-3">
+       <div className="fixed bottom-0 left-64 right-0 bg-gradient-to-t from-gray-900 to-transparent">
+           <div className="w-full max-w-4xl mx-auto p-3">
             {(stableMessages || []).length === 0 && (
               <div className="mb-1 text-center select-none">
                 <div className="text-sm sm:text-base text-purple-300 font-medium drop-shadow-[0_0_12px_rgba(168,85,247,0.65)]">
                   좋아하는 순간을 찍은 사진이나, 생성한 이미지를 올려보세요. 바로 거기서부터 모든 스토리가 시작됩니다.
-                </div>
+                       </div>
                 <div className="mt-1 text-[11px] sm:text-xs text-gray-400">
                   이모지와 텍스트를 추가하면 스토리가 더 풍부해져요.
                 </div>
-              </div>
+                      </div>
             )}
              {/* 새로운 Composer UI */}
              <Composer 
@@ -2186,6 +2349,18 @@ return (
                      sub_model: storyModel
                    });
                    const decidedMode = response.data?.story_mode || (payload.storyMode || 'auto');
+                   const imageSummary = response.data?.image_summary || null;
+                   
+                   // image_summary를 이미지 메시지에 반영 (있는 경우)
+                   if (imageSummary && imageUrl) {
+                     try {
+                       setMessages(curr => curr.map(m => 
+                         (m.type === 'image' && m.url === imageUrl) 
+                           ? { ...m, imageSummary } 
+                           : m
+                       ));
+                     } catch {}
+                   }
                    
                    // 5. thinking 메시지를 실제 응답으로 교체 (타이핑 효과로 점진 출력)
                    if (response.data?.assistant) {
@@ -2199,34 +2374,90 @@ return (
                      const steps = 80;
                      const step = Math.max(2, Math.ceil(total / steps));
                      const intervalMs = 15;
-                     const timer = setInterval(() => {
-                       idx = Math.min(total, idx + step);
-                       const slice = assistantText.slice(0, idx);
-                       setMessages(curr => curr.map(msg => msg.id === assistantId ? { ...msg, content: slice } : msg));
-                       if (idx >= total) {
-                         clearInterval(timer);
-                         // 스트리밍 종료
-                         setMessages(curr => curr.map(msg => msg.id === assistantId ? { ...msg, streaming: false } : msg));
-                         // 텍스트 완료 후 하이라이트 로딩/추천 처리
-                         if (imageUrl) {
-                           const placeholderId = crypto.randomUUID();
-                           setMessages(curr => ([
-                             ...curr,
-                             { id: placeholderId, type: 'story_highlights_loading', createdAt: nowIso() },
-                             { id: crypto.randomUUID(), role: 'assistant', type: 'recommendation', createdAt: nowIso() },
-                           ]));
-                           (async () => {
-                             try {
-                               const hiRes = await chatAPI.agentGenerateHighlights({ text: assistantText, image_url: imageUrl, story_mode: decidedMode || 'auto' });
-                               const scenes = hiRes.data?.story_highlights || [];
-                               setMessages(curr2 => curr2.map(msg => msg.id === placeholderId ? { id: crypto.randomUUID(), type: 'story_highlights', scenes, createdAt: nowIso() } : msg));
-                             } catch (e) {
-                               setMessages(curr2 => curr2.filter(msg => msg.id !== placeholderId));
-                             }
-                           })();
-                         }
-                       }
-                     }, intervalMs);
+                     const currentSessionId = activeSessionId; // ✅ 시작 시점 세션 캡처
+
+
+                    const timer = setInterval(() => {
+                      idx = Math.min(total, idx + step);
+                      const slice = assistantText.slice(0, idx);
+                      
+                      // ✅ 저장소 항상 업데이트
+                      const saved = loadJson(LS_MESSAGES_PREFIX + currentSessionId, []);
+                      const updated = saved.map(msg => msg.id === assistantId ? { 
+                        ...msg, 
+                        content: slice,
+                        fullContent: assistantText, // 전체 텍스트는 항상 저장
+                        streaming: idx < total,
+                        thinking: false,
+                        storyMode: decidedMode
+                      } : msg);
+                      saveJson(LS_MESSAGES_PREFIX + currentSessionId, updated);
+                      
+                      // ✅ 현재 보고 있는 세션일 때만 UI 업데이트
+                      if (activeSessionIdRef.current === currentSessionId) {
+                        setMessages(updated);
+                      }
+                      
+                      if (idx >= total) {
+                        clearInterval(timer);
+                        const timers = sessionTypingTimersRef.current.get(currentSessionId) || [];
+                        sessionTypingTimersRef.current.set(currentSessionId, timers.filter(t => t !== timer));
+                        
+                        // ✅ 하이라이트/추천 추가
+                        if (imageUrl) {
+                          const finalSaved = loadJson(LS_MESSAGES_PREFIX + currentSessionId, []);
+                          const placeholderId = crypto.randomUUID();
+                          const withExtras = [...finalSaved, 
+                            { id: placeholderId, type: 'story_highlights_loading', createdAt: nowIso() }, 
+                            { id: crypto.randomUUID(), role: 'assistant', type: 'recommendation', createdAt: nowIso() }
+                          ];
+                          saveJson(LS_MESSAGES_PREFIX + currentSessionId, withExtras);
+                          
+                          if (activeSessionIdRef.current === currentSessionId) {
+                            setMessages(withExtras);
+                          }
+                          
+                          // ✅ 하이라이트 생성
+                          (async () => {
+                            try {
+                              const hiRes = await chatAPI.agentGenerateHighlights({ text: assistantText, image_url: imageUrl, story_mode: decidedMode || 'auto' });
+                              const scenes = hiRes.data?.story_highlights || [];
+                              
+                              const currentMsgs = loadJson(LS_MESSAGES_PREFIX + currentSessionId, []);
+                              const placeholder = currentMsgs.find(m => m.type === 'story_highlights_loading');
+                              if (!placeholder) return;
+                              
+                              const savedHL = loadJson(LS_MESSAGES_PREFIX + currentSessionId, []);
+                              const updatedHL = savedHL.map(msg => msg.id === placeholder.id ? { 
+                                id: crypto.randomUUID(), 
+                                type: 'story_highlights', 
+                                scenes, 
+                                createdAt: nowIso() 
+                              } : msg);
+                              
+                              saveJson(LS_MESSAGES_PREFIX + currentSessionId, updatedHL);
+                              
+                              if (activeSessionIdRef.current === currentSessionId) {
+                                setMessages(updatedHL);
+                              }
+                            } catch (e) {
+                              const savedErr = loadJson(LS_MESSAGES_PREFIX + currentSessionId, []);
+                              const filtered = savedErr.filter(msg => msg.type !== 'story_highlights_loading');
+                              
+                              saveJson(LS_MESSAGES_PREFIX + currentSessionId, filtered);
+                              
+                              if (activeSessionIdRef.current === currentSessionId) {
+                                setMessages(filtered);
+                              }
+                            }
+                          })();
+                        }
+                      }
+                    }, intervalMs);
+                     
+                     // ✅ 타이머 등록
+                     const timers = sessionTypingTimersRef.current.get(currentSessionId) || [];
+                     sessionTypingTimersRef.current.set(currentSessionId, [...timers, timer]);
                    }
                    
                    // 6. 생성 완료 상태

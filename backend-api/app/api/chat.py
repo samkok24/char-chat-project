@@ -508,7 +508,25 @@ async def agent_simulate(
                 response_length_pref="short" if story_mode == "snap" else "medium",
             )
         
-        response = {"assistant": text, "story_mode": story_mode}
+        # Vision 태그에서 이미지 요약 추출
+        image_summary = None
+        if image_url:
+            try:
+                tags_data = locals().get('tags2', None)
+                if tags_data and isinstance(tags_data, dict):
+                    parts = []
+                    if 'place' in tags_data and tags_data['place']:
+                        parts.append(tags_data['place'])
+                    if 'objects' in tags_data and tags_data['objects']:
+                        objs = tags_data['objects'][:2]
+                        parts.extend(objs)
+                    if 'mood' in tags_data and tags_data['mood']:
+                        parts.append(tags_data['mood'])
+                    image_summary = ', '.join(parts[:3]) if parts else None
+            except Exception:
+                pass
+
+        response = {"assistant": text, "story_mode": story_mode, "image_summary": image_summary}
         
         # 하이라이트는 별도 엔드포인트에서 비동기로 처리
             

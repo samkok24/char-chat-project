@@ -26,16 +26,74 @@ const AgentSidebar = ({ onCreateSession, activeSessionId, onSessionSelect, onDel
   React.useEffect(() => {
     const read = () => {
       try {
-        const arr = JSON.parse(localStorage.getItem('agent:sessions') || '[]') || [];
+        // localStorage 우선, 없으면 sessionStorage 체크 (게스트)
+        let arr = JSON.parse(localStorage.getItem('agent:sessions') || '[]') || [];
+        if (!arr || arr.length === 0) {
+          try { arr = JSON.parse(sessionStorage.getItem('agent:sessions') || '[]') || []; } catch {}
+        }
         const list = Array.isArray(arr) ? arr.sort((a,b) => (new Date(b.updatedAt||0)) - (new Date(a.updatedAt||0))) : [];
         setSessionCount(list.length);
         const mapped = list.slice(0, 8).map((s) => {
           try {
-            const msgs = JSON.parse(localStorage.getItem(`agent:messages:${s.id}`) || '[]') || [];
-            const last = Array.isArray(msgs) ? msgs.filter(m => (m && (m.content || m.type === 'image'))).slice(-1)[0] : null;
-            const snippet = last ? (last.type === 'image' ? '[이미지]' : String(last.content || '').replace(/\s+/g, ' ').slice(0, 40)) : '';
-            return { ...s, snippet };
-          } catch { return { ...s, snippet: '' }; }
+            // localStorage 우선, 없으면 sessionStorage 체크
+            let msgsRaw = localStorage.getItem(`agent:messages:${s.id}`);
+            if (!msgsRaw) {
+              try { msgsRaw = sessionStorage.getItem(`agent:messages:${s.id}`); } catch {}
+            }
+            const msgs = JSON.parse(msgsRaw || '[]') || [];
+            if (!Array.isArray(msgs)) return { ...s, autoTitle: '새 대화', imageDesc: '' };
+            
+            // 첫 번째 AI 답변 추출
+            const firstAI = msgs.find(m => m && m.role === 'assistant' && m.content && !m.type);
+            let autoTitle = s.title || '새 대화';
+            let fullTitle = autoTitle;
+            if (firstAI && firstAI.content) {
+              const text = String(firstAI.content).trim();
+              // 첫 문장 추출 (마침표/물음표/느낌표 기준)
+              const match = text.match(/^[^.!?]+[.!?]/);
+              const firstSentence = match ? match[0].trim() : text.split('\n')[0] || text;
+              fullTitle = firstSentence;
+              autoTitle = firstSentence.length > 30 ? firstSentence.slice(0, 30) + '...' : firstSentence;
+            }
+            
+            // 첫 번째 유저 입력 분석 (이미지 > 텍스트 > 이모지 우선순위)
+            const firstUserMsgs = msgs.filter(m => m && m.role === 'user');
+            let imageDesc = '';
+            let fullImageDesc = '';
+            
+            if (firstUserMsgs.length > 0) {
+              // 첫 번째 이미지 메시지 확인
+              const imgMsg = firstUserMsgs.find(m => m.type === 'image');
+              // 첫 번째 텍스트 메시지 확인
+              const textMsg = firstUserMsgs.find(m => !m.type && m.content && m.content.trim());
+              
+              if (imgMsg) {
+                // 이미지 우선 (이미지+텍스트, 이미지+이모지, 이미지만)
+                const summary = imgMsg.imageSummary || '';
+                if (summary) {
+                  fullImageDesc = `이미지(${summary})`;
+                  imageDesc = summary.length > 20 ? `이미지(${summary.slice(0, 20)}...)` : fullImageDesc;
+                } else {
+                  imageDesc = '이미지';
+                  fullImageDesc = '이미지';
+                }
+              } else if (textMsg) {
+                // 텍스트 (텍스트+이모지 또는 텍스트만)
+                const text = String(textMsg.content || '').trim();
+                // 이모지만 있는지 체크 (유니코드 이모지)
+                const isOnlyEmoji = /^[\p{Emoji}\s]+$/u.test(text);
+                if (isOnlyEmoji) {
+                  fullImageDesc = `이모지(${text})`;
+                  imageDesc = text.length > 20 ? `이모지(${text.slice(0, 20)}...)` : fullImageDesc;
+                } else {
+                  fullImageDesc = `텍스트(${text})`;
+                  imageDesc = text.length > 20 ? `텍스트(${text.slice(0, 20)}...)` : fullImageDesc;
+                }
+              }
+            }
+            
+            return { ...s, autoTitle, fullTitle, imageDesc, fullImageDesc };
+          } catch { return { ...s, autoTitle: '새 대화', fullTitle: '새 대화', imageDesc: '', fullImageDesc: '' }; }
         });
         setSessionList(mapped);
       } catch { setSessionCount(0); }
@@ -105,14 +163,16 @@ const AgentSidebar = ({ onCreateSession, activeSessionId, onSessionSelect, onDel
                     <button
                       onClick={() => onSessionSelect(s.id)}
                       className={`group relative flex-1 text-left px-3 py-2 rounded-lg border transition-colors min-w-0 ${activeSessionId === s.id ? 'bg-gray-700/80 border-purple-500/50' : 'bg-gray-900 border-gray-800 hover:bg-gray-800'}`}
-                      title={s.title || '새 대화'}
                     >
-                      <div className="text-sm text-gray-200 truncate">{s.title || '새 대화'}</div>
-                      <div className="text-xs text-gray-500 truncate">{s.snippet || new Date(s.updatedAt||s.createdAt).toLocaleString()}</div>
-                      {/* hover 팝오버 */}
+                      <div className="text-sm text-gray-200 truncate font-medium">{s.autoTitle || '새 대화'}</div>
+                      <div className="text-xs text-gray-500 truncate mt-0.5">{s.imageDesc || new Date(s.updatedAt||s.createdAt).toLocaleString()}</div>
+                      {/* hover 툴팁 */}
                       <div className="hidden group-hover:block absolute left-full top-0 ml-2 z-20 w-64 p-3 rounded-lg bg-gray-900 border border-gray-700 shadow-xl">
-                        <div className="text-xs text-gray-400 mb-1">{new Date(s.updatedAt||s.createdAt).toLocaleString()}</div>
-                        <div className="text-sm text-gray-200 whitespace-pre-wrap">{s.snippet || '메시지 없음'}</div>
+                        <div className="text-xs text-gray-400 mb-2">{new Date(s.updatedAt||s.createdAt).toLocaleString()}</div>
+                        <div className="text-sm text-gray-200 mb-2 leading-relaxed">{s.fullTitle || s.autoTitle || '새 대화'}</div>
+                        {s.fullImageDesc && (
+                          <div className="text-xs text-gray-400 mt-1 break-all">{s.fullImageDesc}</div>
+                        )}
                       </div>
                     </button>
                     <button
