@@ -45,7 +45,7 @@ const LS_MESSAGES_PREFIX = 'agent:messages:'; // + sessionId
 const LS_STORIES = 'agent:stories';
 const LS_IMAGES = 'agent:images';
 const LS_CHARACTERS = 'agent:characters';
-
+const LS_RECOVERY_PREFIX = 'agent:recovery:'; // + sessionId
 // --- Generation States as per Spec ---
 const GEN_STATE = {
   IDLE: 'IDLE',
@@ -1560,7 +1560,7 @@ const handleContinueInline = useCallback(async (msg) => {
     const res = await chatAPI.agentSimulate({ staged, mode: 'micro', storyMode: mode, model: storyModel, sub_model: storyModel });
     const appended = (res?.data?.assistant || '').toString();
     // 헤드와 구분 개행: 기존 본문이 개행으로 끝나지 않고, 추가 텍스트가 개행으로 시작하지 않으면 공백 줄 추가
-    const headText = (msg.content || '').toString();
+    const headText = (msg.fullContent || msg.content || '').toString();
     const needSep = !(/\n\s*$/.test(headText)) && !(/^\s*\n/.test(appended));
     const sep = needSep ? "\n\n" : "";
 
@@ -2245,23 +2245,24 @@ return (
        {/* 화면 하단 고정 입력창 - 새로운 심플 UI */}
        <div className="fixed bottom-0 left-64 right-0 bg-gradient-to-t from-gray-900 to-transparent">
            <div className="w-full max-w-4xl mx-auto p-3">
-            {(stableMessages || []).length === 0 && (
-              <div className="mb-1 text-center select-none">
-                <div className="text-sm sm:text-base text-purple-300 font-medium drop-shadow-[0_0_12px_rgba(168,85,247,0.65)]">
-                  좋아하는 순간을 찍은 사진이나, 생성한 이미지를 올려보세요. 바로 거기서부터 모든 스토리가 시작됩니다.
-                       </div>
-                <div className="mt-1 text-[11px] sm:text-xs text-gray-400">
-                  이모지와 텍스트를 추가하면 스토리가 더 풍부해져요.
-                </div>
-                      </div>
-            )}
-             {/* 새로운 Composer UI */}
-             <Composer 
-               onSend={async (payload) => {
-                 try {
-                   // 1. 먼저 사용자 메시지 표시
-                   let userText = '';
-                   let imageUrl = null;
+            {/* 새로운 Composer UI */}
+            <Composer 
+                key={activeSessionId || 'no-session'} // 세션별로 독립적인 Composer
+                hasMessages={(stableMessages || []).length > 0} // 메시지 존재 여부 전달
+                onSend={async (payload) => {
+                  try {
+                    // ✅ 세션이 없으면 먼저 생성
+                    let ensuredSessionId = activeSessionId;
+                    if (!ensuredSessionId) {
+                      const newSession = createSession({ title: '새 대화', type: 'story' });
+                      ensuredSessionId = newSession.id;
+                      setActiveSessionId(newSession.id);
+                      setShowChatPanel(true);
+                    }
+                    
+                    // 1. 먼저 사용자 메시지 표시
+                    let userText = '';
+                    let imageUrl = null;
                    
                    payload.staged.forEach(item => {
                      if (item.type === 'image') {
@@ -2305,7 +2306,20 @@ return (
                    if (imageUrl && !userText) {
                      userText = '이 이미지로 스토리를 보고 싶어요';
                    }
-                   
+                  //  // ✅ 복구 정보 저장
+                  // // const recoveryInfo = {
+                  // //   sessionId: activeSessionId,
+                  // //   assistantMessageId: assistantId,
+                  // //   staged: payload.staged,
+                  // //   storyMode: payload.storyMode || 'auto',
+                  // //   model: storyModel,
+                  // //   timestamp: nowIso(),
+                  // //   type: 'generate'
+                  // // };
+                  // try {
+                  //   localStorage.setItem(LS_RECOVERY_PREFIX + activeSessionId, JSON.stringify(recoveryInfo));
+                  // } catch {}
+
                    if (userText) {
                      userMessages.push({ 
                        id: userMsgId, 
@@ -2336,6 +2350,19 @@ return (
                    };
                    
                    setMessages(curr => [...curr, ...userMessages, thinkingMsg]);
+                  // ✅ 여기로 이동 (assistantId 선언 후)
+                  const recoveryInfo = {
+                    sessionId: ensuredSessionId,  // ✅ 세션 확보됨
+                    assistantMessageId: assistantId,  // ✅ 이미 선언됨
+                    staged: payload.staged,
+                    storyMode: payload.storyMode || 'auto',
+                    model: storyModel,
+                    timestamp: nowIso(),
+                    type: 'generate'
+                  };
+                  try {
+                    localStorage.setItem(LS_RECOVERY_PREFIX + ensuredSessionId, JSON.stringify(recoveryInfo));
+                  } catch {}
                    
                    // 3. 생성 상태 업데이트
                    setGenState(activeSessionId, { status: GEN_STATE.PREVIEW_STREAMING });
@@ -2353,14 +2380,32 @@ return (
                    
                    // image_summary를 이미지 메시지에 반영 (있는 경우)
                    if (imageSummary && imageUrl) {
-                     try {
-                       setMessages(curr => curr.map(m => 
-                         (m.type === 'image' && m.url === imageUrl) 
-                           ? { ...m, imageSummary } 
-                           : m
-                       ));
-                     } catch {}
-                   }
+                    try {
+                      // ✅ UI 업데이트
+                      setMessages(curr => curr.map(m => 
+                        (m.type === 'image' && m.url === imageUrl) 
+                          ? { ...m, imageSummary } 
+                          : m
+                      ));
+                      
+                      // ✅ 저장소에도 직접 저장
+                      const saved = loadJson(LS_MESSAGES_PREFIX + activeSessionId, []);
+                      const updated = saved.map(m => 
+                        (m.type === 'image' && m.url === imageUrl) 
+                          ? { ...m, imageSummary } 
+                          : m
+                      );
+                      saveJson(LS_MESSAGES_PREFIX + activeSessionId, updated);
+                      
+                      // ✅ 게스트일 경우 sessionStorage에도 저장
+                      if (isGuest) {
+                        try {
+                          sessionLocalMessagesRef.current.set(activeSessionId, updated);
+                          sessionStorage.setItem(LS_MESSAGES_PREFIX + activeSessionId, JSON.stringify(updated));
+                        } catch {}
+                      }
+                    } catch {}
+                  }
                    
                    // 5. thinking 메시지를 실제 응답으로 교체 (타이핑 효과로 점진 출력)
                    if (response.data?.assistant) {

@@ -1,20 +1,72 @@
 import { useState, useRef } from "react";
-import { Upload, X, Camera, Send, Loader2, Check, Type } from "lucide-react";
+import { Upload, X, Camera, Send, Loader2, Check, Type, Filter } from "lucide-react";
 
-export default function Composer({ onSend, disabled = false }) {
+export default function Composer({ onSend, disabled = false, hasMessages = false }) {
   const [staged, setStaged] = useState([]);
+  const [showStaging, setShowStaging] = useState(true); // 스테이징 UI 표시 여부
   const [showImageTray, setShowImageTray] = useState(false);
-  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [showModePicker, setShowModePicker] = useState(false); // 모드/태그 선택 트레이
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false); // 이모지 트레이
   const [showTextInput, setShowTextInput] = useState(false);
   const [textInput, setTextInput] = useState(""); // 텍스트 상태 유지
   const [storyMode, setStoryMode] = useState("auto"); // 'snap' | 'genre' | 'auto'
   const textInputRef = useRef(null);
 
   // --- helpers
-  const addItem = (item) => setStaged((s) => [...s, item]);
+  const addItem = (item) => {
+    // 태그는 최대 2개까지만
+    if (item.type === 'tag') {
+      const tagCount = staged.filter(s => s.type === 'tag').length;
+      if (tagCount >= 2) {
+        // 토스트 표시
+        try {
+          window.dispatchEvent(new CustomEvent('toast', { 
+            detail: { type: 'warning', message: '태그는 최대 2개까지만 선택 가능합니다.' } 
+          }));
+        } catch {}
+        return;
+      }
+    }
+    setStaged((s) => [...s, item]);
+    setShowStaging(true); // 아이템 추가 시 스테이징 UI 표시
+  };
+  
   const removeItem = (id) => setStaged((s) => s.filter((i) => i.id !== id));
+  
+  // 모드 변경 시 모드 배지 업데이트 또는 생성
+  const updateMode = (newMode) => {
+    setStoryMode(newMode);
+    
+    // staged에 mode 배지가 있으면 업데이트, 없으면 추가
+    const hasModeItem = staged.some(item => item.type === 'mode');
+    
+    if (hasModeItem) {
+      // 기존 모드 배지 업데이트
+      setStaged(s => s.map(item => 
+        item.type === 'mode' ? { ...item, value: newMode } : item
+      ));
+    } else {
+      // 모드 배지 생성 (맨 앞에 추가)
+      setStaged(s => [
+        { id: crypto.randomUUID(), type: 'mode', value: newMode },
+        ...s
+      ]);
+    }
+    
+    // 모드 변경 시 스테이징 UI 표시
+    setShowStaging(true);
+  };
 
   const handleSend = async () => {
+    // 모드 배지 자동 추가 (항상 맨 처음)
+    if (!staged.some(s => s.type === 'mode')) {
+      staged.unshift({ 
+        id: crypto.randomUUID(), 
+        type: "mode", 
+        value: storyMode 
+      });
+    }
+    
     // 텍스트 입력이 있으면 staged에 추가
     if (textInput.trim() && !staged.some(item => item.type === 'text' && item.body === textInput.trim())) {
       const textItem = {
@@ -27,10 +79,13 @@ export default function Composer({ onSend, disabled = false }) {
     
     if (!staged.length || disabled) return;
     
+    // mode와 tag 타입 제거 후 백엔드 전송 (UI용이므로)
+    const cleanStaged = staged.filter(item => item.type !== 'mode' && item.type !== 'tag');
+    
     // 백엔드로 보낼 페이로드 구성
     const payload = { 
       mode: "micro", 
-      staged,
+      staged: cleanStaged,
       storyMode, // 'snap' | 'genre' | 'auto'
       meta: { 
         from_agent_tab: true,
@@ -42,6 +97,7 @@ export default function Composer({ onSend, disabled = false }) {
     setStaged([]); // 즉시 스테이지 초기화
     setTextInput(""); // 텍스트도 초기화
     setShowTextInput(false); // 텍스트 입력창 닫기
+    setShowStaging(true); // 스테이징 UI 다시 표시 (다음 입력 대기)
     
     // 부모 컴포넌트로 전달 (await 제거하여 비동기로 처리)
     onSend(payload);
@@ -50,7 +106,7 @@ export default function Composer({ onSend, disabled = false }) {
   // 텍스트 입력 토글
   const toggleTextInput = () => {
     setShowTextInput(!showTextInput);
-    // 이미지 트레이만 닫기 (이모지는 유지)
+    // 이미지 트레이만 닫기
     if (!showTextInput) {
       setShowImageTray(false);
       // 포커스 주기
@@ -62,11 +118,68 @@ export default function Composer({ onSend, disabled = false }) {
 
   return (
     <div className="w-full">
+      {/* 안내 문구 - 메시지 없을 때만 표시 */}
+      {!hasMessages && (
+        <div className="mb-4 text-center select-none">
+          <div className="text-sm sm:text-base text-purple-300 font-medium drop-shadow-[0_0_12px_rgba(168,85,247,0.65)]">
+            좋아하는 순간을 찍은 사진이나, 생성한 이미지를 올려보세요. 바로 거기서부터 모든 스토리가 시작됩니다.
+          </div>
+          <div className="mt-1 text-[11px] sm:text-xs text-gray-400">
+            이모지와 텍스트를 추가하면 스토리가 더 풍부해져요.
+          </div>
+        </div>
+      )}
+      
       {/* Stage bar - 선택된 아이템 표시 */}
-      <div className={`mb-3 flex items-center gap-2 overflow-x-auto rounded-2xl bg-gray-900/60 border border-purple-500/20 p-2 ${staged.length === 0 ? 'min-h-[56px] opacity-0' : ''}`}>
-          {staged.map((it) => (
+      <div className={`mb-3 relative flex flex-wrap items-center gap-2 rounded-2xl bg-gray-900/60 border border-purple-500/20 p-2 ${staged.length === 0 ? 'min-h-[56px] opacity-0' : ''}`}>
+          {staged.length > 0 && showStaging && (
+            <>
+          {/* 우상단 닫기 버튼 */}
+          <button
+            onClick={() => setShowStaging(false)}
+            className="absolute -top-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full bg-red-500 text-white hover:bg-red-600 z-10"
+            aria-label="스테이징 숨기기"
+          >
+            <X size={12} />
+          </button>
+          {/* 모드 배지는 항상 맨 앞에 표시 */}
+          {(() => {
+            const modeItem = staged.find(it => it.type === 'mode');
+            const otherItems = staged.filter(it => it.type !== 'mode').sort((a, b) => {
+              // 정렬: tag → image → text → emoji
+              const order = { tag: 0, image: 1, text: 2, emoji: 3 };
+              return (order[a.type] || 99) - (order[b.type] || 99);
+            });
+            const sortedStaged = modeItem ? [modeItem, ...otherItems] : otherItems;
+            
+            return sortedStaged.map((it) => (
             <div key={it.id} className="relative shrink-0">
-              {it.type === "image" ? (
+              {it.type === "mode" ? (
+                // 모드 배지 (삭제 불가, 클릭하면 트레이 열림)
+                <button
+                  onClick={() => setShowModePicker(true)}
+                  className={`px-3 py-1.5 rounded-full text-xs font-medium ${
+                    it.value === 'auto' ? 'bg-gray-600 text-white' :
+                    it.value === 'snap' ? 'bg-blue-600 text-white' :
+                    'bg-purple-600 text-white'
+                  }`}
+                >
+                  {it.value === 'auto' ? '자동' : it.value === 'snap' ? '일상' : '장르'}
+                </button>
+              ) : it.type === "tag" ? (
+                // 선택 태그 (삭제 가능)
+                <div className="relative">
+                  <div className="px-2 py-1 rounded-full text-xs bg-gray-800/50 text-gray-300 border border-purple-500/20">
+                    #{it.value}
+                  </div>
+                  <button
+                    onClick={() => removeItem(it.id)}
+                    className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-xs text-white hover:bg-red-600"
+                  >
+                    <X size={10} />
+                  </button>
+                </div>
+              ) : it.type === "image" ? (
                 <div className="relative">
                   <img
                     src={it.url}
@@ -78,34 +191,53 @@ export default function Composer({ onSend, disabled = false }) {
                       {it.caption}
                     </div>
                   )}
+                  <button
+                    onClick={() => removeItem(it.id)}
+                    className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-xs text-white hover:bg-red-600"
+                  >
+                    <X size={10} />
+                  </button>
                 </div>
               ) : it.type === "emoji" ? (
-                <div className="rounded-lg bg-gray-800 px-2 py-1 text-xl">
-                  {it.items.join("")}
+                <div className="relative">
+                  <div className="rounded-lg bg-gray-800 px-2 py-1 text-xl">
+                    {it.items.join("")}
+                  </div>
+                  <button
+                    onClick={() => removeItem(it.id)}
+                    className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-xs text-white hover:bg-red-600"
+                  >
+                    <X size={10} />
+                  </button>
                 </div>
               ) : (
-                <div className="max-w-[150px] truncate rounded-lg bg-gray-800 px-2 py-1 text-sm text-gray-200">
-                  {it.body}
+                <div className="relative">
+                  <div className="max-w-[150px] truncate rounded-lg bg-gray-800 px-2 py-1 text-sm text-gray-200">
+                    {it.body}
+                  </div>
+                  <button
+                    onClick={() => removeItem(it.id)}
+                    className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-xs text-white hover:bg-red-600"
+                  >
+                    <X size={10} />
+                  </button>
                 </div>
               )}
-              <button
-                onClick={() => removeItem(it.id)}
-                className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-xs text-white hover:bg-red-600"
-              >
-                <X size={10} />
-              </button>
             </div>
-          ))}
+            ));
+          })()}
+            </>
+          )}
       </div>
 
       {/* Action row - 4개 버튼 타원형 컨테이너 (텍스트 입력 시 확장) */}
       <div className="flex items-center justify-center -mt-2 h-[64px]">
         <div className={`relative inline-flex items-center gap-4 px-6 py-3 rounded-full bg-gray-900/95 border border-purple-500/30 shadow-[0_0_25px_rgba(168,85,247,0.35)] hover:shadow-[0_0_35px_rgba(168,85,247,0.45)] transition-all duration-300 z-20 ${showTextInput ? 'w-[600px]' : ''}`}>
           
-          {/* 이미지 버튼 - 텍스트 입력 시 좌측으로 이동 */}
-          <div className={`relative transition-all duration-300 ${showTextInput ? '-ml-2' : ''}`}>
+          {/* 이미지 버튼 */}
+          <div className="relative">
             <button
-              onClick={() => { setShowEmojiPicker(false); setShowImageTray(v => !v); }}
+              onClick={() => { setShowEmojiPicker(false); setShowModePicker(false); setShowImageTray(v => !v); }}
               disabled={disabled}
               className="flex h-12 w-12 items-center justify-center rounded-full bg-gray-800/80 text-white hover:bg-gray-700 hover:scale-110 transition-all disabled:opacity-50"
               aria-label="이미지 추가"
@@ -121,6 +253,14 @@ export default function Composer({ onSend, disabled = false }) {
               <ImageTray
                 onClose={() => setShowImageTray(false)}
                 onInsert={(url, caption, style) => {
+                  // 모드 배지 자동 추가 (처음에만)
+                  if (!staged.some(s => s.type === 'mode')) {
+                    addItem({ 
+                      id: crypto.randomUUID(), 
+                      type: "mode", 
+                      value: storyMode 
+                    });
+                  }
                   addItem({ 
                     id: crypto.randomUUID(), 
                     type: "image", 
@@ -146,62 +286,79 @@ export default function Composer({ onSend, disabled = false }) {
               }`}
               aria-label="텍스트 입력"
             >
-              {/* Aa 아이콘 - 제공하신 이미지와 유사하게 */}
               <span className="font-bold text-lg">Aa</span>
             </button>
           </div>
 
           {/* 텍스트 입력 필드 - 버튼 옆에서 확장 */}
           {showTextInput && (
-            <input
-              ref={textInputRef}
-              type="text"
-              value={textInput}
-              onChange={(e) => setTextInput(e.target.value)}
-              onKeyPress={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault();
-                  handleSend();
-                }
-              }}
-              placeholder="스토리 아이디어를 입력하세요..."
-              className="flex-1 h-10 px-4 bg-gray-800/60 rounded-full text-white placeholder-gray-400 outline-none focus:ring-2 focus:ring-purple-500/50 transition-all"
-              disabled={disabled}
-            />
+            <>
+              <input
+                ref={textInputRef}
+                type="text"
+                value={textInput}
+                onChange={(e) => setTextInput(e.target.value)}
+                onKeyPress={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    handleSend();
+                  }
+                }}
+                placeholder="스토리 아이디어를 입력하세요..."
+                className="flex-1 h-10 px-4 bg-gray-800/60 rounded-full text-white placeholder-gray-400 outline-none focus:ring-2 focus:ring-purple-500/50 transition-all"
+                disabled={disabled}
+              />
+              
+              {/* 이모지 버튼 - 텍스트 입력창 우측에 고정 */}
+              <div className="relative">
+                <button
+                  onClick={() => { setShowModePicker(false); setShowEmojiPicker((v) => !v); }}
+                  disabled={disabled}
+                  className="flex h-10 w-10 items-center justify-center rounded-full bg-gray-800/80 text-lg hover:bg-gray-700 hover:scale-110 transition-all disabled:opacity-50"
+                  aria-label="이모지"
+                >
+                  😊
+                </button>
+                {showEmojiPicker && (
+                  <EmojiPicker
+                    onClose={() => setShowEmojiPicker(false)}
+                    onSelect={(emoji) => {
+                      setTextInput(prev => prev + emoji);
+                      textInputRef.current?.focus();
+                    }}
+                  />
+                )}
+              </div>
+            </>
           )}
-          
-          {/* 이모지 버튼 - 텍스트 입력 시 우측으로 이동 */}
-          <div className={`relative transition-all duration-300 ${showTextInput ? 'ml-auto' : ''}`}>
+
+          {/* 모드/태그 선택 버튼 (깔대기 아이콘) - 전송 버튼 바로 왼쪽 */}
+          <div className="relative">
             <button
-              onClick={() => { setShowImageTray(false); setShowEmojiPicker((v) => !v); }}
+              onClick={() => { setShowImageTray(false); setShowEmojiPicker(false); setShowModePicker(v => !v); }}
               disabled={disabled}
-              className="flex h-12 w-12 items-center justify-center rounded-full bg-gray-800/80 text-xl hover:bg-gray-700 hover:scale-110 transition-all disabled:opacity-50"
-              aria-label="이모지"
+              className="flex h-12 w-12 items-center justify-center rounded-full bg-gray-800/80 text-white hover:bg-gray-700 hover:scale-110 transition-all disabled:opacity-50"
+              aria-label="모드/태그 선택"
             >
-              😊
+              <Filter size={20} />
             </button>
-            {showEmojiPicker && (
-              <EmojiTray
-                onClose={() => setShowEmojiPicker(false)}
-                onInsert={(items, mode) => {
+            {showModePicker && (
+              <ModePicker
+                onClose={() => setShowModePicker(false)}
+                onModeChange={(mode) => updateMode(mode)}
+                onTagSelect={(tag) => {
                   addItem({ 
                     id: crypto.randomUUID(), 
-                    type: "emoji", 
-                    items 
+                    type: "tag", 
+                    value: tag 
                   });
-                  // 모드가 변경되었으면 업데이트
-                  if (mode && mode !== 'auto') {
-                    setStoryMode(mode);
-                  }
-                  setShowEmojiPicker(false);
                 }}
-                onModeChange={(mode) => setStoryMode(mode)}
                 currentMode={storyMode}
               />
             )}
           </div>
 
-          {/* 전송 버튼 - 텍스트 입력 시에도 우측 끝 유지 */}
+          {/* 전송 버튼 */}
           <button
             disabled={(!staged.length && !textInput.trim()) || disabled}
             onClick={handleSend}
@@ -225,24 +382,23 @@ export default function Composer({ onSend, disabled = false }) {
   );
 }
 
-// 이모지 트레이 컴포넌트
-function EmojiTray({ onInsert, onClose, onModeChange, currentMode = 'auto' }) {
-  const [picked, setPicked] = useState([]);
+// 모드/태그 선택 트레이
+function ModePicker({ onClose, onModeChange, onTagSelect, currentMode = 'auto' }) {
   const [mode, setMode] = useState(currentMode); // 'snap' | 'genre' | 'auto'
   
-  // 일상/장르별 이모지 분류
-  const snapEmojis = ["😊", "☕", "🌸", "💼", "🌧️", "😢", "💤", "🎉"];
-  const genreEmojis = ["🔥", "⚔️", "💀", "😱", "🔪", "🌙", "✨", "😎"];
-  const allEmojis = [...snapEmojis, ...genreEmojis];
-  
-  // 모드에 따른 이모지 필터링
-  const emojiBank = mode === 'snap' ? snapEmojis : 
-                     mode === 'genre' ? genreEmojis : 
-                     allEmojis;
+  // 자동: 태그 없음
+  // 일상: 일상 태그
+  // 장르: 장르 태그
+  const snapTags = ['위트있게', '빵터지게', '밈스럽게', '따뜻하게', '힐링이되게', '잔잔하게', '여운있게'];
+  const genreTags = ['남성향판타지', '로맨스', '로코', '성장물', '미스터리', '추리', '스릴러', '호러', '느와르'];
   
   const handleModeChange = (newMode) => {
     setMode(newMode);
     if (onModeChange) onModeChange(newMode);
+  };
+  
+  const handleTagClick = (tag) => {
+    if (onTagSelect) onTagSelect(tag);
   };
   
   return (
@@ -250,61 +406,71 @@ function EmojiTray({ onInsert, onClose, onModeChange, currentMode = 'auto' }) {
       {/* 모드 선택 탭 */}
       <div className="flex items-center gap-1 mb-3 p-1 bg-gray-800/50 rounded-lg">
         <button
-          onClick={() => handleModeChange('snap')}
+          onClick={() => handleModeChange('auto')}
           className={`flex-1 flex items-center justify-center gap-1 px-2 py-1.5 rounded-md text-xs font-medium transition-all ${
-            mode === 'snap' 
-              ? 'bg-gradient-to-r from-blue-600 to-cyan-600 text-white shadow-md' 
+            mode === 'auto' 
+              ? 'bg-gradient-to-r from-purple-600 to-fuchsia-600 text-white shadow-md' 
               : 'text-gray-400 hover:text-white hover:bg-gray-700/50'
           }`}
         >
-          <span>🌟</span>
+          <span>자동</span>
+        </button>
+        <button
+          onClick={() => handleModeChange('snap')}
+          className={`flex-1 flex items-center justify-center gap-1 px-2 py-1.5 rounded-md text-xs font-medium transition-all ${
+            mode === 'snap' 
+              ? 'bg-gradient-to-r from-purple-600 to-fuchsia-600 text-white shadow-md' 
+              : 'text-gray-400 hover:text-white hover:bg-gray-700/50'
+          }`}
+        >
           <span>일상</span>
         </button>
         <button
           onClick={() => handleModeChange('genre')}
           className={`flex-1 flex items-center justify-center gap-1 px-2 py-1.5 rounded-md text-xs font-medium transition-all ${
             mode === 'genre' 
-              ? 'bg-gradient-to-r from-purple-600 to-pink-600 text-white shadow-md' 
+              ? 'bg-gradient-to-r from-purple-600 to-fuchsia-600 text-white shadow-md' 
               : 'text-gray-400 hover:text-white hover:bg-gray-700/50'
           }`}
         >
-          <span>🔮</span>
           <span>장르</span>
         </button>
-        <button
-          onClick={() => handleModeChange('auto')}
-          className={`flex-1 flex items-center justify-center gap-1 px-2 py-1.5 rounded-md text-xs font-medium transition-all ${
-            mode === 'auto' 
-              ? 'bg-gradient-to-r from-gray-600 to-gray-700 text-white shadow-md' 
-              : 'text-gray-400 hover:text-white hover:bg-gray-700/50'
-          }`}
-        >
-          <span>✨</span>
-          <span>자동</span>
-        </button>
       </div>
       
-      <div className="grid grid-cols-6 gap-2">
-        {emojiBank.map((e) => (
-          <button
-            key={e}
-            onClick={() =>
-              setPicked((p) => (p.includes(e) ? p.filter((x) => x !== e) : [...p, e]))
-            }
-            className={`rounded-lg p-2 text-xl transition-all ${
-              picked.includes(e) ? "bg-purple-600/30 ring-1 ring-purple-500/50" : "hover:bg-gray-800/50 hover:scale-110"
-            }`}
-          >
-            {e}
-          </button>
-        ))}
-      </div>
+      {/* 자동 모드: 태그 없음 */}
+      {mode === 'auto' && (
+        <div className="text-center py-8 text-gray-400 text-sm">
+          AI가 자동으로 스토리 모드를 선택합니다
+        </div>
+      )}
       
-      {/* 선택된 이모지 미리보기 */}
-      {picked.length > 0 && (
-        <div className="mt-2 flex items-center gap-1 rounded-lg bg-gray-800/50 p-2">
-          <span className="text-sm text-gray-400">선택:</span>
-          <span className="text-xl">{picked.join("")}</span>
+      {/* 일상 모드: 일상 태그 표시 (클릭 시 스테이징 추가) */}
+      {mode === 'snap' && (
+        <div className="flex flex-wrap gap-2">
+          {snapTags.map((tag) => (
+            <button
+              key={tag}
+              onClick={() => handleTagClick(tag)}
+              className="px-3 py-1.5 rounded-full text-sm bg-gray-800/50 text-gray-300 hover:bg-purple-600/20 hover:text-purple-300 transition-all border border-purple-500/20"
+            >
+              #{tag}
+            </button>
+          ))}
+        </div>
+      )}
+      
+      {/* 장르 모드: 장르 태그 표시 (클릭 시 스테이징 추가) */}
+      {mode === 'genre' && (
+        <div className="flex flex-wrap gap-2">
+          {genreTags.map((tag) => (
+            <button
+              key={tag}
+              onClick={() => handleTagClick(tag)}
+              className="px-3 py-1.5 rounded-full text-sm bg-gray-800/50 text-gray-300 hover:bg-purple-600/20 hover:text-purple-300 transition-all border border-purple-500/20"
+            >
+              #{tag}
+            </button>
+          ))}
         </div>
       )}
       
@@ -316,10 +482,39 @@ function EmojiTray({ onInsert, onClose, onModeChange, currentMode = 'auto' }) {
           취소
         </button>
         <button
-          onClick={() => onInsert(picked.length ? picked : ["😊"], mode)}
+          onClick={() => { handleModeChange(mode); onClose(); }}
           className="rounded-lg bg-gradient-to-r from-purple-600 to-purple-500 px-3 py-1 text-white hover:from-purple-700 hover:to-purple-600 transition-all"
         >
-          삽입
+          확인
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// 이모지 선택 트레이
+function EmojiPicker({ onClose, onSelect }) {
+  const emojis = ['😊', '😂', '😍', '🥺', '😭', '😎', '🤔', '😳', '🔥', '✨', '💕', '👍', '🎉', '🌟', '💯', '🙏', '😤', '🥰', '😱', '🤗', '😔', '😌', '🤩', '😏'];
+  
+  return (
+    <div className="absolute bottom-14 right-0 z-50 w-64 rounded-xl bg-gray-900/95 border border-purple-500/20 p-3 shadow-[0_0_20px_rgba(0,0,0,0.5)]">
+      <div className="grid grid-cols-6 gap-2">
+        {emojis.map((emoji) => (
+          <button
+            key={emoji}
+            onClick={() => onSelect(emoji)}
+            className="rounded-lg p-2 text-xl hover:bg-gray-800/50 hover:scale-110 transition-all"
+          >
+            {emoji}
+          </button>
+        ))}
+      </div>
+      <div className="mt-2 flex justify-end">
+        <button 
+          onClick={onClose} 
+          className="rounded-lg px-3 py-1 text-sm text-gray-400 hover:text-white transition-colors"
+        >
+          닫기
         </button>
       </div>
     </div>
