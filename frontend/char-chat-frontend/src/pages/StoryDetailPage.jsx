@@ -35,6 +35,7 @@ const StoryDetailPage = () => {
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [confirmRebuildOpen, setConfirmRebuildOpen] = useState(false);
   const [origModalOpen, setOrigModalOpen] = useState(false);
+  const [preselectedCharacterId, setPreselectedCharacterId] = useState(null);
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ['story', storyId],
@@ -545,7 +546,7 @@ const StoryDetailPage = () => {
                       setOrigModalOpen(true);
                     }}
                   >
-                    원작챗 시작
+                    등장인물과 원작챗 시작
                   </Button>
                 </div>
               </section>
@@ -642,6 +643,10 @@ const StoryDetailPage = () => {
                     maxNo={episodesSorted.length || 1}
                     isOwner={!!isOwner}
                     onStart={(payload)=>handleStartOrigChatWithRange(payload)}
+                    onCharacterClick={(characterId) => {
+                      setPreselectedCharacterId(characterId);
+                      setOrigModalOpen(true);
+                    }}
                   />
                 )}
               </section>
@@ -770,10 +775,14 @@ const StoryDetailPage = () => {
       />
       <OrigChatStartModal
         open={origModalOpen}
-        onClose={() => setOrigModalOpen(false)}
+        onClose={() => {
+          setOrigModalOpen(false);
+          setPreselectedCharacterId(null);
+        }}
         storyId={storyId}
         totalChapters={episodesSorted.length || 1}
         lastReadNo={Number(progressChapterNo) || 0}
+        defaultSelectedCharacterId={preselectedCharacterId}
       />
       {pageToast.show && (
         <div className={`fixed bottom-6 left-1/2 -translate-x-1/2 px-4 py-2 rounded-md text-sm shadow-lg ${pageToast.type==='success' ? 'bg-green-600 text-white' : 'bg-red-600 text-white'}`}>
@@ -815,19 +824,10 @@ const StoryDetailPage = () => {
   );
 };
 
-const ExtractedCharactersGrid = ({ storyId, itemsOverride = null, onStart, maxNo = 1, isOwner = false }) => {
+const ExtractedCharactersGrid = ({ storyId, itemsOverride = null, onStart, maxNo = 1, isOwner = false, onCharacterClick = null }) => {
   const [items, setItems] = useState(itemsOverride || []);
-  const navigate = useNavigate();
   const [busyId, setBusyId] = useState(null);
   const [toast, setToast] = useState({ show: false, type: 'success', message: '' });
-  const [openId, setOpenId] = useState(null);
-  const [previewMap, setPreviewMap] = useState({});
-  const [previewLoadingId, setPreviewLoadingId] = useState(null);
-  const [profileOpenId, setProfileOpenId] = useState(null);
-  const [fromNo, setFromNo] = useState('1');
-  const [toNo, setToNo] = useState('1');
-  const [rangeMode, setRangeMode] = useState('multi'); // 'multi' | 'single'
-  const [didInit, setDidInit] = useState(false);
   const [imgModalFor, setImgModalFor] = useState(null); // { entityType, entityId }
   const maxOptions = Math.max(1, Number(maxNo)||1);
   const lastReadNo = Number(getReadingProgress(storyId) || 0);
@@ -836,79 +836,45 @@ const ExtractedCharactersGrid = ({ storyId, itemsOverride = null, onStart, maxNo
     if (Array.isArray(itemsOverride)) setItems(itemsOverride);
   }, [itemsOverride]);
 
-  // 기본값 세팅: from=1, to=마지막으로 본 회차(없으면 현재 연재된 회차)
-  useEffect(() => {
-    if (didInit) return;
-    // 로컬 저장 복원
-    try {
-      const key = `origchat:range:${storyId}`;
-      const saved = JSON.parse(localStorage.getItem(key) || 'null');
-      if (saved && saved.from && saved.to) {
-        setFromNo(String(Math.min(Math.max(1, Number(saved.from)||1), maxOptions)));
-        setToNo(String(Math.min(Math.max(1, Number(saved.to)||1), maxOptions)));
-        setDidInit(true);
-        return;
-      }
-    } catch (_) {}
-    const defaultFrom = '1';
-    const defaultTo = String(Math.min(maxOptions, lastReadNo > 0 ? lastReadNo : maxOptions));
-    setFromNo(defaultFrom);
-    setToNo(defaultTo);
-    setDidInit(true);
-  }, [didInit, maxOptions, lastReadNo, storyId]);
-
   return (
     <>
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
         {items.map((c, idx) => (
-        <Dialog key={`${c.name}-${idx}`} open={openId===idx} onOpenChange={async (v)=> {
-          if (v) {
-            setOpenId(idx);
-            // 상세 프리뷰 비동기 로드 (OrigChatStartModal과 동일)
-            if (c.character_id && !previewMap[c.character_id]) {
-              try {
-                setPreviewLoadingId(c.character_id);
-                const res = await charactersAPI.getCharacter(c.character_id);
-                setPreviewMap((m)=> ({ ...m, [c.character_id]: res.data || null }));
-              } catch(_) {
-                setPreviewMap((m)=> ({ ...m, [c.character_id]: null }));
-              } finally {
-                setPreviewLoadingId(null);
+          <div 
+            key={`${c.name}-${idx}`}
+            className="relative bg-gray-800/40 border border-gray-700 rounded-md p-3 text-left hover:bg-gray-700/40 cursor-pointer transition-colors"
+            onClick={() => {
+              // 원작챗 모달 열기 + 해당 캐릭터 선택
+              if (c.character_id && onCharacterClick) {
+                onCharacterClick(c.character_id);
               }
-            }
-          } else {
-            setOpenId(null);
-          }
-        }}>
-          <DialogTrigger asChild>
-            <div className="relative bg-gray-800/40 border border-gray-700 rounded-md p-3 text-left hover:bg-gray-700/40">
-              <div className="flex items-center gap-3">
-                {c.avatar_url ? (
-                  <img
-                    src={(() => {
-                      try {
-                        const pv = c.character_id ? previewMap[c.character_id] : null;
-                        const main = pv?.avatar_url || c.avatar_url || '';
-                        const resolved = resolveImageUrl(main) || main;
-                        if (!resolved) return '';
-                        return `${resolved}${resolved.includes('?') ? '&' : '?'}v=${Date.now()}`;
-                      } catch (_) { return c.avatar_url; }
-                    })()}
-                    alt={c.name}
-                    className="w-10 h-10 rounded-full object-cover"
-                  />
-                ) : (
-                  <div className="w-10 h-10 rounded-full bg-blue-600 text-white flex items-center justify-center text-sm font-bold">
-                    {c.initial || (c.name||'')[0] || 'C'}
-                  </div>
-                )}
-                <div>
-                  <div className="text-white font-medium">{c.name}</div>
-                  <div className="text-xs text-gray-400 line-clamp-2">{c.description || ''}</div>
+            }}
+          >
+            <div className="flex items-center gap-3">
+              {c.avatar_url ? (
+                <img
+                  src={(() => {
+                    try {
+                      const resolved = resolveImageUrl(c.avatar_url) || c.avatar_url;
+                      if (!resolved) return '';
+                      return `${resolved}${resolved.includes('?') ? '&' : '?'}v=${Date.now()}`;
+                    } catch (_) { return c.avatar_url; }
+                  })()}
+                  alt={c.name}
+                  className="w-10 h-10 rounded-full object-cover"
+                />
+              ) : (
+                <div className="w-10 h-10 rounded-full bg-blue-600 text-white flex items-center justify-center text-sm font-bold">
+                  {c.initial || (c.name||'')[0] || 'C'}
                 </div>
+              )}
+              <div>
+                <div className="text-white font-medium">{c.name}</div>
+                <div className="text-xs text-gray-400 line-clamp-2">{c.description || ''}</div>
               </div>
-              {/* 개별 재생성 버튼 */}
-              {isOwner && (
+            </div>
+            {/* 개별 재생성 버튼 */}
+            {isOwner && (
               <div className="absolute top-2 right-2 z-10 flex items-center gap-1">
                 <button
                   type="button"
@@ -951,106 +917,8 @@ const ExtractedCharactersGrid = ({ storyId, itemsOverride = null, onStart, maxNo
                   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" className="w-3.5 h-3.5"><path fill="currentColor" d="M21 19V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14l4-4h12a2 2 0 0 0 2-2ZM8.5 11A2.5 2.5 0 1 1 11 8.5 2.5 2.5 0 0 1 8.5 11Z"/></svg>
                 </button>
               </div>
-              )}
-            </div>
-          </DialogTrigger>
-          <DialogContent className="bg-gray-900 text-white border border-gray-700 max-w-4xl md:max-w-5xl" aria-describedby={`dlg-desc-${idx}`}>
-            <DialogHeader>
-              <DialogTitle className="text-white">원작챗 시작 - {c.name}</DialogTitle>
-              <div className="sr-only" id={`dlg-desc-${idx}`}>회차 범위 선택 모달</div>
-            </DialogHeader>
-            <div className="space-y-4" aria-describedby={`dlg-desc-${idx}`} role="document">
-              {/* 미리보기: OrigChatStartModal과 동일 스타일 */}
-              <div className="grid grid-cols-1 lg:grid-cols-[320px_minmax(0,1fr)] gap-4">
-                <div>
-                  <div className="relative w-full rounded-lg overflow-hidden border border-gray-700" style={{ paddingTop: '100%' }}>
-                    {(() => {
-                      const pv = c.character_id ? previewMap[c.character_id] : null;
-                      const main = pv?.avatar_url || (Array.isArray(pv?.image_descriptions) && pv.image_descriptions[0]?.url) || c.avatar_url || '';
-                      return main ? (
-                        <img src={resolveImageUrl(main) || main} alt={c.name} className="absolute inset-0 w-full h-full object-cover" />
-                      ) : (
-                        <div className="absolute inset-0 flex items-center justify-center text-gray-500">NO IMAGE</div>
-                      );
-                    })()}
-                  </div>
-                </div>
-                <div className="space-y-2 min-w-0">
-                  <div className="text-white font-semibold text-lg truncate">{c.name}</div>
-                  {previewLoadingId === c.character_id ? (
-                    <div className="h-16 bg-gray-800/60 rounded" />
-                  ) : (
-                    (() => {
-                      const pv = c.character_id ? previewMap[c.character_id] : null;
-                      return (
-                        <>
-                          <div className="text-sm text-gray-300 whitespace-pre-wrap">{pv?.description || c.description || '소개 정보가 없습니다.'}</div>
-                          {pv?.world_setting && (<div className="text-sm"><span className="text-purple-400 drop-shadow-[0_0_6px_rgba(168,85,247,0.6)]">세계관</span> <span className="text-gray-200">{pv.world_setting}</span></div>)}
-                          {pv?.personality && (<div className="text-sm"><span className="text-purple-400 drop-shadow-[0_0_6px_rgba(168,85,247,0.6)]">성격</span> <span className="text-gray-200">{pv.personality}</span></div>)}
-                          {pv?.speech_style && (<div className="text-sm"><span className="text-purple-400 drop-shadow-[0_0_6px_rgba(168,85,247,0.6)]">말투</span> <span className="text-gray-200">{pv.speech_style}</span></div>)}
-                          {pv?.greeting && (<div className="text-sm"><span className="text-purple-400 drop-shadow-[0_0_6px_rgba(168,85,247,0.6)]">인사</span> <span className="text-gray-200">{pv.greeting}</span></div>)}
-                          {pv?.background_story && (<div className="text-sm"><span className="text-gray-400">배경</span> <span className="text-gray-200">{pv.background_story}</span></div>)}
-                        </>
-                      );
-                    })()
-                  )}
-                  {c.character_id && (
-                    <div className="pt-1">
-                      <Button
-                        variant="outline"
-                        className="h-8 px-3 bg-white text-black border-gray-300 hover:bg-gray-100"
-                        onClick={()=> { setOpenId(null); navigate(`/characters/${c.character_id}`); }}
-                      >상세페이지</Button>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* 범위 선택 안내 (간단 텍스트만 유지) */}
-              <div className="text-xs text-gray-400">원작챗 범위는 상단 ‘원작챗 시작’ 버튼에서 지정할 수 있습니다.</div>
-              {/* 범위 모드 토글 */}
-              <div className="flex items-center gap-3 pt-1">
-                <button
-                  type="button"
-                  onClick={() => setRangeMode('multi')}
-                  className={`px-3 py-1 rounded-full border ${rangeMode==='multi' ? 'bg-blue-600 text-white border-blue-500' : 'bg-gray-800 text-gray-300 border-gray-700'}`}
-                >여러 회차(기본)</button>
-                <button
-                  type="button"
-                  onClick={() => setRangeMode('single')}
-                  className={`px-3 py-1 rounded-full border ${rangeMode==='single' ? 'bg-blue-600 text-white border-blue-500' : 'bg-gray-800 text-gray-300 border-gray-700'}`}
-                >단일 회차</button>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <Select value={fromNo} onValueChange={(v)=>{ setFromNo(v); if (rangeMode==='single') setToNo(v); try { localStorage.setItem(`origchat:range:${storyId}`, JSON.stringify({ from: v, to: (rangeMode==='single'? v : toNo) })); } catch(_){} }}>
-                  <SelectTrigger className="w-28 bg-gray-800 border-gray-700"><SelectValue placeholder="From" /></SelectTrigger>
-                  <SelectContent className="bg-gray-800 text-white border-gray-700 max-h-64 overflow-auto">
-                    {Array.from({length:maxOptions}).map((_,i)=> (
-                      <SelectItem key={`f-${i+1}`} value={`${i+1}`}>{i+1}화</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <span className="text-gray-400">~</span>
-                <Select value={toNo} onValueChange={(v)=>{ setToNo(v); try { localStorage.setItem(`origchat:range:${storyId}`, JSON.stringify({ from: fromNo, to: v })); } catch(_){} }} disabled={rangeMode==='single'}>
-                  <SelectTrigger className={`w-28 border ${rangeMode==='single' ? 'bg-gray-800/50 border-gray-700 opacity-70 cursor-not-allowed' : 'bg-gray-800 border-gray-700'}`}><SelectValue placeholder="To" /></SelectTrigger>
-                  <SelectContent className="bg-gray-800 text-white border-gray-700 max-h-64 overflow-auto">
-                    {Array.from({length:maxOptions}).map((_,i)=> (
-                      <SelectItem key={`t-${i+1}`} value={`${i+1}`}>{i+1}화</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <Button
-                className="w-full"
-                onClick={() => onStart({ range_from: fromNo, range_to: toNo, characterId: c.character_id })}
-                disabled={!c.character_id || !fromNo || !toNo || rangeMode === 'single' || fromNo === toNo}
-              >
-                원작챗 시작
-              </Button>
-            </div>
-          </DialogContent>
-        </Dialog>
+            )}
+          </div>
         ))}
       </div>
       {toast.show && (

@@ -74,11 +74,18 @@ api.interceptors.request.use(
     const isPublicCharacters = (path === '/characters' || path === '/characters/') || /^\/characters\/[0-9a-fA-F\-]+$/.test(path);
     const isPublicStories = (path === '/stories' || path === '/stories/') || /^\/stories\/[0-9a-fA-F\-]+$/.test(path);
     const isPublicTags = path.startsWith('/tags');
+    // 회원가입 관련 공개 API
+    const isPublicAuth = path === '/auth/check-email' 
+      || path === '/auth/check-username' 
+      || path === '/auth/generate-username'
+      || path === '/auth/register'
+      || path === '/auth/login';
     const isPublicGet = isGet && (isPublicCharacters || isPublicStories || isPublicTags);
-    if (token && !isPublicGet) {
+    const isPublicEndpoint = isPublicGet || isPublicAuth;
+    if (token && !isPublicEndpoint) {
       config.headers.Authorization = `Bearer ${token}`;
     } else {
-      // 공개 GET 요청은 Authorization 제거 (백엔드에서 500 방지)
+      // 공개 요청은 Authorization 제거 (백엔드에서 500 방지)
       if (config.headers && config.headers.Authorization) {
         delete config.headers.Authorization;
       }

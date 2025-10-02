@@ -74,7 +74,7 @@ const ChatInteraction = ({ onStartChat, characterId, isAuthenticated }) => {
           onClick={onStartChat}
           className="w-full bg-red-600 hover:bg-red-700 text-white font-bold text-lg py-6"
         >
-          원작챗 시작
+          등장인물과 원작챗 시작
         </Button>
       )}
     </div>

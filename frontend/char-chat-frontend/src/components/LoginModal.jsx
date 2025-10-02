@@ -179,22 +179,22 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
 
                 <TabsContent value="login" className="space-y-4 mt-0">
                   <div className="text-center mb-4">
-                    <CardDescription>
+                    <CardDescription className="text-gray-700">
                       계정에 로그인하여 AI 캐릭터들과 대화를 시작하세요
                     </CardDescription>
                   </div>
                   <form onSubmit={handleLoginSubmit} className="space-y-4">
                     <div className="space-y-2">
-                      <Label htmlFor="login-email">이메일</Label>
+                      <Label htmlFor="login-email" className="text-gray-900">이메일</Label>
                       <div className="relative">
-                        <Mail className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
+                        <Mail className="absolute left-3 top-3 h-4 w-4 text-gray-500" />
                         <Input id="login-email" name="email" type="email" placeholder="이메일을 입력하세요" value={loginData.email} onChange={handleLoginChange} className="pl-10" required />
                       </div>
                     </div>
                     <div className="space-y-2">
-                      <Label htmlFor="login-password">비밀번호</Label>
+                      <Label htmlFor="login-password" className="text-gray-900">비밀번호</Label>
                       <div className="relative">
-                        <Lock className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
+                        <Lock className="absolute left-3 top-3 h-4 w-4 text-gray-500" />
                         <Input id="login-password" name="password" type="password" placeholder="비밀번호를 입력하세요" value={loginData.password} onChange={handleLoginChange} className="pl-10" required />
                       </div>
                     </div>
@@ -206,15 +206,15 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
 
                 <TabsContent value="register" className="space-y-4 mt-0">
                   <div className="text-center mb-4">
-                    <CardDescription>
+                    <CardDescription className="text-gray-700">
                       새 계정을 만들어 AI 캐릭터들과 대화를 시작하세요
                     </CardDescription>
                   </div>
                   <form onSubmit={handleRegisterSubmit} className="space-y-4">
                     <div className="space-y-2">
-                      <Label htmlFor="register-email">이메일</Label>
+                      <Label htmlFor="register-email" className="text-gray-900">이메일</Label>
                       <div className="relative">
-                        <Mail className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
+                        <Mail className="absolute left-3 top-3 h-4 w-4 text-gray-500" />
                         <Input id="register-email" name="email" type="email" placeholder="이메일을 입력하세요" value={registerData.email} onChange={handleRegisterChange} className="pl-10" required />
                       </div>
                       <div className="flex items-center gap-2 mt-2">
@@ -230,9 +230,9 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
                       </div>
                     </div>
                     <div className="space-y-2">
-                      <Label htmlFor="register-username">사용자명</Label>
+                      <Label htmlFor="register-username" className="text-gray-900">사용자명</Label>
                       <div className="relative">
-                        <User className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
+                        <User className="absolute left-3 top-3 h-4 w-4 text-gray-500" />
                         <Input id="register-username" name="username" type="text" placeholder="사용자명을 입력하세요" value={registerData.username} onChange={handleRegisterChange} className="pl-10" required minLength={2} maxLength={100} />
                         <div className="flex items-center gap-2 mt-2">
                           <Button type="button" variant="secondary" className="h-9" onClick={handleCheckUsername} disabled={loading || !registerData.username}>
@@ -248,30 +248,30 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
                       </div>
                     </div>
                     <div className="space-y-2">
-                      <Label htmlFor="register-password">비밀번호</Label>
+                      <Label htmlFor="register-password" className="text-gray-900">비밀번호</Label>
                       <div className="relative">
-                        <Lock className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
+                        <Lock className="absolute left-3 top-3 h-4 w-4 text-gray-500" />
                         <Input id="register-password" name="password" type="password" placeholder="영문/숫자 조합 8자 이상" value={registerData.password} onChange={handleRegisterChange} className="pl-10" required minLength={8} pattern="(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d]{8,}" />
                       </div>
-                      <p className="text-xs text-gray-500">영문과 숫자를 포함해 8자 이상 입력하세요.</p>
+                      <p className="text-xs text-gray-600">영문과 숫자를 포함해 8자 이상 입력하세요.</p>
                     </div>
                     <div className="space-y-2">
-                      <Label htmlFor="register-confirmPassword">비밀번호 확인</Label>
+                      <Label htmlFor="register-confirmPassword" className="text-gray-900">비밀번호 확인</Label>
                       <div className="relative">
-                        <Lock className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
+                        <Lock className="absolute left-3 top-3 h-4 w-4 text-gray-500" />
                         <Input id="register-confirmPassword" name="confirmPassword" type="password" placeholder="비밀번호를 다시 입력하세요" value={registerData.confirmPassword} onChange={handleRegisterChange} className="pl-10" required />
                       </div>
                     </div>
                     <div className="space-y-2">
-                      <Label>성별</Label>
+                      <Label className="text-gray-900">성별</Label>
                       <div className="flex items-center gap-4">
-                        <label className="flex items-center gap-2">
+                        <label className="flex items-center gap-2 cursor-pointer">
                           <input type="radio" name="gender" value="male" checked={registerData.gender === 'male'} onChange={handleRegisterChange} required />
-                          <span>남성</span>
+                          <span className="text-gray-900">남성</span>
                         </label>
-                        <label className="flex items-center gap-2">
+                        <label className="flex items-center gap-2 cursor-pointer">
                           <input type="radio" name="gender" value="female" checked={registerData.gender === 'female'} onChange={handleRegisterChange} required />
-                          <span>여성</span>
+                          <span className="text-gray-900">여성</span>
                         </label>
                       </div>
                     </div>

@@ -293,6 +293,7 @@ class StoryGenerationService:
 
 
 # 기존 스토리 서비스 함수들
+# 295번째 줄부터
 async def create_story(
     db: AsyncSession,
     creator_id: uuid.UUID,
@@ -302,10 +303,10 @@ async def create_story(
     - 스토리 본문, 태그 생성/연결까지 성공해야만 커밋
     - 중간 어떤 단계든 실패하면 전체 롤백되어 부분 생성이 남지 않음
     """
-    # Story 모델에 없는 필드(예: keywords)를 제거하고 생성
-    payload = story_data.model_dump(exclude={"keywords"})
+    try:
+        # Story 모델에 없는 필드(예: keywords)를 제거하고 생성
+        payload = story_data.model_dump(exclude={"keywords"})
 
-    async with db.begin():  # 예외 발생 시 전체 롤백, 정상 종료 시 커밋
         story = Story(
             creator_id=creator_id,
             **payload
@@ -339,9 +340,14 @@ async def create_story(
                     insert(StoryTag).values(story_id=story.id, tag_id=t.id)
                 )
 
-    # 트랜잭션 커밋 후 최신 상태로 리프레시
-    await db.refresh(story)
-    return story
+        # 명시적 커밋
+        await db.commit()
+        # 트랜잭션 커밋 후 최신 상태로 리프레시
+        await db.refresh(story)
+        return story
+    except Exception:
+        await db.rollback()
+        raise
 
 
 async def get_story_by_id(db: AsyncSession, story_id: uuid.UUID) -> Optional[Story]:

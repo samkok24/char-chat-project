@@ -382,7 +382,7 @@ const CharacterDetailPage = () => {
                   className="bg-pink-600 hover:bg-pink-700"
                   onClick={() => navigate(`/ws/chat/${characterId}?source=origchat&storyId=${workId}&anchor=${continueChapter}`)}
                 >
-                  원작챗 시작
+                  등장인물과 원작챗 시작
                 </Button>
               </div>
             )}

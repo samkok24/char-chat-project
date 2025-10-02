@@ -263,14 +263,19 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
       }
       let w = Math.round(baseW * factor);
       let h = Math.round(baseH * factor);
-      let x = cropRect.x;
-      let y = cropRect.y;
-      // 중심 유지
-      const cx = cropRect.x + cropRect.w / 2;
-      const cy = cropRect.y + cropRect.h / 2;
-      x = Math.max(box.x, Math.min(cx - w / 2, box.x + box.w - w));
-      y = Math.max(box.y, Math.min(cy - h / 2, box.y + box.h - h));
-      setCropRect({ x, y, w, h });
+      
+      // 함수형 업데이트로 최신 cropRect 상태 사용
+      setCropRect(prevRect => {
+        // 중심 유지
+        const cx = prevRect.x + prevRect.w / 2;
+        const cy = prevRect.y + prevRect.h / 2;
+        let x = cx - w / 2;
+        let y = cy - h / 2;
+        // 경계 클램프
+        x = Math.max(box.x, Math.min(x, box.x + box.w - w));
+        y = Math.max(box.y, Math.min(y, box.y + box.h - h));
+        return { x, y, w, h };
+      });
       setCropScale(factor);
     } catch (_) {}
   };

@@ -45,7 +45,7 @@ const WorkDetailPage = () => {
                   이어보기{progress > 0 ? ` (${continueChapter}화)` : ''}
                 </Button>
                 <Button variant="secondary" className="bg-pink-600 hover:bg-pink-700" onClick={() => navigate(`/works/${workId}/chapters/${continueChapter}?chat=1`)}>
-                  원작챗 시작
+                  등장인물과 원작챗 시작
                 </Button>
               </div>
             </div>

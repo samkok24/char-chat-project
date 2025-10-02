@@ -7,7 +7,7 @@ import { charactersAPI, origChatAPI, storiesAPI } from '../lib/api';
 import { useNavigate } from 'react-router-dom';
 import { resolveImageUrl } from '../lib/images';
 
-const OrigChatStartModal = ({ open, onClose, storyId, totalChapters = 1, lastReadNo = 0 }) => {
+const OrigChatStartModal = ({ open, onClose, storyId, totalChapters = 1, lastReadNo = 0, defaultSelectedCharacterId = null }) => {
   const navigate = useNavigate();
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -95,6 +95,17 @@ const OrigChatStartModal = ({ open, onClose, storyId, totalChapters = 1, lastRea
     };
     run();
   }, [open, storyId]);
+
+  // defaultSelectedCharacterId가 제공되면 해당 캐릭터를 자동 선택
+  useEffect(() => {
+    if (!open || !defaultSelectedCharacterId) return;
+    // items가 로드된 후에 실행
+    const target = items.find(c => c.character_id === defaultSelectedCharacterId);
+    if (target) {
+      setSelectedId(target.character_id); // character_id를 사용해야 preview 로드가 정상 작동
+    }
+  }, [open, defaultSelectedCharacterId, items]);
+
   // 선택 장면 변경 시 리캡/발췌 미리보기
   useEffect(() => {
     const load = async () => {
