@@ -34,10 +34,11 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
   const cropImgRef = React.useRef(null);
   const cropWrapRef = React.useRef(null);
   const cropImgBoxRef = React.useRef({ x: 0, y: 0, w: 0, h: 0 }); // 화면에 표시된 이미지 영역
+  const cropInitializedRef = React.useRef(false); // 크롭 영역 초기화 플래그
   const [cropRect, setCropRect] = React.useState({ x: 0, y: 0, w: 100, h: 100 });
   const [cropDragging, setCropDragging] = React.useState(false);
-  const cropStartRef = React.useRef({ x: 0, y: 0 });
-  const [cropScale, setCropScale] = React.useState(1); // 0.3 ~ 1.0 (표시 이미지 영역 기준)
+  const [cropResizing, setCropResizing] = React.useState(null); // 'nw' | 'ne' | 'sw' | 'se' | null
+  const cropStartRef = React.useRef({ x: 0, y: 0, rect: { x: 0, y: 0, w: 0, h: 0 } });
 
   const clearEta = () => {
     if (etaTimerRef.current) {
@@ -193,6 +194,7 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
     if (index == null || index < 0 || index >= gallery.length) return;
     setCropIndex(index);
     setCropOpen(true);
+    cropInitializedRef.current = false; // 크롭 모달 열 때 초기화 플래그 리셋
     // 초기 크롭 사각형 계산은 이미지 onLoad에서 수행
   };
 
@@ -201,6 +203,7 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
       const img = cropImgRef.current;
       const wrap = cropWrapRef.current;
       if (!img || !wrap) return;
+      
       const wrapW = wrap.clientWidth;
       const wrapH = wrap.clientHeight;
       const naturalW = img.naturalWidth || 1;
@@ -213,72 +216,131 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
       const dispY = Math.round((wrapH - dispH) / 2);
       cropImgBoxRef.current = { x: dispX, y: dispY, w: dispW, h: dispH };
 
-      // 주어진 비율로 표시 이미지 영역을 가득 채우는 최대 사각형 계산
-      const r = ratioToNumber(genRatio);
-      let w = dispW;
-      let h = Math.round(w / r);
-      if (h > dispH) {
-        h = dispH;
-        w = Math.round(h * r);
+      // 최초 1회만 크롭 영역 초기화
+      if (!cropInitializedRef.current) {
+        // 주어진 비율로 표시 이미지 영역을 가득 채우는 최대 사각형 계산
+        const r = ratioToNumber(genRatio);
+        let w = dispW;
+        let h = Math.round(w / r);
+        if (h > dispH) {
+          h = dispH;
+          w = Math.round(h * r);
+        }
+        const x = Math.round(dispX + (dispW - w) / 2);
+        const y = Math.round(dispY + (dispH - h) / 2);
+        setCropRect({ x, y, w, h });
+        cropInitializedRef.current = true; // 초기화 완료 표시
       }
-      const x = Math.round(dispX + (dispW - w) / 2);
-      const y = Math.round(dispY + (dispH - h) / 2);
-      setCropRect({ x, y, w, h });
-      setCropScale(1);
     } catch (_) {}
   };
 
   const onCropMouseDown = (e) => {
     e.preventDefault();
+    e.stopPropagation();
     setCropDragging(true);
-    cropStartRef.current = { x: e.clientX - cropRect.x, y: e.clientY - cropRect.y };
+    cropStartRef.current = { 
+      x: e.clientX - cropRect.x, 
+      y: e.clientY - cropRect.y,
+      rect: { ...cropRect }
+    };
   };
+
+  const onResizeHandleMouseDown = (e, corner) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setCropResizing(corner);
+    cropStartRef.current = { 
+      x: e.clientX, 
+      y: e.clientY,
+      rect: { ...cropRect }
+    };
+  };
+
   const onCropMouseMove = (e) => {
-    if (!cropDragging) return;
     const box = cropImgBoxRef.current;
     const wrap = cropWrapRef.current;
     if (!wrap || !box) return;
-    let nx = e.clientX - cropStartRef.current.x;
-    let ny = e.clientY - cropStartRef.current.y;
-    // 경계 클램프
-    nx = Math.max(box.x, Math.min(nx, box.x + box.w - cropRect.w));
-    ny = Math.max(box.y, Math.min(ny, box.y + box.h - cropRect.h));
-    setCropRect(prev => ({ ...prev, x: nx, y: ny }));
-  };
-  const onCropMouseUp = () => setCropDragging(false);
 
-  const onCropScale = (value) => {
-    try {
-      const box = cropImgBoxRef.current;
-      const wrap = cropWrapRef.current;
-      if (!wrap || !box) return;
+    // 리사이징 중
+    if (cropResizing) {
+      const dx = e.clientX - cropStartRef.current.x;
+      const dy = e.clientY - cropStartRef.current.y;
+      const startRect = cropStartRef.current.rect;
       const r = ratioToNumber(genRatio);
-      const factor = Math.max(0.3, Math.min(1, Number(value) || 1));
-      // 박스 안에서 꽉 차는 최대 사각형을 기준으로 스케일
-      let baseW = box.w;
-      let baseH = Math.round(baseW / r);
-      if (baseH > box.h) {
-        baseH = box.h;
-        baseW = Math.round(baseH * r);
-      }
-      let w = Math.round(baseW * factor);
-      let h = Math.round(baseH * factor);
       
-      // 함수형 업데이트로 최신 cropRect 상태 사용
-      setCropRect(prevRect => {
-        // 중심 유지
-        const cx = prevRect.x + prevRect.w / 2;
-        const cy = prevRect.y + prevRect.h / 2;
-        let x = cx - w / 2;
-        let y = cy - h / 2;
-        // 경계 클램프
-        x = Math.max(box.x, Math.min(x, box.x + box.w - w));
-        y = Math.max(box.y, Math.min(y, box.y + box.h - h));
-        return { x, y, w, h };
-      });
-      setCropScale(factor);
-    } catch (_) {}
+      let newRect = { ...startRect };
+
+      if (cropResizing === 'se') {
+        // 우하단: 너비/높이 증가
+        let newW = Math.max(30, startRect.w + dx);
+        let newH = Math.round(newW / r);
+        // 경계 체크
+        if (startRect.x + newW > box.x + box.w) newW = box.x + box.w - startRect.x;
+        if (startRect.y + newH > box.y + box.h) {
+          newH = box.y + box.h - startRect.y;
+          newW = Math.round(newH * r);
+        }
+        newRect = { x: startRect.x, y: startRect.y, w: newW, h: newH };
+      } else if (cropResizing === 'sw') {
+        // 좌하단: x 이동, 너비 변경, 높이 증가
+        let newX = Math.max(box.x, Math.min(startRect.x + dx, startRect.x + startRect.w - 30));
+        let newW = startRect.x + startRect.w - newX;
+        let newH = Math.round(newW / r);
+        if (startRect.y + newH > box.y + box.h) {
+          newH = box.y + box.h - startRect.y;
+          newW = Math.round(newH * r);
+          newX = startRect.x + startRect.w - newW;
+        }
+        newRect = { x: newX, y: startRect.y, w: newW, h: newH };
+      } else if (cropResizing === 'ne') {
+        // 우상단: y 이동, 높이 변경, 너비 증가
+        let newY = Math.max(box.y, Math.min(startRect.y + dy, startRect.y + startRect.h - 30));
+        let newH = startRect.y + startRect.h - newY;
+        let newW = Math.round(newH * r);
+        if (startRect.x + newW > box.x + box.w) {
+          newW = box.x + box.w - startRect.x;
+          newH = Math.round(newW / r);
+          newY = startRect.y + startRect.h - newH;
+        }
+        newRect = { x: startRect.x, y: newY, w: newW, h: newH };
+      } else if (cropResizing === 'nw') {
+        // 좌상단: x, y 이동, 너비/높이 변경
+        let newX = Math.max(box.x, Math.min(startRect.x + dx, startRect.x + startRect.w - 30));
+        let newY = Math.max(box.y, Math.min(startRect.y + dy, startRect.y + startRect.h - 30));
+        let newW = startRect.x + startRect.w - newX;
+        let newH = startRect.y + startRect.h - newY;
+        // 비율 유지: 더 제한적인 쪽에 맞춤
+        const targetH = Math.round(newW / r);
+        if (targetH > newH) {
+          newW = Math.round(newH * r);
+          newX = startRect.x + startRect.w - newW;
+        } else {
+          newH = targetH;
+          newY = startRect.y + startRect.h - newH;
+        }
+        newRect = { x: newX, y: newY, w: newW, h: newH };
+      }
+
+      setCropRect(newRect);
+      return;
+    }
+
+    // 드래그 중 (이동)
+    if (cropDragging) {
+      let nx = e.clientX - cropStartRef.current.x;
+      let ny = e.clientY - cropStartRef.current.y;
+      // 경계 클램프
+      nx = Math.max(box.x, Math.min(nx, box.x + box.w - cropRect.w));
+      ny = Math.max(box.y, Math.min(ny, box.y + box.h - cropRect.h));
+      setCropRect(prev => ({ ...prev, x: nx, y: ny }));
+    }
   };
+
+  const onCropMouseUp = () => {
+    setCropDragging(false);
+    setCropResizing(null);
+  };
+
 
   const applyCrop = async () => {
     if (cropIndex < 0) { setCropOpen(false); return; }
@@ -554,20 +616,36 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
           )}
           {/* 크롭 사각형 */}
           <div
-            className="absolute border-2 border-purple-500 bg-purple-500/10 cursor-move"
+            className="absolute border-2 border-purple-500 bg-purple-500/10 cursor-move select-none"
             style={{ left: `${cropRect.x}px`, top: `${cropRect.y}px`, width: `${cropRect.w}px`, height: `${cropRect.h}px` }}
             onMouseDown={onCropMouseDown}
-          />
+          >
+            {/* 리사이즈 핸들 - 네 모서리 */}
+            <div
+              className="absolute w-4 h-4 bg-white border-2 border-purple-500 rounded-full cursor-nw-resize"
+              style={{ left: '-8px', top: '-8px' }}
+              onMouseDown={(e) => onResizeHandleMouseDown(e, 'nw')}
+            />
+            <div
+              className="absolute w-4 h-4 bg-white border-2 border-purple-500 rounded-full cursor-ne-resize"
+              style={{ right: '-8px', top: '-8px' }}
+              onMouseDown={(e) => onResizeHandleMouseDown(e, 'ne')}
+            />
+            <div
+              className="absolute w-4 h-4 bg-white border-2 border-purple-500 rounded-full cursor-sw-resize"
+              style={{ left: '-8px', bottom: '-8px' }}
+              onMouseDown={(e) => onResizeHandleMouseDown(e, 'sw')}
+            />
+            <div
+              className="absolute w-4 h-4 bg-white border-2 border-purple-500 rounded-full cursor-se-resize"
+              style={{ right: '-8px', bottom: '-8px' }}
+              onMouseDown={(e) => onResizeHandleMouseDown(e, 'se')}
+            />
+          </div>
         </div>
-        <div className="mt-3 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-gray-400">크기</span>
-            <input type="range" min={0.3} max={1} step={0.01} value={cropScale} onChange={(e)=> onCropScale(e.target.value)} />
-          </div>
-          <div className="flex items-center gap-2">
-            <Button variant="outline" className="bg-gray-800 border-gray-700 text-gray-200" onClick={()=> setCropOpen(false)} disabled={cropLoading}>취소</Button>
-            <Button className="bg-purple-600 hover:bg-purple-700" onClick={applyCrop} disabled={cropLoading}>{cropLoading ? '적용 중…' : '적용'}</Button>
-          </div>
+        <div className="mt-3 flex items-center justify-end gap-2">
+          <Button variant="outline" className="bg-gray-800 border-gray-700 text-gray-200" onClick={()=> setCropOpen(false)} disabled={cropLoading}>취소</Button>
+          <Button className="bg-purple-600 hover:bg-purple-700" onClick={applyCrop} disabled={cropLoading}>{cropLoading ? '적용 중…' : '적용'}</Button>
         </div>
       </DialogContent>
     </Dialog>

@@ -500,12 +500,83 @@ async def analyze_image_tags_and_context(image_url: str, model: str = 'claude') 
         # 호출자 폴백
         raise
 
-def build_image_grounding_block(tags: dict, pov: str | None = None, style_prompt: str | None = None, ctx: dict | None = None, username: str | None = None, story_mode: str | None = None) -> str:
+def build_image_grounding_block(tags: dict, pov: str | None = None, style_prompt: str | None = None, ctx: dict | None = None, username: str | None = None, story_mode: str | None = None, user_hint: str = "") -> str:
     # 시점 자동 결정 로직
     if ctx and not pov:
         # SNAP 모드: 모든 사진은 유저 본인의 경험/순간 → 무조건 1인칭
         if story_mode == "snap":
-            pov = "1인칭 '나'"
+            # 연애/로맨스 키워드 점수화 시스템 (정제 + 가중치 차등화)
+            keyword_scores = {
+                # 확실한 로맨스 의도 - 2점
+                "연애": 2, "데이트": 2, "좋아해": 2, "사랑": 2, "고백": 2,
+                "첫키스": 2, "키스": 2, "포옹": 2, "안아": 2, "스킨십": 2,
+                "로맨틱": 2, "로맨스": 2,
+                
+                # 강한 로맨스/성적 표현 - 2점
+                "야한": 2, "섹시": 2, "관능": 2, "유혹": 2, "밀당": 2, "썸": 2, "달달": 2,
+                "침대": 2, "숨소리": 2, "체온": 2, "속삭": 2,
+                
+                # 서브컬쳐 로맨스 - 1점
+                "와이프": 1, "허니": 1, "츤데레": 1, "얀데레": 1, "데레": 1,
+                
+                # 여성향 - 1점
+                "남주": 1, "집착": 1, "소유욕": 1,
+                
+                # 남성향 - 1점
+                "히로인": 1, "여주": 1, "공략": 1,
+                
+                # 약한 로맨스 암시 - 0.5점 (단독으로는 불충분)
+                "설레": 0.5, "손잡": 0.5, "모에": 0.5,
+                "은밀": 0.5,
+            }
+            
+            # 복합 표현 (문맥 포함)
+            compound_expressions = {
+                # 동사형 복합 표현 - 2점
+                "연애하고": 2, "연애하는": 2, "데이트하고": 2, "데이트하는": 2,
+                "사랑하고": 2, "사랑하는": 2, "좋아하고": 2, "좋아하는": 2,
+                
+                # 관계 키워드 (확실한 로맨스) - 2점
+                "여자친구": 2, "여친": 2, "남자친구": 2, "남친": 2,
+                "애인": 2, "연인": 2,
+                
+                # 구어체 지칭 - 1.5점
+                "얘랑": 1.5, "쟤랑": 1.5, "저 사람이랑": 1.5,
+                "이 사람이랑": 1.5, "이 사람과": 1.5, "이 여자랑": 1.5, "이 남자랑": 1.5,
+                "그녀와": 1.5, "그와": 1.5, "그녀랑": 1.5, "그랑": 1.5,
+                
+                # 동반 표현 - 2점 (이미지 문맥에서는 강한 로맨스 신호)
+                "같이": 2, "함께": 2,
+            }
+            
+            # 자기 체험 키워드 (이게 있으면 로맨스 점수 무시)
+            self_keywords = [
+                "내가 이렇게", "나도 이런", "이런 느낌", "이런 순간",
+                "나였으면", "나라면", "내 입장", "나한테도", "내 모습"
+            ]
+            
+            # 점수 계산
+            hint_lower = user_hint.lower()
+            romance_score = 0.0
+            
+            # 복합 표현 먼저 체크 (우선순위 높음)
+            for expr, score in compound_expressions.items():
+                if expr in hint_lower:
+                    romance_score += score
+            
+            # 단일 키워드 체크
+            for keyword, score in keyword_scores.items():
+                if keyword in hint_lower:
+                    romance_score += score
+            
+            has_self = any(kw in user_hint for kw in self_keywords)
+            
+            # 1.5점 이상이고, 자기 체험 키워드가 없으면 로맨스 모드
+            if romance_score >= 1.5 and not has_self:
+                pov = "1인칭 '나'(유저). 이미지 속 인물은 '그녀/그'로 지칭하고, 유저와의 로맨틱한 상호작용을 중심으로 서술."
+            else:
+                # 기본: 이미지 속 인물 = 나
+                pov = "1인칭 '나'"
         else:
             # GENRE 모드: 기존 로직 유지
             person_count = ctx.get('person_count', 0)
@@ -678,7 +749,8 @@ async def write_story_from_image_grounded(image_url: str, user_hint: str = "", p
         style_prompt=style_prompt,
         ctx=ctx,
         username=None if story_mode == "snap" else username,
-        story_mode=story_mode
+        story_mode=story_mode,
+        user_hint=user_hint  # 로맨스 키워드 점수화를 위해 전달
     )
     if kw2:
         block += "\n스냅 키워드(경량 태깅): " + ", ".join(kw2)

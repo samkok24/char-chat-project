@@ -14,27 +14,28 @@ import { Loader2 } from 'lucide-react';
 import './App.css';
 import MediaEventsBridge from './components/MediaEventsBridge';
 
-// 🚀 API 캐싱 설정 (성능 최적화)
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      staleTime: 5 * 60 * 1000,
-      gcTime: 10 * 60 * 1000,
+      staleTime: 1 * 60 * 1000, // 5분 → 1분 (너무 길면 변경사항 안 보임)
+      gcTime: 10 * 60 * 1000, // 메모리 캐시는 유지
       retry: 1,
-      refetchOnWindowFocus: false,
-      refetchOnReconnect: false,
-      refetchOnMount: false,
+      refetchOnWindowFocus: true, // false → true (포커스 시 갱신)
+      refetchOnReconnect: true, // false → true (재연결 시 갱신)
+      refetchOnMount: 'always', // false → true (마운트 시 갱신, staleTime 체크함)
     },
   },
 });
 
 // React Query 캐시 영속화(localStorage)
 try {
-  const persister = createSyncStoragePersister({ storage: window.localStorage });
+  const persister = createSyncStoragePersister({
+    storage: window.localStorage,
+  });
   persistQueryClient({
     queryClient,
     persister,
-    maxAge: 24 * 60 * 60 * 1000, // 24시간 유지
+    maxAge: 24 * 60 * 60 * 1000,
   });
 } catch (_) {}
 

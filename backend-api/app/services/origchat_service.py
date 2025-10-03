@@ -891,17 +891,40 @@ async def normalize_dialogue_speakers(
 async def ensure_extracted_characters_for_story(db: AsyncSession, story_id) -> None:
     """스토리에 추출 캐릭터가 없고 회차가 존재하면 기본 3인을 생성한다(간이)."""
     try:
+        # Redis 상태 저장: 진행 중
+        try:
+            from app.core.database import redis_client
+            await redis_client.setex(f"extract:status:{story_id}", 180, "in_progress")
+        except Exception:
+            pass
+        
         # 이미 존재하면 스킵
         rows = await db.execute(select(StoryExtractedCharacter.id).where(StoryExtractedCharacter.story_id == story_id).limit(1))
         if rows.first():
+            try:
+                from app.core.database import redis_client
+                await redis_client.delete(f"extract:status:{story_id}")
+            except Exception:
+                pass
             return
         # 회차 존재 여부 확인
         has_ch = await db.scalar(select(StoryChapter.id).where(StoryChapter.story_id == story_id).limit(1))
         if not has_ch:
+            try:
+                from app.core.database import redis_client
+                await redis_client.delete(f"extract:status:{story_id}")
+            except Exception:
+                pass
             return
         # 1차: LLM 기반 자동 추출 시도
         created = await extract_characters_from_story(db, story_id)
         if created and created > 0:
+            # Redis 상태: 완료
+            try:
+                from app.core.database import redis_client
+                await redis_client.setex(f"extract:status:{story_id}", 60, "completed")
+            except Exception:
+                pass
             # 추출 성공 시 스토리를 원작챗으로 플래그
             try:
                 await db.execute(update(Story).where(Story.id == story_id).values(is_origchat=True))
@@ -909,28 +932,21 @@ async def ensure_extracted_characters_for_story(db: AsyncSession, story_id) -> N
             except Exception:
                 await db.rollback()
             return
-        basics = [
-            {"name": "나", "description": "1인칭 화자(이름 미공개)"},
-            {"name": "조연1", "description": "보조적 역할(임시)"},
-            {"name": "조연2", "description": "보조적 역할(임시)"},
-        ]
-        for idx, b in enumerate(basics):
-            rec = StoryExtractedCharacter(
-                story_id=story_id,
-                name=b["name"],
-                description=b["description"],
-                initial=(b.get("initial") or b["name"][:1])[:1],
-                order_index=idx,
-            )
-            db.add(rec)
-        await db.commit()
-        # 기본 캐릭터 생성으로라도 원작챗 플래그 지정
+        
+        # LLM 추출 실패 시: 기본 캐릭터 생성하지 않고 에러 상태로 표시
         try:
-            await db.execute(update(Story).where(Story.id == story_id).values(is_origchat=True))
-            await db.commit()
+            from app.core.database import redis_client
+            await redis_client.setex(f"extract:status:{story_id}", 300, "failed")
         except Exception:
-            await db.rollback()
+            pass
+        return
     except Exception:
+        # Redis 상태: 실패
+        try:
+            from app.core.database import redis_client
+            await redis_client.setex(f"extract:status:{story_id}", 60, "error")
+        except Exception:
+            pass
         # 실패는 치명적 아님
         pass
 

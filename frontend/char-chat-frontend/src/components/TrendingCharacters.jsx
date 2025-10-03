@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { rankingAPI } from '../lib/api';
-import { resolveImageUrl } from '../lib/images';
+import { resolveImageUrl, getThumbnailUrl } from '../lib/images';
 import { DEFAULT_SQUARE_URI } from '../lib/placeholder';
 import { MessageCircle, Heart, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
@@ -14,7 +14,8 @@ const TrendingItem = ({ character }) => {
   const charId = character?.id || character?.character_id || character?.characterId || character?.target_id;
   const raw = character?.thumbnail_url || character?.avatar_url;
   const withV = raw ? `${raw}${raw.includes('?') ? '&' : '?'}v=${Date.now()}` : raw;
-  const imgSrc = resolveImageUrl(withV) || DEFAULT_SQUARE_URI;
+  const imgSrc = getThumbnailUrl(withV, 276) || DEFAULT_SQUARE_URI;
+  // const imgSrc = resolveImageUrl(withV) || DEFAULT_SQUARE_URI;
   const username = character?.creator_username;
   const isWebNovel = character?.source_type === 'IMPORTED';
   const isOrigChat = !!(character?.origin_story_id || character?.is_origchat);

@@ -24,8 +24,7 @@ const ChatInteraction = ({ onStartChat, characterId, isAuthenticated }) => {
       } catch (_) { return []; }
     },
     staleTime: 0,
-    refetchOnMount: 'always',
-    refetchOnWindowFocus: true,
+    refetchOnMount: 'always'
   });
 
   const recentMatch = Array.isArray(recent) ? recent.find(c => String(c.id) === String(characterId)) : null;

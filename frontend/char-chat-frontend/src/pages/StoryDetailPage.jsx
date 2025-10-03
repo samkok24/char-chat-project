@@ -276,14 +276,26 @@ const StoryDetailPage = () => {
   // 등장인물 목록은 상세 렌더 후 별도 지연 로드
   const [charactersLoading, setCharactersLoading] = useState(true);
   const [extractedItems, setExtractedItems] = useState([]);
+  const [extractionStatus, setExtractionStatus] = useState(null); // 추출 진행 상태
   const fetchExtracted = async () => {
     try {
       setCharactersLoading(true);
       const r = await storiesAPI.getExtractedCharacters(storyId);
       const items = Array.isArray(r.data?.items) ? r.data.items : [];
+      const status = r.data?.extraction_status || null;
+      
       setExtractedItems(items);
+      setExtractionStatus(status);
+      
+      // 진행 중이고 아이템이 없으면 3초 후 재시도
+      if (status === 'in_progress' && items.length === 0) {
+        setTimeout(() => {
+          fetchExtracted();
+        }, 3000);
+      }
     } catch (_) {
       setExtractedItems([]);
+      setExtractionStatus(null);
     } finally {
       setCharactersLoading(false);
     }
@@ -603,6 +615,47 @@ const StoryDetailPage = () => {
                       <span className="text-sm text-gray-400">회차 등록을 먼저 해주세요.</span>
                       {isOwner && (
                         <Button variant="outline" className="h-8 px-3 bg-white text-black border-gray-300 hover:bg-gray-100" onClick={() => setChapterModalOpen(true)}>회차등록</Button>
+                      )}
+                    </div>
+                  ) : extractionStatus === 'in_progress' ? (
+                    <div className="flex items-center justify-between bg-gray-800/40 border border-gray-700 rounded-md p-3">
+                      <div>
+                        <div className="text-sm text-gray-300 flex items-center gap-2">
+                          <svg className="animate-spin h-4 w-4 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                          </svg>
+                          등장인물을 생성하고 있습니다...
+                        </div>
+                        <div className="text-xs text-gray-500 mt-1">최대 2분이 소요될 수 있습니다. 잠시만 기다려주세요.</div>
+                      </div>
+                      {isOwner && (
+                        <Button variant="outline" className="h-8 px-3 bg-white text-black border-gray-300 hover:bg-gray-100" onClick={fetchExtracted}>새로고침</Button>
+                      )}
+                    </div>
+                  ) : extractionStatus === 'failed' ? (
+                    <div className="flex items-center justify-between bg-red-900/20 border border-red-700 rounded-md p-3">
+                      <div>
+                        <div className="text-sm text-red-300">등장인물 추출에 실패했습니다</div>
+                        <div className="text-xs text-gray-400 mt-1">AI가 등장인물을 인식하지 못했습니다. 회차를 더 추가하거나 재생성해주세요.</div>
+                      </div>
+                      {isOwner && (
+                        <Button
+                          variant="outline"
+                          className="h-8 px-3 bg-red-600 text-white border-red-500 hover:bg-red-700"
+                          onClick={async()=>{
+                            try {
+                              setCharactersLoading(true);
+                              await storiesAPI.rebuildExtractedCharacters(storyId);
+                              await fetchExtracted();
+                              setPageToast({ show: true, type: 'success', message: '재생성 완료' });
+                            } catch (e) {
+                              setPageToast({ show: true, type: 'error', message: '재생성 실패' });
+                            } finally {
+                              setCharactersLoading(false);
+                            }
+                          }}
+                        >재생성</Button>
                       )}
                     </div>
                   ) : (

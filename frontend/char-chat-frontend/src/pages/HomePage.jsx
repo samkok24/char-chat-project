@@ -13,10 +13,12 @@ import { Input } from '../components/ui/input';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
 import { Avatar, AvatarFallback, AvatarImage } from '../components/ui/avatar';
+// 15번째 줄 수정: 이미지 썸네일 사이즈 파라미터 추가
+import { resolveImageUrl, getThumbnailUrl } from '../lib/images';
 import { LazyLoadImage } from 'react-lazy-load-image-component';
 import 'react-lazy-load-image-component/src/effects/blur.css';
 import { Skeleton } from '../components/ui/skeleton';
-import { resolveImageUrl } from '../lib/images';
+// import { resolveImageUrl } from '../lib/images';
 import { 
   Search, 
   MessageCircle, 
@@ -143,9 +145,8 @@ const HomePage = () => {
         return list.filter(s => s?.is_public !== false);
       } catch (_) { return []; }
     },
-    staleTime: 0,
-    refetchOnMount: 'always',
-    refetchOnWindowFocus: true,
+    staleTime: 0, // 0 → 5분
+    refetchOnMount: 'always'
   });
   const sentinelRef = useRef(null);
 
@@ -156,11 +157,23 @@ const HomePage = () => {
   const storyQueue = [...(exploreStories || [])];
 
     characters.forEach((ch, idx) => {
-      result.push({ kind: 'character', data: ch });
+      // 썸네일 적용: 89px 표시 크기의 2배 = 178px (Retina 대응)
+      const thumbnailCh = {
+        ...ch,
+        avatar_url: getThumbnailUrl(ch.avatar_url, 178)
+      };
+      result.push({ kind: 'character', data: thumbnailCh });
+      
       if ((idx + 1) % interval === 0 && storyQueue.length > 0) {
-        result.push({ kind: 'story', data: storyQueue.shift() });
+        const story = storyQueue.shift();
+        const thumbnailStory = {
+          ...story,
+          cover_url: getThumbnailUrl(story.cover_url, 178)
+        };
+        result.push({ kind: 'story', data: thumbnailStory });
       }
     });
+  
 
     // 캐릭터가 적을 때는 남은 스토리 일부를 뒤에 보충
     if (result.length < 12 && storyQueue.length > 0) {
@@ -223,8 +236,7 @@ const HomePage = () => {
       return res.data || [];
     },
     staleTime: 0,
-    refetchOnMount: 'always',
-    refetchOnWindowFocus: true,
+    refetchOnMount: 'always'
   });
 
   const createCharacter = () => {
@@ -336,7 +348,7 @@ const HomePage = () => {
                   <h2 className="text-xl font-normal text-white">최근 대화</h2>
                   <Link to="/history" className="text-sm text-gray-400 hover:text-white">더보기</Link>
                 </div>
-                <RecentCharactersList limit={8} />
+                <RecentCharactersList limit={5} />
               </section>
             </>
           )}

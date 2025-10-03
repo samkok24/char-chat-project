@@ -3,6 +3,7 @@ import { useNavigate, Link } from 'react-router-dom';
 import { LazyLoadImage } from 'react-lazy-load-image-component';
 import 'react-lazy-load-image-component/src/effects/blur.css';
 import { Skeleton } from './ui/skeleton';
+import { getThumbnailUrl } from '../lib/images';
 import { resolveImageUrl } from '../lib/images';
 import { DEFAULT_SQUARE_URI } from '../lib/placeholder';
 import { MessageCircle, Heart } from 'lucide-react';

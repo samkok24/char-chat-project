@@ -58,4 +58,29 @@ export const buildPortraitSrcSet = (rawUrl) => {
 };
 
 
+/**
+ * R2 이미지 리사이징 URL 생성
+ * Cloudflare Image Resizing을 사용하여 썸네일 생성
+ * 
+ * @param {string} url - 원본 이미지 URL
+ * @param {number} size - 원하는 너비 (픽셀)
+ * @param {object} options - 추가 옵션 (fit, quality 등)
+ * @returns {string} - 리사이징된 이미지 URL
+ */
+export const getThumbnailUrl = (url, size = 256, options = {}) => {
+  // pub-xxxxx.r2.dev는 cdn-cgi/image를 지원하지 않으므로 원본 반환
+  return url;
+};
 
+/**
+ * 반응형 이미지 srcSet 생성 (1x, 2x, 3x)
+ */
+export const getResponsiveSrcSet = (url, baseSize = 256) => {
+  if (!url) return '';
+  
+  return [
+    `${getThumbnailUrl(url, baseSize)} 1x`,
+    `${getThumbnailUrl(url, baseSize * 2)} 2x`,
+    `${getThumbnailUrl(url, baseSize * 3)} 3x`,
+  ].join(', ');
+};

@@ -32,9 +32,7 @@ export const RecentCharactersList = ({ limit = 4 }) => {
       return response.data || [];
     },
     staleTime: 0,
-    refetchOnMount: 'always',
-    refetchOnWindowFocus: true,
-    retry: 1,
+    refetchOnMount: 'always'
   });
 
   // 토큰 갱신/가시성 회복 시 재요청

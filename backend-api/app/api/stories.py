@@ -867,7 +867,22 @@ async def get_extracted_characters_endpoint(
             "order_index": rec.order_index,
         }
 
-    return {"items": [to_dict(r) for r in items]}
+    # Redis 진행 상태 확인
+    extraction_status = None
+    try:
+        from app.core.database import redis_client
+        status_key = f"extract:status:{story_id}"
+        status_raw = await redis_client.get(status_key)
+        if status_raw:
+            extraction_status = status_raw.decode() if isinstance(status_raw, bytes) else str(status_raw)
+    except Exception:
+        pass
+    
+    response_data = {"items": [to_dict(r) for r in items]}
+    if extraction_status:
+        response_data["extraction_status"] = extraction_status
+    
+    return response_data
 
 
 @router.post("/{story_id}/extracted-characters/rebuild")

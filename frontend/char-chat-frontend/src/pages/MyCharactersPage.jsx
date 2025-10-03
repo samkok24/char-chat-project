@@ -45,7 +45,6 @@ const FavoritesTab = () => {
     },
     staleTime: 0,
     refetchOnMount: 'always',
-    refetchOnWindowFocus: true,
   });
 
   if (isLoading) {

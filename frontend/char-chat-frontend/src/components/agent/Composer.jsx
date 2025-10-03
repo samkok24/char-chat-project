@@ -66,7 +66,6 @@ export default function Composer({ onSend, disabled = false, hasMessages = false
         value: storyMode 
       });
     }
-    
     // 텍스트 입력이 있으면 staged에 추가
     if (textInput.trim() && !staged.some(item => item.type === 'text' && item.body === textInput.trim())) {
       const textItem = {
@@ -78,9 +77,10 @@ export default function Composer({ onSend, disabled = false, hasMessages = false
     }
     
     if (!staged.length || disabled) return;
-    
+  
     // mode와 tag 타입 제거 후 백엔드 전송 (UI용이므로)
     const cleanStaged = staged.filter(item => item.type !== 'mode' && item.type !== 'tag');
+    
     
     // 백엔드로 보낼 페이로드 구성
     const payload = { 
@@ -97,10 +97,12 @@ export default function Composer({ onSend, disabled = false, hasMessages = false
     setStaged([]); // 즉시 스테이지 초기화
     setTextInput(""); // 텍스트도 초기화
     setShowTextInput(false); // 텍스트 입력창 닫기
-    setShowStaging(true); // 스테이징 UI 다시 표시 (다음 입력 대기)
+    setShowModePicker(false); // 모드 트레이 닫기 추가!
+    setShowEmojiPicker(false); // 이모지 트레이도 닫기 추가!
+    setShowImageTray(false); // 이미지 트레이도 닫기 추가!
     
     // 부모 컴포넌트로 전달 (await 제거하여 비동기로 처리)
-    onSend(payload);
+    if (onSend) onSend(payload);
   };
 
   // 텍스트 입력 토글
@@ -402,7 +404,15 @@ function ModePicker({ onClose, onModeChange, onTagSelect, currentMode = 'auto' }
   };
   
   return (
-    <div className="absolute bottom-16 left-1/2 -translate-x-1/2 z-50 w-72 rounded-xl bg-gray-900/95 border border-purple-500/20 p-3 shadow-[0_0_20px_rgba(0,0,0,0.5)]">
+    <>
+      {/* 오버레이 배경 (클릭 시 닫기) */}
+      <div 
+        className="fixed inset-0 z-40" 
+        onClick={onClose}
+      />
+      
+      {/* 트레이 */}
+      <div className="absolute bottom-16 left-1/2 -translate-x-1/2 z-50 w-72 rounded-xl bg-gray-900/95 border border-purple-500/20 p-3 shadow-[0_0_20px_rgba(0,0,0,0.5)]">
       {/* 모드 선택 탭 */}
       <div className="flex items-center gap-1 mb-3 p-1 bg-gray-800/50 rounded-lg">
         <button
@@ -488,7 +498,8 @@ function ModePicker({ onClose, onModeChange, onTagSelect, currentMode = 'auto' }
           확인
         </button>
       </div>
-    </div>
+      </div>
+    </>
   );
 }
 
@@ -650,6 +661,17 @@ function ImageTray({ onInsert, onClose }) {
     });
   };
 
+  const handleDeleteImage = (e, id) => {
+    e.stopPropagation(); // 선택 토글 방지
+    setGallery(prev => prev.filter(g => g.id !== id));
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+  };
+
+
   return (
     <div className="absolute bottom-20 left-1/2 -translate-x-1/2 z-50 w-[420px] max-h-[480px] rounded-xl bg-gray-900/98 border border-purple-500/25 shadow-[0_0_30px_rgba(139,92,246,0.25)] overflow-hidden flex flex-col">
       {/* 헤더 */}
@@ -769,6 +791,14 @@ function ImageTray({ onInsert, onClose }) {
                   alt="" 
                   className="w-full h-24 object-cover"
                 />
+                {/* 삭제 버튼 추가 */}
+                <button
+                  onClick={(e) => handleDeleteImage(e, img.id)}
+                  className="absolute top-1 left-1 w-5 h-5 bg-red-500/90 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-600 z-10"
+                >
+                  <X size={12} className="text-white" />
+                </button>
+                
                 {selectedIds.has(img.id) && (
                   <div className="absolute inset-0 bg-purple-600/20">
                     <div className="absolute top-1 right-1 w-5 h-5 bg-purple-600 rounded-full flex items-center justify-center">
