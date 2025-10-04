@@ -30,7 +30,7 @@ import { storiesAPI, charactersAPI, chatAPI, rankingAPI } from '../lib/api';
 // import { generationAPI } from '../lib/generationAPI'; // removed: use existing backend flow
 import { Switch } from '../components/ui/switch';
 import { DEFAULT_SQUARE_URI } from '../lib/placeholder';
-import { Loader2, Plus, Send, Sparkles, Image as ImageIcon, Trash2, ChevronLeft, ChevronRight, X, CornerDownLeft, Copy as CopyIcon, RotateCcw, Settings, Pencil, Check, RefreshCcw } from 'lucide-react';
+import { Loader2, Plus, Send, Sparkles, Image as ImageIcon, Trash2, ChevronLeft, ChevronRight, X, CornerDownLeft, Copy as CopyIcon, RotateCcw, Settings, Pencil, Check, RefreshCcw, Wand2 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import StoryExploreCard from '../components/StoryExploreCard';
 import { CharacterCard } from '../components/CharacterCard';
@@ -38,6 +38,7 @@ import StoryHighlights from '../components/agent/StoryHighlights';
 import { useQueryClient } from '@tanstack/react-query';
 import ImageGenerateInsertModal from '../components/ImageGenerateInsertModal';
 import Composer from '../components/agent/Composer';
+import DualResponseBubble from '../components/agent/DualResponseBubble';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuLabel } from '../components/ui/dropdown-menu';
 
 const LS_SESSIONS = 'agent:sessions';
@@ -504,6 +505,16 @@ const [isNewSessionPending, setIsNewSessionPending] = useState(false);
 // 인라인 편집 상태
 const [editingMessageId, setEditingMessageId] = useState(null);
 const [editedContent, setEditedContent] = useState('');
+// 부분 재생성 상태
+const [selectedText, setSelectedText] = useState('');
+const [selectionRange, setSelectionRange] = useState(null); // { start, end, messageId }
+const [showEditModal, setShowEditModal] = useState(false);
+const [modalPosition, setModalPosition] = useState({ top: 0, left: 0 });
+const [editPrompt, setEditPrompt] = useState('');
+const [regenerating, setRegenerating] = useState(false);
+const [isDraggingModal, setIsDraggingModal] = useState(false);
+const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
+const savedSelectionRef = useRef(null); // 선택 영역 저장
 // Remix 선택 상태: messageId -> string[]
 const [remixSelected, setRemixSelected] = useState({});
 // 생성 중 경과 시간 표시용
@@ -522,6 +533,115 @@ const toggleRemixTag = useCallback((msgId, tag) => {
     return { ...prev, [msgId]: next };
   });
 }, []);
+
+// 🆕 Dual response 선택 핸들러
+const handleSelectMode = useCallback((messageId, selectedMode) => {
+  const currentSessionId = activeSessionId;
+  
+  // 메시지 찾기
+  const msg = messages.find(m => m.id === messageId);
+  if (!msg || msg.type !== 'dual_response') return;
+  
+  // 선택된 응답 데이터
+  const selectedResponse = msg.responses[selectedMode];
+  if (!selectedResponse) return;
+  
+  // dual_response → 일반 메시지로 변환
+  const convertedMessage = {
+    id: messageId,
+    role: 'assistant',
+    content: selectedResponse.fullContent,
+    fullContent: selectedResponse.fullContent,
+    storyMode: selectedMode,
+    streaming: false,
+    createdAt: msg.createdAt
+  };
+  
+  // UI 업데이트
+  setMessages(prev => prev.map(m => 
+    m.id === messageId ? convertedMessage : m
+  ));
+  
+  // 저장소 업데이트
+  const saved = loadJson(LS_MESSAGES_PREFIX + currentSessionId, []);
+  const updated = saved.map(m => 
+    m.id === messageId ? convertedMessage : m
+  );
+  saveJson(LS_MESSAGES_PREFIX + currentSessionId, updated);
+  
+  // 게스트일 경우 sessionStorage에도 저장
+  if (isGuest) {
+    try {
+      sessionLocalMessagesRef.current.set(currentSessionId, updated);
+      sessionStorage.setItem(LS_MESSAGES_PREFIX + currentSessionId, JSON.stringify(updated));
+    } catch {}
+  }
+  
+  // 🆕 선택 후 하이라이트/추천 생성
+  const msgIndex = updated.findIndex(m => m.id === messageId);
+  let imageUrl = null;
+  for (let i = msgIndex - 1; i >= 0; i--) {
+    if (updated[i].type === 'image') {
+      imageUrl = updated[i].url;
+      break;
+    }
+  }
+  
+  if (imageUrl) {
+    // 하이라이트 로딩 + 추천 메시지 추가
+    const placeholderId = crypto.randomUUID();
+    const withExtras = [
+      ...updated,
+      { id: placeholderId, type: 'story_highlights_loading', createdAt: nowIso() },
+      { id: crypto.randomUUID(), role: 'assistant', type: 'recommendation', createdAt: nowIso() }
+    ];
+    
+    saveJson(LS_MESSAGES_PREFIX + currentSessionId, withExtras);
+    
+    if (activeSessionIdRef.current === currentSessionId) {
+      setMessages(withExtras);
+    }
+    
+    // 하이라이트 생성
+    (async () => {
+      try {
+        const hiRes = await chatAPI.agentGenerateHighlights({
+          text: selectedResponse.fullContent,
+          image_url: imageUrl,
+          story_mode: selectedMode
+        });
+        const scenes = hiRes.data?.story_highlights || [];
+        
+        const currentMsgs = loadJson(LS_MESSAGES_PREFIX + currentSessionId, []);
+        const placeholder = currentMsgs.find(m => m.type === 'story_highlights_loading');
+        if (!placeholder) return;
+        
+        const savedHL = loadJson(LS_MESSAGES_PREFIX + currentSessionId, []);
+        const updatedHL = savedHL.map(m =>
+          m.id === placeholder.id
+            ? { id: crypto.randomUUID(), type: 'story_highlights', scenes, createdAt: nowIso() }
+            : m
+        );
+        
+        saveJson(LS_MESSAGES_PREFIX + currentSessionId, updatedHL);
+        
+        if (activeSessionIdRef.current === currentSessionId) {
+          setMessages(updatedHL);
+        }
+      } catch (e) {
+        console.error('Failed to generate highlights after selection:', e);
+        // 실패 시 로딩 제거
+        const savedErr = loadJson(LS_MESSAGES_PREFIX + currentSessionId, []);
+        const filtered = savedErr.filter(m => m.type !== 'story_highlights_loading');
+        saveJson(LS_MESSAGES_PREFIX + currentSessionId, filtered);
+        
+        if (activeSessionIdRef.current === currentSessionId) {
+          setMessages(filtered);
+        }
+      }
+    })();
+  }
+}, [messages, activeSessionId, isGuest, activeSessionIdRef]);
 
 const handleRemixGenerate = useCallback(async (msg, assistantText) => {
   try {
@@ -1671,6 +1791,189 @@ const handleContinueInline = useCallback(async (msg) => {
   }
 }, [activeSessionId, isGuest, setMessages, updateMessageForSession, storyModel]);
 
+// 🆕 텍스트 드래그 감지 핸들러
+const handleTextSelection = useCallback((e, messageId, messageContent) => {
+  // 편집 모드일 때만 작동
+  if (editingMessageId !== messageId) return;
+  
+  // 이미 모달이 열려있으면 무시
+  if (showEditModal) return;
+  
+  try {
+    const selection = window.getSelection();
+    const selectedText = selection.toString().trim();
+    
+    // 선택된 텍스트가 없으면 무시
+    if (!selectedText || selectedText.length === 0) {
+      return;
+    }
+    
+    // 선택 범위 계산
+    const range = selection.getRangeAt(0);
+    const rect = range.getBoundingClientRect();
+    
+    // 선택 영역 저장 (나중에 복원용)
+    savedSelectionRef.current = range.cloneRange();
+    
+    // 전체 텍스트에서 선택된 부분의 인덱스 계산 (줄바꿈 normalize)
+    const fullText = messageContent || '';
+    const normalizedFull = fullText.replace(/\s+/g, ' ').trim();
+    const normalizedSelected = selectedText.replace(/\s+/g, ' ').trim();
+    const normalizedOffset = normalizedFull.indexOf(normalizedSelected);
+    
+    // 실제 원본 텍스트에서의 위치 추정
+    let actualStart = 0;
+    if (normalizedOffset !== -1) {
+      let normalizedCount = 0;
+      for (let i = 0; i < fullText.length && normalizedCount < normalizedOffset; i++) {
+        if (!/\s/.test(fullText[i]) || (i > 0 && !/\s/.test(fullText[i-1]))) {
+          normalizedCount++;
+        }
+        actualStart = i + 1;
+      }
+    }
+    
+    // 상태 설정
+    setSelectedText(selectedText);
+    setSelectionRange({
+      start: actualStart,
+      end: actualStart + selectedText.length,
+      messageId: messageId
+    });
+    setModalPosition({
+      top: rect.bottom + window.scrollY + 5,
+      left: rect.left + window.scrollX
+    });
+    setShowEditModal(true);
+    
+  } catch (err) {
+    console.error('Text selection error:', err);
+  }
+}, [editingMessageId, showEditModal]);
+
+// 🆕 선택 영역 복원 핸들러
+const handleRestoreSelection = useCallback(() => {
+  if (savedSelectionRef.current) {
+    try {
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(savedSelectionRef.current);
+    } catch (err) {
+      console.error('Failed to restore selection:', err);
+    }
+  }
+}, []);
+
+// 🆕 모달 드래그 핸들러
+const handleModalMouseDown = useCallback((e) => {
+  // Input 영역은 드래그 제외
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'BUTTON') {
+    return;
+  }
+  
+  setIsDraggingModal(true);
+  setDragOffset({
+    x: e.clientX - modalPosition.left,
+    y: e.clientY - modalPosition.top
+  });
+}, [modalPosition]);
+
+// 전역 마우스 이동 감지
+React.useEffect(() => {
+  if (!isDraggingModal) return;
+  
+  const handleMouseMove = (e) => {
+    const newLeft = e.clientX - dragOffset.x;
+    const newTop = e.clientY - dragOffset.y;
+    
+    // 텍스트 박스 영역 내로 제한 (대략적인 범위)
+    const minLeft = 100;
+    const maxLeft = window.innerWidth - 400;
+    const minTop = 100;
+    const maxTop = window.innerHeight - 200;
+    
+    setModalPosition({
+      left: Math.max(minLeft, Math.min(maxLeft, newLeft)),
+      top: Math.max(minTop, Math.min(maxTop, newTop))
+    });
+  };
+  
+  const handleMouseUp = () => {
+    setIsDraggingModal(false);
+  };
+  
+  document.addEventListener('mousemove', handleMouseMove);
+  document.addEventListener('mouseup', handleMouseUp);
+  
+  return () => {
+    document.removeEventListener('mousemove', handleMouseMove);
+    document.removeEventListener('mouseup', handleMouseUp);
+  };
+}, [isDraggingModal, dragOffset]);
+
+// 🆕 부분 재생성 핸들러
+const handlePartialRegenerate = useCallback(async () => {
+  if (!selectionRange || !editPrompt.trim()) return;
+  
+  const { messageId, start, end } = selectionRange;
+  const targetMessage = messages.find(m => m.id === messageId);
+  if (!targetMessage) return;
+  
+  try {
+    setRegenerating(true);
+    const startTime = Date.now();
+    
+    const fullText = targetMessage.fullContent || targetMessage.content || '';
+    const beforeText = fullText.slice(0, start);
+    const selectedText = fullText.slice(start, end);
+    const afterText = fullText.slice(end);
+    
+    // TODO: 백엔드 API 호출 (일단 임시로 프론트엔드에서 처리)
+    // const response = await chatAPI.partialRegenerate({
+    //   full_text: fullText,
+    //   selected_text: selectedText,
+    //   user_prompt: editPrompt,
+    //   before_context: beforeText,
+    //   after_context: afterText
+    // });
+    
+    // 임시: 2초 대기 후 "[재생성된 텍스트]"로 교체
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    const elapsed = Math.floor((Date.now() - startTime) / 1000);
+    const regeneratedText = `[${editPrompt}에 따라 재작성된 텍스트]`;
+    
+    // 텍스트 교체
+    const newFullText = beforeText + regeneratedText + afterText;
+    
+    // 메시지 업데이트
+    setMessages(curr => curr.map(msg => 
+      msg.id === messageId 
+        ? { ...msg, content: newFullText, fullContent: newFullText } 
+        : msg
+    ));
+    
+    // localStorage 저장
+    const saved = loadJson(LS_MESSAGES_PREFIX + activeSessionId, []);
+    const updated = saved.map(msg => 
+      msg.id === messageId 
+        ? { ...msg, content: newFullText, fullContent: newFullText } 
+        : msg
+    );
+    saveJson(LS_MESSAGES_PREFIX + activeSessionId, updated);
+    
+    // 상태 초기화
+    setShowEditModal(false);
+    setEditPrompt('');
+    setSelectedText('');
+    setSelectionRange(null);
+    setRegenerating(false);
+    
+  } catch (err) {
+    console.error('Partial regeneration error:', err);
+    setRegenerating(false);
+  }
+}, [selectionRange, editPrompt, messages, activeSessionId, setMessages]);
+
 const handleStopGeneration = async () => {
   try {
     // 현재 세션의 job/controller만 취소
@@ -1964,6 +2267,8 @@ return (
                               )}
                               {m.type === 'image' ? (
                               <img src={m.url} alt="img" className={`block h-auto w-auto max-w-full md:max-w-[420px] rounded-2xl shadow-lg ${m.role === 'user' ? 'ml-auto' : 'mr-auto'}`} />
+                              ) : m.type === 'dual_response' ? (
+                                <DualResponseBubble message={m} onSelect={(mode) => handleSelectMode(m.id, mode)} />
                               ) : m.type === 'story_highlights' ? (
                                 <StoryHighlights highlights={m.scenes || []} />
                               ) : m.type === 'story_highlights_loading' ? (
@@ -2001,8 +2306,8 @@ return (
                                 <div className={`group relative whitespace-pre-wrap rounded-2xl shadow-lg ${m.role === 'user' 
                                   ? 'max-w-[85%] bg-purple-950/50 border border-purple-500/40 text-white px-3 py-2 shadow-[0_0_14px_rgba(168,85,247,0.45)]'
                                   : (editingMessageId === m.id 
-                                      ? 'w-full max-w-3xl bg-gray-900/30 border border-gray-800/50 px-4 py-3 ring-2 ring-purple-500/70 shadow-[0_0_24px_rgba(168,85,247,0.55)] bg-gradient-to-br from-purple-900/15 to-fuchsia-700/10'
-                                      : 'w-full max-w-3xl bg-gray-900/30 border border-gray-800/50 px-4 py-3')}`}>
+                                      ? 'w-full max-w-3xl bg-gray-900/30 border-2 border-gray-700/80 px-4 py-3 ring-2 ring-purple-500/70 shadow-[0_0_24px_rgba(168,85,247,0.55)] bg-gradient-to-br from-purple-900/15 to-fuchsia-700/10'
+                                      : 'w-full max-w-3xl bg-gray-900/30 border-2 border-gray-700/80 px-4 py-3')}`}>
                                   { m.thinking ? (
                                     <div className="inline-flex items-center gap-2 text-gray-400">
                                       <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -2019,10 +2324,11 @@ return (
                                             <>
                                               {/* 텍스트 영역 (인라인 편집 지원) */}
                                               <div
-                                                className="relative outline-none"
+                                                className="relative outline-none message-content [&::selection]:bg-black [&::selection]:text-white [&_*::selection]:bg-black [&_*::selection]:text-white"
                                                 contentEditable={editingMessageId === m.id}
                                                 suppressContentEditableWarning
                                                 onInput={(e) => { if (editingMessageId === m.id) setEditedContent(e.currentTarget.textContent || ''); }}
+                                                onMouseUp={(e) => handleTextSelection(e, m.id, m.fullContent || m.content)}
                                               >
                                                 {(() => {
                                                   // 어시스턴트 문장은 생성 완료 후에도 절대 미리보기로 잘라내지 않음
@@ -2038,10 +2344,11 @@ return (
                                             </>
                                           ) : (
                                             <div
-                                              className="outline-none"
+                                              className="outline-none message-content [&::selection]:bg-black [&::selection]:text-white [&_*::selection]:bg-black [&_*::selection]:text-white"
                                               contentEditable={editingMessageId === m.id}
                                               suppressContentEditableWarning
                                               onInput={(e) => { if (editingMessageId === m.id) setEditedContent(e.currentTarget.textContent || ''); }}
+                                              onMouseUp={(e) => handleTextSelection(e, m.id, m.fullContent || m.content)}
                                             >
                                               {(m.role === 'assistant' || isStreaming || m.continued || m.expanded) ? (m.content || '') : truncated}
                                             </div>
@@ -2367,16 +2674,129 @@ return (
                    // 3. 생성 상태 업데이트
                    setGenState(activeSessionId, { status: GEN_STATE.PREVIEW_STREAMING });
                    
-                   // 4. 백엔드 호출
-                   const response = await chatAPI.agentSimulate({
-                     staged: payload.staged,
-                     mode: payload.mode || 'micro',
-                     storyMode: payload.storyMode || 'auto',
-                     model: storyModel,
-                     sub_model: storyModel
-                   });
-                   const decidedMode = response.data?.story_mode || (payload.storyMode || 'auto');
-                   const imageSummary = response.data?.image_summary || null;
+                   // 4. 세션 캡처 (타이핑 중 세션 전환 대응)
+                   const currentSessionId = activeSessionId;
+                   
+                   // 5. 백엔드 호출 - auto 모드 분기
+                   if (payload.storyMode === 'auto') {
+                     // === AUTO 모드: snap + genre 병렬 생성 ===
+                     
+                     // 병렬 API 호출
+                     const [snapResponse, genreResponse] = await Promise.all([
+                       chatAPI.agentSimulate({
+                         staged: payload.staged,
+                         mode: payload.mode || 'micro',
+                         storyMode: 'snap',
+                         model: storyModel,
+                         sub_model: storyModel
+                       }),
+                       chatAPI.agentSimulate({
+                         staged: payload.staged,
+                         mode: payload.mode || 'micro',
+                         storyMode: 'genre',
+                         model: storyModel,
+                         sub_model: storyModel
+                       })
+                     ]);
+                     
+                     const snapText = snapResponse.data?.assistant || '';
+                     const genreText = genreResponse.data?.assistant || '';
+                     
+                     // thinking → dual_response로 교체
+                     const dualMessage = {
+                       id: assistantId,
+                       role: 'assistant',
+                       type: 'dual_response',
+                       responses: {
+                         snap: { content: '', fullContent: snapText, streaming: true },
+                         genre: { content: '', fullContent: genreText, streaming: true }
+                       },
+                       thinking: false,
+                       createdAt: nowIso()
+                     };
+                     
+                     setMessages(curr => curr.map(msg => 
+                       msg.id === assistantId ? dualMessage : msg
+                     ));
+                     
+                     // 저장소에도 저장
+                     const savedBeforeTyping = loadJson(LS_MESSAGES_PREFIX + currentSessionId, []);
+                     const updatedBeforeTyping = savedBeforeTyping.map(msg => 
+                       msg.id === assistantId ? dualMessage : msg
+                     );
+                     saveJson(LS_MESSAGES_PREFIX + currentSessionId, updatedBeforeTyping);
+                     
+                     // 두 개의 타이핑 타이머 동시 실행
+                     const createTypingTimer = (mode, fullText) => {
+                       let idx = 0;
+                       const total = fullText.length;
+                       const steps = 80;
+                       const step = Math.max(2, Math.ceil(total / steps));
+                       const intervalMs = 15;
+                       
+                       const timer = setInterval(() => {
+                         idx = Math.min(total, idx + step);
+                         const slice = fullText.slice(0, idx);
+                         
+                         // 저장소 업데이트
+                         const saved = loadJson(LS_MESSAGES_PREFIX + currentSessionId, []);
+                         const updated = saved.map(msg => {
+                           if (msg.id === assistantId && msg.type === 'dual_response') {
+                             return {
+                               ...msg,
+                               responses: {
+                                 ...msg.responses,
+                                 [mode]: {
+                                   content: slice,
+                                   fullContent: fullText,
+                                   streaming: idx < total
+                                 }
+                               }
+                             };
+                           }
+                           return msg;
+                         });
+                         saveJson(LS_MESSAGES_PREFIX + currentSessionId, updated);
+                         
+                         // 현재 세션일 때만 UI 업데이트
+                         if (activeSessionIdRef.current === currentSessionId) {
+                           setMessages(updated);
+                         }
+                         
+                         // 타이핑 완료
+                         if (idx >= total) {
+                           clearInterval(timer);
+                           const timers = sessionTypingTimersRef.current.get(currentSessionId) || [];
+                           sessionTypingTimersRef.current.set(currentSessionId, timers.filter(t => t !== timer));
+                         }
+                       }, intervalMs);
+                       
+                       return timer;
+                     };
+                     
+                     // snap, genre 타이머 동시 시작
+                     const snapTimer = createTypingTimer('snap', snapText);
+                     const genreTimer = createTypingTimer('genre', genreText);
+                     
+                     // 타이머 등록
+                     const timers = sessionTypingTimersRef.current.get(currentSessionId) || [];
+                     sessionTypingTimersRef.current.set(currentSessionId, [...timers, snapTimer, genreTimer]);
+                     
+                     // 생성 완료 상태
+                     setGenState(activeSessionId, { status: GEN_STATE.IDLE });
+                     
+                   } else {
+                     // === 기존 로직 (snap/genre 직접 선택 시) ===
+                     
+                     const response = await chatAPI.agentSimulate({
+                       staged: payload.staged,
+                       mode: payload.mode || 'micro',
+                       storyMode: payload.storyMode || 'auto',
+                       model: storyModel,
+                       sub_model: storyModel
+                     });
+                     const decidedMode = response.data?.story_mode || (payload.storyMode || 'auto');
+                     const imageSummary = response.data?.image_summary || null;
                    
                    // image_summary를 이미지 메시지에 반영 (있는 경우)
                    if (imageSummary && imageUrl) {
@@ -2507,6 +2927,8 @@ return (
                    
                    // 6. 생성 완료 상태
                    setGenState(activeSessionId, { status: GEN_STATE.IDLE });
+                   
+                   } // else 블록 닫기 (snap/genre 직접 선택 시)
                    
                  } catch (error) {
                    console.error('Failed to generate:', error);
@@ -2728,6 +3150,89 @@ return (
            </div>
          </SheetContent>
        </Sheet>
+
+       {/* 🆕 부분 재생성 플로팅 모달 */}
+       {showEditModal && (
+         <>
+           {/* 투명 오버레이 - 클릭하면 모달 닫기 */}
+           <div 
+             className="fixed inset-0 z-40"
+             style={{ userSelect: 'none' }}
+             onMouseDown={(e) => {
+               // 마우스 다운 시점에 선택 해제 방지
+               e.preventDefault();
+             }}
+             onClick={() => {
+               setShowEditModal(false);
+               setEditPrompt('');
+               setSelectedText('');
+               setSelectionRange(null);
+               window.getSelection()?.removeAllRanges();
+             }}
+           />
+           
+           {/* 실제 모달 */}
+           <div 
+             className="fixed z-50 bg-gray-900/95 backdrop-blur-sm border-2 border-purple-500/70 rounded-lg shadow-2xl p-3 min-w-[320px] max-w-[480px]"
+             style={{ 
+               top: `${modalPosition.top}px`, 
+               left: `${modalPosition.left}px`,
+               userSelect: 'none',
+               cursor: isDraggingModal ? 'grabbing' : 'grab'
+             }}
+             onMouseDown={(e) => {
+               e.stopPropagation();
+               handleModalMouseDown(e);
+             }}
+             onClick={(e) => e.stopPropagation()}
+           >
+             {regenerating ? (
+               // 재생성 중 - 스켈레톤 UI
+               <div className="flex items-center gap-3">
+                 <Loader2 className="w-5 h-5 animate-spin text-purple-400" />
+                 <span className="text-sm text-gray-300">
+                   수정중... {Math.floor((Date.now() - (selectionRange?.startTime || Date.now())) / 1000)}s
+                 </span>
+               </div>
+             ) : (
+               // 입력 UI
+               <div className="space-y-2">
+                 <div 
+                   className="text-xs text-gray-400 mb-1 cursor-pointer hover:text-purple-400 transition-colors"
+                   onClick={handleRestoreSelection}
+                   title="클릭하면 선택 영역이 다시 표시됩니다"
+                 >
+                   선택된 텍스트: "{selectedText.slice(0, 50)}{selectedText.length > 50 ? '...' : ''}"
+                 </div>
+                 <div className="flex items-center gap-2">
+                   <Input
+                     type="text"
+                     placeholder="이런 느낌으로 바꿔줘"
+                     value={editPrompt}
+                     onChange={(e) => setEditPrompt(e.target.value)}
+                     onKeyDown={(e) => {
+                       if (e.key === 'Enter' && editPrompt.trim()) {
+                         handlePartialRegenerate();
+                       }
+                     }}
+                     className="flex-1 bg-gray-800 border-gray-700 text-white text-sm"
+                     autoFocus
+                   />
+                   <Button
+                     size="sm"
+                     onClick={handlePartialRegenerate}
+                     disabled={!editPrompt.trim()}
+                     className="bg-purple-600 hover:bg-purple-700 text-white px-3"
+                     title="재생성"
+                   >
+                     <Wand2 className="w-4 h-4" />
+                   </Button>
+                 </div>
+               </div>
+             )}
+           </div>
+         </>
+       )}
 </div>
 </AppLayout>
 );

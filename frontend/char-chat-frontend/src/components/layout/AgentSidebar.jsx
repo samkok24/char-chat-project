@@ -44,16 +44,25 @@ const AgentSidebar = ({ onCreateSession, activeSessionId, onSessionSelect, onDel
             if (!Array.isArray(msgs)) return { ...s, autoTitle: '새 대화', imageDesc: '' };
             
             // 첫 번째 AI 답변 추출
-            const firstAI = msgs.find(m => m && m.role === 'assistant' && m.content && !m.type);
+            // dual_response는 선택 대기 중, 일반 답변은 내용 표시
+            const firstAI = msgs.find(m => m && m.role === 'assistant' && (m.content || m.type === 'dual_response'));
             let autoTitle = s.title || '새 대화';
             let fullTitle = autoTitle;
-            if (firstAI && firstAI.content) {
-              const text = String(firstAI.content).trim();
-              // 첫 문장 추출 (마침표/물음표/느낌표 기준)
-              const match = text.match(/^[^.!?]+[.!?]/);
-              const firstSentence = match ? match[0].trim() : text.split('\n')[0] || text;
-              fullTitle = firstSentence;
-              autoTitle = firstSentence.length > 30 ? firstSentence.slice(0, 30) + '...' : firstSentence;
+            
+            if (firstAI) {
+              if (firstAI.type === 'dual_response') {
+                // 선택 대기 중
+                autoTitle = '응답 생성 중...';
+                fullTitle = '일상/장르 선택 대기 중';
+              } else if (firstAI.content) {
+                // 선택 완료 또는 일반 생성
+                const text = String(firstAI.content).trim();
+                // 첫 문장 추출 (마침표/물음표/느낌표 기준)
+                const match = text.match(/^[^.!?]+[.!?]/);
+                const firstSentence = match ? match[0].trim() : text.split('\n')[0] || text;
+                fullTitle = firstSentence;
+                autoTitle = firstSentence.length > 30 ? firstSentence.slice(0, 30) + '...' : firstSentence;
+              }
             }
             
             // 첫 번째 유저 입력 분석 (이미지 > 텍스트 > 이모지 우선순위)
