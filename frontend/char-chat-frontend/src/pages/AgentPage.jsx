@@ -515,6 +515,7 @@ const [regenerating, setRegenerating] = useState(false);
 const [isDraggingModal, setIsDraggingModal] = useState(false);
 const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
 const savedSelectionRef = useRef(null); // 선택 영역 저장
+const [regeneratedRange, setRegeneratedRange] = useState(null); // { messageId, start, end } - 재생성된 영역 표시용
 // Remix 선택 상태: messageId -> string[]
 const [remixSelected, setRemixSelected] = useState({});
 // 생성 중 경과 시간 표시용
@@ -1920,29 +1921,30 @@ const handlePartialRegenerate = useCallback(async () => {
   if (!targetMessage) return;
   
   try {
+    // 1. 모달 닫기
+    setShowEditModal(false);
+    setEditPrompt('');
+    
+    // 2. 재생성 시작 (스켈레톤 UI용)
     setRegenerating(true);
-    const startTime = Date.now();
     
     const fullText = targetMessage.fullContent || targetMessage.content || '';
     const beforeText = fullText.slice(0, start);
     const selectedText = fullText.slice(start, end);
     const afterText = fullText.slice(end);
     
-    // TODO: 백엔드 API 호출 (일단 임시로 프론트엔드에서 처리)
-    // const response = await chatAPI.partialRegenerate({
-    //   full_text: fullText,
-    //   selected_text: selectedText,
-    //   user_prompt: editPrompt,
-    //   before_context: beforeText,
-    //   after_context: afterText
-    // });
+    // 3. 백엔드 API 호출
+    const response = await chatAPI.agentPartialRegenerate({
+      full_text: fullText,
+      selected_text: selectedText,
+      user_prompt: editPrompt,
+      before_context: beforeText,
+      after_context: afterText
+    });
     
-    // 임시: 2초 대기 후 "[재생성된 텍스트]"로 교체
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    const elapsed = Math.floor((Date.now() - startTime) / 1000);
-    const regeneratedText = `[${editPrompt}에 따라 재작성된 텍스트]`;
+    const regeneratedText = response.data?.regenerated_text || selectedText;
     
-    // 텍스트 교체
+    // 4. 텍스트 교체
     const newFullText = beforeText + regeneratedText + afterText;
     
     // 메시지 업데이트
@@ -1961,16 +1963,27 @@ const handlePartialRegenerate = useCallback(async () => {
     );
     saveJson(LS_MESSAGES_PREFIX + activeSessionId, updated);
     
-    // 상태 초기화
-    setShowEditModal(false);
-    setEditPrompt('');
+    // 5. 재생성 완료 - 보라색 글로우 표시
+    setRegenerating(false);
+    setRegeneratedRange({
+      messageId,
+      start: beforeText.length,
+      end: beforeText.length + regeneratedText.length
+    });
+    
+    // 6. 3초 후 글로우 제거
+    setTimeout(() => {
+      setRegeneratedRange(null);
+    }, 3000);
+    
+    // 7. 선택 상태 초기화
     setSelectedText('');
     setSelectionRange(null);
-    setRegenerating(false);
     
   } catch (err) {
     console.error('Partial regeneration error:', err);
     setRegenerating(false);
+    setShowEditModal(false);
   }
 }, [selectionRange, editPrompt, messages, activeSessionId, setMessages]);
 
@@ -2327,17 +2340,60 @@ return (
                                                 className="relative outline-none message-content [&::selection]:bg-black [&::selection]:text-white [&_*::selection]:bg-black [&_*::selection]:text-white"
                                                 contentEditable={editingMessageId === m.id}
                                                 suppressContentEditableWarning
-                                                onInput={(e) => { if (editingMessageId === m.id) setEditedContent(e.currentTarget.textContent || ''); }}
+                                                onInput={(e) => { 
+                                                  if (editingMessageId === m.id) {
+                                                    // innerText를 사용하여 개행 보존
+                                                    setEditedContent(e.currentTarget.innerText || '');
+                                                  }
+                                                }}
                                                 onMouseUp={(e) => handleTextSelection(e, m.id, m.fullContent || m.content)}
                                               >
                                                 {(() => {
                                                   // 어시스턴트 문장은 생성 완료 후에도 절대 미리보기로 잘라내지 않음
                                                   const renderText = (m.role === 'assistant' || isStreaming || m.continued || m.expanded) ? (m.content || '') : truncated;
+                                                  
+                                                  // 재생성 중이거나 재생성 완료된 부분 하이라이트
+                                                  if (regenerating && selectionRange?.messageId === m.id) {
+                                                    // 재생성 중: 선택 영역을 스켈레톤 UI로 표시
+                                                    const { start, end } = selectionRange;
+                                                    const before = renderText.slice(0, start);
+                                                    const selected = renderText.slice(start, end);
+                                                    const after = renderText.slice(end);
+                                                    
+                                                    return (
+                                                      <>
+                                                        {before}
+                                                        <span className="inline-flex items-center gap-1 bg-gray-800/50 px-2 py-0.5 rounded animate-pulse">
+                                                          <Loader2 className="w-3 h-3 animate-spin text-purple-400" />
+                                                          <span className="text-xs text-gray-400">재생성 중...</span>
+                                                        </span>
+                                                        {after}
+                                                      </>
+                                                    );
+                                                  } else if (regeneratedRange?.messageId === m.id) {
+                                                    // 재생성 완료: 보라색 글로우로 표시
+                                                    const { start, end } = regeneratedRange;
+                                                    const before = renderText.slice(0, start);
+                                                    const regenerated = renderText.slice(start, end);
+                                                    const after = renderText.slice(end);
+                                                    
+                                                    return (
+                                                      <>
+                                                        {before}
+                                                        <span className="bg-purple-500/20 px-1 rounded shadow-[0_0_12px_rgba(168,85,247,0.6)] animate-pulse">
+                                                          {regenerated}
+                                                        </span>
+                                                        {after}
+                                                      </>
+                                                    );
+                                                  }
+                                                  
+                                                  // 일반 렌더링
                                                   const lines = renderText.split('\n');
                                                   return lines.map((line, idx) => (
                                                     <div key={idx}>
                                                       {line || '\u00A0'}
-                      </div>
+                    </div>
                                                   ));
                                                 })()}
                                               </div>
@@ -2347,10 +2403,50 @@ return (
                                               className="outline-none message-content [&::selection]:bg-black [&::selection]:text-white [&_*::selection]:bg-black [&_*::selection]:text-white"
                                               contentEditable={editingMessageId === m.id}
                                               suppressContentEditableWarning
-                                              onInput={(e) => { if (editingMessageId === m.id) setEditedContent(e.currentTarget.textContent || ''); }}
+                                              onInput={(e) => { 
+                                                if (editingMessageId === m.id) {
+                                                  // innerText를 사용하여 개행 보존
+                                                  setEditedContent(e.currentTarget.innerText || '');
+                                                }
+                                              }}
                                               onMouseUp={(e) => handleTextSelection(e, m.id, m.fullContent || m.content)}
                                             >
-                                              {(m.role === 'assistant' || isStreaming || m.continued || m.expanded) ? (m.content || '') : truncated}
+                                              {(() => {
+                                                const renderText = (m.role === 'assistant' || isStreaming || m.continued || m.expanded) ? (m.content || '') : truncated;
+                                                
+                                                // 재생성 중이거나 재생성 완료된 부분 하이라이트
+                                                if (regenerating && selectionRange?.messageId === m.id) {
+                                                  const { start, end } = selectionRange;
+                                                  const before = renderText.slice(0, start);
+                                                  const after = renderText.slice(end);
+                                                  return (
+                                                    <>
+                                                      {before}
+                                                      <span className="inline-flex items-center gap-1 bg-gray-800/50 px-2 py-0.5 rounded animate-pulse">
+                                                        <Loader2 className="w-3 h-3 animate-spin text-purple-400" />
+                                                        <span className="text-xs text-gray-400">재생성 중...</span>
+                                                      </span>
+                                                      {after}
+                                                    </>
+                                                  );
+                                                } else if (regeneratedRange?.messageId === m.id) {
+                                                  const { start, end } = regeneratedRange;
+                                                  const before = renderText.slice(0, start);
+                                                  const regenerated = renderText.slice(start, end);
+                                                  const after = renderText.slice(end);
+                                                  return (
+                                                    <>
+                                                      {before}
+                                                      <span className="bg-purple-500/20 px-1 rounded shadow-[0_0_12px_rgba(168,85,247,0.6)] animate-pulse">
+                                                        {regenerated}
+                                                      </span>
+                                                      {after}
+                                                    </>
+                                                  );
+                                                }
+                                                
+                                                return renderText;
+                                              })()}
                                             </div>
                                           )}
                                           {/* 계속보기 버튼은 텍스트 박스 바깥으로 이동 */}
@@ -2383,8 +2479,10 @@ return (
                                                    type="button"
                                                    className="p-1 hover:bg-gray-800 text-gray-300 hover:text-white"
                                                    title="편집 완료"
-                                                   onClick={() => {
-                                                     const newText = editedContent || text;
+                                                   onClick={(e) => {
+                                                     // DOM에서 직접 현재 텍스트 가져오기 (재생성된 내용 포함)
+                                                     const contentDiv = e.currentTarget.closest('.group').querySelector('.message-content');
+                                                     const newText = contentDiv ? (contentDiv.innerText || contentDiv.textContent) : (editedContent || text);
                                                      setMessages(curr => curr.map(msg => msg.id === m.id ? { ...msg, content: newText, fullContent: newText } : msg));
                                                      try { saveJson(LS_MESSAGES_PREFIX + activeSessionId, (messages||[]).map(msg => msg.id === m.id ? { ...msg, content: newText, fullContent: newText } : msg)); } catch {}
                                                      setEditingMessageId(null);
@@ -2403,14 +2501,26 @@ return (
                                                  </button>
                                                </>
                                              ) : (
-                                               <button
-                                                 type="button"
-                                                 className="p-1 hover:bg-gray-800 text-gray-300 hover:text-white"
-                                                 title={'편집'}
-                                                 onClick={() => { setEditingMessageId(m.id); setEditedContent(m.fullContent || text); }}
-                                               >
-                                                 <Pencil className="w-4 h-4" />
-                                               </button>
+                                              <div className="relative group/edit">
+                                                <button
+                                                  type="button"
+                                                  className="p-1 hover:bg-purple-900/30 text-purple-400 hover:text-purple-300 shadow-[0_0_8px_rgba(168,85,247,0.4)] hover:shadow-[0_0_12px_rgba(168,85,247,0.6)] transition-all"
+                                                  title={'편집'}
+                                                  onClick={() => { setEditingMessageId(m.id); setEditedContent(m.fullContent || text); }}
+                                                >
+                                                  <Pencil className="w-4 h-4" />
+                                                </button>
+                                                {/* 툴팁 */}
+                                                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 bg-gray-900 border border-purple-500/50 rounded-lg shadow-xl opacity-0 group-hover/edit:opacity-100 pointer-events-none transition-opacity whitespace-nowrap z-50">
+                                                  <div className="text-xs text-gray-200 font-medium">
+                                                    원하는 부분을 드래그하면 재생성할 수 있어요.
+                                                  </div>
+                                                  {/* 화살표 */}
+                                                  <div className="absolute top-full left-1/2 -translate-x-1/2 -mt-px">
+                                                    <div className="border-4 border-transparent border-t-purple-500/50"></div>
+                                                  </div>
+                                                </div>
+                                              </div>
                                              )}
                                            </div>
                 </div>

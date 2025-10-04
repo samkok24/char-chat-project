@@ -330,6 +330,8 @@ export const chatAPI = {
     api.post('/chat/agent/generate-highlights', data),
   classifyIntent: (data) =>
     api.post('/chat/agent/classify-intent', data),
+  agentPartialRegenerate: (data) =>
+    api.post('/chat/agent/partial-regenerate', data),
   
   getChatHistory: (sessionId) =>
     api.get(`/chat/history/${sessionId}`),

@@ -540,6 +540,43 @@ async def agent_simulate(
         from fastapi import HTTPException
         raise HTTPException(status_code=500, detail=f"agent_simulate_error: {e}")
 
+@router.post("/agent/partial-regenerate")
+async def agent_partial_regenerate(
+    payload: dict,
+    current_user = Depends(get_current_user_optional),
+):
+    """선택된 텍스트 부분을 AI로 재생성
+    요청: { full_text, selected_text, user_prompt, before_context, after_context }
+    응답: { regenerated_text: string }
+    """
+    try:
+        full_text = payload.get("full_text", "")
+        selected_text = payload.get("selected_text", "")
+        user_prompt = payload.get("user_prompt", "").strip()
+        before_context = payload.get("before_context", "")
+        after_context = payload.get("after_context", "")
+        
+        if not selected_text or not user_prompt:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=400, detail="selected_text and user_prompt are required")
+        
+        # AI 서비스 호출
+        regenerated_text = await ai_service.regenerate_partial_text(
+            selected_text=selected_text,
+            user_prompt=user_prompt,
+            before_context=before_context,
+            after_context=after_context
+        )
+        
+        return {"regenerated_text": regenerated_text}
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        logger.exception(f"/chat/agent/partial-regenerate failed: {e}")
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=f"partial_regenerate_error: {e}")
+
 @router.post("/agent/classify-intent")
 async def classify_intent(payload: dict):
     """유저 입력의 의도를 LLM으로 분류"""

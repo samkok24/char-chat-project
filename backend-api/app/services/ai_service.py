@@ -1471,3 +1471,59 @@ async def get_ai_chat_response(
         # ARGO 모델은 향후 커스텀 API 구현 예정, 현재는 Gemini로 대체
         return await get_gemini_completion(full_prompt, model='gemini-2.5-pro', max_tokens=max_tokens)
 
+
+async def regenerate_partial_text(
+    selected_text: str,
+    user_prompt: str,
+    before_context: str = "",
+    after_context: str = ""
+) -> str:
+    """선택된 텍스트 부분을 사용자 지시사항에 따라 재생성
+    
+    Args:
+        selected_text: 선택된 원본 텍스트
+        user_prompt: 사용자의 수정 지시사항 (예: "더 감성적으로", "짧게 요약해줘")
+        before_context: 선택 영역 이전 텍스트 (맥락)
+        after_context: 선택 영역 이후 텍스트 (맥락)
+    
+    Returns:
+        재생성된 텍스트
+    """
+    try:
+        # 프롬프트 구성
+        prompt = f"""다음은 소설/스토리의 일부입니다. 사용자가 선택한 부분을 지시사항에 따라 재작성해주세요.
+
+[이전 맥락]
+{before_context[-500:] if before_context else "(없음)"}
+
+[선택된 부분 - 이 부분을 재작성해야 합니다]
+{selected_text}
+
+[이후 맥락]
+{after_context[:500] if after_context else "(없음)"}
+
+[사용자 지시사항]
+{user_prompt}
+
+## 재작성 지침:
+1. 이전/이후 맥락과 자연스럽게 연결되어야 합니다
+2. 사용자 지시사항을 최대한 반영하되, 스토리의 흐름을 해치지 않아야 합니다
+3. 원본의 핵심 내용은 유지하되, 표현/스타일/길이 등을 조정합니다
+4. 추가 설명 없이 재작성된 텍스트만 출력하세요
+
+재작성된 텍스트:"""
+
+        # Claude API 호출
+        result = await get_claude_completion(
+            prompt,
+            temperature=0.7,
+            max_tokens=2000,
+            model=CLAUDE_MODEL_PRIMARY
+        )
+        
+        return result.strip()
+        
+    except Exception as e:
+        logger.error(f"Failed to regenerate partial text: {e}")
+        raise
+
