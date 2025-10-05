@@ -7,7 +7,7 @@ export default function Composer({ onSend, disabled = false, hasMessages = false
   const [showImageTray, setShowImageTray] = useState(false);
   const [showModePicker, setShowModePicker] = useState(false); // 모드/태그 선택 트레이
   const [showEmojiPicker, setShowEmojiPicker] = useState(false); // 이모지 트레이
-  const [showTextInput, setShowTextInput] = useState(false);
+  const [showTextInput, setShowTextInput] = useState(true); // ✅ false → true
   const [textInput, setTextInput] = useState(""); // 텍스트 상태 유지
   const [storyMode, setStoryMode] = useState("auto"); // 'snap' | 'genre' | 'auto'
   const textInputRef = useRef(null);

@@ -30,7 +30,8 @@ import { storiesAPI, charactersAPI, chatAPI, rankingAPI } from '../lib/api';
 // import { generationAPI } from '../lib/generationAPI'; // removed: use existing backend flow
 import { Switch } from '../components/ui/switch';
 import { DEFAULT_SQUARE_URI } from '../lib/placeholder';
-import { Loader2, Plus, Send, Sparkles, Image as ImageIcon, Trash2, ChevronLeft, ChevronRight, X, CornerDownLeft, Copy as CopyIcon, RotateCcw, Settings, Pencil, Check, RefreshCcw, Wand2 } from 'lucide-react';
+// ChevronDown import 추가 필요 (33번 줄 근처)
+import { Loader2, Plus, Send, Sparkles, Image as ImageIcon, Trash2, ChevronLeft, ChevronRight, ChevronDown, X, CornerDownLeft, Copy as CopyIcon, RotateCcw, Settings, Pencil, Check, RefreshCcw, Wand2 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import StoryExploreCard from '../components/StoryExploreCard';
 import { CharacterCard } from '../components/CharacterCard';
@@ -273,6 +274,13 @@ const activeSessionIdRef = useRef(activeSessionId);
 const sessionTypingTimersRef = useRef(new Map()); // sessionId -> [timer]
 useEffect(() => { activeSessionIdRef.current = activeSessionId; }, [activeSessionId]);
 const sessionLocalMessagesRef = useRef(new Map());
+// 🆕 전역 스크롤 억제 ref 노출
+React.useEffect(() => {
+  window.agentPageSuppressAutoScroll = suppressAutoScrollRef;
+  return () => {
+    delete window.agentPageSuppressAutoScroll;
+  };
+}, []);
 const messagesContainerRef = useCallback(node => {
     if (node !== null) {
         setScrollElement(node);
@@ -322,11 +330,15 @@ const rowVirtualizer = useVirtualizer({
   overscan: 8,
 });
 
+
 // 새 메시지 도착 시: 하단에 있을 때만 자동 따라가기
 useEffect(() => {
   try {
     if (!scrollElement) return;
     if (suppressAutoScrollRef.current) return;
+    // 🆕 recommendation 메시지는 스크롤 따라가기 안 함
+    const lastMsg = stableMessages[stableMessages.length - 1];
+    if (lastMsg && lastMsg.type === 'recommendation') return;
     if (isFollowingRef.current) scrollToBottomRaf();
   } catch {}
 }, [stableMessages, scrollElement, scrollToBottomRaf]);
@@ -516,6 +528,8 @@ const [isDraggingModal, setIsDraggingModal] = useState(false);
 const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
 const savedSelectionRef = useRef(null); // 선택 영역 저장
 const [regeneratedRange, setRegeneratedRange] = useState(null); // { messageId, start, end } - 재생성된 영역 표시용
+const [aiRecommendedTags, setAiRecommendedTags] = useState({}); // { messageId: [tags] } ← 이 줄 추가
+
 // Remix 선택 상태: messageId -> string[]
 const [remixSelected, setRemixSelected] = useState({});
 // 생성 중 경과 시간 표시용
@@ -524,7 +538,23 @@ const [elapsedSeconds, setElapsedSeconds] = useState(0);
 const [tagViewMode, setTagViewMode] = useState('auto'); // 'auto' | 'snap' | 'genre'
 // 스냅 태그: 상단 4, 하단 3만 노출(순서 중요)
 const SNAP_REMIX_TAGS = ['위트있게','빵터지게','밈스럽게','따뜻하게','힐링이되게','잔잔하게','여운있게','진지하게','차갑게','글더길게','글더짧게','3인칭시점'];
-const GENRE_REMIX_TAGS = ['남성향판타지','로맨스','로코','성장물','미스터리','추리','스릴러','호러','느와르','글더길게','글더짧게','1인칭시점','3인칭시점'];
+// const GENRE_REMIX_TAGS = ['남성향판타지','로맨스','로코','성장물','미스터리','추리','스릴러','호러','느와르','글더길게','글더짧게','1인칭시점','3인칭시점'];
+// 추가
+// 장르 태그: AI 추천 (1줄, 5개)
+const AI_GENRE_TAGS = [
+  '상사에게복수',
+  '소개팅남이재벌',
+  '동기가재벌2세',
+  '옆에좀비발생',
+  '갑자기능력자각성'
+];
+
+
+const POPULAR_GENRE_TAGS = [
+  '후회안하게회귀',
+  '인생뺏으러빙의',
+  '이번생글렀으니환생'
+];
 
 const toggleRemixTag = useCallback((msgId, tag) => {
   setRemixSelected(prev => {
@@ -594,7 +624,7 @@ const handleSelectMode = useCallback((messageId, selectedMode) => {
     const withExtras = [
       ...updated,
       { id: placeholderId, type: 'story_highlights_loading', createdAt: nowIso() },
-      { id: crypto.randomUUID(), role: 'assistant', type: 'recommendation', createdAt: nowIso() }
+      { id: crypto.randomUUID(), role: 'assistant', type: 'recommendation', storyMode: selectedMode, createdAt: nowIso() }
     ];
     
     saveJson(LS_MESSAGES_PREFIX + currentSessionId, withExtras);
@@ -2283,12 +2313,17 @@ return (
                               ) : m.type === 'dual_response' ? (
                                 <DualResponseBubble message={m} onSelect={(mode) => handleSelectMode(m.id, mode)} />
                               ) : m.type === 'story_highlights' ? (
-                                <StoryHighlights highlights={m.scenes || []} />
+                                <StoryHighlights highlights={m.scenes || []} username={user?.username || '게스트'} />
                               ) : m.type === 'story_highlights_loading' ? (
-                                <StoryHighlights loading />
+                                <StoryHighlights loading username={user?.username || '게스트'} />
                               ) : m.type === 'recommendation' ? (
-                                // 탐색 격자에서 상위 조회수 2개를 가져와 카드로 표시
-                                <ExploreRecommendations />
+                                <div data-section="recommendations">
+                                  {m.storyMode === 'snap' ? (
+                                    <CharacterRecommendations />
+                                  ) : (
+                                    <ExploreRecommendations />
+                                  )}
+                                </div>
                               ) : m.type === 'story_preview' ? (
                                 <div className="w-full max-w-3xl bg-[#0d1117]/60 border border-gray-700 rounded-lg">
                                     <div className="px-4 py-2 border-b border-gray-700 text-xs text-gray-300 flex items-center justify-between">
@@ -2457,22 +2492,6 @@ return (
                                       {m.role === 'assistant' && !m.error && (
                                         <div className="absolute right-0 -bottom-px translate-y-full flex items-center gap-1 z-20">
                                           <div className="flex items-center gap-1 px-2 py-1 bg-gray-900/85 border border-gray-700 shadow-lg">
-                                          <button
-                                            type="button"
-                                               className="p-1 hover:bg-gray-800 text-gray-300 hover:text-white"
-                                            title="복사"
-                                               onClick={() => { try { navigator.clipboard.writeText(m.fullContent || text); window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'success', message: '복사됨' } })); } catch {} }}
-                                          >
-                                               <CopyIcon className="w-4 h-4" />
-                                          </button>
-                                          <button
-                                            type="button"
-                                               className="p-1 hover:bg-gray-800 text-gray-300 hover:text-white"
-                                            title="다시 생성"
-                                               onClick={() => { try { handleRerun(m); } catch {} }}
-                                          >
-                                               <RotateCcw className="w-4 h-4" />
-                                          </button>
                                              {editingMessageId === m.id ? (
                                                <>
                                                  <button
@@ -2522,6 +2541,22 @@ return (
                                                 </div>
                                               </div>
                                              )}
+                                          <button
+                                            type="button"
+                                               className="p-1 hover:bg-gray-800 text-gray-300 hover:text-white"
+                                            title="복사"
+                                               onClick={() => { try { navigator.clipboard.writeText(m.fullContent || text); window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'success', message: '복사됨' } })); } catch {} }}
+                                          >
+                                               <CopyIcon className="w-4 h-4" />
+                                          </button>
+                                          <button
+                                            type="button"
+                                               className="p-1 hover:bg-gray-800 text-gray-300 hover:text-white"
+                                            title="다시 생성"
+                                               onClick={() => { try { handleRerun(m); } catch {} }}
+                                          >
+                                               <RotateCcw className="w-4 h-4" />
+                                          </button>
                                            </div>
                 </div>
               )}
@@ -2565,13 +2600,59 @@ return (
                                       </button>
                                     </div>
                                   )}
-                                  {/* 태그 그룹: 4개 / 3개 두 줄 구성, 가운데 정렬 */}
+                                  {/* 태그 그룹: 장르=AI추천+인기, 스냅=기존 */}
                                   {(() => {
                                     const effectiveMode = tagViewMode === 'auto' ? ((m.storyMode || 'auto') === 'genre' ? 'genre' : 'snap') : tagViewMode;
-                                    const all = (effectiveMode === 'genre' ? GENRE_REMIX_TAGS : SNAP_REMIX_TAGS);
-                                    // 요청: '밈스럽게'는 '따뜻하게' 좌측에 노출되도록 재정렬 (스냅)
-                                    let ordered = all;
-                                    if ((m.storyMode || 'auto') !== 'genre') {
+                                    
+                                    // 계속보기 인라인 진행 중 또는 완료된 후에는 태그 숨김
+                                    if (isStreaming || m.continued) return null;
+                                    
+                                    const Chip = (tag, isAI = false, isPopular = false) => {
+                                      const selected = (remixSelected[m.id] || []).includes(tag);
+                                      return (
+                                        <button 
+                                          key={tag} 
+                                          type="button" 
+                                          onClick={() => toggleRemixTag(m.id, tag)}
+                                          className={`px-3.5 py-1.5 rounded-full text-sm transition-all backdrop-blur-sm ${
+                                            selected 
+                                              ? 'bg-purple-600/15 text-purple-200 ring-2 ring-purple-400/70 shadow-[0_0_12px_rgba(168,85,247,0.55)]' 
+                                              : isAI
+                                                ? 'bg-purple-900/30 text-purple-300 ring-1 ring-purple-500/40 shadow-[0_0_10px_rgba(168,85,247,0.3)] hover:bg-purple-800/40'
+                                                : isPopular
+                                                  ? 'bg-orange-900/30 text-orange-300 ring-1 ring-orange-500/40 shadow-[0_0_10px_rgba(251,146,60,0.3)] hover:bg-orange-800/40'
+                                                  : 'bg-gray-900/40 text-gray-200 ring-1 ring-purple-500/35 shadow-[0_0_10px_rgba(168,85,247,0.25)] hover:bg-gray-800/60'
+                                          }`}
+                                        >
+                                          #{tag}
+                                        </button>
+                                      );
+                                    };
+                                    
+                                    if (effectiveMode === 'genre') {
+                                      // 장르 모드: AI 추천 5개 + 인기 3개
+                                      return (
+                                        <div className="flex flex-col items-center gap-3">
+                                          {/* 1줄: AI 추천 */}
+                                          <div className="flex flex-col items-center gap-1.5">
+                                            <div className="text-xs text-purple-300 font-medium">💡 추천</div>
+                                            <div className="flex flex-wrap items-center justify-center gap-2">
+                                              {AI_GENRE_TAGS.map(tag => Chip(tag, true, false))}
+                                            </div>
+                                          </div>
+                                          
+                                          {/* 2줄: 인기 */}
+                                          <div className="flex flex-col items-center gap-1.5">
+                                            <div className="text-xs text-orange-300 font-medium">🔥 인기</div>
+                                            <div className="flex flex-wrap items-center justify-center gap-2">
+                                              {POPULAR_GENRE_TAGS.map(tag => Chip(tag, false, true))}
+                                            </div>
+                                          </div>
+                                        </div>
+                                      );
+                                    } else {
+                                      // 스냅 모드: 기존 로직 유지
+                                      let ordered = SNAP_REMIX_TAGS;
                                       const idxWarm = ordered.indexOf('따뜻하게');
                                       const idxMeme = ordered.indexOf('밈스럽게');
                                       if (idxWarm > -1 && idxMeme > -1 && idxMeme > idxWarm) {
@@ -2580,40 +2661,22 @@ return (
                                         arr.splice(idxWarm, 0, tag);
                                         ordered = arr;
                                       }
-                                    }
-                                    // 총 10개 노출(상단 5, 하단 5) + 필수 태그 3종 보장
-                                    const ensure = ['글더길게','글더짧게','1인칭시점','3인칭시점'];
-                                    const visible = [];
-                                    for (const p of ensure) {
-                                      if (ordered.includes(p) && !visible.includes(p)) visible.push(p);
-                                    }
-                                    for (const t of ordered) {
-                                      if (visible.length >= 10) break;
-                                      if (!visible.includes(t)) visible.push(t);
-                                    }
-                                    const top = visible.slice(0, 5);
-                                    const bottom = visible.slice(5, 10);
-                                    const Chip = (tag) => {
-                                      const selected = (remixSelected[m.id] || []).includes(tag);
+                                      
+                                      const top = ordered.slice(0, 4);
+                                      const bottom = ordered.slice(4, 7);
+                                      
                                       return (
-                                        <button key={tag} type="button" onClick={() => toggleRemixTag(m.id, tag)}
-                                          className={`px-3.5 py-1.5 rounded-full text-sm transition-all backdrop-blur-sm ${selected 
-                                            ? 'bg-purple-600/15 text-purple-200 ring-2 ring-purple-400/70 shadow-[0_0_12px_rgba(168,85,247,0.55)]' 
-                                            : 'bg-gray-900/40 text-gray-200 ring-1 ring-purple-500/35 shadow-[0_0_10px_rgba(168,85,247,0.25)] hover:bg-gray-800/60'}`}
-                                        >
-                                          #{tag}
-                                        </button>
+                                        <div className="flex flex-col items-center gap-2">
+                                          <div className="flex flex-wrap items-center justify-center gap-2">
+                                            {top.map(tag => Chip(tag))}
+                                          </div>
+                                          <div className="flex flex-wrap items-center justify-center gap-2">
+                                            {bottom.map(tag => Chip(tag))}
+                                          </div>
+                                        </div>
                                       );
-                                    };
-                                    // 계속보기 인라인 진행 중 또는 완료된 후에는 태그 숨김
-                                    if (isStreaming || m.continued) return null;
-                                    return (
-                                      <div className="flex flex-col items-center gap-2">
-                                        <div className="flex flex-wrap items-center justify-center gap-2">{top.map(Chip)}</div>
-                                        <div className="flex flex-wrap items-center justify-center gap-2">{bottom.map(Chip)}</div>
-                                      </div>
-                                    );
-                                  })()}
+                                    }
+                                  })()}     
                                   {/* 액션 버튼: 태그 선택 여부에 따라 라벨 변경 */}
                                   <div className="mt-1 flex justify-center">
                                     {((remixSelected[m.id] || []).length > 0) && !(isStreaming || m.continued) ? (
@@ -3354,23 +3417,74 @@ export default AgentPage;
 function ExploreRecommendations() {
   const [stories, setStories] = React.useState([]);
   const [characters, setCharacters] = React.useState([]);
+  // const [selectedStoryId, setSelectedStoryId] = React.useState(null);
+  
+  // 작품별 상태 저장: { storyId: { visibleEpisodes: [...], expandedEpisodes: Set([...]) } }
+    // localStorage에서 복원
+  const [selectedStoryId, setSelectedStoryId] = React.useState(() => {
+    try {
+      return localStorage.getItem('agent:explore:selectedStoryId') || null;
+    } catch {
+      return null;
+    }
+  });
+  
+  // 작품별 상태 저장: { storyId: { visibleEpisodes: [...], expandedEpisodes: Set([...]) } }
+  const [storyStates, setStoryStates] = React.useState(() => {
+    try {
+      const saved = localStorage.getItem('agent:explore:storyStates');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        // Set을 복원
+        Object.keys(parsed).forEach(key => {
+          if (parsed[key].expandedEpisodes && Array.isArray(parsed[key].expandedEpisodes)) {
+            parsed[key].expandedEpisodes = new Set(parsed[key].expandedEpisodes);
+          }
+        });
+        return parsed;
+      }
+    } catch {}
+    return {};
+  });
+  
+  // selectedStoryId 변경 시 저장
+  React.useEffect(() => {
+    try {
+      if (selectedStoryId) {
+        localStorage.setItem('agent:explore:selectedStoryId', selectedStoryId);
+      } else {
+        localStorage.removeItem('agent:explore:selectedStoryId');
+      }
+    } catch {}
+  }, [selectedStoryId]);
+  
+  // storyStates 변경 시 저장
+  React.useEffect(() => {
+    try {
+      const toSave = {};
+      Object.keys(storyStates).forEach(key => {
+        toSave[key] = {
+          visibleEpisodes: storyStates[key].visibleEpisodes || [],
+          expandedEpisodes: Array.from(storyStates[key].expandedEpisodes || [])
+        };
+      });
+      localStorage.setItem('agent:explore:storyStates', JSON.stringify(toSave));
+    } catch {}
+  }, [storyStates]);
+
   
   React.useEffect(() => {
     let alive = true;
     (async () => {
       try {
         const [sRes, cRes] = await Promise.all([
-          // 웹소설 TOP10 (랭킹 API 사용)
           rankingAPI.getDaily({ kind: 'story' }),
-          // 인기 캐릭터
           charactersAPI.getCharacters({ sort: 'views', limit: 24 })
         ]);
         
-        // 웹소설: 랭킹 API에서 상위 2개
         const storyItems = Array.isArray(sRes.data?.items) ? sRes.data.items : [];
         const topStories = storyItems.slice(0, 2);
         
-        // 캐릭터: 상위 1개
         const cList = cRes.data || [];
         const topChars = cList.slice(0, 1);
         
@@ -3386,23 +3500,70 @@ function ExploreRecommendations() {
 
   if (!stories.length && !characters.length) return null;
 
+  const selectedStory = stories.find(s => s.id === selectedStoryId);
+  const currentState = storyStates[selectedStoryId] || { visibleEpisodes: [], expandedEpisodes: new Set() };
+
   return (
     <div className="w-full max-w-2xl">
       <div className="mb-3 text-sm text-gray-400">신비한 천사님, 더 완성도 높은 콘텐츠가 있어요.</div>
-      <div className="grid grid-cols-3 gap-2">
-        {/* 웹소설 TOP 2개 먼저 */}
+      
+      {/* 카드 그리드 - 항상 표시 */}
+      <div className="grid grid-cols-3 gap-2 mb-6">
         {stories.map((story, idx) => (
-          <div key={`rec-s-${story.id || idx}`}>
-            <StoryExploreCard story={story} compact />
+          <div 
+            key={`rec-s-${story.id || idx}`}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setSelectedStoryId(story.id);
+            }}
+            className="cursor-pointer"
+          >
+            <div className={`transition-all ${
+              selectedStoryId === story.id 
+                ? 'ring-2 ring-purple-500 rounded-lg shadow-[0_0_16px_rgba(168,85,247,0.5)]' 
+                : ''
+            }`}>
+              <StoryExploreCard story={story} compact onClick={(e) => e.preventDefault()} />
+            </div>
           </div>
         ))}
-        {/* 캐릭터 1개 마지막 */}
         {characters[0] && (
           <div key={`rec-c-${characters[0].id}`} className="transform scale-[0.9] origin-top-left">
             <CharacterCard character={characters[0]} />
           </div>
         )}
       </div>
+      
+      {/* 선택된 작품의 회차 표시 */}
+      {/* 선택된 작품의 회차 표시 */}
+      {selectedStory && (
+        <EpisodeViewerInline 
+          key={selectedStory.id}
+          storyId={selectedStory.id} 
+          storyTitle={selectedStory.title}
+          visibleEpisodes={currentState.visibleEpisodes || []}
+          expandedEpisodes={currentState.expandedEpisodes || new Set()}
+          onVisibleChange={(newVisible) => {
+            setStoryStates(prev => ({
+              ...prev,
+              [selectedStory.id]: {
+                visibleEpisodes: newVisible,
+                expandedEpisodes: prev[selectedStory.id]?.expandedEpisodes || new Set()
+              }
+            }));
+          }}
+          onExpandedChange={(newExpanded) => {
+            setStoryStates(prev => ({
+              ...prev,
+              [selectedStory.id]: {
+                visibleEpisodes: prev[selectedStory.id]?.visibleEpisodes || [],
+                expandedEpisodes: newExpanded
+              }
+            }));
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -3426,4 +3587,258 @@ function formatW5AsUserMessage(w5, prompt) {
   }
 }
 
+// AgentPage.jsx 끝에 추가할 컴포넌트
 
+// 에피소드 뷰어 (인라인, 상태 외부 관리)
+// 에피소드 뷰어 (인라인, 상태 외부 관리)
+function EpisodeViewerInline({ storyId, storyTitle, visibleEpisodes, expandedEpisodes, onVisibleChange, onExpandedChange }) {
+  const [allEpisodes, setAllEpisodes] = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+  const [scrolledToBottom, setScrolledToBottom] = React.useState({}); // episodeId -> boolean
+
+  React.useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const response = await storiesAPI.getEpisodes(storyId);
+        if (!alive) return;
+        
+        const eps = response.data || [];
+        setAllEpisodes(eps);
+        
+        // 1화만 먼저 표시 (최초 선택 시)
+        if (eps[0] && visibleEpisodes.length === 0) {
+          onVisibleChange([eps[0]]);
+        }
+        
+        setLoading(false);
+      } catch (err) {
+        console.error('Failed to fetch episodes:', err);
+        setLoading(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, [storyId]);
+
+  const handleExpand = (episodeId) => {
+    const newSet = new Set(expandedEpisodes);
+    newSet.add(episodeId);
+    onExpandedChange(newSet);
+  };
+
+  const handleLoadNext = () => {
+    const currentLastEp = visibleEpisodes[visibleEpisodes.length - 1];
+    const currentIndex = allEpisodes.findIndex(ep => ep.id === currentLastEp.id);
+    
+    if (currentIndex !== -1 && currentIndex < allEpisodes.length - 1) {
+      const nextEp = allEpisodes[currentIndex + 1];
+      onVisibleChange([...visibleEpisodes, nextEp]);
+    }
+  };
+
+  const handleScrollToRecommendations = () => {
+    const recommendSection = document.querySelector('[data-section="recommendations"]');
+    if (recommendSection) {
+      recommendSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  };
+
+  const handleContentScroll = (episodeId, e) => {
+    const el = e.target;
+    const atBottom = (el.scrollHeight - el.scrollTop - el.clientHeight) < 10;
+    setScrolledToBottom(prev => ({
+      ...prev,
+      [episodeId]: atBottom
+    }));
+  };
+
+  if (loading) {
+    return (
+      <div className="w-full max-w-2xl">
+        <div className="p-6 bg-gray-900/30 border border-gray-800/50 rounded-lg animate-pulse">
+          <div className="h-4 bg-gray-800 rounded w-1/4 mb-3"></div>
+          <div className="space-y-2">
+            <div className="h-3 bg-gray-800 rounded"></div>
+            <div className="h-3 bg-gray-800 rounded w-5/6"></div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!allEpisodes.length) {
+    return (
+      <div className="w-full max-w-2xl p-6 bg-gray-900/30 border border-gray-800/50 rounded-lg text-center text-gray-400">
+        에피소드가 없습니다.
+      </div>
+    );
+  }
+
+  const hasMoreEpisodes = visibleEpisodes.length < allEpisodes.length;
+
+  return (
+    <div className="w-full max-w-2xl mt-4">
+      {/* 회차 목록 */}
+      <div className="space-y-6">
+        {visibleEpisodes.map((ep, idx) => {
+          const isExpanded = expandedEpisodes.has(ep.id);
+          const preview = ep.content.slice(0, 300);
+          const needsExpand = ep.content.length > 300;
+          const isLastVisible = idx === visibleEpisodes.length - 1;
+          const hasScrolledToBottom = scrolledToBottom[ep.id] || false;
+          
+          return (
+            <div key={ep.id} className="relative">
+              {/* 회차 헤더 */}
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-semibold text-purple-400">
+                    {storyTitle} {ep.no}화
+                  </span>
+                  {ep.title && (
+                    <span className="text-sm text-gray-300">· {ep.title}</span>
+                  )}
+                </div>
+              </div>
+              
+              {/* 본문 - 보라색 글로우 */}
+              <div className="px-4 py-4 bg-gray-900/30 border-2 border-purple-500/60 shadow-[0_0_16px_rgba(168,85,247,0.4)] rounded-lg">
+                <div 
+                  onScroll={(e) => handleContentScroll(ep.id, e)}
+                  className={`text-gray-200 whitespace-pre-wrap leading-relaxed text-[15px] ${
+                    !isExpanded && needsExpand 
+                      ? 'max-h-[400px] overflow-y-auto' 
+                      : ''
+                  }`}
+                  style={!isExpanded && needsExpand ? {
+                    scrollbarWidth: 'thin',
+                    scrollbarColor: 'rgba(168, 85, 247, 0.4) transparent',
+                    paddingRight: '8px'
+                  } : {}}
+                >
+                  {isExpanded ? ep.content : ep.content}
+                </div>
+                
+                {/* 더보기 버튼 (확장 안 됐고, 스크롤 끝 안 갔을 때만) */}
+                {!isExpanded && needsExpand && !hasScrolledToBottom && (
+                  <div className="mt-4 pt-4 border-t border-gray-800/50">
+                    <button
+                      onClick={() => handleExpand(ep.id)}
+                      className="w-full py-2 text-purple-400 hover:text-purple-300 text-sm font-medium transition-colors flex items-center justify-center gap-1"
+                    >
+                      <span>더보기</span>
+                      <ChevronDown className="w-4 h-4" />
+                    </button>
+                  </div>
+                )}
+              </div>
+              
+              {/* 액션 버튼 - 확장됐거나 스크롤 끝 도착 */}
+              {(isExpanded || hasScrolledToBottom) && isLastVisible && (
+                <div className="mt-4 flex justify-center gap-3">
+                  <button
+                    onClick={handleScrollToRecommendations}
+                    className="px-6 py-2 bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-full text-sm font-medium transition-colors"
+                  >
+                    추천 목록으로
+                  </button>
+                  {hasMoreEpisodes && (
+                    <button
+                      onClick={handleLoadNext}
+                      className="px-6 py-2 bg-gradient-to-r from-purple-600 to-fuchsia-600 hover:brightness-110 text-white rounded-full text-sm font-medium transition-all flex items-center gap-2"
+                    >
+                      <span>다음화 보기</span>
+                      <ChevronDown className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+              )}
+              
+              {/* 구분선 */}
+              {!isLastVisible && (
+                <div className="mt-6 border-t border-gray-800/30" />
+              )}
+            </div>
+          );
+        })}
+      </div>
+      
+      {/* 마지막 화 */}
+      {!hasMoreEpisodes && visibleEpisodes.length > 0 && (expandedEpisodes.has(visibleEpisodes[visibleEpisodes.length - 1]?.id) || scrolledToBottom[visibleEpisodes[visibleEpisodes.length - 1]?.id]) && (
+        <div className="mt-8 text-center">
+          <div className="text-sm text-gray-500 mb-4">— 마지막 화입니다 —</div>
+          <button
+            onClick={handleScrollToRecommendations}
+            className="px-6 py-2 bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-full text-sm font-medium transition-colors"
+          >
+            추천 목록으로
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+// 일상(snap) 전용 캐릭터 추천 (하드코딩)
+function CharacterRecommendations() {
+  const hardcodedChars = [
+    { 
+      id: 'gigachad', 
+      name: '기가채드',
+      emoji: '💪',
+      specialty: '시그마 마인드셋'
+    },
+    { 
+      id: 'madongseok', 
+      name: '마동석',
+      emoji: '🦾',
+      specialty: '든든한 형님'
+    },
+    { 
+      id: 'jjanggu', 
+      name: '짱구',
+      emoji: '🤪',
+      specialty: '엉뚱한 유머'
+    },
+    { 
+      id: 'infp', 
+      name: '극INFP친구',
+      emoji: '🥺',
+      specialty: '공감 폭발'
+    },
+    { 
+      id: 'pt', 
+      name: '광기의PT선생님',
+      emoji: '🔥',
+      specialty: '열정 과다'
+    }
+  ];
+
+  const handleCharacterClick = (char) => {
+    console.log('🎭 Character selected:', char);
+    // TODO: 캐릭터챗 시작 로직
+  };
+
+  return (
+    <div className="w-full max-w-2xl">
+      <div className="mb-4 text-sm text-gray-400">💬 이 이야기를 같이 나눌 친구</div>
+      <div className="flex justify-center gap-6">
+        {hardcodedChars.map(char => (
+          <div 
+            key={char.id}
+            onClick={() => handleCharacterClick(char)}
+            className="flex flex-col items-center gap-2 cursor-pointer group"
+          >
+            <div className="w-20 h-20 rounded-full overflow-hidden ring-2 ring-gray-700 group-hover:ring-purple-500 group-hover:shadow-[0_0_16px_rgba(168,85,247,0.5)] transition-all bg-gray-800 flex items-center justify-center">
+              <span className="text-4xl">{char.emoji}</span>
+            </div>
+            <span className="text-sm text-gray-300 group-hover:text-purple-300 transition-colors font-medium text-center">
+              {char.name}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}

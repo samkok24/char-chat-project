@@ -1,0 +1,11 @@
+// 518번 줄 다음에 추가
+const [aiRecommendedTags, setAiRecommendedTags] = useState({}); // { messageId: [tags] }
+
+// 527번 줄 교체 (GENRE_REMIX_TAGS 삭제하고 새로 추가)
+// 인기 장르 태그 (고정 3개)
+const POPULAR_GENRE_TAGS = [
+  '후회안하게회귀',
+  '인생뺏으러빙의',
+  '이번생글렀으니환생'
+];
+

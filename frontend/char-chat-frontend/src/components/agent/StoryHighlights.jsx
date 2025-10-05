@@ -1,7 +1,7 @@
 import React from 'react';
 import { Download, X, Share2, Loader2, Link, Instagram, Twitter } from 'lucide-react';
 
-export default function StoryHighlights({ highlights = [], loading = false }) {
+export default function StoryHighlights({ highlights = [], loading = false, username = '게스트' }) {
   const [currentIndex, setCurrentIndex] = React.useState(0);
   const [showModal, setShowModal] = React.useState(false);
   const [modalIndex, setModalIndex] = React.useState(0);
@@ -18,7 +18,9 @@ export default function StoryHighlights({ highlights = [], loading = false }) {
       <div className="w-full my-4">
         <div className="mb-2 flex items-center gap-2">
           <span className="inline-block w-1.5 h-1.5 bg-purple-400 rounded-full shadow-[0_0_8px_rgba(168,85,247,0.8)]"></span>
-          <span className="text-base font-semibold text-gray-100 tracking-tight">하이라이트</span>
+          <span className="text-base font-semibold text-gray-100 tracking-tight">
+            다른 사람들에게 <span className="text-purple-300">{username}</span>님만의 스토리를 공유할 수 있어요.
+          </span>
         </div>
         <div className="mb-3 flex items-center gap-2 text-sm text-purple-200">
           <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-purple-500/10 ring-2 ring-purple-500/40 shadow-[0_0_12px_rgba(168,85,247,0.6)]">
@@ -194,7 +196,9 @@ export default function StoryHighlights({ highlights = [], loading = false }) {
       {/* 제목 */}
       <div className="mb-2 flex items-center gap-2">
         <span className="inline-block w-1.5 h-1.5 bg-purple-400 rounded-full shadow-[0_0_8px_rgba(168,85,247,0.8)]"></span>
-        <span className="text-base font-semibold text-gray-100 tracking-tight">하이라이트</span>
+        <span className="text-base font-semibold text-gray-100 tracking-tight">
+          다른 사람들에게 <span className="text-purple-300">{username}</span>님만의 스토리를 공유할 수 있어요.
+        </span>
       </div>
       
       {/* 이미지 캐러셀 */}

@@ -1222,3 +1222,76 @@ async def delete_story_comment_endpoint(
     
     await delete_story_comment(db, comment_id)
 
+
+
+
+@router.get("/{story_id}/episodes")
+async def get_story_episodes(
+    story_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """스토리의 에피소드 목록 조회"""
+    from app.models.episode import Episode
+    from sqlalchemy import select
+    
+    try:
+        result = await db.execute(
+            select(Episode)
+            .where(Episode.story_id == story_id)
+            .order_by(Episode.episode_number.asc())
+        )
+        episodes = result.scalars().all()
+        
+        return [
+            {
+                "id": str(ep.id),
+                "episode_number": ep.episode_number,
+                "title": ep.title,
+                "content": ep.content,
+                "view_count": ep.view_count or 0,
+                "created_at": ep.created_at.isoformat() if ep.created_at else None
+            }
+            for ep in episodes
+        ]
+    except Exception as e:
+        import logging
+        logging.error(f"Get episodes error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
+
+
+
+@router.post("/episodes/{episode_id}/view")
+async def increment_episode_view(
+    episode_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """에피소드 조회수 증가"""
+    from app.models.episode import Episode
+    from sqlalchemy import select
+    
+    try:
+        result = await db.execute(
+            select(Episode).where(Episode.id == episode_id)
+        )
+        episode = result.scalar_one_or_none()
+        
+        if not episode:
+            return {"success": False, "message": "Episode not found"}
+        
+        # 조회수 증가
+        episode.view_count = (episode.view_count or 0) + 1
+        await db.commit()
+        await db.refresh(episode)
+        
+        return {
+            "success": True,
+            "view_count": episode.view_count
+        }
+    except Exception as e:
+        await db.rollback()
+        import logging
+        logging.error(f"Episode view count error: {e}")
+        return {"success": False, "message": str(e)}

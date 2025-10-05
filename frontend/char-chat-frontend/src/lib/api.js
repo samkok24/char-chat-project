@@ -523,6 +523,12 @@ export const storiesAPI = {
   
   deleteComment: (commentId) =>
     api.delete(`/stories/comments/${commentId}`),
+  
+  getEpisodes: (storyId) =>
+    api.get(`/chapters/by-story/${storyId}`),
+    
+  incrementEpisodeView: (chapterId) =>
+    api.post(`/chapters/${chapterId}/view`),
 };
 
 // 🏆 랭킹 API
