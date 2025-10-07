@@ -11,7 +11,7 @@ import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { usersAPI, chatAPI } from '../lib/api';
 
-const ChatInteraction = ({ onStartChat, characterId, isAuthenticated }) => {
+const ChatInteraction = ({ onStartChat, characterId, isAuthenticated, isWebNovel = false }) => {
   const navigate = useNavigate();
 
   const { data: recent = [] } = useQuery({
@@ -26,24 +26,51 @@ const ChatInteraction = ({ onStartChat, characterId, isAuthenticated }) => {
     staleTime: 0,
     refetchOnMount: 'always'
   });
-
-  const recentMatch = Array.isArray(recent) ? recent.find(c => String(c.id) === String(characterId)) : null;
+  // 해당 캐릭터의 채팅방들을 시간순으로 다시 정렬해서 가장 최근 것 선택
+  const characterRooms = Array.isArray(recent) ? recent.filter(c => String(c.id) === String(characterId)) : [];
+  const recentMatch = characterRooms.length > 0
+  ? characterRooms.sort((a, b) => {
+      const at = new Date(a.last_chat_time || a.last_message_time || a.updated_at || a.created_at || 0).getTime();
+      const bt = new Date(b.last_chat_time || b.last_message_time || b.updated_at || b.created_at || 0).getTime();
+      return bt - at;
+    })[0]
+  : null;
+    // const recentMatch = Array.isArray(recent) ? recent.find(c => String(c.id) === String(characterId)) : null;
   const hasHistory = !!recentMatch;
 
-  const handleContinue = () => {
+  const handleContinue = async () => {
     if (!isAuthenticated) { navigate('/login'); return; }
-    const roomId = recentMatch?.chat_room_id;
-    if (roomId) {
-      navigate(`/ws/chat/${characterId}?room=${roomId}`);
-    } else {
+    try {
+      const sessionsRes = await chatAPI.getChatSessions();
+      const sessions = Array.isArray(sessionsRes.data) ? sessionsRes.data : [];
+      const characterSessions = sessions.filter(s => String(s.character_id) === String(characterId));
+      const latest = characterSessions.sort((a, b) => {
+        const at = new Date(a.last_message_time || a.last_chat_time || a.updated_at || a.created_at || 0).getTime();
+        const bt = new Date(b.last_message_time || b.last_chat_time || b.updated_at || b.created_at || 0).getTime();
+        return bt - at;
+      })[0];
+      if (latest?.id) {
+        navigate(`/ws/chat/${characterId}?room=${latest.id}`);
+      } else {
+        navigate(`/ws/chat/${characterId}`);
+      }
+    } catch (e) {
+      console.error('continue failed, fallback', e);
       navigate(`/ws/chat/${characterId}`);
     }
   };
 
-  const handleNew = () => {
+  const handleNew = async () => {
     if (!isAuthenticated) { navigate('/login'); return; }
-    // 새 채팅방은 ChatPage에서 생성하도록 위임
-    navigate(`/ws/chat/${characterId}?new=1`);
+    try {
+      // 무조건 새 방 생성 API 사용
+      const roomResponse = await chatAPI.startNewChat(characterId);
+      const newRoomId = roomResponse.data.id;
+      navigate(`/ws/chat/${characterId}?room=${newRoomId}`);
+    } catch (err) {
+      console.error('Failed to create new chat:', err);
+      navigate(`/ws/chat/${characterId}?new=1`);
+    }
   };
 
   return (
@@ -73,7 +100,7 @@ const ChatInteraction = ({ onStartChat, characterId, isAuthenticated }) => {
           onClick={onStartChat}
           className="w-full bg-red-600 hover:bg-red-700 text-white font-bold text-lg py-6"
         >
-          등장인물과 원작챗 시작
+          {isWebNovel ? '등장인물과 원작챗 시작' : '대화 시작'}
         </Button>
       )}
     </div>

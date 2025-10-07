@@ -3,12 +3,14 @@
  */
 
 import React, { useState, useEffect, useRef } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import {useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { usersAPI, filesAPI } from '../lib/api'; 
 import AppLayout from '../components/layout/AppLayout';
 import ErrorBoundary from '../components/ErrorBoundary';
 import AvatarCropModal from '../components/AvatarCropModal';
+import ImageGenerateInsertModal from '../components/ImageGenerateInsertModal';
 import ProfileEditModal from '../components/ProfileEditModal';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -53,7 +55,8 @@ const ProfilePage = () => {
   
   // [추가] URL 파라미터와 현재 로그인 유저 정보를 가져옵니다.
   const { userId: paramUserId } = useParams();
-  const { user: currentUser, isAuthenticated, loading: authLoading } = useAuth();
+  const { user: currentUser, isAuthenticated, loading: authLoading, checkAuth, refreshProfileVersion } = useAuth();
+  const queryClient = useQueryClient();
   const navigate = useNavigate();
 
   // 표시할 프로필의 최종 userId는 이펙트에서 계산 (auth 로딩 완료 후)
@@ -67,6 +70,7 @@ const ProfilePage = () => {
   const fileInputRef = useRef(null);
   const [cropSrc, setCropSrc] = useState('');
   const [isCropOpen, setIsCropOpen] = useState(false);
+  const [imgModalOpen, setImgModalOpen] = useState(false);
 
   // 대시보드 통계 상태 (항상 훅은 컴포넌트 최상단에서 선언)
   const [overview, setOverview] = useState(null);
@@ -197,7 +201,8 @@ const ProfilePage = () => {
   };
 
   const handleClickUploadAvatar = () => {
-    try { fileInputRef.current?.click(); } catch (_) {}
+    // 이미지 생성/삽입 모달을 우선 띄우고, 선택/확인 시 대표 아바타로 반영
+    setImgModalOpen(true);
   };
 
   const validateExt = (file) => {
@@ -275,20 +280,40 @@ const ProfilePage = () => {
                 onClick={handleClickUploadAvatar}
                 disabled={avatarUploading}
                 className="absolute -bottom-2 -right-2 bg-purple-600 hover:bg-purple-700 text-white rounded-full p-1"
-                title="프로필 이미지 업로드"
+                title="프로필 이미지 업로드/생성"
               >
                 <Upload className="w-4 h-4" />
               </button>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*"
-                onChange={handleChangeAvatar}
-                className="hidden"
-              />
             </div>
 
-            {/* 크롭 모달 */}
+            {/* 이미지 생성/삽입 모달 (유저 아바타 전용) */}
+            <ImageGenerateInsertModal
+              open={imgModalOpen}
+              onClose={async (res) => {
+                setImgModalOpen(false);
+                try {
+                  if (res && res.focusUrl) {
+                    // 모달에서 선택된 첫 번째 이미지를 유저 아바타로 저장
+                    await usersAPI.updateUserProfile(profile.id, { avatar_url: res.focusUrl });
+                    setProfile(prev => ({ ...prev, avatar_url: res.focusUrl }));
+                    try { await checkAuth?.(); } catch (_) {}
+                    try { refreshProfileVersion?.(); } catch (_) {}
+                    try { window.dispatchEvent(new CustomEvent('profile:updated', { detail: { ts: Date.now() } })); } catch (_) {}
+                    try {
+                      queryClient.invalidateQueries({ queryKey: ['trending-characters-daily'] });
+                      queryClient.invalidateQueries({ queryKey: ['explore-stories'] });
+                      queryClient.invalidateQueries({ queryKey: ['characters'] });
+                      queryClient.invalidateQueries({ queryKey: ['top-origchat-daily'] });
+                    } catch (_) {}
+                  }
+                } catch (_) {}
+              }}
+              entityType={undefined}
+              entityId={undefined}
+              initialGallery={profile?.avatar_url ? [{ id: `url:0:${profile.avatar_url}`, url: profile.avatar_url }] : []}
+            />
+
+            {/* 크롭 모달 (기존 파일 업로드 경로 유지) */}
             <AvatarCropModal
               isOpen={isCropOpen}
               src={cropSrc}

@@ -31,6 +31,7 @@ const Sidebar = () => {
   const navigate = useNavigate();
   const [showLoginRequired, setShowLoginRequired] = useState(false);
   const [showLoginModal, setShowLoginModal] = useState(false);
+  const [avatarVersion, setAvatarVersion] = useState(Date.now());
 
   const formatRelativeTime = (iso) => {
     try {
@@ -138,6 +139,17 @@ const Sidebar = () => {
         }
       })();
     }
+  }, [isAuthenticated]);
+
+  // 프로필 업데이트 신호 수신 시 즉시 리렌더/리로드
+  useEffect(() => {
+    const onProfileUpdated = () => {
+      setAvatarVersion(Date.now());
+      try { setCharacterImageById(prev => ({ ...prev })); } catch (_) {}
+      try { loadRooms(); } catch (_) {}
+    };
+    try { window.addEventListener('profile:updated', onProfileUpdated); } catch (_) {}
+    return () => { try { window.removeEventListener('profile:updated', onProfileUpdated); } catch (_) {} };
   }, [isAuthenticated]);
 
   // 로컬스토리지 변경 시(다른 탭 등) 최근 웹소설 갱신
@@ -260,8 +272,22 @@ const Sidebar = () => {
               ))
             ) : (
               (() => {
-                // 채팅방(캐릭터) + 최근 웹소설을 하나의 리스트로 섞어서 최근성 기준 정렬
-                const chatItems = (chatRooms || []).map((room) => {
+                // 캐릭터별로 가장 최근 채팅방만 선택
+                const roomsByCharacter = new Map();
+                (chatRooms || []).forEach((room) => {
+                  const charId = room?.character?.id;
+                  if (!charId) return;
+                  
+                  const existing = roomsByCharacter.get(charId);
+                  const roomTime = new Date(room.last_message_time || room.updated_at || room.created_at || 0).getTime();
+                  const existingTime = existing ? new Date(existing.last_message_time || existing.updated_at || existing.created_at || 0).getTime() : 0;
+                  
+                  if (!existing || roomTime > existingTime) {
+                    roomsByCharacter.set(charId, room);
+                  }
+                });
+
+                const chatItems = Array.from(roomsByCharacter.values()).map((room) => {
                   const meta = roomMetaById[String(room.id)] || {};
                   const isOrig = !!(room?.character?.origin_story_id);
                   const rawMode = String(meta.mode || '').toLowerCase();
@@ -271,14 +297,14 @@ const Sidebar = () => {
                     : mode === 'plain' ? ' (일대일)'
                     : '';
                   return ({
-                  kind: 'chat',
-                  id: room.id,
-                  title: `${room.character?.name || '캐릭터'}${suffix}`,
-                  thumb: characterImageById[room.character?.id] || getCharacterPrimaryImage(room.character || {}),
-                  at: new Date(room.last_message_time || room.updated_at || room.created_at || 0).getTime() || 0,
-                  href: `/ws/chat/${room.character?.id}?room=${room.id}`,
-                  is_origchat: isOrig,
-                });
+                    kind: 'chat',
+                    id: room.id,
+                    title: `${room.character?.name || '캐릭터'}${suffix}`,
+                    thumb: characterImageById[room.character?.id] || getCharacterPrimaryImage(room.character || {}),
+                    at: new Date(room.last_message_time || room.updated_at || room.created_at || 0).getTime() || 0,
+                    href: `/ws/chat/${room.character?.id}?room=${room.id}`,
+                    is_origchat: isOrig,
+                  });
                 });
                 const storyItems = (recentStories || []).map((s) => ({
                   kind: 'story',
@@ -293,7 +319,8 @@ const Sidebar = () => {
                 if (mixed.length === 0) {
                   return <p className="px-4 text-sm text-gray-500">최근 항목이 없습니다</p>;
                 }
-                return mixed.map((item) => (
+                // 최대 5개만 노출하여 사이드바 오버플로우로 인한 레이아웃 깨짐 방지
+                return mixed.slice(0, 5).map((item) => (
                   <NavLink
                     key={`${item.kind}-${item.id}`}
                     to={item.href}
@@ -328,7 +355,7 @@ const Sidebar = () => {
             <DropdownMenuTrigger asChild>
               <div className="flex items-center space-x-3 px-1 cursor-pointer hover:bg-gray-700 rounded-lg py-2 transition-colors">
                 <Avatar className="w-8 h-8">
-                  <AvatarImage src={resolveImageUrl(user?.avatar_url)} alt={user?.username} />
+                  <AvatarImage src={resolveImageUrl(user?.avatar_url ? `${user.avatar_url}${user.avatar_url.includes('?') ? '&' : '?'}v=${avatarVersion}` : '')} alt={user?.username} />
                   <AvatarFallback className="bg-purple-600 text-white text-sm">
                     {user?.username?.charAt(0)?.toUpperCase() || 'U'}
                   </AvatarFallback>

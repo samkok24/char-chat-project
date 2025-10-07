@@ -237,6 +237,7 @@ async def convert_character_to_detail_response(character: Character, db: AsyncSe
             created_at=(getattr(character, 'created_at', None) or datetime.now(timezone.utc)),
             updated_at=(getattr(character, 'updated_at', None) or datetime.now(timezone.utc)),
             creator_username=character.creator.username if character.creator else None,
+            creator_avatar_url=character.creator.avatar_url if character.creator else None,
         )
 
     # 개발환경: 기존 로직 유지
@@ -278,7 +279,8 @@ async def convert_character_to_detail_response(character: Character, db: AsyncSe
         like_count=character.like_count,
         created_at=character.created_at,
         updated_at=character.updated_at,
-        creator_username=character.creator.username if character.creator else None
+        creator_username=character.creator.username if character.creator else None,
+        creator_avatar_url=character.creator.avatar_url if character.creator else None
     )
 
 
@@ -514,6 +516,7 @@ async def get_characters(
                     is_public=bool(getattr(char, 'is_public', True)),
                     created_at=(getattr(char, 'created_at', None) or datetime.now(timezone.utc)),
                     creator_username=char.creator.username if getattr(char, 'creator', None) else None,
+                    creator_avatar_url=char.creator.avatar_url if getattr(char, 'creator', None) else None,
                 )
                 items.append(item)
             except Exception as e:
@@ -542,6 +545,7 @@ async def get_characters(
                 is_public=char.is_public,
                 created_at=char.created_at,
                 creator_username=char.creator.username if getattr(char, 'creator', None) else None,
+                creator_avatar_url=char.creator.avatar_url if getattr(char, 'creator', None) else None,
             ) for char in characters
         ]
 

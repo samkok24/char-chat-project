@@ -69,7 +69,9 @@ export const buildPortraitSrcSet = (rawUrl) => {
  */
 export const getThumbnailUrl = (url, size = 256, options = {}) => {
   // pub-xxxxx.r2.dev는 cdn-cgi/image를 지원하지 않으므로 원본 반환
-  return url;
+  // 단, 백엔드 상대경로('/files/...')는 프론트 도메인으로 나가면 깨지므로 절대경로로 변환
+  if (!url) return '';
+  return resolveImageUrl(url);
 };
 
 /**

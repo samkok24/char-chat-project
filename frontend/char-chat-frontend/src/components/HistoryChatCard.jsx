@@ -15,9 +15,11 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from './ui/dropdown-menu';
+import { useAuth } from '../contexts/AuthContext';
 
 export const HistoryChatCard = ({ character, onClick, onPin, onDelete, displayTitle }) => {
   const defaultAvatar = DEFAULT_AVATAR_URI;
+  const { profileVersion } = useAuth();
   
   const formatTime = (dateString) => {
     if (!dateString) return '';
@@ -164,7 +166,7 @@ export const HistoryChatCard = ({ character, onClick, onPin, onDelete, displayTi
                   className="inline-flex items-center gap-1.5 text-[11px] lg:text-xs text-gray-300 hover:text-white"
                 >
                   <Avatar className="w-4 h-4">
-                    <AvatarImage src={''} alt={character.creator_username} />
+                    <AvatarImage src={resolveImageUrl(character.creator_avatar_url ? `${character.creator_avatar_url}${character.creator_avatar_url.includes('?') ? '&' : '?'}v=${profileVersion}` : '')} alt={character.creator_username} />
                     <AvatarFallback className="text-[10px]">{character.creator_username?.charAt(0)?.toUpperCase() || 'U'}</AvatarFallback>
                   </Avatar>
                   <span className="truncate max-w-[120px]">{character.creator_username}</span>

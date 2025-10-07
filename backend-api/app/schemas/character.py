@@ -232,6 +232,7 @@ class CharacterDetailResponse(BaseModel):
     example_dialogues: List[CharacterExampleDialogueResponse] = Field(default_factory=list)
     settings: Optional[CharacterSettingResponse] = None
     creator_username: Optional[str] = None
+    creator_avatar_url: Optional[str] = None
     is_liked: Optional[bool] = False
 
 class CharacterListResponse(BaseModel):
@@ -254,6 +255,7 @@ class CharacterListResponse(BaseModel):
     is_public: bool
     created_at: datetime
     creator_username: Optional[str] = None
+    creator_avatar_url: Optional[str] = None
 
     def model_post_init(self, __context: Any) -> None:  # type: ignore[override]
         # avatar_url 우선, 없으면 image_descriptions[0].url 사용

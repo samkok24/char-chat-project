@@ -48,6 +48,7 @@ async def get_daily_rankings(
                 "like_count": s.like_count,
                 "created_at": s.created_at,
                 "creator_username": getattr(s.creator, "username", None),
+                "creator_avatar_url": getattr(s.creator, "avatar_url", None),
             })
         return result
 
@@ -77,6 +78,7 @@ async def get_daily_rankings(
                 "like_count": c.like_count,
                 "creator_id": c.creator_id,
                 "creator_username": getattr(c.creator, "username", None),
+                "creator_avatar_url": getattr(c.creator, "avatar_url", None),
                 "source_type": c.source_type,
             })
         return result

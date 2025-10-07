@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
-import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../contexts/AuthContext';
 import { charactersAPI, usersAPI, tagsAPI, storiesAPI } from '../lib/api';
 import { Button } from '../components/ui/button';
@@ -56,6 +56,7 @@ import WebNovelSection from '../components/WebNovelSection';
 import LoginRequiredModal from '../components/LoginRequiredModal';
 
 const HomePage = () => {
+  const queryClient = useQueryClient();
   const [searchQuery, setSearchQuery] = useState('');
   const { user, isAuthenticated, logout } = useAuth();
   const navigate = useNavigate();
@@ -268,6 +269,11 @@ const HomePage = () => {
   }, [allTags, topUsedTags]);
   const visibleTags = showAllTags ? arrangedTags : arrangedTags.slice(0, visibleTagLimit);
 
+  // 메인탭 진입 시 인기 캐릭터 캐시 무효화
+  useEffect(() => {
+    queryClient.invalidateQueries({ queryKey: ['trending-characters-daily'] });
+  }, [queryClient]);
+
   // 태그 추가 기능 제거 요청에 따라 관련 로직/버튼 제거됨
 
   return (
@@ -284,42 +290,39 @@ const HomePage = () => {
             </div>
             <div className="justify-self-end" />
           </div>
-          {/* 상단 필터 바 */}
+          {/* 상단 필터 바 + 검색 */}
           <div className="mb-6">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-3">
               <button
                 onClick={() => setSourceFilter(prev => prev === 'IMPORTED' ? null : 'IMPORTED')}
                 className={`px-3 py-1 rounded-full border ${sourceFilter === 'IMPORTED' ? 'bg-yellow-500 text-black border-yellow-400' : 'bg-gray-800 text-gray-200 border-gray-700'}`}
-              >웹소설</button>
+              >전체</button>
               <button
                 onClick={() => setSourceFilter(prev => prev === 'ORIGINAL' ? null : 'ORIGINAL')}
                 className={`px-3 py-1 rounded-full border ${sourceFilter === 'ORIGINAL' ? 'bg-yellow-500 text-black border-yellow-400' : 'bg-gray-800 text-gray-200 border-gray-700'}`}
-              >오리지널</button>
+              >일상</button>
               <button
                 onClick={() => setShowAllTags(v => !v)}
                 className={`px-3 py-1 rounded-full border bg-gray-800 text-gray-200 border-gray-700 inline-flex items-center gap-2`}
               >
-                <span>카테고리</span>
+                <span>장르</span>
                 <ChevronDown className={`h-4 w-4 ${showAllTags ? 'rotate-180' : ''}`} />
               </button>
+              
+              {/* 검색 박스 */}
+              <form onSubmit={handleSearch} className="flex-1 max-w-md">
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-500" />
+                  <Input
+                    type="text"
+                    placeholder="캐릭터 검색"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="w-full pl-10 pr-4 py-2 bg-gray-800 border-gray-700 text-white placeholder-gray-400 rounded-full focus:ring-2 focus:ring-purple-500 focus:border-purple-500 text-sm"
+                  />
+                </div>
+              </form>
             </div>
-          </div>
-
-
-          {/* 검색 */}
-          <div className="mb-12 max-w-2xl">
-            <form onSubmit={handleSearch}>
-              <div className="relative">
-                <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-500" />
-                <Input
-                  type="text"
-                  placeholder="어떤 캐릭터를 찾아볼까요?"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full pl-12 pr-4 py-3 bg-gray-800 border-gray-700 text-white placeholder-gray-400 rounded-full focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
-                />
-              </div>
-            </form>
           </div>
 
           {/* 인기 캐릭터 TOP (4x2) */}

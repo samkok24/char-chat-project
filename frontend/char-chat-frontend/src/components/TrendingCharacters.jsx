@@ -8,14 +8,15 @@ import { Link, useNavigate } from 'react-router-dom';
 import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
 import { Badge } from './ui/badge';
 import { formatCount } from '../lib/format';
+import { useAuth } from '../contexts/AuthContext';
 
 const TrendingItem = ({ character }) => {
   const navigate = useNavigate();
+  const { profileVersion } = useAuth();
   const charId = character?.id || character?.character_id || character?.characterId || character?.target_id;
   const raw = character?.thumbnail_url || character?.avatar_url;
   const withV = raw ? `${raw}${raw.includes('?') ? '&' : '?'}v=${Date.now()}` : raw;
   const imgSrc = getThumbnailUrl(withV, 276) || DEFAULT_SQUARE_URI;
-  // const imgSrc = resolveImageUrl(withV) || DEFAULT_SQUARE_URI;
   const username = character?.creator_username;
   const isWebNovel = character?.source_type === 'IMPORTED';
   const isOrigChat = !!(character?.origin_story_id || character?.is_origchat);
@@ -59,7 +60,7 @@ const TrendingItem = ({ character }) => {
               className="absolute left-0 bottom-0 inline-flex items-center gap-2 text-sm text-gray-300 hover:text-white cursor-pointer"
             >
               <Avatar className="w-5 h-5">
-                <AvatarImage src={''} alt={username} />
+                <AvatarImage src={resolveImageUrl(character.creator_avatar_url ? `${character.creator_avatar_url}${character.creator_avatar_url.includes('?') ? '&' : '?'}v=${profileVersion}` : '')} alt={username} />
                 <AvatarFallback className="text-[10px]">{username?.charAt(0)?.toUpperCase() || 'U'}</AvatarFallback>
               </Avatar>
               <span className="truncate max-w-[140px]">{username}</span>
@@ -90,8 +91,9 @@ const TrendingCharacters = () => {
       const res = await rankingAPI.getDaily({ kind: 'character' });
       return Array.isArray(res.data?.items) ? res.data.items : [];
     },
-    staleTime: 30 * 1000,
+    staleTime: 0,
     refetchOnWindowFocus: true,
+    refetchOnMount: 'always',
   });
 
   const pageSize = 8;
@@ -106,7 +108,6 @@ const TrendingCharacters = () => {
     return items.slice(start, start + pageSize);
   }, [items, page, hasCarousel]);
 
-  // 자동 슬라이드 비활성화: 화살표 클릭 때만 이동
   useEffect(() => {
     return () => {};
   }, []);

@@ -9,9 +9,11 @@ import { Heart, MessageCircle } from 'lucide-react';
 import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
 import { formatCount } from '../lib/format';
 import { Badge } from './ui/badge';
+import { useAuth } from '../contexts/AuthContext';
 
 export const RecentChatCard = ({ character, onClick, displayTitle }) => {
   const defaultAvatar = DEFAULT_AVATAR_URI;
+  const { profileVersion } = useAuth();
   
   const safeUrl = (url) => resolveImageUrl(url) || defaultAvatar;
   
@@ -107,7 +109,7 @@ export const RecentChatCard = ({ character, onClick, displayTitle }) => {
                     className="absolute left-0 bottom-0 inline-flex items-center gap-2 text-sm text-gray-300 hover:text-white truncate"
                   >
                     <Avatar className="w-5 h-5">
-                      <AvatarImage src={''} alt={character.creator_username} />
+                      <AvatarImage src={resolveImageUrl(character.creator_avatar_url ? `${character.creator_avatar_url}${character.creator_avatar_url.includes('?') ? '&' : '?'}v=${profileVersion}` : '')} alt={character.creator_username} />
                       <AvatarFallback className="text-xs">{character.creator_username?.charAt(0)?.toUpperCase() || 'U'}</AvatarFallback>
                     </Avatar>
                     <span className="truncate max-w-[140px]">{character.creator_username}</span>

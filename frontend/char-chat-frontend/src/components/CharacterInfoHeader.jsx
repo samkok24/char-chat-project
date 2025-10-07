@@ -6,6 +6,7 @@ import { useNavigate, Link } from 'react-router-dom';
 import { Switch } from "./ui/switch";
 import { Label } from "./ui/label";
 import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
+import { resolveImageUrl } from '../lib/images';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -13,9 +14,11 @@ import {
   DropdownMenuTrigger,
   DropdownMenuSeparator,
 } from "./ui/dropdown-menu";
+import { useAuth } from '../contexts/AuthContext';
 
 const CharacterInfoHeader = ({ character, likeCount, isLiked, handleLike, isOwner, onEdit, onDelete, onSettings, onTogglePublic, isWebNovel = false, workId = null, tags = [] }) => {
   const navigate = useNavigate();
+  const { profileVersion } = useAuth();
 
   return (
     <div className="space-y-4">
@@ -91,7 +94,7 @@ const CharacterInfoHeader = ({ character, likeCount, isLiked, handleLike, isOwne
             className="inline-flex items-center gap-2 text-lg text-gray-300 hover:text-white"
           >
             <Avatar className="w-6 h-6">
-              <AvatarImage src={character.thumbnail_url || character.avatar_url} alt={character.creator_username} />
+              <AvatarImage src={resolveImageUrl(character.creator_avatar_url ? `${character.creator_avatar_url}${character.creator_avatar_url.includes('?') ? '&' : '?'}v=${profileVersion}` : '')} alt={character.creator_username} />
               <AvatarFallback className="text-sm">{character.creator_username?.charAt(0)?.toUpperCase() || 'U'}</AvatarFallback>
             </Avatar>
             <span className="truncate max-w-[200px]">{character.creator_username}</span>

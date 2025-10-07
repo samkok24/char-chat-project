@@ -11,9 +11,11 @@ import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
 import { Badge } from './ui/badge';
 import { formatCount } from '../lib/format';
 import { storiesAPI } from '../lib/api';
+import { useAuth } from '../contexts/AuthContext';
 
 export const CharacterCard = ({ character, onCardClick, onButtonClick, footerContent, showOriginBadge = false }) => {
   const navigate = useNavigate();
+  const { profileVersion } = useAuth();
   const charId = character?.id || character?.character_id || character?.characterId || character?.target_id;
   const isWebNovel = character?.source_type === 'IMPORTED';
   const isFromOrigChat = !!(character?.origin_story_id || character?.is_origchat);
@@ -123,7 +125,7 @@ export const CharacterCard = ({ character, onCardClick, onButtonClick, footerCon
             className="absolute left-1 bottom-1 py-0.5 px-1.5 rounded bg-black/60 text-xs text-gray-100 inline-flex items-center gap-2 hover:text-white truncate"
           >
             <Avatar className="w-4 h-4">
-              <AvatarImage src={''} alt={character.creator_username} />
+              <AvatarImage src={resolveImageUrl(character.creator_avatar_url ? `${character.creator_avatar_url}${character.creator_avatar_url.includes('?') ? '&' : '?'}v=${profileVersion}` : '')} alt={character.creator_username} />
               <AvatarFallback className="text-[10px]">
                 {character.creator_username?.charAt(0)?.toUpperCase() || 'U'}
               </AvatarFallback>

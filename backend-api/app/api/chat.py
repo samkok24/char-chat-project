@@ -64,6 +64,28 @@ async def _get_room_meta(room_id: uuid.UUID | str) -> Dict[str, Any]:
     return {}
 
 
+def _merge_character_tokens(character, user):
+    """캐릭터 객체의 모든 텍스트 필드에서 {{user}}, {{character}} 토큰을 머지"""
+    try:
+        username = getattr(user, 'username', None) or getattr(user, 'email', '').split('@')[0] or '사용자'
+        charname = getattr(character, 'name', None) or '캐릭터'
+        
+        # 텍스트 필드들 자동 처리
+        text_fields = ['description', 'personality', 'speech_style', 'greeting', 'world_setting', 
+                      'background_story', 'affinity_rules', 'affinity_stages', 'introduction_scenes']
+        
+        for field in text_fields:
+            if hasattr(character, field):
+                original = getattr(character, field)
+                if original and isinstance(original, str):
+                    merged = original.replace('{{user}}', username).replace('{{character}}', charname)
+                    setattr(character, field, merged)
+        
+        return character
+    except Exception:
+        return character
+
+
 async def _set_room_meta(room_id: uuid.UUID | str, data: Dict[str, Any], ttl: int = 2592000) -> None:
     try:
         from app.core.database import redis_client
@@ -767,14 +789,38 @@ async def start_chat(
     
     # 새로 생성된 채팅방인 경우 (메시지가 없는 경우)
     existing_messages = await chat_service.get_messages_by_room_id(db, chat_room.id, limit=1)
-    if not existing_messages and chat_room.character.greeting:
-        # 캐릭터의 인사말을 첫 메시지로 저장
+    if not existing_messages:
+        # 토큰 머지 후 캐릭터의 인사말을 첫 메시지로 저장
+        _merge_character_tokens(chat_room.character, current_user)
         await chat_service.save_message(
             db, chat_room.id, "assistant", chat_room.character.greeting
         )
         await db.commit()
     
     return chat_room
+
+@router.post("/start-new", response_model=ChatRoomResponse, status_code=status.HTTP_201_CREATED)
+async def start_new_chat(
+    request: CreateChatRoomRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """새 채팅 시작 - 무조건 새로운 채팅방 생성"""
+    # 무조건 새 채팅방 생성 (기존 방과 분리)
+    chat_room = await chat_service.create_chat_room(
+        db, user_id=current_user.id, character_id=request.character_id
+    )
+    
+    # 새 방이므로 인사말 추가
+    if chat_room.character.greeting:
+        _merge_character_tokens(chat_room.character, current_user)
+        await chat_service.save_message(
+            db, chat_room.id, "assistant", chat_room.character.greeting
+        )
+        await db.commit()
+    
+    return chat_room
+
 
 @router.post("/message", response_model=SendMessageResponse)
 async def send_message(
@@ -789,6 +835,7 @@ async def send_message(
         raise HTTPException(status_code=404, detail="채팅방을 찾을 수 없습니다.")
 
     character = room.character
+    _merge_character_tokens(character, current_user)
     
     # settings를 별도로 로드
     settings_result = await db.execute(

@@ -19,6 +19,7 @@ export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [profileVersion, setProfileVersion] = useState(Date.now());
 
   // 초기 로드 시 토큰 확인
   useEffect(() => {
@@ -102,10 +103,16 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
+  const refreshProfileVersion = () => {
+    setProfileVersion(Date.now());
+  };
+
   const value = {
     user,
     loading,
     isAuthenticated,
+    profileVersion,
+    refreshProfileVersion,
     login,
     register,
     logout,

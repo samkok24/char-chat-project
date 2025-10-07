@@ -28,7 +28,7 @@ const StoryDetailPage = () => {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const locationState = useLocation().state || {};
-  const { user, isAuthenticated } = useAuth();
+  const { user, isAuthenticated, profileVersion } = useAuth();
   const extractedRef = useRef(null);
   const [chapterModalOpen, setChapterModalOpen] = useState(false);
   const [imgModalOpen, setImgModalOpen] = useState(false);
@@ -473,7 +473,7 @@ const StoryDetailPage = () => {
                   <div className="flex items-center gap-2 mt-2">
                     <button type="button" onClick={() => navigate(`/users/${story.creator_id}`)} className="flex items-center gap-2 hover:opacity-90">
                       <Avatar className="w-6 h-6">
-                        <AvatarImage src={story.creator_avatar_url || ''} />
+                        <AvatarImage src={story.creator_avatar_url ? `${story.creator_avatar_url}${story.creator_avatar_url.includes('?') ? '&' : '?'}v=${profileVersion}` : ''} />
                         <AvatarFallback>{(story.creator_username || 'U').charAt(0).toUpperCase()}</AvatarFallback>
                       </Avatar>
                       <span className="text-sm text-gray-300">{story.creator_username || '작성자'}</span>

@@ -243,6 +243,16 @@ const CharacterDetailPage = () => {
   const searchParams = new URLSearchParams(location.search || '');
   const isWebNovel = (character?.source_type === 'IMPORTED') || (location.state?.source === 'webnovel') || (searchParams.get('source') === 'webnovel');
   const workId = location.state?.workId || searchParams.get('workId') || null;
+  
+  // console.log('🔍 Character Debug:', {
+  //   characterId,
+  //   source_type: character?.source_type,
+  //   isWebNovel,
+  //   workId,
+  //   locationState: location.state,
+  //   searchParams: Object.fromEntries(searchParams.entries())
+  // });
+
   const progress = getReadingProgress(workId);
   const continueChapter = progress > 0 ? progress : 1;
 
@@ -369,6 +379,7 @@ const CharacterDetailPage = () => {
 
             {/* 원작 웹소설 카드는 CharacterDetails 내 '세계관' 아래에서만 노출 */}
 
+            {/* 웹소설 원작 버튼 - workId가 있을 때만 */}
             {isWebNovel && workId && (
               <div className="flex items-center gap-2">
                 <Button className="bg-purple-600 hover:bg-purple-700" onClick={() => navigate(`/works/${workId}/chapters/1`)}>
@@ -387,6 +398,8 @@ const CharacterDetailPage = () => {
               </div>
             )}
 
+
+
             {isWebNovel && (
               <div className="mt-4">
                 <h3 className="text-lg font-semibold mb-2">소설 캐릭터 요약</h3>
@@ -401,7 +414,7 @@ const CharacterDetailPage = () => {
               </div>
             )}
 
-            <ChatInteraction onStartChat={startChat} characterId={characterId} isAuthenticated={isAuthenticated} />
+            <ChatInteraction onStartChat={startChat} characterId={characterId} isAuthenticated={isAuthenticated} isWebNovel={isWebNovel} />
             <CharacterDetails 
               character={character}
               comments={comments}

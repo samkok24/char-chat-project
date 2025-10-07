@@ -313,7 +313,7 @@ const MyCharactersPage = () => {
           <div className="flex items-center gap-3">
             <Button
               variant="ghost"
-              onClick={() => navigate('/')}
+              onClick={() => navigate('/dashboard')}
               className="p-2 rounded-full text-gray-300 hover:text-white hover:bg-gray-800"
             >
               <ArrowLeft className="w-5 h-5" />

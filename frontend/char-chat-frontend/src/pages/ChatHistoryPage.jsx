@@ -194,7 +194,7 @@ const ChatHistoryPage = () => {
           <div className="flex items-center gap-3">
             <Button
               variant="ghost"
-              onClick={() => navigate('/')}
+              onClick={() => navigate('/dashboard')}
               className="p-2 rounded-full text-gray-300 hover:text-white hover:bg-gray-800"
             >
               <ArrowLeft className="w-5 h-5" />
@@ -216,7 +216,7 @@ const ChatHistoryPage = () => {
             <p className="text-lg text-gray-400">아직 대화한 캐릭터가 없습니다.</p>
             <p className="text-sm text-gray-500 mt-2">홈 화면에서 캐릭터를 선택해 대화를 시작해보세요.</p>
             <Button 
-              onClick={() => navigate('/')}
+              onClick={() => navigate('/dashboard')}
               className="mt-6 bg-purple-600 hover:bg-purple-700"
             >
               캐릭터 둘러보기

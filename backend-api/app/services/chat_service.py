@@ -134,7 +134,9 @@ async def get_chat_rooms_for_user(
     result = await db.execute(
         select(ChatRoom)
         .where(ChatRoom.user_id == user_id)
-        .options(selectinload(ChatRoom.character))
+        .options(
+            selectinload(ChatRoom.character).selectinload(Character.creator)
+        )
         .order_by(ChatRoom.updated_at.desc())
     )
     return result.scalars().all()

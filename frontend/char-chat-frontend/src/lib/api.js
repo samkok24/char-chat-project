@@ -321,6 +321,9 @@ export const chatAPI = {
   startChat: (characterId) =>
     api.post('/chat/start', { character_id: characterId }),
 
+  startNewChat: (characterId) =>
+    api.post('/chat/start-new', { character_id: characterId }),
+
   sendMessage: (data) =>
     api.post('/chat/message', data),
   // 에이전트 탭용 간단 시뮬레이터(캐릭터 없이)

@@ -6,6 +6,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'; // useMemo 추가
 import { useNavigate, Link, useParams, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
+import { useQueryClient } from '@tanstack/react-query';
 import { charactersAPI, filesAPI, API_BASE_URL, tagsAPI, api, mediaAPI } from '../lib/api';
 import { replacePromptTokens } from '../lib/prompt';
 import { Button } from '../components/ui/button';
@@ -53,6 +54,7 @@ import ErrorBoundary from '../components/ErrorBoundary';
 import { z } from 'zod';
 
 const CreateCharacterPage = () => {
+  const queryClient = useQueryClient();
   const { characterId } = useParams();
   const isEditMode = !!characterId;
   const fileInputRef = useRef(null);
@@ -695,6 +697,9 @@ const CreateCharacterPage = () => {
       } else {
         const response = await charactersAPI.createAdvancedCharacter(characterData);
         const newId = response.data.id;
+        // 🆕 캐시 무효화
+        queryClient.invalidateQueries({ queryKey: ['trending-characters-daily'] });
+        queryClient.invalidateQueries({ queryKey: ['characters'] });
         // 태그 저장
         if (selectedTagSlugs.length) {
           await api.put(`/characters/${newId}/tags`, { tags: selectedTagSlugs });

@@ -296,11 +296,16 @@ const ChatPage = () => {
         const buildLastRoomKey = (uid, cid, sid) => `cc:lastRoom:${uid || 'anon'}:${cid || 'none'}:${sid || 'none'}:origchat`;
         let roomId = explicitRoom || null;
         // room 파라미터 유효성 검사
+        // 수정: 파라미터를 신뢰(네트워크 일시 오류여도 유지)
         if (roomId) {
           try {
             const r = await chatAPI.getChatRoom(roomId);
-            if (!(r && r.data && r.data.id)) roomId = null;
-          } catch (_) { roomId = null; }
+            if (!(r && r.data && r.data.id)) {
+              console.warn('room param looks invalid, will still try to join:', roomId);
+            }
+          } catch (e) {
+            console.warn('room validation failed, keep roomId anyway:', roomId, e);
+          }
         }
 
         if (!roomId) {
@@ -339,12 +344,20 @@ const ChatPage = () => {
               const roomResponse = await chatAPI.startChat(characterId);
               roomId = roomResponse.data.id;
             } else {
-              // 최근 대화 방 시도: 서버 세션 목록에서 검색
-              try {
-                const sessionsRes = await chatAPI.getChatSessions();
-                const latest = (Array.isArray(sessionsRes.data) ? sessionsRes.data : []).find(s => String(s.character_id) === String(characterId));
-                if (latest) roomId = latest.id;
-              } catch (_) {}
+              // URL에 room 파라미터가 있으면 그대로 사용, 없으면 최신 방 찾기
+              if (!explicitRoom) {
+                try {
+                  const sessionsRes = await chatAPI.getChatSessions();
+                  const sessions = Array.isArray(sessionsRes.data) ? sessionsRes.data : [];
+                  const characterSessions = sessions.filter(s => String(s.character_id) === String(characterId));
+                  const latest = characterSessions.sort((a, b) => {
+                    const aTime = new Date(a.last_message_time || a.last_chat_time || a.updated_at || a.created_at || 0).getTime();
+                    const bTime = new Date(b.last_message_time || b.last_chat_time || b.updated_at || b.created_at || 0).getTime();
+                    return bTime - aTime;
+                  })[0];
+                  if (latest) roomId = latest.id;
+                } catch (_) {}
+              }
               if (!roomId) {
                 const roomResponse = await chatAPI.startChat(characterId);
                 roomId = roomResponse.data.id;

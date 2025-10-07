@@ -2,6 +2,7 @@
 사용자 관련 서비스
 """
 
+from sqlalchemy import select, update, delete, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, and_, or_, func, Integer
 from typing import Optional, Union, Dict, List
@@ -172,6 +173,7 @@ async def get_recent_characters_for_user(db: AsyncSession, user_id: uuid.UUID, l
         .subquery()
     )
     
+
     result = await db.execute(
         select(
             Character,
@@ -185,7 +187,10 @@ async def get_recent_characters_for_user(db: AsyncSession, user_id: uuid.UUID, l
         .outerjoin(Story, Character.origin_story_id == Story.id)
         .where(ChatRoom.user_id == user_id)
         .options(selectinload(Character.creator))
-        .order_by(last_message_subquery.c.last_chat_time.desc().nullslast(), Character.id)
+        .order_by(
+            last_message_subquery.c.last_chat_time.desc().nullslast(),
+            ChatRoom.updated_at.desc()
+        )
         .limit(limit)
         .offset(skip)
     )
@@ -203,17 +208,17 @@ async def get_recent_characters_for_user(db: AsyncSession, user_id: uuid.UUID, l
         except Exception:
             pass
         characters.append(char)
-        
+    return characters    
     # 동일 캐릭터가 여러 방으로 중복될 수 있으므로 character_id 기준 dedupe (가장 최신만 유지)
-    seen = set()
-    deduped: list[Character] = []
-    for c in characters:
-        cid = getattr(c, 'id', None)
-        if cid in seen:
-            continue
-        seen.add(cid)
-        deduped.append(c)
-    return deduped
+    # seen = set()
+    # deduped: list[Character] = []
+    # for c in characters:
+    #     cid = getattr(c, 'id', None)
+    #     if cid in seen:
+    #         continue
+    #     seen.add(cid)
+    #     deduped.append(c)
+    # return deduped
 
 
 async def get_liked_characters_for_user(
