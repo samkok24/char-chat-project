@@ -43,6 +43,7 @@ try {
 const LoginPage = React.lazy(() => import('./pages/LoginPage'));
 const HomePage = React.lazy(() => import('./pages/HomePage'));
 const AgentPage = React.lazy(() => import('./pages/AgentPage'));
+const AgentDrawerPage = React.lazy(() => import('./pages/AgentDrawerPage'));
 const ChatPage = React.lazy(() => import('./pages/ChatPage'));
 const CharacterDetailPage = React.lazy(() => import('./pages/CharacterDetailPage'));
 const ChatRedirectPage = React.lazy(() => import('./pages/ChatRedirectPage')); // 새로 추가
@@ -107,6 +108,7 @@ const AppRouter = () => {
           {/* 초기 진입은 에이전트 탭으로 */}
           <Route path="/" element={<Navigate to="/agent" replace />} />
           <Route path="/agent" element={<AgentPage />} />
+          <Route path="/agent/drawer" element={<AgentDrawerPage />} />
           {/* 대시보드 별도 경로 */}
           <Route path="/dashboard" element={<HomePage />} />
 

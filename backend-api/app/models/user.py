@@ -50,6 +50,9 @@ class User(Base):
     # 기억노트 및 페르소나 관계
     memory_notes = relationship("MemoryNote", back_populates="user", cascade="all, delete-orphan")
     user_personas = relationship("UserPersona", back_populates="user", cascade="all, delete-orphan")
+    
+    # 에이전트 콘텐츠 관계
+    agent_contents = relationship("AgentContent", back_populates="user", cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<User(id={self.id}, email={self.email}, username={self.username})>"

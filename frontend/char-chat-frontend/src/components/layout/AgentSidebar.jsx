@@ -157,13 +157,13 @@ const AgentSidebar = ({ onCreateSession, activeSessionId, onSessionSelect, onDel
         
         {!isGuest ? (
           <>
-            <div className="text-xs text-gray-400 px-2 mb-2">히스토리</div>
-            <div className="flex items-center justify-between px-3 py-2 rounded-lg text-gray-300 bg-gray-900 border border-gray-700">
-              <div className="inline-flex items-center">
-                <MessageSquarePlus className="w-4 h-4 mr-2" /> 최근 세션
-              </div>
-              <span className="text-xs text-gray-400">{sessionCount}개</span>
-            </div>
+            {/* 내 서랍 버튼 */}
+            <Button
+              onClick={() => navigate('/agent/drawer')}
+              className="w-full mb-3 bg-purple-600 hover:bg-purple-700 text-white"
+            >
+              내 서랍
+            </Button>
 
             {sessionList.length > 0 && (
               <div className="mt-2 space-y-1">

@@ -75,17 +75,6 @@ const ChatInteraction = ({ onStartChat, characterId, isAuthenticated, isWebNovel
 
   return (
     <div className="space-y-4">
-      <Select defaultValue="default">
-        <SelectTrigger className="w-full bg-gray-800 border-gray-700">
-          <SelectValue placeholder="시작할 대화의 상황을 선택하세요" />
-        </SelectTrigger>
-        <SelectContent className="bg-gray-800 text-white border-gray-700">
-          <SelectItem value="default">이세계에 강제 소환하게 된 당신</SelectItem>
-          <SelectItem value="option2">다른 상황 선택지 1</SelectItem>
-          <SelectItem value="option3">다른 상황 선택지 2</SelectItem>
-        </SelectContent>
-      </Select>
-
       {hasHistory ? (
         <div className="grid grid-cols-2 gap-2">
           <Button onClick={handleContinue} className="w-full bg-gray-700 hover:bg-gray-600 text-white font-semibold py-5">

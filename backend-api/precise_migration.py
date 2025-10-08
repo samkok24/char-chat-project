@@ -37,6 +37,20 @@ TABLES_TO_CREATE = {
         "created_at DATETIME DEFAULT (CURRENT_TIMESTAMP)",
         "updated_at DATETIME DEFAULT (CURRENT_TIMESTAMP)",
         "FOREIGN KEY(creator_id) REFERENCES users(id)"
+    ],
+    "agent_contents": [
+        "id CHAR(36) PRIMARY KEY",
+        "user_id CHAR(36) NOT NULL",
+        "session_id VARCHAR(100)",
+        "message_id VARCHAR(100)",
+        "story_mode VARCHAR(20) NOT NULL",
+        "user_text TEXT",
+        "user_image_url VARCHAR(500)",
+        "generated_text TEXT NOT NULL",
+        "generated_image_urls TEXT",
+        "created_at DATETIME DEFAULT (CURRENT_TIMESTAMP)",
+        "updated_at DATETIME DEFAULT (CURRENT_TIMESTAMP)",
+        "FOREIGN KEY(user_id) REFERENCES users(id)"
     ]
 }
 
@@ -54,6 +68,7 @@ COLUMNS_TO_ADD = {
         ("source_type", "VARCHAR(20) DEFAULT 'ORIGINAL'"),
         ("speech_style", "TEXT"),
         ("greeting", "TEXT"),
+        ("greetings", "TEXT"),  # 이 줄 추가 (JSON은 SQLite에서 TEXT로 저장)
         ("world_setting", "TEXT"),
         ("user_display_description", "TEXT"),
         ("use_custom_description", "BOOLEAN DEFAULT 0"),

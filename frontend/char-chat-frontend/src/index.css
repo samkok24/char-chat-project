@@ -49,6 +49,22 @@
   .scrollbar-dark::-webkit-scrollbar-thumb:hover {
     background: #525252; /* 호버 시 조금 더 밝게 */
   }
+  
+  /* 하이라이트 플래시 효과 (내 서랍에서 스크롤 시) */
+  .highlight-flash {
+    animation: flash 2s ease-in-out;
+    border-radius: 8px;
+  }
+  
+  @keyframes flash {
+    0%, 100% { 
+      background: transparent; 
+    }
+    50% { 
+      background: rgba(168, 85, 247, 0.3);
+      box-shadow: 0 0 16px rgba(168, 85, 247, 0.4);
+    }
+  }
   /* Firefox */
   .scrollbar-dark {
     scrollbar-width: thin;

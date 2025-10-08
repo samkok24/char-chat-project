@@ -10,6 +10,7 @@ import uuid
 import json
 
 from app.models.character import Character, CharacterSetting, CharacterExampleDialogue
+from app.models.chat import ChatRoom, ChatMessage
 from app.models.tag import Tag, CharacterTag
 from app.models.user import User
 from app.models.like import CharacterLike
@@ -617,3 +618,43 @@ async def increment_character_chat_count(db: AsyncSession, character_id: uuid.UU
     await db.commit()
     return result.rowcount > 0
 
+async def get_real_message_count(db: AsyncSession, character_id: uuid.UUID) -> int:
+    """해당 캐릭터와 연결된 모든 메시지 수 실시간 계산"""
+    result = await db.execute(
+        select(func.count(ChatMessage.id))
+        .join(ChatRoom, ChatMessage.chat_room_id == ChatRoom.id)
+        .where(ChatRoom.character_id == character_id)
+    )
+    return result.scalar() or 0
+
+async def sync_character_chat_count(db: AsyncSession, character_id: uuid.UUID) -> bool:
+    """캐릭터 대화수를 실제 메시지 수와 동기화"""
+    real_count = await get_real_message_count(db, character_id)
+    result = await db.execute(
+        update(Character)
+        .where(Character.id == character_id)
+        .values(chat_count=real_count)
+    )
+    await db.commit()
+    return result.rowcount > 0
+
+
+async def get_real_message_count(db: AsyncSession, character_id: uuid.UUID) -> int:
+    """해당 캐릭터와 연결된 모든 메시지 수 실시간 계산"""
+    result = await db.execute(
+        select(func.count(ChatMessage.id))
+        .join(ChatRoom, ChatMessage.chat_room_id == ChatRoom.id)
+        .where(ChatRoom.character_id == character_id)
+    )
+    return result.scalar() or 0
+
+async def sync_character_chat_count(db: AsyncSession, character_id: uuid.UUID) -> bool:
+    """캐릭터 대화수를 실제 메시지 수와 동기화"""
+    real_count = await get_real_message_count(db, character_id)
+    result = await db.execute(
+        update(Character)
+        .where(Character.id == character_id)
+        .values(chat_count=real_count)
+    )
+    await db.commit()
+    return result.rowcount > 0

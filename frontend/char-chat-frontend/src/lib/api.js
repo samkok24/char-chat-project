@@ -336,6 +336,14 @@ export const chatAPI = {
   agentPartialRegenerate: (data) =>
     api.post('/chat/agent/partial-regenerate', data),
   
+  // 에이전트 콘텐츠 (내 서랍)
+  saveAgentContent: (data) =>
+    api.post('/agent/contents', data),
+  getAgentContents: (params = {}) =>
+    api.get('/agent/contents', { params }),
+  deleteAgentContent: (id) =>
+    api.delete(`/agent/contents/${id}`),
+  
   getChatHistory: (sessionId) =>
     api.get(`/chat/history/${sessionId}`),
   

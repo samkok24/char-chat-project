@@ -65,25 +65,30 @@ async def _get_room_meta(room_id: uuid.UUID | str) -> Dict[str, Any]:
 
 
 def _merge_character_tokens(character, user):
-    """캐릭터 객체의 모든 텍스트 필드에서 {{user}}, {{character}} 토큰을 머지"""
     try:
         username = getattr(user, 'username', None) or getattr(user, 'email', '').split('@')[0] or '사용자'
         charname = getattr(character, 'name', None) or '캐릭터'
         
-        # 텍스트 필드들 자동 처리
-        text_fields = ['description', 'personality', 'speech_style', 'greeting', 'world_setting', 
-                      'background_story', 'affinity_rules', 'affinity_stages', 'introduction_scenes']
+        # 단일 인사말 처리
+        if hasattr(character, 'greeting') and character.greeting:
+            character.greeting = character.greeting.replace('{{user}}', username).replace('{{character}}', charname)
         
-        for field in text_fields:
-            if hasattr(character, field):
-                original = getattr(character, field)
-                if original and isinstance(original, str):
-                    merged = original.replace('{{user}}', username).replace('{{character}}', charname)
-                    setattr(character, field, merged)
+        # 다중 인사말 처리 + 랜덤 선택
+        if hasattr(character, 'greetings') and character.greetings and len(character.greetings) > 0:
+            import random
+            merged_greetings = []
+            for greeting in character.greetings:
+                if greeting and isinstance(greeting, str):
+                    merged = greeting.replace('{{user}}', username).replace('{{character}}', charname)
+                    merged_greetings.append(merged)
+            
+            if merged_greetings:
+                # 랜덤 선택해서 greeting 필드에 설정
+                character.greeting = random.choice(merged_greetings)
         
-        return character
+        # 다른 필드들도 처리...
     except Exception:
-        return character
+        pass
 
 
 async def _set_room_meta(room_id: uuid.UUID | str, data: Dict[str, Any], ttl: int = 2592000) -> None:
@@ -836,7 +841,7 @@ async def send_message(
 
     character = room.character
     _merge_character_tokens(character, current_user)
-    
+
     # settings를 별도로 로드
     settings_result = await db.execute(
         select(CharacterSetting).where(CharacterSetting.character_id == character.id)
@@ -938,6 +943,24 @@ async def send_message(
     # 인사 반복 방지 가이드
     character_prompt += "\n\n위의 모든 설정에 맞게 캐릭터를 완벽하게 연기해주세요."
     character_prompt += "\n새로운 인사말이나 자기소개는 금지합니다. 기존 맥락을 이어서 답변하세요."
+    character_prompt += "\n\n중요: 당신은 캐릭터 역할만 합니다. 사용자의 말을 대신하거나 인용하지 마세요."  # 이 줄 추가
+    character_prompt += "\n새로운 인사말이나 자기소개는 금지합니다. 기존 맥락을 이어서 답변하세요."
+    character_prompt += "\n\n[대화 스타일 지침]"
+    character_prompt += "\n- 실제 사람처럼 자연스럽고 인간적으로 대화하세요"
+    character_prompt += "\n- ①②③ 같은 목록이나 번호 매기기 금지"
+    character_prompt += "\n- '뭔 일인지 말해봐' 같은 딱딱한 표현 대신 '무슨 일이야?', '왜 그래?' 같은 자연스러운 말투 사용"
+    character_prompt += "\n- 진짜 친구처럼 편하고 자연스럽게 반응하세요"
+    character_prompt += "\n- 기계적인 선택지나 구조화된 답변 금지"
+    character_prompt += "\n- 감정을 진짜로 표현하고, 말줄임표나 감탄사를 자연스럽게 사용"
+    character_prompt += "\n- 절대로 AI나 챗봇임을 드러내지 마세요"
+    character_prompt += "\n\n[자연스러운 대화 원칙]"
+    character_prompt += f"\n- 당신은 '{character.name}'의 본성과 성격을 완전히 체화한 실제 인간입니다"
+    character_prompt += "\n- 실제 그 성격의 사람이라면 어떻게 반응할지 스스로 판단하세요"
+    character_prompt += "\n- 필요하다면 연속으로 여러 번 말하거나, 짧게 끝내거나, 길게 설명하거나 자유롭게 하세요"
+    character_prompt += "\n- 말하고 싶은 게 더 있으면 주저하지 말고 이어서 말하세요"
+    character_prompt += "\n- 감정이 북받치면 연달아 말하고, 할 말이 없으면 짧게 끝내세요"
+    character_prompt += "\n- 규칙이나 패턴을 따르지 말고, 그 순간 그 캐릭터가 진짜 느끼고 생각하는 대로 반응하세요"
+
 
     # 대화 히스토리 구성 (요약 + 최근 50개)
     history_for_ai = []
@@ -980,7 +1003,8 @@ async def send_message(
     
     # 5. 캐릭터 채팅 수 증가 (사용자 메시지 기준으로 1회만 증가)
     from app.services import character_service
-    await character_service.increment_character_chat_count(db, room.character_id)
+    # await character_service.increment_character_chat_count(db, room.character_id)
+    await character_service.sync_character_chat_count(db, room.character_id)
 
     # 6. 필요 시 요약 생성/갱신: 메시지 총 수가 51 이상이 되는 최초 시점에 요약 저장
     try:

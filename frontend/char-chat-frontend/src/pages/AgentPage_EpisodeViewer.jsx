@@ -21,13 +21,13 @@ function EpisodeViewer({ storyId, storyTitle }) {
         if (eps[0]) {
           setExpandedEpisodes(new Set([eps[0].id]));
           
-          // 1화 조회수 증가
-          try {
-            await storiesAPI.incrementEpisodeView(eps[0].id);
-            setViewCounted(new Set([eps[0].id]));
-          } catch (err) {
-            console.error('Failed to count 1st episode view:', err);
-          }
+          // // 1화 조회수 증가
+          // try {
+          //   await storiesAPI.incrementEpisodeView(eps[0].id);
+          //   setViewCounted(new Set([eps[0].id]));
+          // } catch (err) {
+          //   console.error('Failed to count 1st episode view:', err);
+          // }
         }
         
         setLoading(false);

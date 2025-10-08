@@ -6,6 +6,7 @@ import {
 } from './ui/accordion';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
 import { Button } from './ui/button';
+import { Badge } from './ui/badge';  // 이 줄 추가
 import { Input } from './ui/input';
 import { Loader2, Trash2 } from 'lucide-react';
 
@@ -58,10 +59,10 @@ const CharacterDetails = ({ character, comments, commentText, setCommentText, ha
         ) : (
           <div className="flex flex-wrap gap-2">
             {tags.map(t => (
-              <span key={t.id} className="px-3 py-1 rounded-full bg-gray-800 text-gray-100 border border-gray-700 inline-flex items-center gap-2">
-                <span>{t.emoji || '🏷️'}</span>
-                <span>{t.name}</span>
-              </span>
+              <Badge key={t.id || t.slug || t.name} variant="secondary" className="bg-gray-700 hover:bg-gray-600 text-white inline-flex items-center gap-1">
+              {/* <span>{t.emoji || '🏷️'}</span> */}
+              <span>{t.name}</span>
+              </Badge>
             ))}
           </div>
         )}

@@ -659,6 +659,26 @@ const handleSelectMode = useCallback((messageId, selectedMode) => {
         if (activeSessionIdRef.current === currentSessionId) {
           setMessages(updatedHL);
         }
+        
+        // ✅ 자동 저장 (내 서랍) - 하이라이트 생성 후
+        if (!isGuest) {
+          try {
+            const userMsgs = updatedHL.filter(m => m.role === 'user' && !m.type);
+            const lastUserText = userMsgs.length > 0 ? userMsgs[userMsgs.length - 1].content : null;
+            
+            await chatAPI.saveAgentContent({
+              session_id: currentSessionId,
+              message_id: messageId,
+              story_mode: selectedMode,
+              user_text: lastUserText,
+              user_image_url: imageUrl,
+              generated_text: selectedResponse.fullContent,
+              generated_image_urls: scenes.map(s => s.imageUrl)
+            });
+          } catch (err) {
+            console.error('Failed to save to drawer:', err);
+          }
+        }
       } catch (e) {
         console.error('Failed to generate highlights after selection:', e);
         // 실패 시 로딩 제거
@@ -938,7 +958,7 @@ useEffect(() => {
     }
 }, [sessions, activeSessionId, isGuest, createSession]);
 
-// Hash-based activation from AgentSidebar
+// Hash-based activation from AgentSidebar + scroll to message
 useEffect(() => {
 const tryActivateFromHash = () => {
 try {
@@ -948,13 +968,31 @@ try {
   if (id && sessions.some(s => s.id === id)) {
     setActiveSessionId(id);
     setShowChatPanel(true);
+    
+    // scrollTo 파라미터 확인
+    const scrollMatch = h.match(/scrollTo=([^&]+)/);
+    const scrollToId = scrollMatch?.[1];
+    if (scrollToId) {
+      // 메시지 로드 대기 후 스크롤
+      setTimeout(() => {
+        const element = document.querySelector(`[data-message-id="${scrollToId}"]`);
+        if (element) {
+          element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          // 하이라이트 효과
+          element.classList.add('highlight-flash');
+          setTimeout(() => {
+            element.classList.remove('highlight-flash');
+          }, 2000);
+        }
+      }, 500);
+    }
   }
 } catch {}
 };
 tryActivateFromHash();
 window.addEventListener('hashchange', tryActivateFromHash);
 return () => window.removeEventListener('hashchange', tryActivateFromHash);
-}, [sessions]);
+}, [sessions, messages]);
 
 // 세션 전환 시 메시지 유무로 패널 표시 결정 (빈 채팅방 금지)
 useEffect(() => {
@@ -2300,7 +2338,7 @@ return (
                       const isStreaming = !!(m.streaming || m.thinking);
                       const truncated = text.length > 500 ? text.slice(0, 500) + '…' : text;
                       return (
-                        <div key={m.id}>
+                        <div key={m.id} data-message-id={m.id}>
                           <div className={`flex w-full items-start gap-3 my-4 ${m.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
                               {/* 텍스트 메시지일 때만 아바타 배지 표시 */}
                               {(!m.type || m.type === 'text') && (
@@ -3041,6 +3079,28 @@ return (
                         const timers = sessionTypingTimersRef.current.get(currentSessionId) || [];
                         sessionTypingTimersRef.current.set(currentSessionId, timers.filter(t => t !== timer));
                         
+                        // ✅ 자동 저장 (내 서랍)
+                        if (!isGuest) {
+                          (async () => {
+                            try {
+                              const userMsgs = updated.filter(m => m.role === 'user' && !m.type);
+                              const lastUserText = userMsgs.length > 0 ? userMsgs[userMsgs.length - 1].content : null;
+                              
+                              await chatAPI.saveAgentContent({
+                                session_id: currentSessionId,
+                                message_id: assistantId,
+                                story_mode: decidedMode,
+                                user_text: lastUserText,
+                                user_image_url: imageUrl,
+                                generated_text: assistantText,
+                                generated_image_urls: []
+                              });
+                            } catch (err) {
+                              console.error('Failed to save to drawer:', err);
+                            }
+                          })();
+                        }
+                        
                         // ✅ 하이라이트/추천 추가
                         if (imageUrl) {
                           const finalSaved = loadJson(LS_MESSAGES_PREFIX + currentSessionId, []);
@@ -3780,58 +3840,89 @@ function EpisodeViewerInline({ storyId, storyTitle, visibleEpisodes, expandedEpi
 }
 
 
-// 일상(snap) 전용 캐릭터 추천 (하드코딩)
+// 일상(snap) 전용 캐릭터 추천 (DB에서 '일상' 태그 필터링)
 function CharacterRecommendations() {
-  const hardcodedChars = [
-    { 
-      id: 'gigachad', 
-      name: '기가채드',
-      emoji: '💪',
-      specialty: '시그마 마인드셋'
-    },
-    { 
-      id: 'madongseok', 
-      name: '마동석',
-      emoji: '🦾',
-      specialty: '든든한 형님'
-    },
-    { 
-      id: 'jjanggu', 
-      name: '짱구',
-      emoji: '🤪',
-      specialty: '엉뚱한 유머'
-    },
-    { 
-      id: 'infp', 
-      name: '극INFP친구',
-      emoji: '🥺',
-      specialty: '공감 폭발'
-    },
-    { 
-      id: 'pt', 
-      name: '광기의PT선생님',
-      emoji: '🔥',
-      specialty: '열정 과다'
-    }
-  ];
+  const [characters, setCharacters] = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+
+  React.useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        // '일상' 태그를 가진 캐릭터 조회 (인기순)
+        const res = await charactersAPI.getCharacters({ 
+          tags: '일상',  // 태그 필터
+          sort: 'views',  // 인기순
+          limit: 5 
+        });
+        if (!alive) return;
+        
+        const chars = res.data || [];
+        setCharacters(chars.slice(0, 5));
+        setLoading(false);
+      } catch (err) {
+        console.error('Failed to fetch characters:', err);
+        setLoading(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
 
   const handleCharacterClick = (char) => {
     console.log('🎭 Character selected:', char);
     // TODO: 캐릭터챗 시작 로직
   };
 
+  if (loading) {
+    return (
+      <div className="w-full max-w-2xl">
+        <div className="mb-4 text-sm text-gray-400">💬 이 이야기를 같이 나눌 친구</div>
+        <div className="flex justify-center gap-6">
+          {[...Array(5)].map((_, i) => (
+            <div key={i} className="flex flex-col items-center gap-2">
+              <div className="w-20 h-20 rounded-full bg-gray-800 animate-pulse" />
+              <div className="h-4 w-16 bg-gray-800 rounded animate-pulse" />
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (characters.length === 0) {
+    return (
+      <div className="w-full max-w-2xl">
+        <div className="mb-4 text-sm text-gray-400">💬 이 이야기를 같이 나눌 친구</div>
+        <div className="text-center text-gray-500 py-4">
+          '일상' 태그 캐릭터가 없습니다
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="w-full max-w-2xl">
       <div className="mb-4 text-sm text-gray-400">💬 이 이야기를 같이 나눌 친구</div>
       <div className="flex justify-center gap-6">
-        {hardcodedChars.map(char => (
+        {characters.map(char => (
           <div 
             key={char.id}
             onClick={() => handleCharacterClick(char)}
             className="flex flex-col items-center gap-2 cursor-pointer group"
           >
             <div className="w-20 h-20 rounded-full overflow-hidden ring-2 ring-gray-700 group-hover:ring-purple-500 group-hover:shadow-[0_0_16px_rgba(168,85,247,0.5)] transition-all bg-gray-800 flex items-center justify-center">
-              <span className="text-4xl">{char.emoji}</span>
+              <img 
+                src={char.avatar_url || char.thumbnail_url} 
+                alt={char.name}
+                className="w-full h-full object-cover"
+                onError={(e) => {
+                  e.target.style.display = 'none';
+                  e.target.nextSibling.style.display = 'flex';
+                }}
+              />
+              <span className="text-4xl hidden">
+                {char.name?.charAt(0) || '👤'}
+              </span>
             </div>
             <span className="text-sm text-gray-300 group-hover:text-purple-300 transition-colors font-medium text-center">
               {char.name}

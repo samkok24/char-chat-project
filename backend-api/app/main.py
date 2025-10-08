@@ -42,6 +42,7 @@ from app.api.point import router as point_router        # ⏳ 나중에: 포인�
 from app.api.files import router as files_router
 from app.api.tags import router as tags_router
 from app.api.metrics import router as metrics_router
+from app.api.agent_contents import router as agent_contents_router  # 내 서랍 API
 from app.models.tag import Tag
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
@@ -209,6 +210,7 @@ app.include_router(users_router, prefix="", tags=["✅ 유저 (필수)"])  # pre
 app.include_router(story_importer_router, prefix="/story-importer", tags=["✨ 스토리 임포터 (신규)"])
 app.include_router(memory_notes_router, prefix="/memory-notes", tags=["✨ 기억노트 (신규)"])
 app.include_router(user_personas_router, prefix="/user-personas", tags=["👤 유저 페르소나 (신규)"])
+app.include_router(agent_contents_router, prefix="/agent/contents", tags=["📦 에이전트 콘텐츠 (내 서랍)"])
 app.include_router(files_router, prefix="/files", tags=["🗂️ 파일"])
 app.include_router(tags_router, prefix="/tags", tags=["🏷️ 태그"])
 app.include_router(media_router, prefix="/media", tags=["🖼️ 미디어"])

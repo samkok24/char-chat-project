@@ -22,6 +22,7 @@ class Character(Base):
     personality = Column(Text)  # 성격
     speech_style = Column(Text)  # 말투
     greeting = Column(Text)  # 인사말
+    greetings = Column(JSON, default=list)  # ["인사말1", "인사말2", "인사말3"]
     background_story = Column(Text)  # 배경 스토리
     
     # 🌍 세계관 설정

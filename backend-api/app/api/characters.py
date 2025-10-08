@@ -58,6 +58,7 @@ from app.services.character_service import (
     like_character,
     unlike_character,
     is_character_liked_by_user,
+    sync_character_chat_count,
     # 🔥 CAVEDUCK 스타일 고급 서비스
     create_advanced_character,
     update_advanced_character,
@@ -662,6 +663,15 @@ async def get_character(
     
     # 3. 🔥 고급 응답 모델로 변환하는 헬퍼 함수를 재사용
     response_data = await convert_character_to_detail_response(character, db)
+
+    # 추가: 실시간 메시지 수로 동기화
+    from app.services.character_service import get_real_message_count
+    # real_count = await get_real_message_count(db, character_id)
+    # response_data.chat_count = real_count
+    real_count = await sync_character_chat_count(db, character_id)
+    response_data.chat_count = await get_real_message_count(db, character_id)
+
+
     # 원작 스토리 카드용 보강 필드
     try:
         if response_data.origin_story_id:
@@ -693,11 +703,6 @@ async def get_character(
         response_data.is_liked = await is_character_liked_by_user(db, character_id, current_user.id)
     else:
         response_data.is_liked = False
-    # 상세페이지 접속 시 조회수(뷰 개념) 증가: chat_count를 조회수로 간주
-    try:
-        background_tasks.add_task(increment_character_chat_count, db, character_id)
-    except Exception:
-        pass
     
     return response_data
 

@@ -85,7 +85,7 @@ const ChatPage = () => {
   
   const [character, setCharacter] = useState(null);
   const [chatRoomId, setChatRoomId] = useState(null);
-  const [newMessage, setNewMessage] = useState('');
+  const [aiThinking, setAiThinking] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [showModelModal, setShowModelModal] = useState(false);
@@ -610,6 +610,46 @@ const ChatPage = () => {
 
   // 서버에서 인사말을 저장하므로, 클라이언트에서 별도 주입하지 않습니다.
 
+  useEffect(() => {
+    if (messages.length > 0) {
+      const lastMessage = messages[messages.length - 1];
+      
+      // AI 메시지 완료 시
+      if (lastMessage.senderType === 'assistant' && !lastMessage.isStreaming) {
+        // 조건 체크
+        const messageLength = (lastMessage.content || '').length;
+        const hasQuestion = (lastMessage.content || '').includes('?');
+        const isShort = messageLength < 50;
+        
+        // 연속 응답 가능성이 높은 경우만 표시
+        let shouldShow = false;
+        
+        // 1. 짧은 응답 (더 말할 게 있을 가능성)
+        if (isShort && !hasQuestion) {
+          shouldShow = Math.random() < 0.3; // 30% 확률
+        }
+        // 2. 감정적 응답 (연속 반응 가능성)
+        else if (/[!…]/.test(lastMessage.content)) {
+          shouldShow = Math.random() < 0.2; // 20% 확률
+        }
+        // 3. 질문으로 끝나면 표시 안 함 (사용자 답변 대기)
+        else if (hasQuestion) {
+          shouldShow = false;
+        }
+        // 4. 일반적인 경우
+        else {
+          shouldShow = Math.random() < 0.1; // 10% 확률
+        }
+        
+        if (shouldShow) {
+          setAiThinking(true);
+          setTimeout(() => {
+            setAiThinking(false);
+          }, 2000);
+        }
+      }
+    }
+  }, [messages, character?.name]);
 
   useEffect(() => {
     // 신규 메시지 수신 시 맨 아래로 스크롤
@@ -1594,6 +1634,15 @@ const ChatPage = () => {
               rows={1}
             />
             </div>
+            {/* AI 연속 응답 힌트 */}
+            {aiThinking && (
+              <div className="absolute -bottom-6 left-0 text-xs text-gray-400 flex items-center gap-1">
+                <span className="inline-block w-1 h-1 bg-gray-400 rounded-full animate-pulse"></span>
+                <span className="inline-block w-1 h-1 bg-gray-400 rounded-full animate-pulse" style={{ animationDelay: '0.2s' }}></span>
+                <span className="inline-block w-1 h-1 bg-gray-400 rounded-full animate-pulse" style={{ animationDelay: '0.4s' }}></span>
+                <span className="ml-1">{character?.name}이(가) 더 말하고 싶어하는 것 같아요</span>
+              </div>
+            )}
             {/* 상황 입력 필드 (토글 열림형, 원버튼 제출) */}
             {isOrigChat && showSituation && (
               <div className="absolute -top-12 left-0 right-0 flex items-center gap-2">

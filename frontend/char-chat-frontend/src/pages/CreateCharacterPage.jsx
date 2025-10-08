@@ -971,24 +971,103 @@ const CreateCharacterPage = () => {
         </div>
 
         <div>
-          <Label htmlFor="greeting">인사말</Label>
-          <Textarea
-            id="greeting"
-            className="mt-4"
-            value={formData.basic_info.greeting}
-            onChange={(e) => updateFormData('basic_info', 'greeting', e.target.value)}
-            placeholder="채팅을 시작할 때 캐릭터가 건네는 첫마디"
-            rows={2}
-            maxLength={500}
-          />
-          {fieldErrors['basic_info.greeting'] && (
-            <p className="text-xs text-red-500">{fieldErrors['basic_info.greeting']}</p>
+          <Label htmlFor="greetings">인사말</Label>
+          {(formData.basic_info.greetings || ['']).map((greeting, index) => (
+            <div key={index} className="mt-4">
+              <div className="flex gap-2">
+                <Textarea
+                  id={index === 0 ? "greeting" : `greeting_${index}`}
+                  className="flex-1"
+                  value={greeting}
+                  onChange={(e) => {
+                    const newGreetings = [...(formData.basic_info.greetings || [''])];
+                    newGreetings[index] = e.target.value;
+                    updateFormData('basic_info', 'greetings', newGreetings);
+                  }}
+                  placeholder={`인사말 ${index + 1} - 채팅을 시작할 때 캐릭터가 건네는 첫마디`}
+                  rows={2}
+                  maxLength={500}
+                />
+                {(formData.basic_info.greetings || ['']).length > 1 && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      const newGreetings = (formData.basic_info.greetings || ['']).filter((_, i) => i !== index);
+                      updateFormData('basic_info', 'greetings', newGreetings.length ? newGreetings : ['']);
+                    }}
+                    className="px-3 self-start mt-1"
+                  >
+                    삭제
+                  </Button>
+                )}
+              </div>
+              <div className="flex items-center gap-2 mt-2">
+                <span className="text-xs text-gray-500">토큰 삽입:</span>
+                <Button 
+                  type="button" 
+                  variant="secondary" 
+                  size="sm" 
+                  title="{{assistant}} 삽입" 
+                  onClick={() => {
+                    const el = document.getElementById(index === 0 ? "greeting" : `greeting_${index}`);
+                    const current = greeting || '';
+                    const { next, caret } = insertAtCursor(el, current, TOKEN_ASSISTANT);
+                    const newGreetings = [...(formData.basic_info.greetings || [''])];
+                    newGreetings[index] = next;
+                    updateFormData('basic_info', 'greetings', newGreetings);
+                    if (el && caret !== null) {
+                      setTimeout(() => { try { el.focus(); el.setSelectionRange(caret, caret); } catch(_){} }, 0);
+                    }
+                  }}
+                >
+                  캐릭터
+                </Button>
+                <Button 
+                  type="button" 
+                  variant="secondary" 
+                  size="sm" 
+                  title="{{user}} 삽입"
+                  onClick={() => {
+                    const el = document.getElementById(index === 0 ? "greeting" : `greeting_${index}`);
+                    const current = greeting || '';
+                    const { next, caret } = insertAtCursor(el, current, TOKEN_USER);
+                    const newGreetings = [...(formData.basic_info.greetings || [''])];
+                    newGreetings[index] = next;
+                    updateFormData('basic_info', 'greetings', newGreetings);
+                    if (el && caret !== null) {
+                      setTimeout(() => { try { el.focus(); el.setSelectionRange(caret, caret); } catch(_){} }, 0);
+                    }
+                  }}
+                >
+                  유저
+                </Button>
+              </div>
+            </div>
+          ))}
+          
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => {
+              const newGreetings = [...(formData.basic_info.greetings || ['']), ''];
+              updateFormData('basic_info', 'greetings', newGreetings);
+            }}
+            className="w-full mt-4"
+          >
+            인사말 추가
+          </Button>
+          
+          {(formData.basic_info.greetings || ['']).length > 1 && (
+            <p className="text-sm text-gray-500 mt-2">
+              2개 이상일 때 채팅 시작 시 랜덤으로 선택됩니다
+            </p>
           )}
-          <div className="flex items-center gap-2 mt-4">
-            <span className="text-xs text-gray-500">토큰 삽입:</span>
-            <Button type="button" variant="secondary" size="sm" title="{{assistant}} 삽입" onClick={() => insertBasicToken('greeting','greeting', TOKEN_ASSISTANT)}>캐릭터</Button>
-            <Button type="button" variant="secondary" size="sm" title="{{user}} 삽입" onClick={() => insertBasicToken('greeting','greeting', TOKEN_USER)}>유저</Button>
-          </div>
+          
+          {fieldErrors['basic_info.greetings'] && (
+            <p className="text-xs text-red-500 mt-2">{fieldErrors['basic_info.greetings']}</p>
+          )}
         </div>
       </div>
 

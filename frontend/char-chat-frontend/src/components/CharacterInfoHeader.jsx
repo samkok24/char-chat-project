@@ -112,8 +112,8 @@ const CharacterInfoHeader = ({ character, likeCount, isLiked, handleLike, isOwne
       {Array.isArray(tags) && tags.length > 0 && (
         <div className="flex flex-wrap gap-2">
           {tags.map((t) => (
-            <Badge key={t.id || t.slug || t.name} variant="secondary" className="bg-gray-700 hover:bg-gray-600 inline-flex items-center gap-1">
-              <span>{t.emoji || '🏷️'}</span>
+            <Badge key={t.id || t.slug || t.name} variant="secondary" className="bg-gray-700 hover:bg-gray-600 text-white inline-flex items-center gap-1">
+              {/* <span>{t.emoji || '🏷️'}</span> */}
               <span>{t.name}</span>
             </Badge>
           ))}
