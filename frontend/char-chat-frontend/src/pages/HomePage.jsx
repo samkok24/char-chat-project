@@ -325,6 +325,122 @@ const HomePage = () => {
             </div>
           </div>
 
+          {/* 특화 캐릭터 바로가기 */}
+          <section className="mb-10">
+            <h2 className="text-lg font-medium text-gray-100 mb-4">특화 캐릭터들과 일상을 같이 나눠보세요</h2>
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+              {[
+                { name: '마동석', title: '슬기로운 사회생활 배우기', image: '/image/마동석2.jpg', tag: '직장' },
+                { name: '아이유', title: '연애 고민 상담소', image: '/image/아이유.png', tag: '일상' },
+                { name: '김영철', title: '유쾌한 영어 회화', image: '/image/김영철.jpg', tag: '일상' },
+                { name: '침착맨', title: '깨진 멘탈 다 잡기', image: '/image/침착맨.jpg', tag: '일상' },
+                { name: '펭수', title: '정신이 번쩍 드는 독설 듣기', image: '/image/펭수.jpg', tag: '일상' },
+                { name: '빠니보틀', title: '여행계획하기', image: '/image/빠니보틀.png', tag: '일상' }
+              ].map((item, idx) => (
+                <div
+                  key={idx}
+                  className="bg-gray-800/40 rounded-lg p-3 cursor-pointer hover:bg-gray-800/60 transition-all border border-gray-700/50 hover:border-gray-600"
+                  onClick={() => {
+                    // TODO: 캐릭터 채팅방으로 이동
+                    console.log(`Navigate to ${item.name} chat`);
+                  }}
+                >
+                  <div className="flex items-center gap-3 mb-2">
+                    <div className="w-10 h-10 rounded-full bg-gray-700 flex items-center justify-center flex-shrink-0 overflow-hidden">
+                      <img 
+                        src={item.image} 
+                        alt={item.name}
+                        className="w-full h-full object-cover object-top"
+                        onError={(e) => {
+                          e.target.style.display = 'none';
+                          e.target.nextSibling.style.display = 'flex';
+                        }}
+                      />
+                      <span className="text-lg hidden">{item.name.charAt(0)}</span>
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs text-gray-400 truncate">{item.name}</div>
+                    </div>
+                  </div>
+                  <div className="text-sm text-gray-200 leading-snug">
+                    {item.title}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          {/* 스토리 시뮬레이터 */}
+          <section className="mb-10">
+            <h2 className="text-lg font-medium text-gray-100 mb-4">
+              {user?.username || '신비한천사60'}님. 이런 상상, 해본 적 있으세요? 직접 주인공이 되어보세요.
+            </h2>
+            <div className="flex gap-4 overflow-x-auto pb-2 scrollbar-hide">
+              {[
+                { 
+                  title: '로또1등이라 엄청 즐겁게 회사생활하기', 
+                  badge: '로또1등도 출근합니다',
+                  image: '로또1등도.jpg'
+                },
+                { 
+                  title: '전셋집에서 쫓겨나서 부동산 재벌되기', 
+                  badge: '회귀해서 부동산 재벌',
+                  image: '부동산.jpg'
+                },
+                { 
+                  title: '1998년부터 시작해서 K-컬쳐의 제왕되기', 
+                  badge: 'K-문화의 제왕',
+                  image: 'K문화.jpg'
+                },
+                { 
+                  title: '망한 아이돌멤버에서 빌보드 프로듀서까지', 
+                  badge: '두번 사는 프로듀서',
+                  image: '프로듀서.jpg'
+                },
+                { 
+                  title: '회사사람들과 다 같이 생존게임 참여하기', 
+                  badge: '구조조정에서 살아남는법',
+                  image: '구조조정.jpg'
+                }
+              ].map((item, idx) => (
+                <div
+                  key={idx}
+                  className="flex-shrink-0 w-[200px] cursor-pointer group"
+                  onClick={() => {
+                    // TODO: 스토리 시뮬레이터로 이동
+                    console.log(`Start story simulator: ${item.title}`);
+                  }}
+                >
+                  <div className="relative aspect-[3/4] rounded-lg overflow-hidden mb-2 bg-gray-900 border border-gray-700/50 group-hover:border-gray-600 transition-colors">
+                    <img 
+                      src={`/image/${item.image}`}
+                      alt={item.title}
+                      className="w-full h-full object-cover"
+                      onError={(e) => {
+                        e.target.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="200" height="267"%3E%3Crect fill="%23374151" width="200" height="267"/%3E%3Ctext x="50%25" y="50%25" fill="%239ca3af" text-anchor="middle" dominant-baseline="middle" font-size="12"%3E이미지 준비중%3C/text%3E%3C/svg%3E';
+                      }}
+                    />
+                    <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent" />
+                    <div className="absolute bottom-0 left-0 right-0 p-3">
+                      <h3 className="text-white font-semibold text-base leading-tight" style={{
+                        textShadow: '0 2px 8px rgba(0,0,0,0.8), 0 0 2px rgba(0,0,0,1)',
+                        WebkitTextStroke: '0.5px black'
+                      }}>
+                        {item.title}
+                      </h3>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-xs text-gray-500">by</span>
+                    <Badge className="bg-blue-600/80 hover:bg-blue-600 text-white text-[10px] px-2 py-0.5">
+                      {item.badge}
+                    </Badge>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+
           {/* 인기 캐릭터 TOP (4x2) */}
           <ErrorBoundary>
             <TrendingCharacters />

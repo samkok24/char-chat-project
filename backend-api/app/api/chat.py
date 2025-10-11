@@ -15,16 +15,18 @@ from typing import List, Optional, Dict, Any
 import uuid
 import json
 import time
-
+from datetime import datetime
+from fastapi import BackgroundTasks
 from app.core.database import get_db, AsyncSessionLocal
 from app.core.config import settings
 from app.core.security import get_current_user, get_current_user_optional
 from app.models.user import User
+from app.models.chat import ChatRoom
 from app.models.character import CharacterSetting, CharacterExampleDialogue, Character
 from app.models.story import Story
 from app.models.story_chapter import StoryChapter
 from app.models.story_summary import StoryEpisodeSummary
-
+from app.services.chat_service import get_chat_room_by_character_and_session
 from app.services import chat_service
 from app.services import origchat_service
 from app.services import ai_service
@@ -38,7 +40,7 @@ from app.schemas.chat import (
     SendMessageResponse,
     ChatMessageUpdate,
     RegenerateRequest,
-    MessageFeedback,
+    MessageFeedback
 )
 try:
     from app.core.logger import logger
@@ -553,7 +555,13 @@ async def agent_simulate(
             except Exception:
                 pass
 
-        response = {"assistant": text, "story_mode": story_mode, "image_summary": image_summary}
+        response = {
+            "assistant": text, 
+            "story_mode": story_mode, 
+            "image_summary": image_summary,
+            "vision_tags": locals().get('tags2') if image_url else None,
+            "vision_ctx": locals().get('ctx') if image_url else None    
+        }
         
         # 하이라이트는 별도 엔드포인트에서 비동기로 처리
             
@@ -827,6 +835,273 @@ async def start_new_chat(
     return chat_room
 
 
+@router.post("/start-with-context", response_model=ChatRoomResponse, status_code=status.HTTP_201_CREATED)
+async def start_chat_with_agent_context(
+    request: dict,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """에이전트에서 생성한 일상 텍스트로 시작하는 채팅"""
+    character_id = request.get("character_id")
+    agent_text = request.get("agent_text")
+    image_url = request.get("image_url")
+    session_id = request.get("session_id")
+    vision_tags = request.get("vision_tags")
+    vision_ctx = request.get("vision_ctx")
+
+    # 기존 room 검색 시 session_id도 검사
+    chat_room = await get_chat_room_by_character_and_session(
+        db, current_user.id, request["character_id"], session_id
+    )
+
+    if not chat_room:
+        chat_room = ChatRoom(
+            user_id=current_user.id,
+            character_id=request["character_id"],
+            session_id=session_id,
+            created_at=datetime.utcnow()
+        )
+        db.add(chat_room)
+        await db.commit()
+        await db.refresh(chat_room)
+
+    from app.core.database import redis_client
+    idem_key = f"chat:room:{chat_room.id}:first_response_scheduled"
+    done_key = f"chat:room:{chat_room.id}:first_response_done"
+
+    # 멱등 가드: 이미 스케줄/완료면 바로 반환 (관계 로드 보장)
+    if await redis_client.get(idem_key) or await redis_client.get(done_key):
+        from sqlalchemy.orm import selectinload
+        from sqlalchemy import select as sql_select
+        stmt = sql_select(ChatRoom).where(ChatRoom.id == chat_room.id).options(selectinload(ChatRoom.character))
+        result = await db.execute(stmt)
+        return result.scalar_one()
+
+    await redis_client.setex(idem_key, 3600, "1")  # 1시간
+
+    background_tasks.add_task(
+        _generate_agent_first_response,
+        room_id=str(chat_room.id),
+        character_id=str(character_id),
+        agent_text=agent_text,
+        image_url=image_url,
+        user_id=current_user.id,
+        vision_tags=vision_tags,
+        vision_ctx=vision_ctx,
+    )
+
+    # ← 반환 직전 관계 로드 보장
+    from sqlalchemy.orm import selectinload
+    from sqlalchemy import select as sql_select
+    stmt = sql_select(ChatRoom).where(ChatRoom.id == chat_room.id).options(selectinload(ChatRoom.character))
+    result = await db.execute(stmt)
+    return result.scalar_one()
+    # return chat_room  # 즉시 반환
+
+
+# 파일 하단 (868줄 이후)에 백그라운드 함수 추가:
+
+async def _generate_agent_first_response(
+    room_id: str,
+    character_id: str,
+    agent_text: str,
+    image_url: str,
+    user_id: int,
+    vision_tags: dict,
+    vision_ctx: dict
+):
+
+    from app.core.database import redis_client
+
+    done_key = f"chat:room:{room_id}:first_response_done"
+    if await redis_client.get(done_key):
+        return
+
+
+    """백그라운드에서 캐릭터의 첫 반응 생성 (이미지+텍스트를 본 반응만)"""
+    async with AsyncSessionLocal() as db:
+        try:
+            import uuid
+            from app.models.character import Character, CharacterSetting, CharacterExampleDialogue
+            
+            # 캐릭터 정보 로드
+            room = await chat_service.get_chat_room_by_id(db, uuid.UUID(room_id))
+            if not room:
+                return
+            
+            character = room.character
+            user = await db.get(User, user_id)
+            if not user:
+                return
+                
+            _merge_character_tokens(character, user)
+            
+            # settings 로드
+            settings_result = await db.execute(
+                select(CharacterSetting).where(CharacterSetting.character_id == character.id)
+            )
+            settings = settings_result.scalar_one_or_none()
+            
+            # 예시 대화 가져오기
+            example_dialogues_result = await db.execute(
+                select(CharacterExampleDialogue)
+                .where(CharacterExampleDialogue.character_id == character.id)
+                .order_by(CharacterExampleDialogue.order_index)
+            )
+            example_dialogues = example_dialogues_result.scalars().all()
+            
+            # 기억노트 가져오기
+            active_memories = await get_active_memory_notes_by_character(
+                db, user.id, character.id
+            )
+            
+            # 캐릭터 프롬프트 구성
+            character_prompt = f"""당신은 '{character.name}'입니다.
+
+[기본 정보]
+설명: {character.description or '설정 없음'}
+성격: {character.personality or '설정 없음'}
+말투: {character.speech_style or '설정 없음'}
+배경 스토리: {character.background_story or '설정 없음'}
+
+[세계관]
+{character.world_setting or '설정 없음'}
+"""
+
+            if character.has_affinity_system and character.affinity_rules:
+                character_prompt += f"\n\n[호감도 시스템]\n{character.affinity_rules}"
+                if character.affinity_stages:
+                    character_prompt += f"\n호감도 단계: {character.affinity_stages}"
+            
+            if character.introduction_scenes:
+                character_prompt += f"\n\n[도입부 설정]\n{character.introduction_scenes}"
+            
+            if example_dialogues:
+                character_prompt += "\n\n[예시 대화]"
+                for dialogue in example_dialogues:
+                    character_prompt += f"\nUser: {dialogue.user_message}"
+                    character_prompt += f"\n{character.name}: {dialogue.character_response}"
+            
+            if active_memories:
+                character_prompt += "\n\n[사용자와의 중요한 기억]"
+                for memory in active_memories:
+                    character_prompt += f"\n• {memory.title}: {memory.content}"
+            
+            if settings and settings.system_prompt:
+                character_prompt += f"\n\n[추가 지시사항]\n{settings.system_prompt}"
+            
+            character_prompt += "\n\n위의 모든 설정에 맞게 캐릭터를 완벽하게 연기해주세요."
+            character_prompt += "\n\n[대화 스타일 지침]"
+            character_prompt += "\n- 실제 사람처럼 자연스럽고 인간적으로 대화하세요"
+            character_prompt += "\n- ①②③ 같은 목록이나 번호 매기기 금지"
+            character_prompt += "\n- 진짜 친구처럼 편하고 자연스럽게 반응하세요"
+            character_prompt += "\n- 기계적인 선택지나 구조화된 답변 금지"
+            character_prompt += "\n- 감정을 진짜로 표현하고, 말줄임표나 감탄사를 자연스럽게 사용"
+            character_prompt += "\n중요: 'User:'같은 라벨 없이 바로 대사만 작성하세요."
+
+            # 이미지 분석 및 그라운딩 블록 생성
+            if image_url:
+                if vision_tags and vision_ctx:
+                    # ✅ 전달받은 결과 재사용 (재분석 안 함)
+                    image_grounding = ai_service.build_image_grounding_block(
+                        tags=vision_tags,
+                        ctx=vision_ctx,
+                        story_mode='snap',
+                        username=None
+                    )
+                else:
+                    # 폴백: 없으면 새로 분석
+                    try:
+                        tags, ctx = await ai_service.analyze_image_tags_and_context(image_url, model='claude')
+                        image_grounding = ai_service.build_image_grounding_block(
+                            tags=tags,
+                            ctx=ctx,
+                            story_mode='snap',
+                            username=None
+                        )
+                    except Exception as e:
+                        logger.error(f"Image analysis failed: {e}")
+                        image_grounding = "(함께 이미지도 공유함)"
+            character_prompt += f"\n\n[상황] 사용자가 다음과 같은 일상 이야기를 공유했습니다:\n\"{agent_text}\""
+            if image_grounding:
+                character_prompt += f"\n\n{image_grounding}"  # ← 성별 포함된 분석 정보
+            character_prompt += "\n\n이제 당신 차례입니다. 이 이야기에 대해 자연스럽게 짧게(1~2문장) 반응해주세요. 공감이나 질문으로 대화를 시작하세요."
+
+            # 이미지 컨텍스트를 항상 Redis에 저장
+            try:
+                from app.core.database import redis_client
+                import json
+                if image_grounding:
+                    await redis_client.setex(
+                        f"chat:room:{room_id}:image_context",
+                        2592000,  # 30일
+                        json.dumps({
+                            "image_url": image_url,
+                            "image_grounding": image_grounding,
+                            "vision_tags": vision_tags,
+                            "vision_ctx": vision_ctx
+                        }, ensure_ascii=False)
+                    )
+            except Exception:
+                pass
+
+            
+            # AI 응답 생성 (빈 히스토리, 짧게)
+            ai_response_text = await ai_service.get_ai_chat_response(
+                character_prompt=character_prompt,
+                user_message="",  # 빈 메시지 (프롬프트에 상황 포함됨)
+                history=[],
+                preferred_model=user.preferred_model,
+                preferred_sub_model=user.preferred_sub_model,
+                response_length_pref='short'
+            )
+            
+           # AI 응답 저장 후
+            await chat_service.save_message(
+                db, uuid.UUID(room_id), "assistant", ai_response_text
+            )
+            await db.commit()
+            await redis_client.setex(f"chat:room:{room_id}:first_response_done", 3600, "1")
+
+            # ✅ 채팅방에 이미지 정보 저장 (메타데이터)
+            if vision_tags and vision_ctx:
+                try:
+                    from app.core.database import redis_client
+                    import json
+                    
+                    cache_data = {
+                        "image_url": image_url,
+                        "image_grounding": image_grounding,
+                        "vision_tags": vision_tags,
+                        "vision_ctx": vision_ctx
+                    }
+                    
+                    # 30일 보관
+                    await redis_client.setex(
+                        f"chat:room:{room_id}:image_context",
+                        2592000,  # 30일
+                        json.dumps(cache_data, ensure_ascii=False)
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to save vision to redis: {e}")
+
+ 
+            # # 캐릭터 응답만 저장
+            # await chat_service.save_message(
+            #     db, uuid.UUID(room_id), "assistant", ai_response_text
+            # )
+            # await db.commit()
+            
+        except Exception as e:
+            logger.error(f"Background agent first response failed: {e}")
+
+        # await chat_service.save_message(db, uuid.UUID(room_id), "assistant", ai_response_text)
+        # await db.commit()
+        # await redis_client.setex(f"chat:room:{room_id}:first_response_done", 3600, "1")
+
+
+
 @router.post("/message", response_model=SendMessageResponse)
 async def send_message(
     request: SendMessageRequest,
@@ -834,12 +1109,20 @@ async def send_message(
     db: AsyncSession = Depends(get_db),
 ):
     """메시지 전송 - 핵심 채팅 기능"""
-    # 1. 채팅방 및 캐릭터 정보 조회
-    room = await chat_service.get_or_create_chat_room(db, current_user.id, request.character_id)
-    if not room:
-        raise HTTPException(status_code=404, detail="채팅방을 찾을 수 없습니다.")
+    # 1. 채팅방 및 캐릭터 정보 조회 (room_id 우선)
+    if getattr(request, "room_id", None):
+        room = await chat_service.get_chat_room_by_id(db, request.room_id)
+        if not room:
+            raise HTTPException(status_code=404, detail="채팅방을 찾을 수 없습니다.")
+        if room.user_id != current_user.id or str(room.character_id) != str(request.character_id):
+            raise HTTPException(status_code=403, detail="권한이 없거나 캐릭터 불일치")
+        character = room.character
+    else:
+        room = await chat_service.get_or_create_chat_room(db, current_user.id, request.character_id)
+        if not room:
+            raise HTTPException(status_code=404, detail="채팅방을 찾을 수 없습니다.")
+        character = room.character
 
-    character = room.character
     _merge_character_tokens(character, current_user)
 
     # settings를 별도로 로드
@@ -863,14 +1146,14 @@ async def send_message(
     save_user_message = True
     clean_content = (request.content or "").strip()
     is_continue = (clean_content == "" or clean_content.lower() in {"continue", "계속", "continue please"})
-    if is_continue:
-        save_user_message = False
+    save_user_message = not is_continue
+
     if save_user_message:
-        user_message = await chat_service.save_message(
-            db, room.id, "user", request.content
-        )
+        user_message = await chat_service.save_message(db, room.id, "user", request.content)
     else:
         user_message = None
+
+    await db.commit()  # ← 즉시 커밋
 
     # 3. AI 응답 생성 (CAVEDUCK 스타일 최적화)
     history = await chat_service.get_messages_by_room_id(db, room.id, limit=20)
@@ -888,9 +1171,6 @@ async def send_message(
         db, current_user.id, character.id
     )
     
-    # 현재 활성 유저 페르소나 가져오기
-    active_persona = await get_active_persona_by_user(db, current_user.id)
-    
     # 캐릭터 프롬프트 구성 (모든 정보 포함)
     character_prompt = f"""당신은 '{character.name}'입니다.
 
@@ -904,14 +1184,20 @@ async def send_message(
 {character.world_setting or '설정 없음'}
 """
 
-    # 유저 페르소나 정보 추가
-    if active_persona:
-        character_prompt += f"""
-
-[대화 상대 정보]
-이름: {active_persona.name}
-특징: {active_persona.description}
-위의 정보는 당신이 대화하고 있는 상대방에 대한 정보입니다. 이를 바탕으로 자연스럽게 대화하세요."""
+    # ✅ Redis에서 이미지 컨텍스트 가져오기
+    try:
+        from app.core.database import redis_client
+        import json
+        
+        cached = await redis_client.get(f"chat:room:{room.id}:image_context")
+        if cached:
+            cache_str = cached.decode('utf-8') if isinstance(cached, (bytes, bytearray)) else cached
+            cache_data = json.loads(cache_str)
+            saved_grounding = cache_data.get('image_grounding')
+            if saved_grounding:
+                character_prompt += f"\n\n[참고: 대화 시작 시 공유된 이미지 정보]\n{saved_grounding}"
+    except Exception:
+        pass
 
     # 호감도 시스템이 있는 경우
     if character.has_affinity_system and character.affinity_rules:
@@ -987,13 +1273,20 @@ async def send_message(
         if is_continue else request.content
     )
 
+    # 응답 길이 설정: override가 있으면 우선 사용
+    response_length = (
+        request.response_length_override 
+        if hasattr(request, 'response_length_override') and request.response_length_override
+        else getattr(current_user, 'response_length_pref', 'medium')
+    )
+    
     ai_response_text = await ai_service.get_ai_chat_response(
         character_prompt=character_prompt,
         user_message=effective_user_message,
         history=history_for_ai,
         preferred_model=current_user.preferred_model,
         preferred_sub_model=current_user.preferred_sub_model,
-        response_length_pref=getattr(current_user, 'response_length_pref', 'medium')
+        response_length_pref=response_length
     )
 
     # 4. AI 응답 메시지 저장

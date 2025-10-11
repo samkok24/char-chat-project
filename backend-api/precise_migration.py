@@ -96,7 +96,10 @@ COLUMNS_TO_ADD = {
     ],
     "story_chapters": [
         ("view_count", "INTEGER DEFAULT 0"),
-    ]
+    ],
+    "chat_rooms": [  # ✅ 새로 추가: chat_rooms 테이블에 session_id 컬럼
+    ("session_id", "VARCHAR(100) DEFAULT NULL")  # ✅ session_id 필드 (VARCHAR로 문자열, NULL 허용)
+]
 }
 
 def _resolve_db_path():

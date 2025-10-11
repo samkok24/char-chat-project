@@ -320,9 +320,12 @@ export const chatAPI = {
   // 🔥 CAVEDUCK 스타일 채팅 시작 API
   startChat: (characterId) =>
     api.post('/chat/start', { character_id: characterId }),
-
+  
   startNewChat: (characterId) =>
     api.post('/chat/start-new', { character_id: characterId }),
+  
+  startChatWithContext: (data) =>
+    api.post('/chat/start-with-context', data),
 
   sendMessage: (data) =>
     api.post('/chat/message', data),

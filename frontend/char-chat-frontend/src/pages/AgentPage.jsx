@@ -40,6 +40,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import ImageGenerateInsertModal from '../components/ImageGenerateInsertModal';
 import Composer from '../components/agent/Composer';
 import DualResponseBubble from '../components/agent/DualResponseBubble';
+import CharacterChatInline from '../components/CharacterChatInline';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuLabel } from '../components/ui/dropdown-menu';
 
 const LS_SESSIONS = 'agent:sessions';
@@ -291,9 +292,64 @@ const isAtBottomRef = useRef(true);
 const isFollowingRef = useRef(true);
 const suppressAutoScrollRef = useRef(false);
 const suppressTimerRef = useRef(null);
+
+// 인라인 캐릭터 채팅 상태
+const [sessionChatStates, setSessionChatStates] = useState({});
+// sessionChatStates 구조: { [sessionId]: { character, roomId, focused, loading } }
+
+// 현재 세션의 인라인챗 상태 계산 (derived state)
+const currentChatState = sessionChatStates[activeSessionId] || {};
+
+const [selectedCharacter, setSelectedCharacter] = useState(null);
+const [chatRoomId, setChatRoomId] = useState(null);
+const [chatFocused, setChatFocused] = useState(false);
+const [chatLoading, setChatLoading] = useState(false); // 채팅창 로딩 상태
+const chatContainerRef = useRef(null);
+
+React.useEffect(() => {
+  if (!activeSessionId) return;
+
+  // 새 세션 진입 시 저장값 복원
+  try {
+    const raw = localStorage.getItem(`agent:inline:${activeSessionId}`);
+    if (!raw) {
+      // 저장값 없으면 초기화
+      setSelectedCharacter(null);
+      setChatRoomId(null);
+      setChatFocused(false);
+      setChatLoading(false);
+      return;
+    }
+    const saved = JSON.parse(raw);
+    if (saved?.roomId && saved?.character) {
+      setSelectedCharacter(saved.character);
+      setChatRoomId(saved.roomId);
+      setChatFocused(true);
+      setChatLoading(false);
+    }
+  } catch {
+    // 오류 시 초기화
+    setSelectedCharacter(null);
+    setChatRoomId(null);
+    setChatFocused(false);
+    setChatLoading(false);
+  }
+}, [activeSessionId]);
+
+
+const sessionChatStatesRef = useRef({});
 const [showScrollDown, setShowScrollDown] = useState(false);
 const BOTTOM_THRESHOLD = 16;
 const scrollRafIdRef = useRef(0);
+
+
+// // 이 useEffect는 **삭제** (세션 변경 시 인라인챗 초기화하는 거)
+// React.useEffect(() => {
+//   setSelectedCharacter(null);
+//   setChatRoomId(null);
+//   setChatFocused(false);
+//   setChatLoading(false);
+// }, [activeSessionId]);
 
 const scrollToBottom = useCallback(() => {
   try {
@@ -1092,6 +1148,7 @@ const handleSessionSelect = (id) => {
 const handleDeleteSession = (id) => {
   // 단순히 세션 제거만 요청. 다음 상태 결정은 "최고 결정권자" useEffect에 위임.
   removeSession(id);
+  delete sessionChatStatesRef.current[id];
 };
 
 const buildCharacterFromChat = () => {
@@ -2205,6 +2262,97 @@ const insertToPrompt = useCallback((token) => {
   } catch {}
 }, []);
 
+// 캐릭터 선택 핸들러 (일상 → 캐릭터 채팅 심리스 연결)
+const handleCharacterSelect = useCallback(async (character, generatedText, imageUrl, sessionId, existingRoomId) => {
+  try {
+    window.__agent = { sessionId, generatedText, imageUrl };
+    console.log('[agent:select]', { sessionId, generatedText, imageUrl });
+  } catch {}
+  
+  
+  try {
+    setChatLoading(true);
+    setSelectedCharacter(character);
+    
+    let roomId = existingRoomId;
+    
+    if (!roomId) {
+      // ✅ localStorage에서 vision 정보 읽기
+      let visionTags = null;
+      let visionCtx = null;
+      try {
+        const stored = localStorage.getItem(`agent:vision:${sessionId}`);
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          visionTags = parsed.tags;
+          visionCtx = parsed.ctx;
+        }
+      } catch {}
+      
+      const roomRes = await chatAPI.startChatWithContext({
+        character_id: character.id,
+        agent_text: generatedText,
+        image_url: imageUrl,
+        session_id: sessionId,
+        vision_tags: visionTags,   // ✅ 추가
+        vision_ctx: visionCtx       // ✅ 추가
+      });
+      roomId = roomRes.data.id;
+    }
+    
+    setChatRoomId(roomId);
+    try {
+      localStorage.setItem(
+        `agent:inline:${activeSessionId}`,
+        JSON.stringify({
+          roomId,
+          character: {
+            id: character.id,
+            name: character.name,
+            avatar_url: character.avatar_url || character.thumbnail_url || null
+          }
+        })
+      );
+    } catch {}
+    setChatFocused(true);
+    setChatLoading(false); // 로딩 완료
+    
+    // 채팅창으로 스크롤
+    setTimeout(() => {
+      chatContainerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }, 100);
+  } catch (err) {
+    console.error('Failed to start character chat:', err);
+    setChatLoading(false); // 에러 시에도 로딩 해제
+    window.dispatchEvent(new CustomEvent('toast', { 
+      detail: { type: 'error', message: '채팅을 시작할 수 없습니다.' } 
+    }));
+  }
+}, []);
+
+// 채팅 닫기 핸들러
+const handleCloseChat = useCallback(() => {
+  setSelectedCharacter(null);
+  setChatRoomId(null);
+  setChatFocused(false);
+  setChatLoading(false);
+  try { localStorage.removeItem(`agent:inline:${activeSessionId}`); } catch {}
+}, []);
+
+// 외부 클릭 감지 (Composer 다시 보이기)
+useEffect(() => {
+  const handleClickOutside = (e) => {
+    if (chatContainerRef.current && !chatContainerRef.current.contains(e.target)) {
+      setChatFocused(false);
+    }
+  };
+
+  if (selectedCharacter) {
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }
+}, [selectedCharacter]);
+
 return (
 <AppLayout 
   SidebarComponent={AgentSidebar}
@@ -2357,7 +2505,59 @@ return (
                               ) : m.type === 'recommendation' ? (
                                 <div data-section="recommendations">
                                   {m.storyMode === 'snap' ? (
-                                    <CharacterRecommendations />
+                                    <>
+                                      <CharacterRecommendations 
+                                        generatedText={(() => {
+                                          // 이전 assistant 메시지 찾기
+                                          const idx = stableMessages.findIndex(msg => msg.id === m.id);
+                                          for (let i = idx - 1; i >= 0; i--) {
+                                            const msg = stableMessages[i];
+                                            if (msg.role === 'assistant' && !msg.type) {
+                                              return msg.fullContent || msg.content;
+                                            }
+                                          }
+                                          return '';
+                                        })()}
+                                        imageUrl={(() => {
+                                          // 이전 이미지 메시지 찾기
+                                          const idx = stableMessages.findIndex(msg => msg.id === m.id);
+                                          for (let i = idx - 1; i >= 0; i--) {
+                                            const msg = stableMessages[i];
+                                            if (msg.type === 'image') {
+                                              return msg.url;
+                                            }
+                                          }
+                                          return null;
+                                        })()}
+                                        sessionId={activeSessionId}
+                                        selectedCharacterId={selectedCharacter?.id}
+                                        onCharacterSelect={handleCharacterSelect}
+                                      />
+                                      
+                                      {/* 인라인 캐릭터 채팅 (선택된 경우) - 추천 목록 바로 아래 */}
+                                      {selectedCharacter && (
+                                        <div ref={chatContainerRef}>
+                                          {chatLoading ? (
+                                            <div 
+                                              className="mt-6 border-2 border-purple-500/60 rounded-lg bg-gray-900/50 shadow-[0_0_16px_rgba(168,85,247,0.4)] flex flex-col items-center justify-center"
+                                              style={{ width: '900px', minHeight: '400px', height: '400px' }}
+                                            >
+                                              <Loader2 className="w-8 h-8 animate-spin text-purple-500 mb-3" />
+                                              <span className="text-sm text-gray-300">{selectedCharacter.name}와 대화 준비 중...</span>
+                                            </div>
+                                          ) : chatRoomId ? (
+                                            <CharacterChatInline
+                                              key={`${activeSessionId}-${chatRoomId}`}  // ← 이거 추가
+                                              characterId={selectedCharacter.id}
+                                              characterName={selectedCharacter.name}
+                                              characterAvatar={selectedCharacter.avatar_url || selectedCharacter.thumbnail_url}
+                                              roomId={chatRoomId}
+                                              onClose={handleCloseChat}
+                                            />
+                                          ) : null}
+                                        </div>
+                                      )}
+                                    </>
                                   ) : (
                                     <ExploreRecommendations />
                                   )}
@@ -2761,7 +2961,8 @@ return (
               </div>
     </div>
        {/* 화면 하단 고정 입력창 - 새로운 심플 UI */}
-       <div className="fixed bottom-0 left-64 right-0 bg-gradient-to-t from-gray-900 to-transparent">
+       {!chatFocused && (
+         <div className="fixed bottom-0 left-64 right-0 bg-gradient-to-t from-gray-900 to-transparent">
            <div className="w-full max-w-4xl mx-auto p-3">
             {/* 새로운 Composer UI */}
             <Composer 
@@ -3008,7 +3209,19 @@ return (
                      });
                      const decidedMode = response.data?.story_mode || (payload.storyMode || 'auto');
                      const imageSummary = response.data?.image_summary || null;
-                   
+                     // ✅ 이미지 분석 결과 저장 (3줄 추가)
+                     const visionTags = response.data?.vision_tags;
+                     const visionCtx = response.data?.vision_ctx;
+                     if (visionTags && visionCtx && ensuredSessionId) {
+                      try {
+                        localStorage.setItem(`agent:vision:${ensuredSessionId}`, JSON.stringify({
+                          tags: visionTags,
+                          ctx: visionCtx
+                        }));
+                      } catch {}
+                    }
+
+
                    // image_summary를 이미지 메시지에 반영 (있는 경우)
                    if (imageSummary && imageUrl) {
                     try {
@@ -3180,8 +3393,9 @@ return (
              />
              
            {/* 기존 복잡한 입력 UI 완전 제거 - Git에서 복원 가능 */}
-                </div>
-      </div>
+           </div>
+         </div>
+       )}
 
     {/* 시트: 이미지 보관함 전체 */}
     <Sheet open={showImagesSheet} onOpenChange={setShowImagesSheet}>
@@ -3840,44 +4054,196 @@ function EpisodeViewerInline({ storyId, storyTitle, visibleEpisodes, expandedEpi
 }
 
 
-// 일상(snap) 전용 캐릭터 추천 (DB에서 '일상' 태그 필터링)
-function CharacterRecommendations() {
-  const [characters, setCharacters] = React.useState([]);
-  const [loading, setLoading] = React.useState(true);
+// 첫 문장까지만 자르기
+function truncateToFirstSentence(text) {
+  if (!text) return '';
+  const match = text.match(/[^.?!]*[.?!]/);
+  return match ? match[0].trim() : text.slice(0, 30) + '...';
+}
+
+// 타이핑 효과 컴포넌트
+function TypewriterText({ text, speed = 30 }) {
+  const [displayText, setDisplayText] = React.useState('');
+  const [currentIndex, setCurrentIndex] = React.useState(0);
 
   React.useEffect(() => {
+    if (currentIndex < text.length) {
+      const timer = setTimeout(() => {
+        setDisplayText(prev => prev + text[currentIndex]);
+        setCurrentIndex(prev => prev + 1);
+      }, speed);
+      return () => clearTimeout(timer);
+    }
+  }, [currentIndex, text, speed]);
+
+  return <span className="text-xs text-gray-200 text-center leading-relaxed break-words">{displayText}</span>;
+}
+
+// 일상(snap) 전용 캐릭터 추천 (DB에서 '일상' 태그 필터링)
+function CharacterRecommendations({ generatedText, imageUrl, sessionId, onCharacterSelect, selectedCharacterId }) {
+  const [characters, setCharacters] = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+  const [previewRooms, setPreviewRooms] = React.useState({}); // { charId: roomId }
+  const [previewMessages, setPreviewMessages] = React.useState({}); // { charId: firstMessage }
+  const pollingIntervalsRef = React.useRef({});
+
+  // 캐릭터 목록 로드
+
+
+  // 캐릭터 목록이 로드되면 각 캐릭터의 미리보기 채팅방 생성
+  // 캐릭터 목록이 로드되면 각 캐릭터의 미리보기 채팅방 생성
+  React.useEffect(() => {
     let alive = true;
+    const effectSessionId = sessionId; // ✅ 세션 스냅샷
+
     (async () => {
       try {
-        // '일상' 태그를 가진 캐릭터 조회 (인기순)
         const res = await charactersAPI.getCharacters({ 
-          tags: '일상',  // 태그 필터
-          sort: 'views',  // 인기순
+          tags: '일상',
+          sort: 'views',
           limit: 5 
         });
-        if (!alive) return;
-        
+
+        if (!alive || effectSessionId !== sessionId) return; // ✅ 세션 가드(1)
+
         const chars = res.data || [];
         setCharacters(chars.slice(0, 5));
         setLoading(false);
+
+        // 캐릭터 로드 직후 프리뷰 생성 (sessionId별 캐싱 추가)
+        if (chars.length > 0 && generatedText && sessionId) {
+          // localStorage에서 기존 previewRooms 캐싱 확인
+          const cacheKey = `agent:previewRooms:${sessionId}`;
+          let cachedRooms = {};
+          try {
+            const stored = localStorage.getItem(cacheKey);
+            if (stored) cachedRooms = JSON.parse(stored);
+          } catch {}
+
+          setPreviewRooms(cachedRooms);
+          setPreviewMessages({});
+
+          // vision 읽기
+          let visionTags = null;
+          let visionCtx = null;
+          try {
+            const stored = localStorage.getItem(`agent:vision:${sessionId}`);
+            if (stored) {
+              const parsed = JSON.parse(stored);
+              visionTags = parsed.tags;
+              visionCtx = parsed.ctx;
+            }
+          } catch {}
+
+          // 방 생성
+          const rooms = { ...cachedRooms };
+          for (const char of chars.slice(0, 5)) {
+            if (!rooms[char.id]) {  // ✅ 추가: 기존 캐싱 없으면 생성
+              try {
+                const roomRes = await chatAPI.startChatWithContext({
+                  character_id: char.id,
+                  agent_text: generatedText,
+                  image_url: imageUrl,
+                  session_id: sessionId,
+                  vision_tags: visionTags,
+                  vision_ctx: visionCtx
+                });
+                rooms[char.id] = roomRes.data.id;
+              } catch (err) {
+                console.error(`Failed to create preview for ${char.name}:`, err);
+              }
+            }
+          }
+
+          if (!alive || effectSessionId !== sessionId) return; // ✅ 세션 가드(2)
+          setPreviewRooms(rooms);
+
+          // 캐싱 저장
+          try {
+            localStorage.setItem(cacheKey, JSON.stringify(rooms));
+          } catch {}
+        }
       } catch (err) {
         console.error('Failed to fetch characters:', err);
         setLoading(false);
       }
     })();
-    return () => { alive = false; };
-  }, []);
 
-  const handleCharacterClick = (char) => {
-    console.log('🎭 Character selected:', char);
-    // TODO: 캐릭터챗 시작 로직
+    return () => { alive = false; };
+  }, [sessionId, generatedText, imageUrl]); // 의존성 배열: generatedText/imageUrl 추가로 변경 시 재실행
+
+  // 각 채팅방의 첫 메시지 폴링
+  React.useEffect(() => {
+    if (Object.keys(previewRooms).length === 0) return;
+
+    Object.entries(previewRooms).forEach(([charId, roomId]) => {
+      // 이미 메시지가 있으면 폴링 안 함
+      if (previewMessages[charId]) return;
+
+      // 로컬 스토리지에서 캐시된 메시지 확인 (세션별로)
+      try {
+        const cacheKey = `agent:preview:${sessionId}:${charId}`;
+        const cached = localStorage.getItem(cacheKey);
+        if (cached) {
+          setPreviewMessages(prev => ({ ...prev, [charId]: cached }));
+          return; // 캐시 있으면 폴링 안 함
+        }
+      } catch {}
+
+      const pollMessages = async () => {
+        try {
+          const res = await chatAPI.getMessages(roomId);
+          const messages = res.data || [];
+          
+          // 첫 AI 메시지 찾기
+          const firstAI = messages.find(m => m.sender_type === 'assistant');
+          if (firstAI) {
+            setPreviewMessages(prev => ({ ...prev, [charId]: firstAI.content }));
+            
+            // 로컬 스토리지에 캐싱 (세션별로)
+            try {
+              const cacheKey = `agent:preview:${sessionId}:${charId}`;
+              localStorage.setItem(cacheKey, firstAI.content);
+            } catch {}
+            
+            // 메시지 받았으면 폴링 중지
+            if (pollingIntervalsRef.current[charId]) {
+              clearInterval(pollingIntervalsRef.current[charId]);
+              delete pollingIntervalsRef.current[charId];
+            }
+          }
+        } catch (err) {
+          console.error(`Failed to poll messages for char ${charId}:`, err);
+        }
+      };
+
+      // 즉시 1회 실행
+      pollMessages();
+
+      // 2초마다 폴링
+      pollingIntervalsRef.current[charId] = setInterval(pollMessages, 2000);
+    });
+
+    return () => {
+      Object.values(pollingIntervalsRef.current).forEach(interval => {
+        clearInterval(interval);
+      });
+      pollingIntervalsRef.current = {};
+    };
+  }, [previewRooms, previewMessages]);
+
+  const handleCharacterClick = async (char) => {
+    if (onCharacterSelect) {
+      // 이미 생성된 채팅방 ID 전달
+      onCharacterSelect(char, generatedText, imageUrl, sessionId, previewRooms[char.id]);
+    }
   };
 
   if (loading) {
     return (
-      <div className="w-full max-w-2xl">
+      <div className="w-full max-w-4xl">
         <div className="mb-4 text-sm text-gray-400">💬 이 이야기를 같이 나눌 친구</div>
-        <div className="flex justify-center gap-6">
+        <div className="flex gap-6">
           {[...Array(5)].map((_, i) => (
             <div key={i} className="flex flex-col items-center gap-2">
               <div className="w-20 h-20 rounded-full bg-gray-800 animate-pulse" />
@@ -3891,9 +4257,9 @@ function CharacterRecommendations() {
 
   if (characters.length === 0) {
     return (
-      <div className="w-full max-w-2xl">
+      <div className="w-full max-w-4xl">
         <div className="mb-4 text-sm text-gray-400">💬 이 이야기를 같이 나눌 친구</div>
-        <div className="text-center text-gray-500 py-4">
+        <div className="text-gray-500 py-4">
           '일상' 태그 캐릭터가 없습니다
         </div>
       </div>
@@ -3901,16 +4267,24 @@ function CharacterRecommendations() {
   }
 
   return (
-    <div className="w-full max-w-2xl">
+    <div className="w-full max-w-4xl">
       <div className="mb-4 text-sm text-gray-400">💬 이 이야기를 같이 나눌 친구</div>
-      <div className="flex justify-center gap-6">
-        {characters.map(char => (
+      <div className="flex gap-6">
+        {characters.map(char => {
+          const isSelected = selectedCharacterId === char.id;
+          return (
           <div 
             key={char.id}
-            onClick={() => handleCharacterClick(char)}
             className="flex flex-col items-center gap-2 cursor-pointer group"
           >
-            <div className="w-20 h-20 rounded-full overflow-hidden ring-2 ring-gray-700 group-hover:ring-purple-500 group-hover:shadow-[0_0_16px_rgba(168,85,247,0.5)] transition-all bg-gray-800 flex items-center justify-center">
+            <div 
+              onClick={() => handleCharacterClick(char)}
+              className={`w-20 h-20 rounded-full overflow-hidden ring-2 transition-all bg-gray-800 flex items-center justify-center ${
+                isSelected 
+                  ? 'ring-purple-500 shadow-[0_0_20px_rgba(168,85,247,0.8)]' 
+                  : 'ring-gray-700 group-hover:ring-purple-500 group-hover:shadow-[0_0_16px_rgba(168,85,247,0.5)]'
+              }`}
+            >
               <img 
                 src={char.avatar_url || char.thumbnail_url} 
                 alt={char.name}
@@ -3924,12 +4298,31 @@ function CharacterRecommendations() {
                 {char.name?.charAt(0) || '👤'}
               </span>
             </div>
-            <span className="text-sm text-gray-300 group-hover:text-purple-300 transition-colors font-medium text-center">
+            <span className={`text-sm transition-colors font-medium text-center ${
+              isSelected ? 'text-purple-300' : 'text-gray-300 group-hover:text-purple-300'
+            }`}>
               {char.name}
             </span>
+            
+            {/* 미리보기 말풍선 (선택되지 않았을 때만) */}
+            {!isSelected && (
+              <div className="mt-1 px-3 py-2 bg-white/10 rounded-lg max-w-[160px] min-h-[50px] flex items-center justify-center">
+                {previewMessages[char.id] ? (
+                  <TypewriterText text={truncateToFirstSentence(previewMessages[char.id])} speed={30} />
+                ) : (
+                  <div className="flex space-x-1">
+                    <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
+                    <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
+                    <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
 }
+

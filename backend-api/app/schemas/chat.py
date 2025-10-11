@@ -38,6 +38,8 @@ class SendMessageRequest(BaseModel):
     """메시지 전송 요청 스키마"""
     character_id: uuid.UUID
     content: str
+    room_id: Optional[uuid.UUID] = None  # 추가
+    response_length_override: Optional[str] = None  # 'short' | 'medium' | 'long'
 
 
 class ChatMessageResponse(ChatMessageBase):
@@ -75,10 +77,11 @@ class ChatRoomResponse(BaseModel):
     character_id: uuid.UUID
     title: Optional[str] = None
     message_count: int = 0
+    summary: Optional[str]
     character: CharacterForChatResponse
     created_at: datetime
     updated_at: datetime
-
+    session_id: Optional[str] = None
     class Config:
         from_attributes = True
 

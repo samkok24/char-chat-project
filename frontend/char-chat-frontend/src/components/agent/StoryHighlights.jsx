@@ -1,5 +1,5 @@
 import React from 'react';
-import { Download, X, Share2, Loader2, Link, Instagram, Twitter } from 'lucide-react';
+import { Download, X, Share2, Loader2, Link, Instagram, Twitter, ChevronDown, ChevronUp } from 'lucide-react';
 
 export default function StoryHighlights({ highlights = [], loading = false, username = '게스트' }) {
   const [currentIndex, setCurrentIndex] = React.useState(0);
@@ -7,35 +7,57 @@ export default function StoryHighlights({ highlights = [], loading = false, user
   const [modalIndex, setModalIndex] = React.useState(0);
   const [showShareModal, setShowShareModal] = React.useState(false);
   const [shareImageUrl, setShareImageUrl] = React.useState('');
+  const [isExpanded, setIsExpanded] = React.useState(false); // 접기/펼치기 상태
   const DURATION_MS = 10000; // 10초
   const [progress, setProgress] = React.useState(0); // 0..1
   const [modalProgress, setModalProgress] = React.useState(0); // 0..1
   const timerRef = React.useRef(null);
   const modalTimerRef = React.useRef(null);
   
+  const [loadingElapsed, setLoadingElapsed] = React.useState(0);
+  
+  // 로딩 중 경과 시간 카운터
+  React.useEffect(() => {
+    if (!loading) return;
+    
+    setLoadingElapsed(0);
+    const timer = setInterval(() => {
+      setLoadingElapsed(prev => prev + 1);
+    }, 1000);
+    
+    return () => clearInterval(timer);
+  }, [loading]);
+  
   if (loading) {
     return (
       <div className="w-full my-4">
-        <div className="mb-2 flex items-center gap-2">
+        {/* 제목 + 펼치기 버튼 (로딩 중) */}
+        <div 
+          className="mb-2 flex items-center gap-2 cursor-pointer group"
+          onClick={() => setIsExpanded(!isExpanded)}
+        >
           <span className="inline-block w-1.5 h-1.5 bg-purple-400 rounded-full shadow-[0_0_8px_rgba(168,85,247,0.8)]"></span>
-          <span className="text-base font-semibold text-gray-100 tracking-tight">
-            다른 사람들에게 <span className="text-purple-300">{username}</span>님만의 스토리를 공유할 수 있어요.
+          <span className="text-base font-semibold text-gray-100 tracking-tight flex items-center gap-2">
+            <Loader2 className="w-4 h-4 animate-spin text-purple-400" />
+            텍스트 기반 하이라이트를 생성중입니다...{loadingElapsed}s
           </span>
+          <button className="text-gray-400 group-hover:text-purple-400 transition-colors ml-1">
+            {isExpanded ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
+          </button>
         </div>
-        <div className="mb-3 flex items-center gap-2 text-sm text-purple-200">
-          <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-purple-500/10 ring-2 ring-purple-500/40 shadow-[0_0_12px_rgba(168,85,247,0.6)]">
-            <Loader2 className="w-4.5 h-4.5 animate-spin text-purple-300 drop-shadow-[0_0_10px_rgba(168,85,247,0.9)]" />
-          </span>
-          <span className="tracking-tight">하이라이트 생성 중…</span>
-        </div>
-        <div className="grid grid-cols-3 gap-3">
-          {[1,2,3].map(i => (
-            <div key={i} className="aspect-[3/4] rounded-xl bg-gray-800 animate-pulse" />
-          ))}
-        </div>
+        
+        {/* 스켈레톤 (펼쳤을 때만) */}
+        {isExpanded && (
+          <div className="grid grid-cols-3 gap-3">
+            {[1,2,3].map(i => (
+              <div key={i} className="aspect-[3/4] rounded-xl bg-gray-800 animate-pulse" />
+            ))}
+          </div>
+        )}
       </div>
     );
   }
+  
   if (!highlights || highlights.length === 0) return null;
   
   const handlePrevious = () => {
@@ -193,16 +215,37 @@ export default function StoryHighlights({ highlights = [], loading = false, user
   
   return (
     <div className="w-full my-4">
-      {/* 제목 */}
-      <div className="mb-2 flex items-center gap-2">
+      {/* 제목 + 펼치기 버튼 */}
+      <div 
+        className="mb-2 flex items-center gap-2 cursor-pointer group"
+        onClick={() => setIsExpanded(!isExpanded)}
+      >
         <span className="inline-block w-1.5 h-1.5 bg-purple-400 rounded-full shadow-[0_0_8px_rgba(168,85,247,0.8)]"></span>
-        <span className="text-base font-semibold text-gray-100 tracking-tight">
-          다른 사람들에게 <span className="text-purple-300">{username}</span>님만의 스토리를 공유할 수 있어요.
+        <span className="text-base font-semibold text-gray-100 tracking-tight flex items-center gap-2">
+          {loading && <Loader2 className="w-4 h-4 animate-spin text-purple-400" />}
+          {loading ? (
+            <>텍스트 기반 하이라이트를 생성중입니다...{loadingElapsed}s</>
+          ) : (
+            <>다른 사람들에게 <span className="text-purple-300">{username}</span>님만의 스토리를 공유할 수 있어요.</>
+          )}
         </span>
+        <button className={`transition-colors ml-1 ${loading ? 'text-gray-500 cursor-default' : 'text-gray-400 group-hover:text-purple-400'}`}>
+          {isExpanded ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
+        </button>
       </div>
       
-      {/* 이미지 캐러셀 */}
+      {/* 이미지 캐러셀 (펼쳤을 때만 표시) */}
+      {isExpanded && (
       <div className="relative">
+        {loading ? (
+          // 로딩 중 스켈레톤
+          <div className="grid grid-cols-3 gap-3">
+            {[1,2,3].map(i => (
+              <div key={i} className="aspect-[3/4] rounded-xl bg-gray-800 animate-pulse" />
+            ))}
+          </div>
+        ) : (
+          <>
         {/* 데스크톱: 스토리 뷰어 */}
         <div className="hidden md:flex justify-start relative">
           <div 
@@ -348,7 +391,10 @@ export default function StoryHighlights({ highlights = [], loading = false, user
             ))}
           </div>
         )}
+        </>
+        )}
       </div>
+      )}
       
       {/* 모달 뷰어 */}
       {showModal && (
@@ -397,14 +443,6 @@ export default function StoryHighlights({ highlights = [], loading = false, user
         </div>
       )}
 
-      {/* 로딩 스켈레톤 */}
-      {highlights.length === 0 && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {[1, 2, 3, 4].map((i) => (
-            <div key={i} className="aspect-[3/4] rounded-lg bg-gray-800 animate-pulse" />
-          ))}
-        </div>
-      )}
 
       {/* 공유 모달 */}
       {showShareModal && (

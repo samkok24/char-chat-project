@@ -1423,7 +1423,7 @@ async def get_ai_chat_response(
     intent_block = ("\n[의도 반영]\n" + "\n".join(intent_lines)) if intent_lines else ""
 
     # 프롬프트와 사용자 메시지 결합(+의도 블록)
-    full_prompt = f"{character_prompt}{intent_block}\n\n사용자: {user_message}\n{character.name}:"
+    full_prompt = f"{character_prompt}{intent_block}\n\n사용자 메시지: {user_message}\n\n위 설정에 맞게 자연스럽게 응답하세요 (대화만 출력, 라벨 없이):"
 
     # 응답 길이 선호도 → 최대 토큰 비율 조정 (중간 기준 1.0)
     base_max_tokens = 1800

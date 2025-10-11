@@ -792,12 +792,16 @@ function ImageTray({ onInsert, onClose }) {
                   className="w-full h-24 object-cover"
                 />
                 {/* 삭제 버튼 추가 */}
-                <button
-                  onClick={(e) => handleDeleteImage(e, img.id)}
-                  className="absolute top-1 left-1 w-5 h-5 bg-red-500/90 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-600 z-10"
+                <div
+                  role="button"
+                  tabIndex={0}
+                  onClick={(e) => handleDeleteImage(e, img.id)}   // handleDeleteImage 내부에 e.stopPropagation() 이미 있음
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleDeleteImage(e, img.id); }}
+                  className="absolute top-1 left-1 w-5 h-5 bg-red-500/90 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-600 z-10 cursor-pointer"
+                  aria-label="삭제"
                 >
                   <X size={12} className="text-white" />
-                </button>
+                </div>
                 
                 {selectedIds.has(img.id) && (
                   <div className="absolute inset-0 bg-purple-600/20">

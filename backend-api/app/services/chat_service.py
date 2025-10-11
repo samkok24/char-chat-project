@@ -49,6 +49,16 @@ async def get_or_create_chat_room(
         
     return chat_room
 
+async def get_chat_room_by_character_and_session(db, user_id: uuid.UUID, character_id: uuid.UUID, session_id: str) -> Optional[ChatRoom]:
+    stmt = select(ChatRoom).where(
+        ChatRoom.user_id == user_id,
+        ChatRoom.character_id == character_id,
+        ChatRoom.session_id == session_id  # ✅ session_id 조건 추가 (ChatRoom 모델에 session_id 필드가 있어야 함)
+    ).options(selectinload(ChatRoom.character))  # ✅ character relationship 로드
+    result = await db.execute(stmt)
+    return result.scalar_one_or_none()
+
+
 async def create_chat_room(
     db: AsyncSession, user_id: uuid.UUID, character_id: uuid.UUID
 ) -> ChatRoom:

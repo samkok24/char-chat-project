@@ -26,6 +26,7 @@ class ChatRoom(Base):
     user = relationship("User")
     character = relationship("Character", back_populates="chat_rooms")
     messages = relationship("ChatMessage", back_populates="chat_room", cascade="all, delete-orphan")
+    session_id = Column(String, nullable=True, index=True)
 
     def __repr__(self):
         return f"<ChatRoom(id={self.id}, user_id={self.user_id}, character_id={self.character_id})>"
