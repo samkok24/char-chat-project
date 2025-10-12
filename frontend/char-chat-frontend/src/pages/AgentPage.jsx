@@ -689,13 +689,25 @@ const handleSelectMode = useCallback((messageId, selectedMode) => {
       setMessages(withExtras);
     }
     
+    // vision_tags 읽기
+    let visionTags = null;
+    try {
+      const stored = localStorage.getItem(`agent:vision:${currentSessionId}`);  // 또는 activeSessionId
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        visionTags = parsed.tags;
+      }
+    } catch {}
+
+
     // 하이라이트 생성
     (async () => {
       try {
         const hiRes = await chatAPI.agentGenerateHighlights({
           text: selectedResponse.fullContent,
           image_url: imageUrl,
-          story_mode: selectedMode
+          story_mode: selectedMode,
+          vision_tags: visionTags
         });
         const scenes = hiRes.data?.story_highlights || [];
         
@@ -858,11 +870,21 @@ const handleRemixGenerate = useCallback(async (msg, assistantText) => {
           if (activeSessionIdRef.current === currentSessionId) {
             setMessages(withExtras);
           }
-          
+          // vision_tags 읽기
+          let visionTags = null;
+          try {
+            const stored = localStorage.getItem(`agent:vision:${currentSessionId}`);  // 또는 activeSessionId
+            if (stored) {
+              const parsed = JSON.parse(stored);
+              visionTags = parsed.tags;
+            }
+          } catch {}
+
+
           // ✅ 하이라이트 생성 (백그라운드, 세션 무관)
           (async () => {
             try {
-              const hiRes = await chatAPI.agentGenerateHighlights({ text, image_url: imageUrl, story_mode: decidedMode || 'auto' });
+              const hiRes = await chatAPI.agentGenerateHighlights({ text, image_url: imageUrl, story_mode: decidedMode || 'auto',vision_tags: visionTags });
               const scenes = hiRes.data?.story_highlights || [];
               
               const currentMsgs = loadJson(LS_MESSAGES_PREFIX + currentSessionId, []);
@@ -1347,8 +1369,19 @@ const handleRerun = useCallback(async (msg) => {
     if (activeSessionId === sid) setMessages(withLoading);
     
     const originalSessionId = sid; // 세션 캡처
+
+    // vision_tags 읽기
+    let visionTags = null;
     try {
-      const hiRes = await chatAPI.agentGenerateHighlights({ text: assistantText, image_url: imageUrl || '', story_mode: decidedMode || 'auto' });
+      const stored = localStorage.getItem(`agent:vision:${currentSessionId}`);  // 또는 activeSessionId
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        visionTags = parsed.tags;
+      }
+    } catch {}
+
+    try {
+      const hiRes = await chatAPI.agentGenerateHighlights({ text: assistantText, image_url: imageUrl || '', story_mode: decidedMode || 'auto',vision_tags: visionTags });
       const scenes = (hiRes?.data?.story_highlights || []).map((s, i) => ({ ...s, id: crypto.randomUUID() }));
       const list2 = isGuest ? (sessionLocalMessagesRef.current.get(originalSessionId) || []) : loadJson(LS_MESSAGES_PREFIX + originalSessionId, []);
       const idx2 = list2.findIndex(m => m.id === loadingId);
@@ -1865,11 +1898,22 @@ const handleContinueInline = useCallback(async (msg) => {
           setMessages(withLoading);
         }
 
+        // vision_tags 읽기
+        let visionTags = null;
+        try {
+          const stored = localStorage.getItem(`agent:vision:${currentSessionId}`);  // 또는 activeSessionId
+          if (stored) {
+            const parsed = JSON.parse(stored);
+            visionTags = parsed.tags;
+          }
+        } catch {}
+
+
         // ✅ 하이라이트 생성
         (async () => {
           const originalSessionId = currentSessionId;
           try {
-            const hiRes = await chatAPI.agentGenerateHighlights({ text: combinedText, image_url: imageUrl || '', story_mode: mode || 'auto' });
+            const hiRes = await chatAPI.agentGenerateHighlights({ text: combinedText, image_url: imageUrl || '', story_mode: mode || 'auto', vision_tags: visionTags });
             const scenes = (hiRes?.data?.story_highlights || []).map((s, i) => ({ ...s, id: crypto.randomUUID() }));
             
             const saved = loadJson(LS_MESSAGES_PREFIX + originalSessionId, []);
@@ -3110,7 +3154,16 @@ return (
                          sub_model: storyModel
                        })
                      ]);
-                     
+                     const visionTags = snapResponse.data?.vision_tags;
+                     const visionCtx = snapResponse.data?.vision_ctx;
+                     if (visionTags && visionCtx && ensuredSessionId) {
+                      try {
+                        localStorage.setItem(`agent:vision:${ensuredSessionId}`, JSON.stringify({
+                          tags: visionTags,
+                          ctx: visionCtx
+                        }));
+                      } catch {}
+                    }
                      const snapText = snapResponse.data?.assistant || '';
                      const genreText = genreResponse.data?.assistant || '';
                      
@@ -3207,18 +3260,23 @@ return (
                        model: storyModel,
                        sub_model: storyModel
                      });
+                     console.log('[DEBUG] agentSimulate response:', response.data);  // ✅ 추가
                      const decidedMode = response.data?.story_mode || (payload.storyMode || 'auto');
                      const imageSummary = response.data?.image_summary || null;
                      // ✅ 이미지 분석 결과 저장 (3줄 추가)
                      const visionTags = response.data?.vision_tags;
                      const visionCtx = response.data?.vision_ctx;
+                     console.log('[DEBUG] visionTags:', visionTags, 'visionCtx:', visionCtx, 'sessionId:', ensuredSessionId);
                      if (visionTags && visionCtx && ensuredSessionId) {
                       try {
                         localStorage.setItem(`agent:vision:${ensuredSessionId}`, JSON.stringify({
                           tags: visionTags,
                           ctx: visionCtx
                         }));
-                      } catch {}
+                        console.log('[DEBUG] Vision saved to localStorage');  // ✅ 추가
+                      } catch (e){
+                        console.error('[DEBUG] Vision save failed:', e);  // ✅ 추가
+                      }
                     }
 
 
@@ -3328,10 +3386,21 @@ return (
                             setMessages(withExtras);
                           }
                           
+                          // vision_tags 읽기
+                          let visionTags = null;
+                          try {
+                            const stored = localStorage.getItem(`agent:vision:${currentSessionId}`);  // 또는 activeSessionId
+                            if (stored) {
+                              const parsed = JSON.parse(stored);
+                              visionTags = parsed.tags;
+                            }
+                          } catch {}
+
+
                           // ✅ 하이라이트 생성
                           (async () => {
                             try {
-                              const hiRes = await chatAPI.agentGenerateHighlights({ text: assistantText, image_url: imageUrl, story_mode: decidedMode || 'auto' });
+                              const hiRes = await chatAPI.agentGenerateHighlights({ text: assistantText, image_url: imageUrl, story_mode: decidedMode || 'auto',vision_tags: visionTags });
                               const scenes = hiRes.data?.story_highlights || [];
                               
                               const currentMsgs = loadJson(LS_MESSAGES_PREFIX + currentSessionId, []);

@@ -145,8 +145,12 @@ async def agent_simulate(
     응답: { assistant: string }
     """
     try:
+        # ✅ 함수 시작 시 선언 (스코프 확보)
+
         character_prompt = ""
         text = ""
+        tags2 = None
+        ctx = None
 
         # 새로운 staged 형식 처리
         if "staged" in payload:
@@ -186,8 +190,28 @@ async def agent_simulate(
                 tag_hint = " ".join([f"#{tag}" for tag in keyword_tags])
                 content = (content + " " + tag_hint).strip() if content else tag_hint
             
+            if image_url:
+                try:
+                    tags2, ctx = await ai_service.analyze_image_tags_and_context(image_url, model='claude')
+                    logger.info("Vision combine success")
+                except Exception as e:
+                    logger.error(f"Vision combine failed: {str(e)}")
+                    # 폴백: 개별 호출
+                    try:
+                        ctx = await ai_service.extract_image_narrative_context(image_url, model='claude') or {}
+                        logger.info("Context fallback success")
+                    except Exception as e2:
+                        logger.error(f"Context fallback failed: {str(e2)}")
+                        ctx = {}
+                    try:
+                        tags2 = await ai_service.tag_image_keywords(image_url, model='claude') or {}
+                        logger.info("Tags fallback success")
+                    except Exception as e3:
+                        logger.error(f"Tags fallback failed: {str(e3)}")
+                        tags2 = {}
             # 스토리 모드 자동 감지 (auto인 경우)
             if story_mode == "auto":
+
                 # 1) 이모지 기반 기초 점수
                 snap_emojis = {"😊", "☕", "🌸", "💼", "🌧️", "😢", "💤", "🎉"}
                 genre_emojis = {"🔥", "⚔️", "💀", "😱", "🔪", "🌙", "✨", "😎"}
@@ -266,20 +290,7 @@ async def agent_simulate(
 
                 # 3) 이미지 컨텍스트/태그 기반 보정 (Claude Vision)
                 strong_genre_match = False
-                if image_url:
-                    # 통합 함수 우선 호출(건조/사실 모드), 실패 시 개별 호출 폴백
-                    try:
-                        tags2, ctx = await ai_service.analyze_image_tags_and_context(image_url, model='claude')
-                    except Exception:
-                        # 폴백: 개별 호출
-                        try:
-                            ctx = await ai_service.extract_image_narrative_context(image_url, model='claude') or {}
-                        except Exception:
-                            ctx = {}
-                        try:
-                            tags2 = await ai_service.tag_image_keywords(image_url, model='claude') or {}
-                        except Exception:
-                            tags2 = {}
+                if image_url and ctx and tags2:
 
                     # 사람 수/셀카 여부: 인물 0이거나 셀카면 스냅 가산
                     try:
@@ -423,12 +434,12 @@ async def agent_simulate(
 
         # UI 모델명을 ai_service 기대 형식으로 매핑
         # [임시] GPT와 Gemini 비활성화 - 모든 요청을 Claude로 강제 전환
-        # from app.services.ai_service import CLAUDE_MODEL_PRIMARY
-        # preferred_model = "claude"
-        # preferred_sub_model = CLAUDE_MODEL_PRIMARY
-        from app.services.ai_service import GPT_MODEL_PRIMARY
-        preferred_model = "gpt"  # Claude → GPT 전환
-        preferred_sub_model = GPT_MODEL_PRIMARY
+        from app.services.ai_service import CLAUDE_MODEL_PRIMARY
+        preferred_model = "claude"
+        preferred_sub_model = CLAUDE_MODEL_PRIMARY
+        # from app.services.ai_service import GPT_MODEL_PRIMARY
+        # preferred_model = "gpt"  # Claude → GPT 전환
+        # preferred_sub_model = GPT_MODEL_PRIMARY
 
         
         # 원래 로직 (임시 비활성화)
@@ -465,8 +476,8 @@ async def agent_simulate(
             if current_user:
                 username = current_user.username or current_user.email.split('@')[0]
             
-            vision_tags = locals().get('tags2', None) if image_url else None
-            vision_ctx = locals().get('ctx', None) if image_url else None
+            vision_tags = tags2 if image_url else None
+            vision_ctx = ctx if image_url else None
 
             text = await ai_service.write_story_from_image_grounded(
                 image_url=image_url,
@@ -541,7 +552,7 @@ async def agent_simulate(
         image_summary = None
         if image_url:
             try:
-                tags_data = locals().get('tags2', None)
+                tags_data = tags2
                 if tags_data and isinstance(tags_data, dict):
                     parts = []
                     if 'place' in tags_data and tags_data['place']:
@@ -559,8 +570,10 @@ async def agent_simulate(
             "assistant": text, 
             "story_mode": story_mode, 
             "image_summary": image_summary,
-            "vision_tags": locals().get('tags2') if image_url else None,
-            "vision_ctx": locals().get('ctx') if image_url else None    
+            # "vision_tags": locals().get('tags2') if image_url else None,
+            # "vision_ctx": locals().get('ctx') if image_url else None    
+            "vision_tags": tags2,  # ✅ locals() 제거
+            "vision_ctx": ctx      # ✅ locals() 제거
         }
         
         # 하이라이트는 별도 엔드포인트에서 비동기로 처리
@@ -667,6 +680,7 @@ async def agent_generate_highlights(payload: dict):
         text = (payload.get("text") or "").strip()
         image_url = (payload.get("image_url") or "").strip()
         story_mode = (payload.get("story_mode") or "auto").strip()
+        vision_tags = payload.get("vision_tags")
         if not text or not image_url:
             raise HTTPException(status_code=400, detail="text and image_url are required")
 
@@ -710,7 +724,8 @@ async def agent_generate_highlights(payload: dict):
                 sentence=s.sentence,
                 keywords=s.keywords,
                 stage=s.stage.value,
-                story_mode=story_mode
+                story_mode=story_mode,
+                original_image_tags=vision_tags
             )
             for s in scenes
         ]
