@@ -16,7 +16,7 @@ const socketHandler = require('./controllers/socketController');
 const authMiddleware = require('./middleware/authMiddleware');
 const redisClient = require('./services/redisService');
 const logger = require('./utils/logger');
-
+const axios = require('axios');
 // Express 앱 생성
 const app = express();
 const server = createServer(app);

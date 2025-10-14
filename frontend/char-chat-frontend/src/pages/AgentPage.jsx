@@ -43,12 +43,14 @@ import DualResponseBubble from '../components/agent/DualResponseBubble';
 import CharacterChatInline from '../components/CharacterChatInline';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuLabel } from '../components/ui/dropdown-menu';
 
-const LS_SESSIONS = 'agent:sessions';
-const LS_MESSAGES_PREFIX = 'agent:messages:'; // + sessionId
-const LS_STORIES = 'agent:stories';
-const LS_IMAGES = 'agent:images';
-const LS_CHARACTERS = 'agent:characters';
-const LS_RECOVERY_PREFIX = 'agent:recovery:'; // + sessionId
+const LS_SESSIONS = (userId) => `agent:sessions:${userId}`;
+const LS_MESSAGES_PREFIX = (userId) => `agent:messages:${userId}:`;
+const LS_STORIES = (userId) => `agent:stories:${userId}`;
+const LS_IMAGES = (userId) => `agent:images:${userId}`;
+const LS_CHARACTERS = (userId) => `agent:characters:${userId}`;
+const LS_RECOVERY_PREFIX = (userId) => `agent:recovery:${userId}:`;
+const LS_UI = (userId) => `agent:ui:${userId}`;
+const LS_INLINE_PREFIX = (userId) => `agent:inline:${userId}:`;
 // --- Generation States as per Spec ---
 const GEN_STATE = {
   IDLE: 'IDLE',
@@ -77,12 +79,12 @@ function saveJson(key, value) {
 try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
 }
 
-function useAgentSessions(persist = true, useSessionStorage = false) {
+function useAgentSessions(userId, persist = true, useSessionStorage = false) {
 const [sessions, setSessions] = useState(() => {
-  if (persist) return loadJson(LS_SESSIONS, []);
+  if (persist) return loadJson(LS_SESSIONS(userId), []);
   if (useSessionStorage) {
     try {
-      const raw = sessionStorage.getItem(LS_SESSIONS);
+      const raw = sessionStorage.getItem(LS_SESSIONS(userId));
       return raw ? JSON.parse(raw) : [];
     } catch { return []; }
   }
@@ -91,9 +93,9 @@ const [sessions, setSessions] = useState(() => {
 
 useEffect(() => { 
 if (persist) {
-saveJson(LS_SESSIONS, sessions);
+saveJson(LS_SESSIONS(userId), sessions);
 } else if (useSessionStorage) {
-  try { sessionStorage.setItem(LS_SESSIONS, JSON.stringify(sessions)); } catch {}
+  try { sessionStorage.setItem(LS_SESSIONS(userId), JSON.stringify(sessions)); } catch {}
 }
 try { window.dispatchEvent(new Event('agent:sessionsChanged')); } catch {}
 }, [sessions, persist, useSessionStorage]);
@@ -111,9 +113,9 @@ type: partial.type || 'chat',
 const next = [session, ...sessions];
 setSessions(next);
 if (persist) {
-  saveJson(LS_MESSAGES_PREFIX + id, []);
+  saveJson(LS_MESSAGES_PREFIX(userId) + id, []);
 } else if (useSessionStorage) {
-  try { sessionStorage.setItem(LS_MESSAGES_PREFIX + id, JSON.stringify([])); } catch {}
+  try { sessionStorage.setItem(LS_MESSAGES_PREFIX(userId) + id, JSON.stringify([])); } catch {}
 }
 try { window.dispatchEvent(new CustomEvent('analytics', { detail: { name: 'agent_create_session', props: { id } } })); } catch {}
 return session;
@@ -126,9 +128,9 @@ setSessions(prev => prev.map(s => s.id === id ? { ...s, ...patch, updatedAt: now
 const removeSession = (id) => {
 setSessions(prev => prev.filter(s => s.id !== id));
 if (persist) {
-  try { localStorage.removeItem(LS_MESSAGES_PREFIX + id); } catch {}
+  try { localStorage.removeItem(LS_MESSAGES_PREFIX(userId) + id); } catch {}
 } else if (useSessionStorage) {
-  try { sessionStorage.removeItem(LS_MESSAGES_PREFIX + id); } catch {}
+  try { sessionStorage.removeItem(LS_MESSAGES_PREFIX(userId) + id); } catch {}
 }
 try { window.dispatchEvent(new Event('agent:sessionsChanged')); } catch {}
 };
@@ -136,12 +138,12 @@ try { window.dispatchEvent(new Event('agent:sessionsChanged')); } catch {}
 return { sessions, setSessions, createSession, updateSession, removeSession };
 }
 
-function useSessionMessages(sessionId, persist = true, useSessionStorage = false) {
+function useSessionMessages(sessionId, userId, persist = true, useSessionStorage = false) {
 const [messages, setMessages] = useState(() => {
-  if (persist) return loadJson(LS_MESSAGES_PREFIX + sessionId, []);
+  if (persist) return loadJson(LS_MESSAGES_PREFIX(userId) + sessionId, []);
   if (useSessionStorage) {
     try {
-      const raw = sessionStorage.getItem(LS_MESSAGES_PREFIX + sessionId);
+      const raw = sessionStorage.getItem(LS_MESSAGES_PREFIX(userId) + sessionId);
       return raw ? JSON.parse(raw) : [];
     } catch { return []; }
   }
@@ -156,7 +158,7 @@ if (persist) {
     // When session ID changes, load new messages
     if (sessionId !== prevSessionIdRef.current) {
         isSessionChangingRef.current = true;
-        setMessages(loadJson(LS_MESSAGES_PREFIX + sessionId, []));
+        setMessages(loadJson(LS_MESSAGES_PREFIX(userId) + sessionId, []));
         prevSessionIdRef.current = sessionId;
         setTimeout(() => {
             isSessionChangingRef.current = false;
@@ -166,7 +168,7 @@ if (persist) {
     if (sessionId !== prevSessionIdRef.current) {
         isSessionChangingRef.current = true;
         try {
-          const raw = sessionStorage.getItem(LS_MESSAGES_PREFIX + sessionId);
+          const raw = sessionStorage.getItem(LS_MESSAGES_PREFIX(userId) + sessionId);
           setMessages(raw ? JSON.parse(raw) : []);
         } catch { setMessages([]); }
         prevSessionIdRef.current = sessionId;
@@ -177,7 +179,7 @@ if (persist) {
 } else {
     setMessages([]);
 }
-}, [sessionId, persist, useSessionStorage]);
+}, [sessionId, userId,persist, useSessionStorage]);
 
 useEffect(() => { 
   // Only save if we're not in the middle of a session change
@@ -185,11 +187,11 @@ useEffect(() => {
       return; // Don't save during session transition
   }
   if (persist && sessionId) {
-      saveJson(LS_MESSAGES_PREFIX + sessionId, messages); 
+      saveJson(LS_MESSAGES_PREFIX(userId) + sessionId, messages); 
   } else if (useSessionStorage && sessionId) {
-      try { sessionStorage.setItem(LS_MESSAGES_PREFIX + sessionId, JSON.stringify(messages)); } catch {}
+      try { sessionStorage.setItem(LS_MESSAGES_PREFIX(userId) + sessionId, JSON.stringify(messages)); } catch {}
   }
-}, [sessionId, messages, persist, useSessionStorage]);
+}, [sessionId, userId, messages, persist, useSessionStorage]);
 
 return { messages, setMessages };
 }
@@ -265,9 +267,9 @@ const todayLabel = React.useMemo(() => {
 }, []);
 const { user } = useAuth();
 const isGuest = !user;
-const { sessions, createSession, updateSession, removeSession } = useAgentSessions(!isGuest === true, isGuest === true);
+const { sessions, createSession, updateSession, removeSession } = useAgentSessions(user?.id || 'guest', !isGuest === true, isGuest === true);
 const [activeSessionId, setActiveSessionId] = useState((!isGuest ? (sessions[0]?.id || null) : null));
-const { messages, setMessages } = useSessionMessages(activeSessionId || '', !isGuest === true, isGuest === true);
+const { messages, setMessages } = useSessionMessages(activeSessionId || '', user?.id || 'guest', !isGuest === true, isGuest === true);
 const queryClient = useQueryClient();
 const [scrollElement, setScrollElement] = useState(null);
 // P0: activeSessionIdRef/sessionLocalMessagesRef for live updates
@@ -311,7 +313,7 @@ React.useEffect(() => {
 
   // 새 세션 진입 시 저장값 복원
   try {
-    const raw = localStorage.getItem(`agent:inline:${activeSessionId}`);
+    const raw = user?.id ? localStorage.getItem(LS_INLINE_PREFIX(user.id) + activeSessionId) : null;
     if (!raw) {
       // 저장값 없으면 초기화
       setSelectedCharacter(null);
@@ -533,7 +535,7 @@ useEffect(() => {
 
 // (moved) headlessWatchersRef/startHeadlessWatcher 아래로 이동: updateMessageForSession 선언 이후에 초기화되도록 함
 
-const [images, setImages] = useState(() => loadJson(LS_IMAGES, []));
+const [images, setImages] = useState(() => user?.id ? loadJson(LS_IMAGES(user.id), []) : []);
 const [imageResults, setImageResults] = useState([]);
 const [showChatPanel, setShowChatPanel] = useState(false);
 const [showImagesSheet, setShowImagesSheet] = useState(false);
@@ -546,10 +548,10 @@ const clearFirstFrame = useCallback(() => setFirstFrameUrl(''), []);
 const [insertTargetImage, setInsertTargetImage] = useState(null);
 const [insertKind, setInsertKind] = useState('gallery'); // 'cover' | 'gallery'
 const [selectedStoryId, setSelectedStoryId] = useState(null);
-const [storiesList, setStoriesList] = useState(() => loadJson(LS_STORIES, []));
+const [storiesList, setStoriesList] = useState(() => user?.id ? loadJson(LS_STORIES(user.id), []) : []);
 const [showStoriesViewerSheet, setShowStoriesViewerSheet] = useState(false);
 const [showCharactersViewerSheet, setShowCharactersViewerSheet] = useState(false);
-const [charactersList, setCharactersList] = useState(() => loadJson(LS_CHARACTERS, []));
+const [charactersList, setCharactersList] = useState(() => user?.id ? loadJson(LS_CHARACTERS(user.id), []) : []);
 const [touchStartX, setTouchStartX] = useState(null);
 const [imageSize, setImageSize] = useState('768');
 const [imageAspect, setImageAspect] = useState('1:1');
@@ -650,17 +652,17 @@ const handleSelectMode = useCallback((messageId, selectedMode) => {
   ));
   
   // 저장소 업데이트
-  const saved = loadJson(LS_MESSAGES_PREFIX + currentSessionId, []);
+  const saved = loadJson(LS_MESSAGES_PREFIX(user?.id) + currentSessionId, []);
   const updated = saved.map(m => 
     m.id === messageId ? convertedMessage : m
   );
-  saveJson(LS_MESSAGES_PREFIX + currentSessionId, updated);
+  saveJson(LS_MESSAGES_PREFIX(user?.id) + currentSessionId, updated);
   
   // 게스트일 경우 sessionStorage에도 저장
   if (isGuest) {
     try {
       sessionLocalMessagesRef.current.set(currentSessionId, updated);
-      sessionStorage.setItem(LS_MESSAGES_PREFIX + currentSessionId, JSON.stringify(updated));
+      sessionStorage.setItem(LS_MESSAGES_PREFIX(user?.id) + currentSessionId, JSON.stringify(updated));
     } catch {}
   }
   
@@ -683,7 +685,7 @@ const handleSelectMode = useCallback((messageId, selectedMode) => {
       { id: crypto.randomUUID(), role: 'assistant', type: 'recommendation', storyMode: selectedMode, createdAt: nowIso() }
     ];
     
-    saveJson(LS_MESSAGES_PREFIX + currentSessionId, withExtras);
+    saveJson(LS_MESSAGES_PREFIX(user?.id) + currentSessionId, withExtras);
     
     if (activeSessionIdRef.current === currentSessionId) {
       setMessages(withExtras);
@@ -711,18 +713,18 @@ const handleSelectMode = useCallback((messageId, selectedMode) => {
         });
         const scenes = hiRes.data?.story_highlights || [];
         
-        const currentMsgs = loadJson(LS_MESSAGES_PREFIX + currentSessionId, []);
+        const currentMsgs = loadJson(LS_MESSAGES_PREFIX(user?.id) + currentSessionId, []);
         const placeholder = currentMsgs.find(m => m.type === 'story_highlights_loading');
         if (!placeholder) return;
         
-        const savedHL = loadJson(LS_MESSAGES_PREFIX + currentSessionId, []);
+        const savedHL = loadJson(LS_MESSAGES_PREFIX(user?.id) + currentSessionId, []);
         const updatedHL = savedHL.map(m =>
           m.id === placeholder.id
             ? { id: crypto.randomUUID(), type: 'story_highlights', scenes, createdAt: nowIso() }
             : m
         );
         
-        saveJson(LS_MESSAGES_PREFIX + currentSessionId, updatedHL);
+        saveJson(LS_MESSAGES_PREFIX(user?.id) + currentSessionId, updatedHL);
         
         if (activeSessionIdRef.current === currentSessionId) {
           setMessages(updatedHL);
@@ -750,9 +752,9 @@ const handleSelectMode = useCallback((messageId, selectedMode) => {
       } catch (e) {
         console.error('Failed to generate highlights after selection:', e);
         // 실패 시 로딩 제거
-        const savedErr = loadJson(LS_MESSAGES_PREFIX + currentSessionId, []);
+        const savedErr = loadJson(LS_MESSAGES_PREFIX(user?.id) + currentSessionId, []);
         const filtered = savedErr.filter(m => m.type !== 'story_highlights_loading');
-        saveJson(LS_MESSAGES_PREFIX + currentSessionId, filtered);
+        saveJson(LS_MESSAGES_PREFIX(user?.id) + currentSessionId, filtered);
         
         if (activeSessionIdRef.current === currentSessionId) {
           setMessages(filtered);
@@ -836,7 +838,7 @@ const handleRemixGenerate = useCallback(async (msg, assistantText) => {
       const slice = text.slice(0, idx);
       
       // ✅ 저장소 항상 업데이트 (타이핑 중에도)
-      const saved = loadJson(LS_MESSAGES_PREFIX + currentSessionId, []);
+      const saved = loadJson(LS_MESSAGES_PREFIX(user?.id) + currentSessionId, []);
       const updated = saved.map(m => m.id === assistantId ? { 
         ...m, 
         content: slice,
@@ -845,7 +847,7 @@ const handleRemixGenerate = useCallback(async (msg, assistantText) => {
         thinking: false,
         storyMode: decidedMode
       } : m);
-      saveJson(LS_MESSAGES_PREFIX + currentSessionId, updated);
+      saveJson(LS_MESSAGES_PREFIX(user?.id) + currentSessionId, updated);
       
       // ✅ 현재 보고 있는 세션일 때만 UI 업데이트
       if (activeSessionIdRef.current === currentSessionId) {
@@ -859,13 +861,13 @@ const handleRemixGenerate = useCallback(async (msg, assistantText) => {
         
         // ✅ 하이라이트/추천 추가
         if (imageUrl) {
-          const finalSaved = loadJson(LS_MESSAGES_PREFIX + currentSessionId, []);
+          const finalSaved = loadJson(LS_MESSAGES_PREFIX(user?.id) + currentSessionId, []);
           const placeholderId = crypto.randomUUID();
           const withExtras = [...finalSaved, 
             { id: placeholderId, type: 'story_highlights_loading', createdAt: nowIso() }, 
             { id: crypto.randomUUID(), role: 'assistant', type: 'recommendation', createdAt: nowIso() }
           ];
-          saveJson(LS_MESSAGES_PREFIX + currentSessionId, withExtras);
+          saveJson(LS_MESSAGES_PREFIX(user?.id) + currentSessionId, withExtras);
           
           if (activeSessionIdRef.current === currentSessionId) {
             setMessages(withExtras);
@@ -887,11 +889,11 @@ const handleRemixGenerate = useCallback(async (msg, assistantText) => {
               const hiRes = await chatAPI.agentGenerateHighlights({ text, image_url: imageUrl, story_mode: decidedMode || 'auto',vision_tags: visionTags });
               const scenes = hiRes.data?.story_highlights || [];
               
-              const currentMsgs = loadJson(LS_MESSAGES_PREFIX + currentSessionId, []);
+              const currentMsgs = loadJson(LS_MESSAGES_PREFIX(user?.id) + currentSessionId, []);
               const placeholder = currentMsgs.find(m => m.type === 'story_highlights_loading');
               if (!placeholder) return;
               
-              const savedAfterHL = loadJson(LS_MESSAGES_PREFIX + currentSessionId, []);
+              const savedAfterHL = loadJson(LS_MESSAGES_PREFIX(user?.id) + currentSessionId, []);
               const updatedHL = savedAfterHL.map(mm => mm.id === placeholder.id ? { 
                 id: crypto.randomUUID(), 
                 type: 'story_highlights', 
@@ -899,15 +901,15 @@ const handleRemixGenerate = useCallback(async (msg, assistantText) => {
                 createdAt: nowIso() 
               } : mm);
               
-              saveJson(LS_MESSAGES_PREFIX + currentSessionId, updatedHL);
+              saveJson(LS_MESSAGES_PREFIX(user?.id) + currentSessionId, updatedHL);
               
               if (activeSessionIdRef.current === currentSessionId) {
                 setMessages(updatedHL);
               }
             } catch (_) {
-              const savedErr = loadJson(LS_MESSAGES_PREFIX + currentSessionId, []);
+              const savedErr = loadJson(LS_MESSAGES_PREFIX(user?.id) + currentSessionId, []);
               const filtered = savedErr.filter(mm => mm.type !== 'story_highlights_loading');
-              saveJson(LS_MESSAGES_PREFIX + currentSessionId, filtered);
+              saveJson(LS_MESSAGES_PREFIX(user?.id) + currentSessionId, filtered);
               
               if (activeSessionIdRef.current === currentSessionId) {
                 setMessages(filtered);
@@ -961,9 +963,9 @@ useEffect(() => {
     }
 }, [prompt]);
 
-useEffect(() => { if (!isGuest) saveJson(LS_IMAGES, images); }, [images, isGuest]);
-useEffect(() => { if (!isGuest) saveJson(LS_STORIES, storiesList); }, [storiesList, isGuest]);
-useEffect(() => { if (!isGuest) saveJson(LS_CHARACTERS, charactersList); }, [charactersList, isGuest]);
+useEffect(() => { if (user?.id) saveJson(LS_IMAGES(user.id), images); }, [user?.id, images]);
+useEffect(() => { if (user?.id) saveJson(LS_STORIES(user.id), storiesList); }, [user?.id, storiesList]);
+useEffect(() => { if (user?.id) saveJson(LS_CHARACTERS(user.id), charactersList); }, [user?.id, charactersList]);
 
 // 생성 중 경과 시간 타이머
 useEffect(() => {
@@ -984,7 +986,7 @@ useEffect(() => {
 // UI 상태 로컬 복원/저장
 useEffect(() => {
 try {
-const ui = loadJson('agent:ui', null);
+const ui = user?.id ? loadJson(LS_UI(user.id), null) : null;
 if (ui) {
   if (ui.mode) setMode(ui.mode);
   if (ui.storyModel) setStoryModel(ui.storyModel);
@@ -1018,8 +1020,10 @@ try {
 } catch {}
 }, []);
 useEffect(() => {
-saveJson('agent:ui', { mode, storyModel, imageModel, isPublic, w5, imageSize, imageAspect, imageCount, publishPublic, includeNewImages, includeLibraryImages });
-}, [mode, storyModel, imageModel, isPublic, w5, imageSize, imageAspect, imageCount, publishPublic, includeNewImages, includeLibraryImages]);
+  if (user?.id) {
+    saveJson(LS_UI(user.id), { mode, storyModel, imageModel, isPublic, w5, imageSize, imageAspect, imageCount, publishPublic, includeNewImages, includeLibraryImages });
+  }
+}, [user?.id,mode, storyModel, imageModel, isPublic, w5, imageSize, imageAspect, imageCount, publishPublic, includeNewImages, includeLibraryImages]);
 
 // "최고 결정권자" useEffect: 세션 상태 변화를 감시하고 UI를 동기화
 useEffect(() => {
@@ -1156,7 +1160,7 @@ const handleSessionSelect = (id) => {
     } catch {}
     setActiveSessionId(id);
     try {
-        const list = isGuest ? [] : (loadJson(LS_MESSAGES_PREFIX + id, []) || []);
+        const list = isGuest ? [] : (loadJson(LS_MESSAGES_PREFIX(user?.id) + id, []) || []);
         setShowChatPanel((list || []).length > 0);
     } catch {}
     navigate(`/agent#session=${id}`, { replace: true });
@@ -1300,7 +1304,7 @@ const updateMessageForSession = useCallback((targetSessionId, targetMessageId, u
     try {
         const currentList = isGuest
           ? (sessionLocalMessagesRef.current.get(targetSessionId) || [])
-          : loadJson(LS_MESSAGES_PREFIX + targetSessionId, []);
+          : loadJson(LS_MESSAGES_PREFIX(user?.id) + targetSessionId, []);
         let found = false;
         const updatedList = (currentList || []).map(m => {
             if (m.id === targetMessageId) { found = true; return updater(m); }
@@ -1313,7 +1317,7 @@ const updateMessageForSession = useCallback((targetSessionId, targetMessageId, u
         if (isGuest) {
           sessionLocalMessagesRef.current.set(targetSessionId, updatedList);
         } else {
-          saveJson(LS_MESSAGES_PREFIX + targetSessionId, updatedList);
+          saveJson(LS_MESSAGES_PREFIX(user?.id) + targetSessionId, updatedList);
         }
         if (activeSessionIdRef.current === targetSessionId) setMessages(updatedList);
         return updatedList;
@@ -1328,13 +1332,13 @@ const handleRerun = useCallback(async (msg) => {
     // 1) 태그 초기화
     setRemixSelected(prev => ({ ...prev, [msg.id]: [] }));
     // 2) 아래에 붙은 하이라이트/로딩/추천 제거
-    const list = isGuest ? (sessionLocalMessagesRef.current.get(sid) || []) : loadJson(LS_MESSAGES_PREFIX + sid, []);
+    const list = isGuest ? (sessionLocalMessagesRef.current.get(sid) || []) : loadJson(LS_MESSAGES_PREFIX(user?.id) + sid, []);
     const idx = list.findIndex(m => m.id === msg.id);
     if (idx === -1) return;
     const headList = list.slice(0, idx + 1);
     const tail = list.slice(idx + 1).filter(m => !(m.type === 'story_highlights' || m.type === 'story_highlights_loading' || m.type === 'recommendation'));
     const cleaned = [...headList, ...tail];
-    if (isGuest) sessionLocalMessagesRef.current.set(sid, cleaned); else saveJson(LS_MESSAGES_PREFIX + sid, cleaned);
+    if (isGuest) sessionLocalMessagesRef.current.set(sid, cleaned); else saveJson(LS_MESSAGES_PREFIX(user?.id) + sid, cleaned);
     if (activeSessionId === sid) setMessages(cleaned);
     // 3) 메시지를 스피너로 전환
     updateMessageForSession(sid, msg.id, (m) => ({ ...m, thinking: true, streaming: false, content: '', fullContent: '' }));
@@ -1859,7 +1863,7 @@ const handleContinueInline = useCallback(async (msg) => {
       const fullText = startText + appended;
 
       // ✅ 저장소 항상 업데이트
-      const saved = loadJson(LS_MESSAGES_PREFIX + currentSessionId, []);
+      const saved = loadJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + currentSessionId, []);
       const updated = saved.map(m => m.id === msg.id ? { 
         ...m, 
         content: slice, 
@@ -1868,7 +1872,7 @@ const handleContinueInline = useCallback(async (msg) => {
         continued: i < total,
         expanded: i >= total
       } : m);
-      saveJson(LS_MESSAGES_PREFIX + currentSessionId, updated);
+      saveJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + currentSessionId, updated);
 
       // ✅ 현재 세션일 때만 UI 업데이트
       if (activeSessionIdRef.current === currentSessionId) {
@@ -1884,7 +1888,7 @@ const handleContinueInline = useCallback(async (msg) => {
         const combinedText = startText + appended;
         const placeholderId = crypto.randomUUID();
         
-        const afterContinue = loadJson(LS_MESSAGES_PREFIX + currentSessionId, []);
+        const afterContinue = loadJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + currentSessionId, []);
         const pos = afterContinue.findIndex(mm => mm.id === msg.id);
         const withLoading = pos > -1 ? [
           ...afterContinue.slice(0, pos + 1),
@@ -1892,7 +1896,7 @@ const handleContinueInline = useCallback(async (msg) => {
           ...afterContinue.slice(pos + 1)
         ] : afterContinue;
         
-        saveJson(LS_MESSAGES_PREFIX + currentSessionId, withLoading);
+        saveJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + currentSessionId, withLoading);
         
         if (activeSessionIdRef.current === currentSessionId) {
           setMessages(withLoading);
@@ -2124,13 +2128,13 @@ const handlePartialRegenerate = useCallback(async () => {
     ));
     
     // localStorage 저장
-    const saved = loadJson(LS_MESSAGES_PREFIX + activeSessionId, []);
+    const saved = loadJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + activeSessionId, []);
     const updated = saved.map(msg => 
       msg.id === messageId 
         ? { ...msg, content: newFullText, fullContent: newFullText } 
         : msg
     );
-    saveJson(LS_MESSAGES_PREFIX + activeSessionId, updated);
+    saveJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + activeSessionId, updated);
     
     // 5. 재생성 완료 - 보라색 글로우 표시
     setRegenerating(false);
@@ -2214,7 +2218,7 @@ try { window.dispatchEvent(new CustomEvent('analytics', { detail: { name: 'agent
 
 const handleInsertImageToStoryOpen = (img) => {
 setInsertTargetImage(img);
-const list = isGuest ? [] : loadJson(LS_STORIES, []);
+const list = (isGuest || !user?.id) ? [] : loadJson(LS_STORIES(user.id), []);
 setStoriesList(list);
 setSelectedStoryId(list[0]?.id || null);
 setInsertKind('gallery');
@@ -2270,8 +2274,10 @@ const toggleStoryVisibility = async (storyId, nextPublic) => {
 try {
 await storiesAPI.updateStory(storyId, { is_public: nextPublic });
 setStoriesList(prev => prev.map(s => s.id === storyId ? { ...s, is_public: nextPublic } : s));
-const all = loadJson(LS_STORIES, []);
-saveJson(LS_STORIES, all.map(s => s.id === storyId ? { ...s, is_public: nextPublic } : s));
+const all = user?.id ? loadJson(LS_STORIES(user.id), []) : [];
+if (user?.id) {
+  saveJson(LS_STORIES(user.id), all.map(s => s.id === storyId ? { ...s, is_public: nextPublic } : s));
+}
 window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'success', message: nextPublic ? '공개로 변경되었습니다' : '비공개로 변경되었습니다' } }));
 try { window.dispatchEvent(new CustomEvent('analytics', { detail: { name: 'agent_toggle_visibility', props: { storyId, is_public: nextPublic } } })); } catch {}
 } catch (e) {
@@ -2347,7 +2353,7 @@ const handleCharacterSelect = useCallback(async (character, generatedText, image
     setChatRoomId(roomId);
     try {
       localStorage.setItem(
-        `agent:inline:${activeSessionId}`,
+        LS_INLINE_PREFIX(user?.id || 'temp') + activeSessionId,
         JSON.stringify({
           roomId,
           character: {
@@ -2380,8 +2386,12 @@ const handleCloseChat = useCallback(() => {
   setChatRoomId(null);
   setChatFocused(false);
   setChatLoading(false);
-  try { localStorage.removeItem(`agent:inline:${activeSessionId}`); } catch {}
-}, []);
+  try {
+    if (user?.id) {
+      localStorage.removeItem(LS_INLINE_PREFIX(user.id) + activeSessionId);
+    }
+  } catch {}
+}, [user?.id, activeSessionId]);
 
 // 외부 클릭 감지 (Composer 다시 보이기)
 useEffect(() => {
@@ -2487,7 +2497,7 @@ return (
                 <div className="flex items-center gap-2">
                   <Badge className="bg-gray-700 text:white">{userTurns}/{generationLimit} 턴</Badge>
                         <Button size="sm" variant="ghost" className="text-gray-300 hover:bg-gray-700/60 hover:text-white" onClick={() => { const current = sessions.find(s => s.id === activeSessionId); const next = window.prompt('세션 이름 변경', current?.title || '새 대화'); if (next && next.trim()) updateSession(activeSessionId, { title: next.trim() }); }}>이름 변경</Button>
-                        <Button size="sm" variant="ghost" className="text-gray-300 hover:bg-gray-700/60 hover:text:white" onClick={() => { setMessages([]); try { saveJson(LS_MESSAGES_PREFIX + activeSessionId, []); } catch {} }}>대화 지우기</Button>
+                        <Button size="sm" variant="ghost" className="text-gray-300 hover:bg-gray-700/60 hover:text:white" onClick={() => { setMessages([]); try { saveJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + activeSessionId, []); } catch {} }}>대화 지우기</Button>
                         <Button size="sm" variant="ghost" className="text-red-400 hover:bg-red-500/10 hover:text-red-300" onClick={() => handleDeleteSession(activeSessionId)}>세션 삭제</Button>
                         <Button size="sm" className="bg-green-600 hover:bg-green-700 text:white" onClick={() => setShowPublishSheet(true)} disabled={(stableMessages||[]).filter(m=>m.role==='assistant'&&m.content).length===0}>
                     공개 · 캐릭터 만들기
@@ -2776,8 +2786,8 @@ return (
                                           <div className="flex items-center gap-1 px-2 py-1 bg-gray-900/85 border border-gray-700 shadow-lg">
                                              {editingMessageId === m.id ? (
                                                <>
-                                                 <button
-                                                   type="button"
+                                          <button
+                                            type="button"
                                                    className="p-1 hover:bg-gray-800 text-gray-300 hover:text-white"
                                                    title="편집 완료"
                                                    onClick={(e) => {
@@ -2785,7 +2795,7 @@ return (
                                                      const contentDiv = e.currentTarget.closest('.group').querySelector('.message-content');
                                                      const newText = contentDiv ? (contentDiv.innerText || contentDiv.textContent) : (editedContent || text);
                                                      setMessages(curr => curr.map(msg => msg.id === m.id ? { ...msg, content: newText, fullContent: newText } : msg));
-                                                     try { saveJson(LS_MESSAGES_PREFIX + activeSessionId, (messages||[]).map(msg => msg.id === m.id ? { ...msg, content: newText, fullContent: newText } : msg)); } catch {}
+                                                     try { saveJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + activeSessionId, (messages||[]).map(msg => msg.id === m.id ? { ...msg, content: newText, fullContent: newText } : msg)); } catch {}
                                                      setEditingMessageId(null);
                                                      setEditedContent('');
                                                    }}
@@ -2815,7 +2825,7 @@ return (
                                                 <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 bg-gray-900 border border-purple-500/50 rounded-lg shadow-xl opacity-0 group-hover/edit:opacity-100 pointer-events-none transition-opacity whitespace-nowrap z-50">
                                                   <div className="text-xs text-gray-200 font-medium">
                                                     원하는 부분을 드래그하면 재생성할 수 있어요.
-                                                  </div>
+                      </div>
                                                   {/* 화살표 */}
                                                   <div className="absolute top-full left-1/2 -translate-x-1/2 -mt-px">
                                                     <div className="border-4 border-transparent border-t-purple-500/50"></div>
@@ -3006,7 +3016,7 @@ return (
     </div>
        {/* 화면 하단 고정 입력창 - 새로운 심플 UI */}
        {!chatFocused && (
-         <div className="fixed bottom-0 left-64 right-0 bg-gradient-to-t from-gray-900 to-transparent">
+       <div className="fixed bottom-0 left-64 right-0 bg-gradient-to-t from-gray-900 to-transparent">
            <div className="w-full max-w-4xl mx-auto p-3">
             {/* 새로운 Composer UI */}
             <Composer 
@@ -3124,7 +3134,7 @@ return (
                     type: 'generate'
                   };
                   try {
-                    localStorage.setItem(LS_RECOVERY_PREFIX + ensuredSessionId, JSON.stringify(recoveryInfo));
+                    localStorage.setItem(LS_RECOVERY_PREFIX(user?.id || 'guest') + ensuredSessionId, JSON.stringify(recoveryInfo));
                   } catch {}
                    
                    // 3. 생성 상태 업데이트
@@ -3185,11 +3195,11 @@ return (
                      ));
                      
                      // 저장소에도 저장
-                     const savedBeforeTyping = loadJson(LS_MESSAGES_PREFIX + currentSessionId, []);
+                     const savedBeforeTyping = loadJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + currentSessionId, []);
                      const updatedBeforeTyping = savedBeforeTyping.map(msg => 
                        msg.id === assistantId ? dualMessage : msg
                      );
-                     saveJson(LS_MESSAGES_PREFIX + currentSessionId, updatedBeforeTyping);
+                     saveJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + currentSessionId, updatedBeforeTyping);
                      
                      // 두 개의 타이핑 타이머 동시 실행
                      const createTypingTimer = (mode, fullText) => {
@@ -3204,7 +3214,7 @@ return (
                          const slice = fullText.slice(0, idx);
                          
                          // 저장소 업데이트
-                         const saved = loadJson(LS_MESSAGES_PREFIX + currentSessionId, []);
+                         const saved = loadJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + currentSessionId, []);
                          const updated = saved.map(msg => {
                            if (msg.id === assistantId && msg.type === 'dual_response') {
                              return {
@@ -3221,7 +3231,7 @@ return (
                            }
                            return msg;
                          });
-                         saveJson(LS_MESSAGES_PREFIX + currentSessionId, updated);
+                         saveJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + currentSessionId, updated);
                          
                          // 현재 세션일 때만 UI 업데이트
                          if (activeSessionIdRef.current === currentSessionId) {
@@ -3291,19 +3301,19 @@ return (
                       ));
                       
                       // ✅ 저장소에도 직접 저장
-                      const saved = loadJson(LS_MESSAGES_PREFIX + activeSessionId, []);
+                      const saved = loadJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + activeSessionId, []);
                       const updated = saved.map(m => 
                         (m.type === 'image' && m.url === imageUrl) 
                           ? { ...m, imageSummary } 
                           : m
                       );
-                      saveJson(LS_MESSAGES_PREFIX + activeSessionId, updated);
+                      saveJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + activeSessionId, updated);
                       
                       // ✅ 게스트일 경우 sessionStorage에도 저장
                       if (isGuest) {
                         try {
                           sessionLocalMessagesRef.current.set(activeSessionId, updated);
-                          sessionStorage.setItem(LS_MESSAGES_PREFIX + activeSessionId, JSON.stringify(updated));
+                          sessionStorage.setItem(LS_MESSAGES_PREFIX('guest') + activeSessionId, JSON.stringify(updated));
                         } catch {}
                       }
                     } catch {}
@@ -3329,7 +3339,7 @@ return (
                       const slice = assistantText.slice(0, idx);
                       
                       // ✅ 저장소 항상 업데이트
-                      const saved = loadJson(LS_MESSAGES_PREFIX + currentSessionId, []);
+                      const saved = loadJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + currentSessionId, []);
                       const updated = saved.map(msg => msg.id === assistantId ? { 
                         ...msg, 
                         content: slice,
@@ -3338,7 +3348,7 @@ return (
                         thinking: false,
                         storyMode: decidedMode
                       } : msg);
-                      saveJson(LS_MESSAGES_PREFIX + currentSessionId, updated);
+                      saveJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + currentSessionId, updated);
                       
                       // ✅ 현재 보고 있는 세션일 때만 UI 업데이트
                       if (activeSessionIdRef.current === currentSessionId) {
@@ -3374,13 +3384,13 @@ return (
                         
                         // ✅ 하이라이트/추천 추가
                         if (imageUrl) {
-                          const finalSaved = loadJson(LS_MESSAGES_PREFIX + currentSessionId, []);
+                          const finalSaved = loadJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + currentSessionId, []);
                           const placeholderId = crypto.randomUUID();
                           const withExtras = [...finalSaved, 
                             { id: placeholderId, type: 'story_highlights_loading', createdAt: nowIso() }, 
                             { id: crypto.randomUUID(), role: 'assistant', type: 'recommendation', createdAt: nowIso() }
                           ];
-                          saveJson(LS_MESSAGES_PREFIX + currentSessionId, withExtras);
+                          saveJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + currentSessionId, withExtras);
                           
                           if (activeSessionIdRef.current === currentSessionId) {
                             setMessages(withExtras);
@@ -3403,11 +3413,11 @@ return (
                               const hiRes = await chatAPI.agentGenerateHighlights({ text: assistantText, image_url: imageUrl, story_mode: decidedMode || 'auto',vision_tags: visionTags });
                               const scenes = hiRes.data?.story_highlights || [];
                               
-                              const currentMsgs = loadJson(LS_MESSAGES_PREFIX + currentSessionId, []);
+                              const currentMsgs = loadJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + currentSessionId, []);
                               const placeholder = currentMsgs.find(m => m.type === 'story_highlights_loading');
                               if (!placeholder) return;
                               
-                              const savedHL = loadJson(LS_MESSAGES_PREFIX + currentSessionId, []);
+                              const savedHL = loadJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + currentSessionId, []);
                               const updatedHL = savedHL.map(msg => msg.id === placeholder.id ? { 
                                 id: crypto.randomUUID(), 
                                 type: 'story_highlights', 
@@ -3415,16 +3425,16 @@ return (
                                 createdAt: nowIso() 
                               } : msg);
                               
-                              saveJson(LS_MESSAGES_PREFIX + currentSessionId, updatedHL);
+                              saveJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + currentSessionId, updatedHL);
                               
                               if (activeSessionIdRef.current === currentSessionId) {
                                 setMessages(updatedHL);
                               }
                             } catch (e) {
-                              const savedErr = loadJson(LS_MESSAGES_PREFIX + currentSessionId, []);
+                              const savedErr = loadJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + currentSessionId, []);
                               const filtered = savedErr.filter(msg => msg.type !== 'story_highlights_loading');
                               
-                              saveJson(LS_MESSAGES_PREFIX + currentSessionId, filtered);
+                              saveJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + currentSessionId, filtered);
                               
                               if (activeSessionIdRef.current === currentSessionId) {
                                 setMessages(filtered);
@@ -3462,8 +3472,8 @@ return (
              />
              
            {/* 기존 복잡한 입력 UI 완전 제거 - Git에서 복원 가능 */}
-           </div>
-         </div>
+                       </div>
+                </div>
        )}
 
     {/* 시트: 이미지 보관함 전체 */}
@@ -3533,9 +3543,9 @@ return (
           <SheetTitle className="text:white">생성된 스토리</SheetTitle>
         </SheetHeader>
         <div className="mt-4 space-y-3 pr-1 max-h-[70vh] overflow:auto">
-          {loadJson(LS_STORIES, []).length === 0 ? (
+          {(user?.id ? loadJson(LS_STORIES(user.id), []) : []).length === 0 ? (
             <div className="text-gray-400 text-sm">아직 생성된 스토리가 없습니다.</div>
-          ) : loadJson(LS_STORIES, []).map(s => (
+          ) : (user?.id ? loadJson(LS_STORIES(user.id), []) : []).map(s => (
             <div key={s.id} className="p-2 rounded-md border bg-gray-800 border-gray-700">
               <div className="flex items-center gap-3">
                 <div className="w-16 h-16 rounded bg-gray-900 border border-gray-700 overflow-hidden">
@@ -3577,9 +3587,9 @@ return (
           <SheetTitle className="text-white">생성된 캐릭터</SheetTitle>
         </SheetHeader>
         <div className="mt-4 space-y-3 pr-1 max-h-[70vh] overflow-auto">
-          {loadJson(LS_CHARACTERS, []).length === 0 ? (
+          {(user?.id ? loadJson(LS_CHARACTERS(user.id), []) : []).length === 0 ? (
             <div className="text-gray-400 text-sm">아직 생성된 캐릭터가 없습니다.</div>
-          ) : loadJson(LS_CHARACTERS, []).map(c => (
+          ) : (user?.id ? loadJson(LS_CHARACTERS(user.id), []) : []).map(c => (
             <div key={c.id} className="p-2 rounded-md border bg-gray-800 border-gray-700">
               <div className="flex items:center gap-3">
                 <div className="w-16 h-16 rounded bg-gray-900 border border-gray-700 overflow-hidden">

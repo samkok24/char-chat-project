@@ -160,8 +160,8 @@ export const authAPI = {
   verifyEmail: (token) =>
     api.post('/auth/verify-email', { token }),
   
-  sendVerificationEmail: () =>
-    api.post('/auth/send-verification-email'),
+  sendVerificationEmail: (email) =>
+    api.post('/auth/send-verification-email', { email }),
   checkEmail: (email) => api.get(`/auth/check-email`, { params: { email } }),
   checkUsername: (username) => api.get(`/auth/check-username`, { params: { username } }),
   generateUsername: () => api.get('/auth/generate-username'),

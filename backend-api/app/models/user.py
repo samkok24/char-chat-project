@@ -21,6 +21,7 @@ class User(Base):
     gender = Column(String(10), nullable=False)
     is_active = Column(Boolean, default=True)
     is_verified = Column(Boolean, default=False)
+    is_admin = Column(Boolean, default=False, index=True)  # 관리자 플래그
     # 프로필 이미지 및 소개
     avatar_url = Column(String(500))
     bio = Column(String(1000))

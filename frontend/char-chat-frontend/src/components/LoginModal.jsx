@@ -7,10 +7,10 @@ import { Alert, AlertDescription } from './ui/alert';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
-import { Loader2, Mail, Lock, User, MessageCircle, Check, Wand2 } from 'lucide-react';
+import { Loader2, Mail, Lock, User, MessageCircle, Check, Wand2, Eye, EyeOff } from 'lucide-react';
 
 const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
-  const { login, register } = useAuth();
+  const { login, register, user } = useAuth();
   const [activeTab, setActiveTab] = useState(initialTab);
   const [loginData, setLoginData] = useState({ email: '', password: '' });
   const [registerData, setRegisterData] = useState({
@@ -26,6 +26,9 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
   const [emailChecking, setEmailChecking] = useState(false);
   const [usernameChecking, setUsernameChecking] = useState(false);
   const [error, setError] = useState('');
+  const [showLoginPassword, setShowLoginPassword] = useState(false);
+  const [showRegisterPassword, setShowRegisterPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
   useEffect(() => {
     if (isOpen) {
@@ -33,6 +36,11 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
       setError('');
     }
   }, [isOpen, initialTab]);
+
+  // 탭 변경 시 에러 메시지 초기화
+  useEffect(() => {
+    setError('');
+  }, [activeTab]);
 
   const handleLoginChange = (e) => {
     setLoginData({ ...loginData, [e.target.name]: e.target.value });
@@ -165,9 +173,19 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
           <Card className="shadow-none border-0">
             <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
               <CardHeader className="pb-4">
-                <TabsList className="grid w-full grid-cols-2">
-                  <TabsTrigger value="login">로그인</TabsTrigger>
-                  <TabsTrigger value="register">회원가입</TabsTrigger>
+                <TabsList className="grid w-full grid-cols-2 bg-gray-200 dark:bg-gray-700">
+                  <TabsTrigger 
+                    value="login"
+                    className="text-gray-700 dark:text-gray-300 data-[state=active]:bg-white dark:data-[state=active]:bg-gray-800 data-[state=active]:text-gray-900 dark:data-[state=active]:text-white font-semibold"
+                  >
+                    로그인
+                  </TabsTrigger>
+                  <TabsTrigger 
+                    value="register"
+                    className="text-gray-700 dark:text-gray-300 data-[state=active]:bg-white dark:data-[state=active]:bg-gray-800 data-[state=active]:text-gray-900 dark:data-[state=active]:text-white font-semibold"
+                  >
+                    회원가입
+                  </TabsTrigger>
                 </TabsList>
               </CardHeader>
               <CardContent>
@@ -179,26 +197,42 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
 
                 <TabsContent value="login" className="space-y-4 mt-0">
                   <div className="text-center mb-4">
-                    <CardDescription className="text-gray-700">
+                    <CardDescription className="text-gray-600 dark:text-gray-300">
                       계정에 로그인하여 AI 캐릭터들과 대화를 시작하세요
                     </CardDescription>
                   </div>
                   <form onSubmit={handleLoginSubmit} className="space-y-4">
                     <div className="space-y-2">
-                      <Label htmlFor="login-email" className="text-gray-900">이메일</Label>
+                      <Label htmlFor="login-email" className="text-gray-900 dark:text-gray-200 font-semibold">이메일</Label>
                       <div className="relative">
-                        <Mail className="absolute left-3 top-3 h-4 w-4 text-gray-500" />
-                        <Input id="login-email" name="email" type="email" placeholder="이메일을 입력하세요" value={loginData.email} onChange={handleLoginChange} className="pl-10" required />
+                        <Mail className="absolute left-3 top-3 h-4 w-4 text-gray-500 dark:text-gray-400" />
+                        <Input id="login-email" name="email" type="email" placeholder="이메일을 입력하세요" value={loginData.email} onChange={handleLoginChange} className="pl-10 text-gray-900 dark:text-gray-100" required />
                       </div>
                     </div>
                     <div className="space-y-2">
-                      <Label htmlFor="login-password" className="text-gray-900">비밀번호</Label>
+                      <Label htmlFor="login-password" className="text-gray-900 dark:text-gray-200 font-semibold">비밀번호</Label>
                       <div className="relative">
-                        <Lock className="absolute left-3 top-3 h-4 w-4 text-gray-500" />
-                        <Input id="login-password" name="password" type="password" placeholder="비밀번호를 입력하세요" value={loginData.password} onChange={handleLoginChange} className="pl-10" required />
+                        <Lock className="absolute left-3 top-3 h-4 w-4 text-gray-500 dark:text-gray-400" />
+                        <Input 
+                          id="login-password" 
+                          name="password" 
+                          type={showLoginPassword ? "text" : "password"} 
+                          placeholder="비밀번호를 입력하세요" 
+                          value={loginData.password} 
+                          onChange={handleLoginChange} 
+                          className="pl-10 pr-10 text-gray-900 dark:text-gray-100" 
+                          required 
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowLoginPassword(!showLoginPassword)}
+                          className="absolute right-3 top-3 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+                        >
+                          {showLoginPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                        </button>
                       </div>
                     </div>
-                    <Button type="submit" className="w-full bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700" disabled={loading}>
+                    <Button type="submit" className="w-full bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white font-medium" disabled={loading}>
                       {loading ? (<><Loader2 className="mr-2 h-4 w-4 animate-spin" />로그인 중...</>) : '로그인'}
                     </Button>
                   </form>
@@ -206,76 +240,101 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
 
                 <TabsContent value="register" className="space-y-4 mt-0">
                   <div className="text-center mb-4">
-                    <CardDescription className="text-gray-700">
+                    <CardDescription className="text-gray-600 dark:text-gray-300">
                       새 계정을 만들어 AI 캐릭터들과 대화를 시작하세요
                     </CardDescription>
                   </div>
                   <form onSubmit={handleRegisterSubmit} className="space-y-4">
                     <div className="space-y-2">
-                      <Label htmlFor="register-email" className="text-gray-900">이메일</Label>
+                      <Label htmlFor="register-email" className="text-gray-900 dark:text-gray-200 font-semibold">이메일</Label>
                       <div className="relative">
-                        <Mail className="absolute left-3 top-3 h-4 w-4 text-gray-500" />
-                        <Input id="register-email" name="email" type="email" placeholder="이메일을 입력하세요" value={registerData.email} onChange={handleRegisterChange} className="pl-10" required />
+                        <Mail className="absolute left-3 top-3 h-4 w-4 text-gray-500 dark:text-gray-400" />
+                        <Input id="register-email" name="email" type="email" placeholder="이메일을 입력하세요" value={registerData.email} onChange={handleRegisterChange} className="pl-10 text-gray-900 dark:text-gray-100" required />
+                      </div>
+                      {emailCheck.checked && emailCheck.message && (
+                        <div className={`text-sm font-semibold mt-1 ${emailCheck.available ? 'text-green-500' : 'text-red-500'}`}>
+                          {emailCheck.message}
+                        </div>
+                      )}
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="register-username" className="text-gray-900 dark:text-gray-200 font-semibold">사용자명</Label>
+                      <div className="relative">
+                        <User className="absolute left-3 top-3 h-4 w-4 text-gray-500 dark:text-gray-400" />
+                        <Input id="register-username" name="username" type="text" placeholder="사용자명을 입력하세요" value={registerData.username} onChange={handleRegisterChange} className="pl-10 text-gray-900 dark:text-gray-100" required minLength={2} maxLength={100} />
                       </div>
                       <div className="flex items-center gap-2 mt-2">
-                        <Button type="button" variant="secondary" className="h-9" onClick={handleCheckEmail} disabled={loading || !registerData.email}>
-                          이메일 중복확인
+                        <Button type="button" variant="secondary" className="h-9 bg-blue-600 hover:bg-blue-700 text-white font-medium" onClick={handleGenerateUsername} disabled={loading}>
+                          <Wand2 className="h-4 w-4 mr-1" /> 자동생성
                         </Button>
-                        <Button type="button" variant="secondary" className="h-9" onClick={async()=>{ try { await import('../lib/api').then(m=>m.authAPI.sendVerificationEmail({ email: registerData.email })); alert('인증 메일을 보냈습니다. 메일함을 확인하세요.'); } catch(_) { alert('인증 메일 발송에 실패했습니다.'); } }} disabled={!registerData.email}>
-                          인증메일 보내기
-                        </Button>
-                        {emailCheck.checked && (
-                          <span className={`text-sm ${emailCheck.available ? 'text-green-600' : 'text-red-600'}`}>{emailCheck.message}</span>
+                        {usernameCheck.checked && usernameCheck.message && (
+                          <span className={`text-sm font-semibold ${usernameCheck.available ? 'text-green-500' : 'text-red-500'}`}>{usernameCheck.message}</span>
                         )}
                       </div>
                     </div>
                     <div className="space-y-2">
-                      <Label htmlFor="register-username" className="text-gray-900">사용자명</Label>
+                      <Label htmlFor="register-password" className="text-gray-900 dark:text-gray-200 font-semibold">비밀번호</Label>
                       <div className="relative">
-                        <User className="absolute left-3 top-3 h-4 w-4 text-gray-500" />
-                        <Input id="register-username" name="username" type="text" placeholder="사용자명을 입력하세요" value={registerData.username} onChange={handleRegisterChange} className="pl-10" required minLength={2} maxLength={100} />
-                        <div className="flex items-center gap-2 mt-2">
-                          <Button type="button" variant="secondary" className="h-9" onClick={handleCheckUsername} disabled={loading || !registerData.username}>
-                            <Check className="h-4 w-4 mr-1" /> 중복확인
-                          </Button>
-                          <Button type="button" variant="secondary" className="h-9" onClick={handleGenerateUsername} disabled={loading}>
-                            <Wand2 className="h-4 w-4 mr-1" /> 자동생성
-                          </Button>
-                          {usernameCheck.checked && (
-                            <span className={`text-sm ${usernameCheck.available ? 'text-green-600' : 'text-red-600'}`}>{usernameCheck.message}</span>
-                          )}
-                        </div>
+                        <Lock className="absolute left-3 top-3 h-4 w-4 text-gray-500 dark:text-gray-400" />
+                        <Input 
+                          id="register-password" 
+                          name="password" 
+                          type={showRegisterPassword ? "text" : "password"} 
+                          placeholder="영문/숫자 조합 8자 이상" 
+                          value={registerData.password} 
+                          onChange={handleRegisterChange} 
+                          className="pl-10 pr-10 text-gray-900 dark:text-gray-100" 
+                          required 
+                          minLength={8} 
+                          pattern="(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d]{8,}" 
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowRegisterPassword(!showRegisterPassword)}
+                          className="absolute right-3 top-3 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+                        >
+                          {showRegisterPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                        </button>
+                      </div>
+                      <p className="text-xs text-gray-600 dark:text-gray-400 font-medium">영문과 숫자를 포함해 8자 이상 입력하세요.</p>
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="register-confirmPassword" className="text-gray-900 dark:text-gray-200 font-semibold">비밀번호 확인</Label>
+                      <div className="relative">
+                        <Lock className="absolute left-3 top-3 h-4 w-4 text-gray-500 dark:text-gray-400" />
+                        <Input 
+                          id="register-confirmPassword" 
+                          name="confirmPassword" 
+                          type={showConfirmPassword ? "text" : "password"} 
+                          placeholder="비밀번호를 다시 입력하세요" 
+                          value={registerData.confirmPassword} 
+                          onChange={handleRegisterChange} 
+                          className="pl-10 pr-10 text-gray-900 dark:text-gray-100" 
+                          required 
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                          className="absolute right-3 top-3 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+                        >
+                          {showConfirmPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                        </button>
                       </div>
                     </div>
                     <div className="space-y-2">
-                      <Label htmlFor="register-password" className="text-gray-900">비밀번호</Label>
-                      <div className="relative">
-                        <Lock className="absolute left-3 top-3 h-4 w-4 text-gray-500" />
-                        <Input id="register-password" name="password" type="password" placeholder="영문/숫자 조합 8자 이상" value={registerData.password} onChange={handleRegisterChange} className="pl-10" required minLength={8} pattern="(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d]{8,}" />
-                      </div>
-                      <p className="text-xs text-gray-600">영문과 숫자를 포함해 8자 이상 입력하세요.</p>
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="register-confirmPassword" className="text-gray-900">비밀번호 확인</Label>
-                      <div className="relative">
-                        <Lock className="absolute left-3 top-3 h-4 w-4 text-gray-500" />
-                        <Input id="register-confirmPassword" name="confirmPassword" type="password" placeholder="비밀번호를 다시 입력하세요" value={registerData.confirmPassword} onChange={handleRegisterChange} className="pl-10" required />
-                      </div>
-                    </div>
-                    <div className="space-y-2">
-                      <Label className="text-gray-900">성별</Label>
+                      <Label className="text-gray-900 dark:text-gray-200 font-semibold">성별</Label>
                       <div className="flex items-center gap-4">
                         <label className="flex items-center gap-2 cursor-pointer">
                           <input type="radio" name="gender" value="male" checked={registerData.gender === 'male'} onChange={handleRegisterChange} required />
-                          <span className="text-gray-900">남성</span>
+                          <span className="text-gray-900 dark:text-gray-100">남성</span>
                         </label>
                         <label className="flex items-center gap-2 cursor-pointer">
                           <input type="radio" name="gender" value="female" checked={registerData.gender === 'female'} onChange={handleRegisterChange} required />
-                          <span className="text-gray-900">여성</span>
+                          <span className="text-gray-900 dark:text-gray-100">여성</span>
                         </label>
                       </div>
                     </div>
-                    <Button type="submit" className="w-full bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700" disabled={loading}>
+                    <Button type="submit" className="w-full bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white font-medium" disabled={loading}>
                       {loading ? (<><Loader2 className="mr-2 h-4 w-4 animate-spin" />가입 중...</>) : '회원가입'}
                     </Button>
                   </form>

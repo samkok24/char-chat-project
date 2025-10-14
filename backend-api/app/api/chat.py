@@ -138,7 +138,8 @@ async def _build_light_context(db: AsyncSession, story_id, player_max: Optional[
 @router.post("/agent/simulate")
 async def agent_simulate(
     payload: dict,
-    current_user = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),  # ✅ 필수
+    db: AsyncSession = Depends(get_db),
 ):
     """간단한 에이전트 시뮬레이터: 프론트의 모델 선택을 매핑하여 AI 응답을 생성합니다.
     요청 예시: { content, history?, model?, sub_model?, staged?, mode? }
@@ -591,7 +592,8 @@ async def agent_simulate(
 @router.post("/agent/partial-regenerate")
 async def agent_partial_regenerate(
     payload: dict,
-    current_user = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),  # ✅ 필수
+    db: AsyncSession = Depends(get_db),
 ):
     """선택된 텍스트 부분을 AI로 재생성
     요청: { full_text, selected_text, user_prompt, before_context, after_context }
@@ -626,7 +628,10 @@ async def agent_partial_regenerate(
         raise HTTPException(status_code=500, detail=f"partial_regenerate_error: {e}")
 
 @router.post("/agent/classify-intent")
-async def classify_intent(payload: dict):
+async def classify_intent(
+    payload: dict,
+    current_user: User = Depends(get_current_user)
+):  
     """유저 입력의 의도를 LLM으로 분류"""
     try:
         user_text = (payload.get("text") or "").strip()
@@ -674,7 +679,10 @@ async def classify_intent(payload: dict):
 
 
 @router.post("/agent/generate-highlights")
-async def agent_generate_highlights(payload: dict):
+async def agent_generate_highlights(
+    payload: dict,
+    current_user: User = Depends(get_current_user)
+):
     """텍스트와 원본 이미지 URL을 받아 하이라이트 이미지를 3장 생성하여 반환"""
     try:
         text = (payload.get("text") or "").strip()
@@ -1364,11 +1372,12 @@ async def get_chat_history(
 
 @router.get("/sessions", response_model=List[ChatRoomResponse])
 async def get_chat_sessions(
+    limit: int = Query(50, ge=1, le=500, description="최대 반환 개수 (기본: 50개)"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """내 채팅 목록 - 사용자의 모든 채팅 세션"""
-    chat_rooms = await chat_service.get_chat_rooms_for_user(db, user_id=current_user.id)
+    """내 채팅 목록 - 사용자의 채팅 세션 (최근 순)"""
+    chat_rooms = await chat_service.get_chat_rooms_for_user(db, user_id=current_user.id, limit=limit)
     return chat_rooms
 
 # 🔧 기존 호환성을 위한 엔드포인트 (점진적 마이그레이션)
@@ -1384,11 +1393,12 @@ async def get_or_create_room_legacy(
 
 @router.get("/rooms", response_model=List[ChatRoomResponse])
 async def get_user_chat_rooms_legacy(
+    limit: int = Query(50, ge=1, le=500, description="최대 반환 개수 (기본: 50개)"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """사용자의 채팅방 목록 조회 (레거시 호환성)"""
-    return await get_chat_sessions(current_user, db)
+    return await get_chat_sessions(limit, current_user, db)
 
 @router.get("/rooms/{room_id}", response_model=ChatRoomResponse)
 async def get_chat_room(
@@ -1596,37 +1606,127 @@ async def origchat_start(
                                 await _r.setex(f"ctx:warm:{sid}:scene_anchor", 600, excerpt)
                         except Exception:
                             pass
-                        # 인사말 생성 및 저장 → 완료 플래그 세팅
+        # 인사말 말풍선: 사전 준비 결과가 있으면 즉시 사용(없으면 생략)
                         try:
-                            intro_lines: list[str] = []
+                            # 컨텍스트 수집
+                            story_title = ""
+                            story_summary = ""
+                            recap_text = ""
+                            scene_quote = ""
+                            char_name = ""
+                            char_personality = ""
+                            
                             try:
                                 srow = await _db.execute(select(Story.title, Story.summary, Story.content).where(Story.id == sid))
                                 sdata = srow.first()
                                 if sdata:
+                                    story_title = (sdata[0] or "").strip()
                                     story_summary = (sdata[1] or "").strip() or (sdata[2] or "").strip()
-                                    if story_summary:
-                                        intro_lines.append((" ".join(story_summary.split()))[:50])
                             except Exception:
                                 pass
-                            recap_text = ""
+                            
                             try:
                                 if int(anchor or 1) > 1:
                                     recap_text = await generate_backward_weighted_recap(_db, sid, anchor=int(anchor or 1), max_chars=300)
                             except Exception:
                                 recap_text = ""
-                            if recap_text:
-                                intro_lines.append(recap_text)
-                            quote = ""
+                            
                             try:
-                                quote = await get_scene_anchor_text(_db, sid, chapter_no=int(anchor or 1), scene_id=scene_id, max_len=100)
+                                scene_quote = await get_scene_anchor_text(_db, sid, chapter_no=int(anchor or 1), scene_id=scene_id, max_len=200)
                             except Exception:
-                                quote = ""
-                            if quote:
-                                intro_lines.append(f"“{quote.strip()}”")
-                            greeting = "\n\n".join([ln for ln in intro_lines if ln])
-                            if greeting:
-                                await chat_service.save_message(_db, room_id, sender_type="character", content=greeting, message_metadata={"kind":"intro"})
+                                scene_quote = ""
+                            
+                            try:
+                                crow = await _db.execute(select(Character.name, Character.personality).where(Character.id == room.character_id))
+                                cdata = crow.first()
+                                if cdata:
+                                    char_name = (cdata[0] or "").strip()
+                                    char_personality = (cdata[1] or "").strip()
+                            except Exception:
+                                pass
+                            
+                            # Gemini로 자연스러운 인사말 생성
+                            try:
+                                import google.generativeai as genai
+                                from app.core.config import settings
+                                
+                                genai.configure(api_key=settings.GEMINI_API_KEY)
+                                model = genai.GenerativeModel('gemini-2.5-pro')
+                                
+                                prompt = f"""당신은 웹소설 '{story_title}'의 캐릭터 '{char_name}'입니다.
+
+【캐릭터 성격】
+{char_personality or '정보 없음'}
+
+【작품 배경】
+{story_summary[:200] if story_summary else '정보 없음'}
+
+【현재 상황까지의 줄거리】
+{recap_text or '이야기의 시작'}
+
+【현재 장면】
+{scene_quote or '이야기가 시작됩니다'}
+
+---
+
+위 정보를 바탕으로, 캐릭터 시점에서 자연스러운 인사말을 생성하세요.
+
+조건:
+1. 1인칭 시점으로 작성
+2. 150-250자 내외
+3. 현재 상황을 간략히 설명
+4. 마지막에 사용자에게 질문이나 행동 유도
+5. 대화체로 작성 (소설체 X)
+6. 요약이 아니라 캐릭터가 직접 말하는 것처럼
+
+형식:
+안녕하세요/인사말
+[현재 상황 간단 설명 2-3문장]
+[질문이나 행동 유도]
+
+평문으로만 출력:"""
+
+                                response = model.generate_content(
+                                    prompt,
+                                    generation_config={
+                                        'temperature': 0.7,
+                                        'max_output_tokens': 400,
+                                    }
+                                )
+                                
+                                greeting = response.text.strip()
+                                
+                                if greeting and len(greeting) > 20:
+                                    await chat_service.save_message(_db, room_id, sender_type="character", content=greeting, message_metadata={"kind":"intro"})
+                                else:
+                                    fallback = f"안녕하세요. {story_title}의 세계에 오신 것을 환영합니다.\n\n지금부터 이야기가 시작됩니다. 어떻게 하시겠습니까?"
+                                    await chat_service.save_message(_db, room_id, sender_type="character", content=fallback, message_metadata={"kind":"intro"})
+                                    
+                            except Exception as e:
+                                import logging
+                                logging.warning(f"인사말 LLM 생성 실패: {e}")
+                                fallback = "안녕하세요. 이야기를 시작하겠습니다.\n\n어떻게 하시겠습니까?"
+                                await chat_service.save_message(_db, room_id, sender_type="character", content=fallback, message_metadata={"kind":"intro"})
+                            
                             await _set_room_meta(room_id, {"intro_ready": True, "init_stage": "ready"})
+                            
+                            # ✅ 초기 선택지 생성 및 메타에 추가
+                            try:
+                                from app.services.origchat_service import propose_choices_from_anchor
+                                
+                                # 앵커 텍스트나 리캡으로 선택지 생성
+                                choices = propose_choices_from_anchor(scene_quote or recap_text, None)
+                                if choices and len(choices) > 0:
+                                    # 룸 메타에 초기 선택지 저장
+                                    current_meta = await _get_room_meta(room_id)
+                                    if isinstance(current_meta, dict):
+                                        current_meta["initial_choices"] = choices[:3]
+                                        await _set_room_meta(room_id, current_meta)
+                            except Exception as e:
+                                import logging
+                                logging.warning(f"초기 선택지 생성 실패: {e}")
+                                pass
+                                
                         except Exception:
                             try:
                                 await _set_room_meta(room_id, {"intro_ready": True, "init_stage": "ready"})

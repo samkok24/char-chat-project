@@ -84,13 +84,42 @@ const Sidebar = () => {
 
   const [roomMetaById, setRoomMetaById] = React.useState({});
 
-  const loadRooms = async () => {
+  // 캐시 설정
+  const CACHE_KEY = 'sidebar:chatRooms:cache';
+  const CACHE_DURATION = 0.5 * 1000; 
+
+  const loadRooms = async (forceRefresh = false) => {
     try {
       setLoading(true);
-      const response = await chatAPI.getChatRooms();
+      
+      // 캐시 확인 (강제 새로고침이 아닐 때만)
+      if (!forceRefresh) {
+        try {
+          const cached = localStorage.getItem(CACHE_KEY);
+          if (cached) {
+            const { data, timestamp } = JSON.parse(cached);
+            const age = Date.now() - timestamp;
+            
+            // 5분 이내 캐시는 그대로 사용
+            if (age < CACHE_DURATION && data.rooms && data.roomMetaById) {
+              setChatRooms(data.rooms);
+              setRoomMetaById(data.roomMetaById);
+              setCharacterImageById(data.characterImageById || {});
+              if (data.recentStories) setRecentStories(data.recentStories);
+              setLoading(false);
+              return; // API 호출 스킵
+            }
+          }
+        } catch (_) {}
+      }
+      
+      // 백엔드에서 최근 50개만 가져오기
+      const response = await chatAPI.getChatRooms({ limit: 50 });
       const rooms = response.data || [];
       setChatRooms(rooms);
-      // 룸 메타 동시 조회(모드 파악용)
+      
+      // 룸 메타 동시 조회(모드 파악용) - 모든 rooms에 대해 조회 (이미 50개로 제한됨)
+      let metaById = {};
       try {
         const entries = await Promise.all(
           rooms.map(async (r) => {
@@ -100,9 +129,11 @@ const Sidebar = () => {
             } catch (_) { return [String(r.id), {}]; }
           })
         );
-        setRoomMetaById(Object.fromEntries(entries));
+        metaById = Object.fromEntries(entries);
+        setRoomMetaById(metaById);
       } catch (_) {}
 
+      let charImageById = {};
       const ids = Array.from(new Set(rooms.map(r => r?.character?.id).filter(Boolean)));
       if (ids.length) {
         const entries = await Promise.all(ids.map(async (id) => {
@@ -114,9 +145,25 @@ const Sidebar = () => {
             return [id, ''];
           }
         }));
-        setCharacterImageById(Object.fromEntries(entries));
+        charImageById = Object.fromEntries(entries);
+        setCharacterImageById(charImageById);
       }
+      
       await loadRecentStories();
+      
+      // 캐시 저장
+      try {
+        localStorage.setItem(CACHE_KEY, JSON.stringify({
+          data: {
+            rooms,
+            roomMetaById: metaById,
+            characterImageById: charImageById,
+            recentStories: recentStories,
+          },
+          timestamp: Date.now()
+        }));
+      } catch (_) {}
+      
     } catch (error) {
       console.error('채팅방 목록을 불러오는데 실패했습니다.', error);
     } finally {
@@ -169,7 +216,7 @@ const Sidebar = () => {
     let suppressOnce = false;
     const handler = () => {
       if (suppressOnce) { suppressOnce = false; return; }
-      loadRooms();
+      loadRooms(true); // 강제 새로고침 (캐시 무시)
     };
     const handlerSuppress = () => { suppressOnce = true; };
     try { window.addEventListener('chat:roomsChanged', handler); } catch (_) {}
@@ -360,8 +407,13 @@ const Sidebar = () => {
                     {user?.username?.charAt(0)?.toUpperCase() || 'U'}
                   </AvatarFallback>
                 </Avatar>
-                <div className="flex-1 min-w-0">
+                <div className="flex-1 min-w-0 flex items-center gap-2">
                   <p className="text-sm font-medium text-white truncate">{user?.username}</p>
+                  {user?.is_admin && (
+                    <Badge className="text-xs px-1.5 py-0 bg-yellow-600 hover:bg-yellow-600 text-white font-semibold">
+                      관리자
+                    </Badge>
+                  )}
                 </div>
               </div>
             </DropdownMenuTrigger>

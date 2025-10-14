@@ -12,6 +12,7 @@ class Token(BaseModel):
     access_token: str
     refresh_token: str
     token_type: str = "bearer"
+    user_id: str  # ✅ 추가
 
 
 class TokenData(BaseModel):

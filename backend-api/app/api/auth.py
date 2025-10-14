@@ -97,13 +97,9 @@ async def register(
         gender=user_data.gender
     )
     
-    # 인증 메일 발송 (베스트 에포트)
-    try:
-        token = generate_verification_token(user.email)
-        await send_verification_email_async(user.email, token)
-    except Exception:
-        # 개발/비프로덕션에서는 발송 실패를 치명적으로 보지 않음
-        pass
+    # 자동 인증 처리 (이메일 인증 없이 바로 사용 가능)
+    await update_user_verification_status(db, user.id, True)
+
 
     return user
 
@@ -139,7 +135,8 @@ async def login(
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
-        "token_type": "bearer"
+        "token_type": "bearer",
+        "user_id": str(user.id)  # ✅ 추가
     }
 
 
@@ -176,7 +173,8 @@ async def refresh_token(
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
-        "token_type": "bearer"
+        "token_type": "bearer",
+        "user_id": user_id  # ✅ 추가 (이미 문자열)
     }
 
 
@@ -227,14 +225,16 @@ async def send_verification_email(
     redis: Redis = Depends(get_redis),
     db: AsyncSession = Depends(get_db)
 ):
-    """인증 이메일 발송"""
-    if current_user.is_verified:
+    """인증 이메일 발송 (회원가입용)"""
+    # 해당 이메일의 유저가 있는지 확인
+    user = await get_user_by_email(db, payload.email)
+    if user and user.is_verified:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="이미 인증된 계정입니다."
         )
-    # 로그인 없이 이메일을 받아 인증 메일을 발송
-    # (비프로덕션 환경에서는 바로 발송, 프로덕션에서는 rate-limit 필요)
+    
+    # 인증 토큰 생성 및 메일 발송
     token = generate_verification_token(payload.email)
     await send_verification_email_async(payload.email, token)
     return {"message": "인증 메일을 전송했습니다."}

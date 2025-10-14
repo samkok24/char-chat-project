@@ -26,19 +26,20 @@ const AgentSidebar = ({ onCreateSession, activeSessionId, onSessionSelect, onDel
   React.useEffect(() => {
     const read = () => {
       try {
+        const userId = user?.id || 'guest';
         // localStorage 우선, 없으면 sessionStorage 체크 (게스트)
-        let arr = JSON.parse(localStorage.getItem('agent:sessions') || '[]') || [];
+        let arr = JSON.parse(localStorage.getItem(`agent:sessions:${userId}`) || '[]') || [];
         if (!arr || arr.length === 0) {
-          try { arr = JSON.parse(sessionStorage.getItem('agent:sessions') || '[]') || []; } catch {}
+          try { arr = JSON.parse(sessionStorage.getItem(`agent:sessions:${userId}`) || '[]') || []; } catch {}
         }
         const list = Array.isArray(arr) ? arr.sort((a,b) => (new Date(b.updatedAt||0)) - (new Date(a.updatedAt||0))) : [];
         setSessionCount(list.length);
         const mapped = list.slice(0, 8).map((s) => {
           try {
             // localStorage 우선, 없으면 sessionStorage 체크
-            let msgsRaw = localStorage.getItem(`agent:messages:${s.id}`);
+            let msgsRaw = localStorage.getItem(`agent:messages:${userId}:${s.id}`);
             if (!msgsRaw) {
-              try { msgsRaw = sessionStorage.getItem(`agent:messages:${s.id}`); } catch {}
+              try { msgsRaw = sessionStorage.getItem(`agent:messages:${userId}:${s.id}`); } catch {}
             }
             const msgs = JSON.parse(msgsRaw || '[]') || [];
             if (!Array.isArray(msgs)) return { ...s, autoTitle: '새 대화', imageDesc: '' };
@@ -111,7 +112,7 @@ const AgentSidebar = ({ onCreateSession, activeSessionId, onSessionSelect, onDel
     const handler = () => read();
     try { window.addEventListener('agent:sessionsChanged', handler); } catch {}
     return () => { try { window.removeEventListener('agent:sessionsChanged', handler); } catch {} };
-  }, []);
+  }, [user?.id]);
 
   const handleLogout = () => {
     logout();
@@ -124,11 +125,12 @@ const AgentSidebar = ({ onCreateSession, activeSessionId, onSessionSelect, onDel
       return;
     }
     try {
-      const raw = localStorage.getItem('agent:sessions') || '[]';
+      const userId = user?.id || 'guest';
+      const raw = localStorage.getItem(`agent:sessions:${userId}`) || '[]';
       const arr = JSON.parse(raw) || [];
       const next = Array.isArray(arr) ? arr.filter(s => s.id !== id) : [];
-      localStorage.setItem('agent:sessions', JSON.stringify(next));
-      try { localStorage.removeItem(`agent:messages:${id}`); } catch {}
+      localStorage.setItem(`agent:sessions:${userId}`, JSON.stringify(next));
+      try { localStorage.removeItem(`agent:messages:${userId}:${id}`); } catch {}
       try { window.dispatchEvent(new Event('agent:sessionsChanged')); } catch {}
     } catch {}
   };
@@ -203,8 +205,8 @@ const AgentSidebar = ({ onCreateSession, activeSessionId, onSessionSelect, onDel
                 <div className="hidden group-hover:block absolute left-full top-0 ml-2 z-20 w-64 p-3 rounded-lg bg-gray-900 border border-gray-700 shadow-xl">
                   <div className="text-sm text-white mb-2">이미지 보관함</div>
                   <div className="grid grid-cols-3 gap-2">
-                    {(JSON.parse(localStorage.getItem('agent:images')||'[]')||[]).slice(0,6).map(img => (
-                      <img key={img.id} src={img.url} alt="img" className="w-full h-12 object-cover rounded cursor-pointer" onClick={() => { try { const sid = (JSON.parse(localStorage.getItem('agent:sessions')||'[]')||[])[0]?.id; if (sid) { window.location.href=`/agent#session=${sid}`; } else { window.location.href='/agent'; } } catch { window.location.href='/agent'; } }} />
+                    {(JSON.parse(localStorage.getItem(`agent:images:${user?.id || 'guest'}`)||'[]')||[]).slice(0,6).map(img => (
+                      <img key={img.id} src={img.url} alt="img" className="w-full h-12 object-cover rounded cursor-pointer" onClick={() => { try { const uid = user?.id || 'guest'; const sid = (JSON.parse(localStorage.getItem(`agent:sessions:${uid}`)||'[]')||[])[0]?.id; if (sid) { window.location.href=`/agent#session=${sid}`; } else { window.location.href='/agent'; } } catch { window.location.href='/agent'; } }} />
                     ))}
                   </div>
                 </div>
@@ -214,7 +216,7 @@ const AgentSidebar = ({ onCreateSession, activeSessionId, onSessionSelect, onDel
                 <div className="hidden group-hover:block absolute left-full top-0 ml-2 z-20 w-64 p-3 rounded-lg bg-gray-900 border border-gray-700 shadow-xl">
                   <div className="text-sm text-white mb-2">생성된 스토리</div>
                   <div className="space-y-2 max-h-56 overflow-auto pr-1">
-                    {(JSON.parse(localStorage.getItem('agent:stories')||'[]')||[]).slice(0,8).map(s => (
+                    {(JSON.parse(localStorage.getItem(`agent:stories:${user?.id || 'guest'}`)||'[]')||[]).slice(0,8).map(s => (
                       <button key={s.id} className="block w-full text-left text-xs text-gray-300 truncate hover:text-white" onClick={() => { try { if (s.sessionId) { window.location.href=`/agent#session=${s.sessionId}`; } else { window.location.href='/agent'; } } catch { window.location.href='/agent'; } }}>{s.title}</button>
                     ))}
                   </div>
@@ -225,7 +227,7 @@ const AgentSidebar = ({ onCreateSession, activeSessionId, onSessionSelect, onDel
                 <div className="hidden group-hover:block absolute left-full top-0 ml-2 z-20 w-64 p-3 rounded-lg bg-gray-900 border border-gray-700 shadow-xl">
                   <div className="text-sm text-white mb-2">생성된 캐릭터</div>
                   <div className="space-y-2 max-h-56 overflow-auto pr-1">
-                    {(JSON.parse(localStorage.getItem('agent:characters')||'[]')||[]).slice(0,8).map(c => (
+                    {(JSON.parse(localStorage.getItem(`agent:characters:${user?.id || 'guest'}`)||'[]')||[]).slice(0,8).map(c => (
                       <button key={c.id} className="block w-full text-left text-xs text-gray-300 truncate hover:text-white" onClick={() => { try { window.location.href=`/characters/${c.id}`; } catch { window.location.href='/agent'; } }}>{c.name||'캐릭터'}</button>
                     ))}
                   </div>
@@ -254,8 +256,13 @@ const AgentSidebar = ({ onCreateSession, activeSessionId, onSessionSelect, onDel
                     {user?.username?.charAt(0)?.toUpperCase() || 'U'}
                   </AvatarFallback>
                 </Avatar>
-                <div className="flex-1 min-w-0">
+                <div className="flex-1 min-w-0 flex items-center gap-2">
                   <p className="text-sm font-medium text-white truncate">{user?.username}</p>
+                  {user?.is_admin && (
+                    <Badge className="text-xs px-1.5 py-0 bg-yellow-600 hover:bg-yellow-600 text-white font-semibold">
+                      관리자
+                    </Badge>
+                  )}
                 </div>
               </div>
             </DropdownMenuTrigger>

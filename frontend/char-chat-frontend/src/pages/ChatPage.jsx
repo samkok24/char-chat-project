@@ -97,6 +97,7 @@ const ChatPage = () => {
   const [regenOpen, setRegenOpen] = useState(false);
   const [regenInstruction, setRegenInstruction] = useState('');
   const [regenTargetId, setRegenTargetId] = useState(null);
+  const [newMessage, setNewMessage] = useState('');
   // 이미지 캐러셀 상태
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
   const [characterImages, setCharacterImages] = useState([]);
@@ -329,7 +330,15 @@ const ChatPage = () => {
               const a = Number(anchorParam) || 1;
               const rf = rangeFromParam ? Number(rangeFromParam) : null;
               const rt = rangeToParam ? Number(rangeToParam) : null;
-              const startRes = await origChatAPI.start({ story_id: storyIdParam, character_id: characterId, mode: (modeParam || 'canon'), start: { chapter: a }, range_from: rf, range_to: rt });
+              const startRes = await origChatAPI.start({ 
+                story_id: storyIdParam, 
+                character_id: characterId, 
+                mode: (modeParam || 'canon'), 
+                start: { chapter: a }, 
+                range_from: rf, 
+                range_to: rt, 
+                pov: (modeParam === 'parallel' ? 'persona' : 'possess')
+              });
               roomId = startRes.data?.id || startRes.data?.room_id || startRes.data?.room?.id || null;
               // 새 방을 만든 직후에는 최근 세션 리스트가 중복갱신되지 않도록 이벤트 브로드캐스트 지연/스킵
               try { window.dispatchEvent(new CustomEvent('chat:roomsChanged:suppressOnce')); } catch (_) {}
@@ -833,7 +842,7 @@ const ChatPage = () => {
     try {
       setOrigTurnLoading(true);
       if (isOrigChat) setTurnStage('generating');
-      if (isOrigChat) setTurnStage('generating');
+
       const payload = { room_id: chatRoomId, choice_id: choice.id, user_text: choice.label, idempotency_key: genIdemKey(), settings_patch: null };
       setLastOrigTurnPayload(payload);
       const resp = await origChatAPI.turn(payload);
@@ -1833,4 +1842,3 @@ const ChatPage = () => {
 };
 
 export default ChatPage;
-

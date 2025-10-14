@@ -138,10 +138,10 @@ async def apply_feedback(db: AsyncSession, message_id: uuid.UUID, upvote: bool) 
     return res.scalar_one()
 
 async def get_chat_rooms_for_user(
-    db: AsyncSession, user_id: uuid.UUID
+    db: AsyncSession, user_id: uuid.UUID, limit: int = None
 ) -> List[ChatRoom]:
-    """사용자의 모든 채팅방 목록 조회"""
-    result = await db.execute(
+    """사용자의 채팅방 목록 조회 (최근 순)"""
+    query = (
         select(ChatRoom)
         .where(ChatRoom.user_id == user_id)
         .options(
@@ -149,6 +149,11 @@ async def get_chat_rooms_for_user(
         )
         .order_by(ChatRoom.updated_at.desc())
     )
+    
+    if limit is not None and limit > 0:
+        query = query.limit(limit)
+    
+    result = await db.execute(query)
     return result.scalars().all()
 
 async def get_chat_room_by_id(

@@ -62,6 +62,7 @@ COLUMNS_TO_ADD = {
         ("bio", "VARCHAR(500)"),
         ("avatar_url", "VARCHAR(500)"),
         ("response_length_pref", "VARCHAR(10) DEFAULT 'medium'"),
+        ("is_admin", "BOOLEAN DEFAULT 0"),
     ],
     "characters": [
         ("comment_count", "INTEGER DEFAULT 0"),

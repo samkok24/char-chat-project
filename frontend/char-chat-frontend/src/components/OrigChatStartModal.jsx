@@ -3,7 +3,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { RefreshCw } from 'lucide-react';
 import { Button } from './ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
-import { charactersAPI, origChatAPI, storiesAPI } from '../lib/api';
+import { charactersAPI, origChatAPI, chatAPI, storiesAPI } from '../lib/api';
 import { useNavigate } from 'react-router-dom';
 import { resolveImageUrl } from '../lib/images';
 

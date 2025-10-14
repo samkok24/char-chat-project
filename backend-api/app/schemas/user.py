@@ -40,6 +40,7 @@ class UserResponse(UserBase):
     id: uuid.UUID
     is_active: bool
     is_verified: bool
+    is_admin: bool = False
     avatar_url: Optional[str] = None
     bio: Optional[str] = None
     created_at: datetime

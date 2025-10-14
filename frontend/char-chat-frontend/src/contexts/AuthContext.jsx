@@ -3,7 +3,7 @@
  */
 
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { authAPI } from '../lib/api';
+import { authAPI, usersAPI } from '../lib/api';
 
 const AuthContext = createContext();
 
@@ -79,8 +79,14 @@ export const AuthProvider = ({ children }) => {
     try {
       const response = await authAPI.register(email, username, password, gender);
       
-      // 회원가입 완료 → 인증 안내 페이지로 이동하도록 신호 반환
-      return { success: true };
+      // 회원가입 성공 후 자동 로그인 시도
+      const loginResult = await login(email, password);
+      if (loginResult.success) {
+        return { success: true };
+      } else {
+        // 로그인 실패 시에도 회원가입은 성공했으므로 성공으로 처리
+        return { success: true };
+      }
     } catch (error) {
       console.error('회원가입 실패:', error);
       return {
@@ -100,11 +106,53 @@ export const AuthProvider = ({ children }) => {
       localStorage.removeItem('refresh_token');
       setUser(null);
       setIsAuthenticated(false);
+      
+      // 로그아웃 후 강제 리다이렉트
+      window.location.href = '/';
     }
   };
 
   const refreshProfileVersion = () => {
     setProfileVersion(Date.now());
+  };
+
+  /**
+   * 사용자 프로필 업데이트 (닉네임, 아바타, bio)
+   * 낙관적 업데이트로 즉시 UI 반영
+   */
+  const updateUserProfile = async (updates) => {
+    if (!user || !user.id) {
+      return {
+        success: false,
+        error: '로그인이 필요합니다.',
+      };
+    }
+
+    // 이전 상태 백업 (롤백용)
+    const previousUser = { ...user };
+
+    try {
+      // 낙관적 업데이트: UI 즉시 반영
+      setUser(prev => ({ ...prev, ...updates }));
+      
+      // 프로필 버전 갱신 (다른 컴포넌트에 변경 알림)
+      refreshProfileVersion();
+
+      // 서버에 업데이트 요청
+      await usersAPI.updateUserProfile(user.id, updates);
+
+      return { success: true };
+    } catch (error) {
+      console.error('프로필 업데이트 실패:', error);
+      
+      // 에러 시 이전 상태로 롤백
+      setUser(previousUser);
+      
+      return {
+        success: false,
+        error: error.response?.data?.detail || '프로필 업데이트에 실패했습니다.',
+      };
+    }
   };
 
   const value = {
@@ -117,6 +165,7 @@ export const AuthProvider = ({ children }) => {
     register,
     logout,
     checkAuth,
+    updateUserProfile,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

@@ -538,18 +538,17 @@ def extract_top_ngrams(text: str, n_values: Tuple[int, ...] = (1, 2)) -> List[st
 
 
 def propose_choices_from_anchor(anchor_excerpt: Optional[str], cumulative_summary: Optional[str]) -> List[Dict[str, str]]:
+    """휴리스틱 방식 선택지 생성 (기존 로직 완전 복원)"""
     base_text = (anchor_excerpt or "").strip()
     if not base_text and cumulative_summary:
         base_text = cumulative_summary[:600]
     if not base_text:
-        # 폴백 기본 3개
         return [
             {"id": "probe_detail", "label": "자세한 단서를 더 살핀다"},
             {"id": "ask_direct", "label": "상대에게 직접 물어본다"},
             {"id": "change_topic", "label": "대화를 다른 주제로 돌린다"},
         ]
     grams = extract_top_ngrams(base_text, (1, 2))
-    # 동사형 템플릿 간단 매핑(장르 불문 기본)
     templates = [
         "{kw}에 대해 더 파고든다",
         "{kw}을(를) 확인한다",
@@ -557,13 +556,11 @@ def propose_choices_from_anchor(anchor_excerpt: Optional[str], cumulative_summar
         "{kw}을(를) 의심한다",
         "{kw}에게 도움을 청한다",
     ]
-    # 상위 키워드 3개에 대해 자연스러운 선택지 생성
     top = grams[:3] if len(grams) >= 3 else (grams + ["상황"] * (3 - len(grams)))
     out: List[Dict[str, str]] = []
     used: set = set()
     idx = 0
     for kw in top:
-        # 템플릿 순환 적용
         for _ in range(5):
             t = templates[idx % len(templates)]
             idx += 1
@@ -573,7 +570,6 @@ def propose_choices_from_anchor(anchor_excerpt: Optional[str], cumulative_summar
             used.add(label)
             out.append({"id": f"kw_{kw}_{idx}", "label": label[:20]})
             break
-    # 보정: 정확히 3개 보장
     while len(out) < 3:
         out.append({"id": f"fill_{len(out)}", "label": "상황을 더 관찰한다"})
     return out[:3]
