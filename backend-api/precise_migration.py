@@ -48,6 +48,8 @@ TABLES_TO_CREATE = {
         "user_image_url VARCHAR(500)",
         "generated_text TEXT NOT NULL",
         "generated_image_urls TEXT",
+        "is_published INTEGER DEFAULT 0 NOT NULL",
+        "published_at DATETIME",
         "created_at DATETIME DEFAULT (CURRENT_TIMESTAMP)",
         "updated_at DATETIME DEFAULT (CURRENT_TIMESTAMP)",
         "FOREIGN KEY(user_id) REFERENCES users(id)"
@@ -99,8 +101,12 @@ COLUMNS_TO_ADD = {
         ("view_count", "INTEGER DEFAULT 0"),
     ],
     "chat_rooms": [  # ✅ 새로 추가: chat_rooms 테이블에 session_id 컬럼
-    ("session_id", "VARCHAR(100) DEFAULT NULL")  # ✅ session_id 필드 (VARCHAR로 문자열, NULL 허용)
-]
+        ("session_id", "VARCHAR(100) DEFAULT NULL")  # ✅ session_id 필드 (VARCHAR로 문자열, NULL 허용)
+    ],
+    "agent_contents": [  # ✅ 피드 발행 기능
+        ("is_published", "INTEGER DEFAULT 0 NOT NULL"),
+        ("published_at", "DATETIME")
+    ]
 }
 
 def _resolve_db_path():

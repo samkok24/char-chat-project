@@ -578,12 +578,63 @@ def build_image_grounding_block(tags: dict, pov: str | None = None, style_prompt
                 # 기본: 이미지 속 인물 = 나
                 pov = "1인칭 '나'"
         else:
-            # GENRE 모드: 기존 로직 유지
+            # GENRE 모드: 로맨스 장르는 항상 1인칭
             person_count = ctx.get('person_count', 0)
             camera = ctx.get('camera', {})
             is_selfie = camera.get('is_selfie', False)
             
-            if person_count == 0:
+            is_romance = False
+            if user_hint:
+                hint_lower = user_hint.lower()
+                romance_score = 0.0
+                
+                # 복합 표현 체크
+                compound_expressions = {
+                    "연애하고": 2, "연애하는": 2, "데이트하고": 2, "데이트하는": 2,
+                    "사랑하고": 2, "사랑하는": 2, "좋아하고": 2, "좋아하는": 2,
+                    "여자친구": 2, "여친": 2, "남자친구": 2, "남친": 2,
+                    "애인": 2, "연인": 2,
+                    "얘랑": 1.5, "쟤랑": 1.5, "저 사람이랑": 1.5,
+                    "이 사람이랑": 1.5, "이 사람과": 1.5, "이 여자랑": 1.5, "이 남자랑": 1.5,
+                    "그녀와": 1.5, "그와": 1.5, "그녀랑": 1.5, "그랑": 1.5,
+                    "같이": 2, "함께": 2,
+                }
+                
+                for expr, score in compound_expressions.items():
+                    if expr in hint_lower:
+                        romance_score += score
+                
+                # 단일 키워드 체크
+                keyword_scores = {
+                    "연애": 2, "데이트": 2, "좋아해": 2, "사랑": 2, "고백": 2,
+                    "첫키스": 2, "키스": 2, "포옹": 2, "안아": 2, "스킨십": 2,
+                    "로맨틱": 2, "로맨스": 2,
+                    "야한": 2, "섹시": 2, "관능": 2, "유혹": 2, "밀당": 2, "썸": 2, "달달": 2,
+                    "침대": 2, "숨소리": 2, "체온": 2, "속삭": 2,
+                    "와이프": 1, "허니": 1, "츤데레": 1, "얀데레": 1, "데레": 1,
+                    "남주": 1, "집착": 1, "소유욕": 1,
+                    "히로인": 1, "여주": 1, "공략": 1,
+                    "설레": 0.5, "손잡": 0.5, "모에": 0.5, "은밀": 0.5,
+                }
+                
+                for keyword, score in keyword_scores.items():
+                    if keyword in hint_lower:
+                        romance_score += score
+                
+                # 자기 체험 키워드 체크
+                self_keywords = [
+                    "내가 이렇게", "나도 이런", "이런 느낌", "이런 순간",
+                    "나였으면", "나라면", "내 입장", "나한테도", "내 모습"
+                ]
+                has_self = any(kw in user_hint for kw in self_keywords)
+                
+                # 1.5점 이상이고, 자기 체험 키워드가 없으면 로맨스
+                is_romance = romance_score >= 1.5 and not has_self
+            
+            # ✅ 우선순위에 따라 시점 결정
+            if is_romance:  # ✅ 로맨스가 최우선!
+                pov = "1인칭 '나'(유저). 이미지 속 인물은 '그녀/그'로 지칭하고, 유저와의 로맨틱한 상호작용을 중심으로 서술."
+            elif person_count == 0:
                 pov = "1인칭 '나'"
             elif is_selfie:
                 pov = "1인칭 '나'"

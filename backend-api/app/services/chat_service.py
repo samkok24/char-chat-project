@@ -92,6 +92,11 @@ async def save_message(
         message_metadata=message_metadata or {}
     )
     db.add(chat_message)
+    await db.execute(
+        update(ChatRoom)
+        .where(ChatRoom.id == chat_room_id)
+        .values(updated_at=func.now())
+    )
     await db.commit()
     await db.refresh(chat_message)
     return chat_message

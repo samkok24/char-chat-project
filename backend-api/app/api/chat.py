@@ -1447,6 +1447,9 @@ async def get_chat_room_meta(
         "init_stage": meta.get("init_stage"),
         "intro_ready": meta.get("intro_ready"),
         "updated_at": meta.get("updated_at"),
+        # ✅ 추가: 선택지 복원을 위한 필드
+        "pending_choices_active": meta.get("pending_choices_active"),
+        "initial_choices": meta.get("initial_choices"),
     }
     return allowed
 
@@ -1796,6 +1799,16 @@ async def origchat_turn(
         user_text = (payload.get("user_text") or "").strip()
         choice_id = (payload.get("choice_id") or "").strip()
         situation_text = (payload.get("situation_text") or "").strip()
+        # ✅ 선택지를 선택한 경우 사용자 메시지로 저장
+        if choice_id and user_text:
+            user_msg = await chat_service.save_message(
+                db, 
+                room_id, 
+                "user", 
+                user_text,
+                message_metadata={"choice_id": choice_id, "kind": "choice"}
+            )
+            await db.commit()
         trigger = (payload.get("trigger") or "").strip()
         settings_patch = payload.get("settings_patch") or {}
         idempotency_key = (payload.get("idempotency_key") or "").strip()
@@ -1890,7 +1903,7 @@ async def origchat_turn(
         # 레이트리밋/쿨다운 체크(간단 버전)
         now = int(time.time())
         last_choice_ts = meta_state.get("last_choice_ts", 0)
-        cooldown_met = now - last_choice_ts >= 8  # 최소 8초 간격
+        cooldown_met = now - last_choice_ts >= 5  # 최소 8초 간격
 
         # 간단 스포일러/완결 가드 + 세계관/반복 방지 규칙 + 경량 컨텍스트 주입
         guarded_text = user_text
@@ -2049,95 +2062,173 @@ async def origchat_turn(
         meta_stage = locals().get("stage_name", None)
 
         # 스테이지 메트릭: 생성/보정 단계 표시용
-        t0 = time.time()  # 생성 시작
-        req = SendMessageRequest(character_id=room.character_id, content=guarded_text)
-        resp = await send_message(req, current_user, db)
-        tti_ms = int((time.time() - t0) * 1000)
+        # t0 = time.time()  # 생성 시작
+        # req = SendMessageRequest(character_id=room.character_id, content=guarded_text)
+        # resp = await send_message(req, current_user, db)
+        # tti_ms = int((time.time() - t0) * 1000)
+        t0 = time.time()
+
+        # ✅ want_choices일 때는 AI 생성 스킵
+        if want_choices:
+            # 선택지만 요청한 경우: 마지막 AI 메시지를 그대로 반환
+            try:
+                msgs = await chat_service.get_messages_by_room_id(db, room.id, limit=1)
+                last_ai = msgs[0] if msgs else None
+                if not last_ai:
+                    raise HTTPException(status_code=400, detail="선택지를 생성할 이전 메시지가 없습니다.")
+                
+                # 기존 메시지로 resp 생성
+                from app.schemas.chat import ChatMessageResponse, SendMessageResponse
+                resp = SendMessageResponse(
+                    user_message=None,
+                    ai_message=ChatMessageResponse.model_validate(last_ai)
+                )
+                tti_ms = 0  # AI 생성 안 함
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"선택지 요청 실패: {e}")
+        else:
+            # ✅ 일반 턴: AI 응답 생성
+            # 1. 히스토리 조회
+            history = await chat_service.get_messages_by_room_id(db, room.id, limit=20)
+            history_for_ai = []
+            for msg in history[-20:]:
+                if msg.sender_type == "user":
+                    history_for_ai.append({"role": "user", "parts": [msg.content]})
+                else:
+                    history_for_ai.append({"role": "model", "parts": [msg.content]})
+
+            # 2. 캐릭터 프롬프트 (guarded_text는 이미 모든 규칙/컨텍스트 포함)
+            character_prompt = guarded_text
+
+            # 3. 실제 사용자 입력 추출
+            actual_user_input = user_text if user_text else (situation_text if situation_text else "계속 진행")
+
+            # 4. AI 응답 생성
+            from app.services import ai_service
+
+            ai_response_text = await ai_service.get_ai_chat_response(
+                character_prompt=character_prompt,
+                user_message=actual_user_input,
+                history=history_for_ai,
+                preferred_model=current_user.preferred_model or "gemini-pro",
+                preferred_sub_model=current_user.preferred_sub_model,
+                response_length_pref=getattr(current_user, 'response_length_pref', 'medium')
+            )
+
+            # 5. AI 응답만 저장
+            ai_message = await chat_service.save_message(
+                db, room.id, "assistant", ai_response_text
+            )
+            await db.commit()
+
+            tti_ms = int((time.time() - t0) * 1000)
+
+            # 6. resp 객체 생성 (기존 코드와 호환)
+            from app.schemas.chat import ChatMessageResponse, SendMessageResponse
+            resp = SendMessageResponse(
+                user_message=None,  # 사용자 메시지는 이미 1800-1808줄에서 저장됨
+                ai_message=ChatMessageResponse.model_validate(ai_message)
+            )
 
         # 일관성 강화: 응답을 경량 재작성(최소 수정) (postprocess_mode에 따라)
-        try:
-            from app.services.origchat_service import enforce_character_consistency as _enforce, get_story_character_names, normalize_dialogue_speakers
-            focus_name = None
-            focus_persona = None
-            focus_speech = None
-            if meta_state.get("focus_character_id"):
-                row_fc = await db.execute(
-                    select(Character.name, Character.personality, Character.speech_style)
-                    .where(Character.id == meta_state.get("focus_character_id"))
-                )
-                fc2 = row_fc.first()
-                if fc2:
-                    focus_name = (fc2[0] or '').strip()
-                    focus_persona = (fc2[1] or '').strip()
-                    focus_speech = (fc2[2] or '').strip()
-            world_bible = None
+        if not want_choices:
             try:
-                from app.core.database import redis_client
-                _sid = locals().get('sid', None)
-                if _sid:
-                    raw_wb = await redis_client.get(f"ctx:warm:{_sid}:world_bible")
-                    if raw_wb:
-                        world_bible = raw_wb.decode("utf-8") if isinstance(raw_wb, (bytes, bytearray)) else str(raw_wb)
-            except Exception:
-                world_bible = None
-            ai_text0 = getattr(resp.ai_message, 'content', '') or ''
-            # postprocess_mode: always | first2 | off
-            pp_mode = str(meta_state.get("postprocess_mode") or "first2").lower()
-            need_pp = (pp_mode == "always") or (pp_mode == "first2" and int(meta_state.get("turn_count") or 0) <= 2)
-            refined = ai_text0
-            if need_pp:
-                refined = await _enforce(
-                    ai_text0,
-                    focus_name=focus_name,
-                    persona=focus_persona,
-                    speech_style=focus_speech,
-                    style_prompt=style_prompt,
-                    world_bible=world_bible,
-                )
-            # 스피커 정합 보정(다인 장면 최소 보정)
-            refined2 = refined
-            if need_pp:
-                try:
-                    allowed_names = await get_story_character_names(db, sid) if 'sid' in locals() else []
-                    refined2 = await normalize_dialogue_speakers(
-                        refined,
-                        allowed_names=allowed_names,
-                        focus_name=focus_name,
-                        npc_limit=int(meta_state.get("next_event_len") or 1),
+                from app.services.origchat_service import enforce_character_consistency as _enforce, get_story_character_names, normalize_dialogue_speakers
+                focus_name = None
+                focus_persona = None
+                focus_speech = None
+                if meta_state.get("focus_character_id"):
+                    row_fc = await db.execute(
+                        select(Character.name, Character.personality, Character.speech_style)
+                        .where(Character.id == meta_state.get("focus_character_id"))
                     )
-                except Exception:
-                    refined2 = refined
-            if refined2 and refined2 != ai_text0:
+                    fc2 = row_fc.first()
+                    if fc2:
+                        focus_name = (fc2[0] or '').strip()
+                        focus_persona = (fc2[1] or '').strip()
+                        focus_speech = (fc2[2] or '').strip()
+                world_bible = None
                 try:
-                    resp.ai_message.content = refined2  # type: ignore[attr-defined]
+                    from app.core.database import redis_client
+                    _sid = locals().get('sid', None)
+                    if _sid:
+                        raw_wb = await redis_client.get(f"ctx:warm:{_sid}:world_bible")
+                        if raw_wb:
+                            world_bible = raw_wb.decode("utf-8") if isinstance(raw_wb, (bytes, bytearray)) else str(raw_wb)
                 except Exception:
-                    pass
-        except Exception:
-            pass
+                    world_bible = None
+                ai_text0 = getattr(resp.ai_message, 'content', '') or ''
+                # postprocess_mode: always | first2 | off
+                pp_mode = str(meta_state.get("postprocess_mode") or "first2").lower()
+                need_pp = (pp_mode == "always") or (pp_mode == "first2" and int(meta_state.get("turn_count") or 0) <= 2)
+                refined = ai_text0
+                if need_pp:
+                    refined = await _enforce(
+                        ai_text0,
+                        focus_name=focus_name,
+                        persona=focus_persona,
+                        speech_style=focus_speech,
+                        style_prompt=style_prompt,
+                        world_bible=world_bible,
+                    )
+                # 스피커 정합 보정(다인 장면 최소 보정)
+                refined2 = refined
+                if need_pp:
+                    try:
+                        allowed_names = await get_story_character_names(db, sid) if 'sid' in locals() else []
+                        refined2 = await normalize_dialogue_speakers(
+                            refined,
+                            allowed_names=allowed_names,
+                            focus_name=focus_name,
+                            npc_limit=int(meta_state.get("next_event_len") or 1),
+                        )
+                    except Exception:
+                        refined2 = refined
+                if refined2 and refined2 != ai_text0:
+                    try:
+                        resp.ai_message.content = refined2  # type: ignore[attr-defined]
+                    except Exception:
+                        pass
+            except Exception:
+                pass
 
         meta_resp: Dict[str, Any] = {"turn_count": turn_count, "max_turns": max_turns, "completed": completed}
-        if want_choices and cooldown_met:
+
+        # ✅ 온디맨드 선택지: 쿨다운 무시
+        if want_choices:
             from app.services.origchat_service import propose_choices_from_anchor as _pc
             choices = _pc(getattr(resp.ai_message, 'content', ''), None)
             meta_resp["choices"] = choices
-            # 선택지 제공 시점 기록
             meta_state["last_choice_ts"] = now
             meta_state["pending_choices_active"] = True
             await _set_room_meta(room.id, {"last_choice_ts": now, "pending_choices_active": True})
 
-        # 분기 가치가 높을 때 자동 제안(과잉 방지: 쿨다운 준수, 온디맨드가 아닌 경우만)
-        if not want_choices and cooldown_met:
+        # ✅ 자동 선택지: 쿨다운 적용 (온디맨드와 충돌 안 함)
+        elif cooldown_met:  # ✅ want_choices가 False일 때만 실행
             try:
                 from app.services.origchat_service import compute_branch_score_from_text, propose_choices_from_anchor as _pc
                 ai_text = getattr(resp.ai_message, 'content', '') or ''
                 score = compute_branch_score_from_text(ai_text)
-                if score >= 2.0:
+                if score >= 1.5:
                     meta_resp["choices"] = _pc(ai_text, None)
                     meta_state["last_choice_ts"] = now
                     meta_state["pending_choices_active"] = True
                     await _set_room_meta(room.id, {"last_choice_ts": now, "pending_choices_active": True})
             except Exception:
                 pass
+        # # 분기 가치가 높을 때 자동 제안(과잉 방지: 쿨다운 준수, 온디맨드가 아닌 경우만)
+        # if not want_choices and cooldown_met:
+        #     try:
+        #         from app.services.origchat_service import compute_branch_score_from_text, propose_choices_from_anchor as _pc
+        #         ai_text = getattr(resp.ai_message, 'content', '') or ''
+        #         score = compute_branch_score_from_text(ai_text)
+        #         if score >= 2.0:
+        #             meta_resp["choices"] = _pc(ai_text, None)
+        #             meta_state["last_choice_ts"] = now
+        #             meta_state["pending_choices_active"] = True
+        #             await _set_room_meta(room.id, {"last_choice_ts": now, "pending_choices_active": True})
+        #     except Exception:
+        #         pass
 
         # 완결 직후 안내 내레이션
         if just_completed:
@@ -2174,7 +2265,7 @@ async def origchat_turn(
 
         # 선택/사용자 입력/자동 진행 성공 시 선택지 대기 해제
         try:
-            if choice_id or user_text or want_next_event:
+            if (choice_id) or (not want_choices and (user_text or want_next_event)):
                 if meta_state.get("pending_choices_active"):
                     meta_state["pending_choices_active"] = False
                     await _set_room_meta(room.id, {"pending_choices_active": False})

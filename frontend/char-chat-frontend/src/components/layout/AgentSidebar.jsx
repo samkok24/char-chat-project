@@ -162,9 +162,17 @@ const AgentSidebar = ({ onCreateSession, activeSessionId, onSessionSelect, onDel
             {/* 내 서랍 버튼 */}
             <Button
               onClick={() => navigate('/agent/drawer')}
-              className="w-full mb-3 bg-purple-600 hover:bg-purple-700 text-white"
+              className="w-full mb-3 bg-purple-600 hover:bg-purple-700 text-white transition-colors"
             >
               내 서랍
+            </Button>
+
+            {/* 내 피드 버튼 */}
+            <Button
+              onClick={() => navigate('/agent/feed')}
+              className="w-full mb-3 bg-pink-600 hover:bg-pink-700 text-white transition-colors"
+            >
+              내 피드
             </Button>
 
             {sessionList.length > 0 && (

@@ -2,7 +2,7 @@
 에이전트 콘텐츠 모델 - 내 서랍 기능
 """
 
-from sqlalchemy import Column, String, Text, DateTime, ForeignKey, JSON, Index
+from sqlalchemy import Column, String, Text, DateTime, ForeignKey, JSON, Index, Boolean
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
@@ -30,6 +30,10 @@ class AgentContent(Base):
     # 생성 결과
     generated_text = Column(Text, nullable=False)
     generated_image_urls = Column(JSON)  # 하이라이트 이미지 URL 배열
+    
+    # 피드 발행 정보
+    is_published = Column(Boolean, default=False, nullable=False, index=True)
+    published_at = Column(DateTime(timezone=True), nullable=True)
     
     # 타임스탬프
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)

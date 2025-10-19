@@ -30,6 +30,8 @@ class AgentContentResponse(BaseModel):
     user_image_url: Optional[str]
     generated_text: str
     generated_image_urls: Optional[List[str]]
+    is_published: bool = False
+    published_at: Optional[datetime] = None
     created_at: datetime
     
     class Config:
@@ -42,4 +44,9 @@ class AgentContentListResponse(BaseModel):
     total: int
     page: int
     limit: int
+
+
+class AgentContentPublish(BaseModel):
+    """에이전트 콘텐츠 발행 요청"""
+    is_public: bool = True
 

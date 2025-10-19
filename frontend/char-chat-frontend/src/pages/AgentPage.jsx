@@ -1362,13 +1362,13 @@ const handleRerun = useCallback(async (msg) => {
     updateMessageForSession(sid, msg.id, (m) => ({ ...m, thinking: false, streaming: false, content: assistantText.slice(0,500), fullContent: assistantText }));
     // 6) 하이라이트 로딩 추가 → 생성 후 교체
     const loadingId = crypto.randomUUID();
-    const afterText = isGuest ? (sessionLocalMessagesRef.current.get(sid) || []) : loadJson(LS_MESSAGES_PREFIX + sid, []);
+    const afterText = isGuest ? (sessionLocalMessagesRef.current.get(sid) || []) : loadJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + sid, []);
     const withLoading = [...afterText.slice(0, idx + 1), { id: loadingId, type: 'story_highlights_loading', createdAt: nowIso() }, ...afterText.slice(idx + 1)];
     if (isGuest) {
       sessionLocalMessagesRef.current.set(sid, withLoading);
-      try { sessionStorage.setItem(LS_MESSAGES_PREFIX + sid, JSON.stringify(withLoading)); } catch {}
+      try { sessionStorage.setItem(LS_MESSAGES_PREFIX(user?.id || 'guest') + sid, JSON.stringify(withLoading)); } catch {}
     } else {
-      saveJson(LS_MESSAGES_PREFIX + sid, withLoading);
+      saveJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + sid, withLoading);
     }
     if (activeSessionId === sid) setMessages(withLoading);
     
@@ -1387,31 +1387,31 @@ const handleRerun = useCallback(async (msg) => {
     try {
       const hiRes = await chatAPI.agentGenerateHighlights({ text: assistantText, image_url: imageUrl || '', story_mode: decidedMode || 'auto',vision_tags: visionTags });
       const scenes = (hiRes?.data?.story_highlights || []).map((s, i) => ({ ...s, id: crypto.randomUUID() }));
-      const list2 = isGuest ? (sessionLocalMessagesRef.current.get(originalSessionId) || []) : loadJson(LS_MESSAGES_PREFIX + originalSessionId, []);
+      const list2 = isGuest ? (sessionLocalMessagesRef.current.get(originalSessionId) || []) : loadJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + originalSessionId, []);
       const idx2 = list2.findIndex(m => m.id === loadingId);
       const replaced = [...list2.slice(0, idx2), { id: crypto.randomUUID(), type: 'story_highlights', scenes, createdAt: nowIso() }, ...list2.slice(idx2 + 1)];
       if (isGuest) {
         sessionLocalMessagesRef.current.set(originalSessionId, replaced);
-        try { sessionStorage.setItem(LS_MESSAGES_PREFIX + originalSessionId, JSON.stringify(replaced)); } catch {}
+        try { sessionStorage.setItem(LS_MESSAGES_PREFIX(user?.id || 'guest') + originalSessionId, JSON.stringify(replaced)); } catch {}
       } else {
-        saveJson(LS_MESSAGES_PREFIX + originalSessionId, replaced);
+        saveJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + originalSessionId, replaced);
       }
       if (activeSessionIdRef.current === originalSessionId) setMessages(replaced);
     } catch (_) {
       // 하이라이트 실패 시 로딩 제거만
-      const list3 = isGuest ? (sessionLocalMessagesRef.current.get(originalSessionId) || []) : loadJson(LS_MESSAGES_PREFIX + originalSessionId, []);
+      const list3 = isGuest ? (sessionLocalMessagesRef.current.get(originalSessionId) || []) : loadJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + originalSessionId, []);
       const idx3 = list3.findIndex(m => m.id === loadingId);
       const reduced = idx3 >= 0 ? [...list3.slice(0, idx3), ...list3.slice(idx3 + 1)] : list3;
       if (isGuest) {
         sessionLocalMessagesRef.current.set(originalSessionId, reduced);
-        try { sessionStorage.setItem(LS_MESSAGES_PREFIX + originalSessionId, JSON.stringify(reduced)); } catch {}
+        try { sessionStorage.setItem(LS_MESSAGES_PREFIX(user?.id || 'guest') + originalSessionId, JSON.stringify(reduced)); } catch {}
       } else {
-        saveJson(LS_MESSAGES_PREFIX + originalSessionId, reduced);
+        saveJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + originalSessionId, reduced);
       }
       if (activeSessionIdRef.current === originalSessionId) setMessages(reduced);
     }
     // 7) 추천 카드 재삽입(하이라이트 뒤)
-    const finalList = isGuest ? (sessionLocalMessagesRef.current.get(originalSessionId) || []) : loadJson(LS_MESSAGES_PREFIX + originalSessionId, []);
+    const finalList = isGuest ? (sessionLocalMessagesRef.current.get(originalSessionId) || []) : loadJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + originalSessionId, []);
     const insertAt = finalList.findIndex(m => m.type === 'story_highlights' && finalList.indexOf(m) > idx);
     const recMsg = { id: crypto.randomUUID(), role: 'assistant', type: 'recommendation', createdAt: nowIso() };
     let injected;
@@ -1419,9 +1419,9 @@ const handleRerun = useCallback(async (msg) => {
     else injected = [...finalList, recMsg];
     if (isGuest) {
       sessionLocalMessagesRef.current.set(originalSessionId, injected);
-      try { sessionStorage.setItem(LS_MESSAGES_PREFIX + originalSessionId, JSON.stringify(injected)); } catch {}
+      try { sessionStorage.setItem(LS_MESSAGES_PREFIX(user?.id || 'guest') + originalSessionId, JSON.stringify(injected)); } catch {}
     } else {
-      saveJson(LS_MESSAGES_PREFIX + originalSessionId, injected);
+      saveJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + originalSessionId, injected);
     }
     if (activeSessionIdRef.current === originalSessionId) setMessages(injected);
   } catch {}
@@ -1508,13 +1508,13 @@ const handleGenerate = useCallback(async (overridePrompt = null, attachedImageUr
 
     // 사용자 메시지 추가
     const userMessage = { id: crypto.randomUUID(), role: 'user', content: effectivePrompt, createdAt: nowIso() };
-    const lsBefore = isGuest ? (sessionLocalMessagesRef.current.get(sessionIdForJob) || []) : loadJson(LS_MESSAGES_PREFIX + sessionIdForJob, []);
+    const lsBefore = isGuest ? (sessionLocalMessagesRef.current.get(sessionIdForJob) || []) : loadJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + sessionIdForJob, []);
     const withUser = [...(lsBefore || []), userMessage];
     if (isGuest) {
         sessionLocalMessagesRef.current.set(sessionIdForJob, withUser);
     if (activeSessionId === sessionIdForJob) setMessages(withUser);
     } else {
-        saveJson(LS_MESSAGES_PREFIX + sessionIdForJob, withUser);
+        saveJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + sessionIdForJob, withUser);
         if (activeSessionId === sessionIdForJob) setMessages(withUser);
     }
     
@@ -1531,7 +1531,7 @@ const handleGenerate = useCallback(async (overridePrompt = null, attachedImageUr
         sessionLocalMessagesRef.current.set(sessionIdForJob, withThinking);
     if (activeSessionId === sessionIdForJob) setMessages(withThinking);
     } else {
-        saveJson(LS_MESSAGES_PREFIX + sessionIdForJob, withThinking);
+        saveJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + sessionIdForJob, withThinking);
         if (activeSessionId === sessionIdForJob) setMessages(withThinking);
     }
 
@@ -1576,9 +1576,9 @@ const handleGenerate = useCallback(async (overridePrompt = null, attachedImageUr
                     sessionLocalMessagesRef.current.set(sessionIdForJob, next);
                     if (activeSessionId === sessionIdForJob) setMessages(next);
                 } else {
-                    const arr = loadJson(LS_MESSAGES_PREFIX + sessionIdForJob, []);
+                    const arr = loadJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + sessionIdForJob, []);
                     const next = [...arr, recommendMsg];
-                    saveJson(LS_MESSAGES_PREFIX + sessionIdForJob, next);
+                    saveJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + sessionIdForJob, next);
                     if (activeSessionId === sessionIdForJob) setMessages(next);
                 }
                 setGenState(sessionIdForJob, { status: GEN_STATE.COMPLETED, controller: null });
@@ -1656,7 +1656,7 @@ const handleGenerate = useCallback(async (overridePrompt = null, attachedImageUr
                 // 최종 완료 시에만 보관함에 반영
                 if (!isGuest) {
                     try {
-                        const finalMessages = loadJson(LS_MESSAGES_PREFIX + sessionIdForJob, []);
+                        const finalMessages = loadJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + sessionIdForJob, []);
                         const finalAssistantMessage = finalMessages.find(m => m.id === assistantThinkingId);
                         // AI 응답에서 스토리 제목 자동 생성
                         const fullText = finalAssistantMessage?.fullContent || finalAssistantMessage?.content || '';
@@ -1716,9 +1716,9 @@ const handleGenerate = useCallback(async (overridePrompt = null, attachedImageUr
                       sessionLocalMessagesRef.current.set(sessionIdForJob, next);
                       if (activeSessionId === sessionIdForJob) setMessages(next);
                     } else {
-                      const arr = loadJson(LS_MESSAGES_PREFIX + sessionIdForJob, []);
+                      const arr = loadJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + sessionIdForJob, []);
                       const next = [...arr, imgMsg];
-                      saveJson(LS_MESSAGES_PREFIX + sessionIdForJob, next);
+                      saveJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + sessionIdForJob, next);
                       if (activeSessionId === sessionIdForJob) setMessages(next);
                     }
                   }
@@ -1809,13 +1809,13 @@ const handleContinueInline = useCallback(async (msg) => {
     if (!sid) return;
 
     // 1) 아래 붙은 하이라이트/로딩/추천 제거
-    const list = isGuest ? (sessionLocalMessagesRef.current.get(sid) || []) : loadJson(LS_MESSAGES_PREFIX + sid, []);
+    const list = isGuest ? (sessionLocalMessagesRef.current.get(sid) || []) : loadJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + sid, []);
     const idx = list.findIndex(m => m.id === msg.id);
     if (idx === -1) return;
     const head = list.slice(0, idx + 1);
     const tail = list.slice(idx + 1).filter(m => !(m.type === 'story_highlights' || m.type === 'story_highlights_loading' || m.type === 'recommendation'));
     const cleaned = [...head, ...tail];
-    if (isGuest) sessionLocalMessagesRef.current.set(sid, cleaned); else saveJson(LS_MESSAGES_PREFIX + sid, cleaned);
+    if (isGuest) sessionLocalMessagesRef.current.set(sid, cleaned); else saveJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + sid, cleaned);
     if (activeSessionId === sid) setMessages(cleaned);
 
     // 2) 버튼 스피너 표시: 메시지 텍스트는 유지, continued 플래그만 세팅
@@ -1920,7 +1920,7 @@ const handleContinueInline = useCallback(async (msg) => {
             const hiRes = await chatAPI.agentGenerateHighlights({ text: combinedText, image_url: imageUrl || '', story_mode: mode || 'auto', vision_tags: visionTags });
             const scenes = (hiRes?.data?.story_highlights || []).map((s, i) => ({ ...s, id: crypto.randomUUID() }));
             
-            const saved = loadJson(LS_MESSAGES_PREFIX + originalSessionId, []);
+            const saved = loadJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + originalSessionId, []);
             const pIdx = saved.findIndex(x => x.id === placeholderId);
             let replaced = saved;
             if (pIdx > -1) {
@@ -1936,17 +1936,17 @@ const handleContinueInline = useCallback(async (msg) => {
               { id: crypto.randomUUID(), role: 'assistant', type: 'recommendation', createdAt: nowIso() }
             ];
             
-            saveJson(LS_MESSAGES_PREFIX + originalSessionId, final);
+            saveJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + originalSessionId, final);
             
             if (activeSessionIdRef.current === originalSessionId) {
               setMessages(final);
             }
           } catch (e) {
-            const saved = loadJson(LS_MESSAGES_PREFIX + originalSessionId, []);
+            const saved = loadJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + originalSessionId, []);
             const pIdx = saved.findIndex(x => x.id === placeholderId);
             const reduced = pIdx >= 0 ? [...saved.slice(0, pIdx), ...saved.slice(pIdx + 1)] : saved;
             
-            saveJson(LS_MESSAGES_PREFIX + originalSessionId, reduced);
+            saveJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + originalSessionId, reduced);
             
             if (activeSessionIdRef.current === originalSessionId) {
               setMessages(reduced);
@@ -2201,9 +2201,9 @@ setShowChatPanel(true);
 setTimeout(() => {
   const m = { id: crypto.randomUUID(), role: 'user', type: 'image', url: img.url, createdAt: nowIso() };
   if (!isGuest) {
-    const curr = loadJson(LS_MESSAGES_PREFIX + s.id, []);
+    const curr = loadJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + s.id, []);
     const next = [...curr, m];
-    saveJson(LS_MESSAGES_PREFIX + s.id, next);
+    saveJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + s.id, next);
   }
   setMessages(prev => [...prev, m]);
 }, 0);

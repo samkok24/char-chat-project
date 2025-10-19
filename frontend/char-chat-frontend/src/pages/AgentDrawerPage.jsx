@@ -4,6 +4,7 @@ import { chatAPI } from '../lib/api';
 import AppLayout from '../components/layout/AppLayout';
 import AgentSidebar from '../components/layout/AgentSidebar';
 import { Button } from '../components/ui/button';
+import { Badge } from '../components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { ArrowLeft, Loader2, Trash2, ChevronDown, ChevronUp } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
@@ -50,6 +51,27 @@ const AgentDrawerPage = () => {
 
   const handleCardClick = (item) => {
     navigate(`/agent#session=${item.session_id}&scrollTo=${item.message_id}`);
+  };
+
+  const handlePublish = async (id) => {
+    try {
+      await chatAPI.publishAgentContent(id, true);
+      window.dispatchEvent(new CustomEvent('toast', { 
+        detail: { 
+          type: 'success', 
+          message: '피드에 발행되었습니다' 
+        } 
+      }));
+      loadContents(activeTab, page);
+    } catch (err) {
+      console.error('Failed to publish:', err);
+      window.dispatchEvent(new CustomEvent('toast', { 
+        detail: { 
+          type: 'error', 
+          message: '발행에 실패했습니다' 
+        } 
+      }));
+    }
   };
 
   const toggleExpand = (id) => {
@@ -194,12 +216,30 @@ const AgentDrawerPage = () => {
                                     minute: '2-digit'
                                   })}
                                 </p>
-                                <button
-                                  onClick={() => handleCardClick(item)}
-                                  className="text-xs text-purple-400 hover:text-purple-300"
-                                >
-                                  이동 →
-                                </button>
+                                
+                                {/* 발행 상태 및 버튼 */}
+                                <div className="flex items-center gap-2">
+                                  {item.is_published ? (
+                                    <>
+                                      <Badge className="text-xs bg-green-600/20 text-green-400 border border-green-600/30">
+                                        발행됨
+                                      </Badge>
+                                      <button
+                                        onClick={() => navigate('/agent/feed')}
+                                        className="text-xs text-pink-400 hover:text-pink-300"
+                                      >
+                                        피드 보기 →
+                                      </button>
+                                    </>
+                                  ) : (
+                                    <button
+                                      onClick={(e) => { e.stopPropagation(); handlePublish(item.id); }}
+                                      className="text-xs px-3 py-1 rounded bg-green-600 hover:bg-green-700 text-white transition-colors"
+                                    >
+                                      피드에 발행
+                                    </button>
+                                  )}
+                                </div>
                               </div>
                             </div>
                           </div>

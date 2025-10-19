@@ -4,8 +4,9 @@
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete, desc, func
+from sqlalchemy import select, delete, desc, func, update
 from typing import List
+from datetime import datetime
 import uuid
 
 from app.core.database import get_db
@@ -15,7 +16,8 @@ from app.models.agent_content import AgentContent
 from app.schemas.agent_content import (
     AgentContentCreate,
     AgentContentResponse,
-    AgentContentListResponse
+    AgentContentListResponse,
+    AgentContentPublish
 )
 
 router = APIRouter()
@@ -111,4 +113,101 @@ async def delete_agent_content(
     await db.commit()
     
     return {"message": "삭제되었습니다."}
+
+
+@router.patch("/{content_id}/publish", response_model=AgentContentResponse)
+async def publish_agent_content(
+    content_id: uuid.UUID,
+    payload: AgentContentPublish,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """에이전트 콘텐츠 발행"""
+    result = await db.execute(
+        select(AgentContent).where(
+            AgentContent.id == content_id,
+            AgentContent.user_id == current_user.id
+        )
+    )
+    content = result.scalar_one_or_none()
+    
+    if not content:
+        raise HTTPException(status_code=404, detail="콘텐츠를 찾을 수 없습니다.")
+    
+    # 발행 처리
+    content.is_published = True
+    content.published_at = datetime.utcnow()
+    
+    await db.commit()
+    await db.refresh(content)
+    
+    return content
+
+
+@router.patch("/{content_id}/unpublish", response_model=AgentContentResponse)
+async def unpublish_agent_content(
+    content_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """에이전트 콘텐츠 발행 취소"""
+    result = await db.execute(
+        select(AgentContent).where(
+            AgentContent.id == content_id,
+            AgentContent.user_id == current_user.id
+        )
+    )
+    content = result.scalar_one_or_none()
+    
+    if not content:
+        raise HTTPException(status_code=404, detail="콘텐츠를 찾을 수 없습니다.")
+    
+    # 발행 취소
+    content.is_published = False
+    
+    await db.commit()
+    await db.refresh(content)
+    
+    return content
+
+
+@router.get("/feed", response_model=AgentContentListResponse)
+async def get_agent_feed(
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """발행된 에이전트 콘텐츠 피드 조회"""
+    skip = (page - 1) * limit
+    
+    # 발행된 콘텐츠만 필터
+    conditions = [
+        AgentContent.user_id == current_user.id,
+        AgentContent.is_published == True
+    ]
+    
+    # 총 개수 조회
+    count_result = await db.execute(
+        select(func.count(AgentContent.id))
+        .where(*conditions)
+    )
+    total = count_result.scalar() or 0
+    
+    # 목록 조회 (발행 시간 기준 최신순)
+    result = await db.execute(
+        select(AgentContent)
+        .where(*conditions)
+        .order_by(desc(AgentContent.published_at))
+        .offset(skip)
+        .limit(limit)
+    )
+    items = result.scalars().all()
+    
+    return AgentContentListResponse(
+        items=items,
+        total=total,
+        page=page,
+        limit=limit
+    )
 

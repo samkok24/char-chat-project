@@ -346,6 +346,12 @@ export const chatAPI = {
     api.get('/agent/contents', { params }),
   deleteAgentContent: (id) =>
     api.delete(`/agent/contents/${id}`),
+  publishAgentContent: (id, is_public = true) =>
+    api.patch(`/agent/contents/${id}/publish`, { is_public }),
+  unpublishAgentContent: (id) =>
+    api.patch(`/agent/contents/${id}/unpublish`),
+  getAgentFeed: (params = {}) =>
+    api.get('/agent/contents/feed', { params }),
   
   getChatHistory: (sessionId) =>
     api.get(`/chat/history/${sessionId}`),

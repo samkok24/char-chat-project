@@ -28,7 +28,7 @@ import sys
 from typing import List, Dict, Any
 import uuid as _uuid
 
-from sqlalchemy import create_engine, text, Table, MetaData
+from sqlalchemy import create_engine, text, Table, MetaData, inspect
 from sqlalchemy.engine import Engine
 from sqlalchemy.sql import select
 from urllib.parse import quote
@@ -299,18 +299,37 @@ def _count_rows(engine: Engine, table_name: str) -> int:
         return -1
 
 
-def migrate(sqlite_path: str, pg_url: str, truncate: bool = False, dry_run: bool = False, best_effort: bool = False):
+def migrate(sqlite_path: str, pg_url: str, truncate: bool = False, dry_run: bool = False, best_effort: bool = False, recreate_schema: bool = False):
     _import_all_models()
     src = _connect_sqlite(sqlite_path)
     dst = _connect_postgres(pg_url)
 
-    # 대상 스키마가 이미 생성되어 있어야 함 (Alembic/앱 초기화로 생성)
+    if recreate_schema and not dry_run:
+        _log("스키마 재생성(--recreate-schema) 옵션 활성화됨. 모든 테이블을 삭제합니다.")
+        try:
+            # ✅ 수정된 부분: CASCADE를 사용하여 강제 삭제
+            with dst.begin() as conn:
+                # 모든 테이블 목록을 가져옴
+                inspector = inspect(dst)
+                tables = inspector.get_table_names()
+                
+                # 모든 테이블에 대해 CASCADE 옵션으로 DROP 실행
+                for table_name in reversed(tables):
+                    _log(f"  -> '{table_name}' 테이블 삭제 중...")
+                    conn.execute(text(f'DROP TABLE IF EXISTS "{table_name}" CASCADE'))
+            
+            _log("✅ 모든 테이블 삭제 완료.")
+        except Exception as e:
+            _log(f"[warn] 테이블 삭제 실패 (계속 진행): {e}")
+
+    # 항상 스키마 존재/생성을 확인하여 drop 이후 재생성되도록 합니다.
     _ensure_schema(dst)
     tables = _sorted_tables()
 
     _log(f"총 {len(tables)}개 테이블 복사 시작 (의존 순)")
 
-    if truncate and not dry_run:
+    # recreate_schema가 아닐 때만 truncate를 실행합니다.
+    if truncate and not dry_run and not recreate_schema:
         _truncate_tables(dst, tables)
 
     _disable_constraints_pg(dst)
@@ -334,16 +353,13 @@ def migrate(sqlite_path: str, pg_url: str, truncate: bool = False, dry_run: bool
                 rows_fk_ok = _filter_rows_by_fk(dst, t.name, rows)
                 inserted = _insert_rows(dst, t, rows_fk_ok)
             except Exception as e:
-                # FK 오류인 경우 힌트 출력
                 msg = str(e)
                 if "ForeignKeyViolation" in msg or "violates foreign key constraint" in msg:
                     _log(f"[hint] FK 충돌: 상위 테이블(예: users/stories)이 먼저 채워졌는지 확인하세요")
-                # 기본은 strict: 즉시 중단하여 데이터 손실을 방지
                 if not best_effort:
                     raise
                 _log(f"- {t.name}: 삽입 오류 → 건너뜀 (best-effort) ({e})")
                 inserted = 0
-            # 간단 검증: 대상 건수 로깅(실패 시 -1)
             dst_cnt = _count_rows(dst, t.name)
             _log(f"- {t.name}: {inserted}건 복사 (대상 현재 {dst_cnt}건)")
             copied_total += inserted
@@ -367,6 +383,7 @@ def main():
     p.add_argument("--truncate", action="store_true", help="복사 전 대상(Postgres) 테이블 비우기 (소스 SQLite는 수정 안 함)")
     p.add_argument("--best-effort", action="store_true", help="삽입 오류가 발생해도 계속 진행(기본은 오류 시 중단)")
     p.add_argument("--dry-run", action="store_true", help="삽입하지 않고 건수만 출력")
+    p.add_argument("--recreate-schema", action="store_true", help="대상 DB의 모든 테이블을 삭제하고 스키마를 다시 생성합니다.")
     args = p.parse_args()
 
     migrate(sqlite_path=args.sqlite, pg_url=args.pg, truncate=bool(args.truncate), dry_run=bool(args.dry_run), best_effort=bool(args.best_effort))

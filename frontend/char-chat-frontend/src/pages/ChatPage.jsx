@@ -617,6 +617,82 @@ const ChatPage = () => {
     }
   }, [connected, chatRoomId, currentRoom]); // currentRoom 추가하여 중복 입장 방지
 
+  // ✅ 원작챗: HTTP로 메시지 로드 및 선택지 복원
+  useEffect(() => {
+    if (!chatRoomId) return;
+    
+    const loadOrigChatMessages = async () => {
+      try {
+              // 1. 룸 메타 먼저 로드하여 원작챗 여부 확인
+        const metaRes = await chatAPI.getRoomMeta(chatRoomId);
+        const meta = metaRes?.data || {};
+
+        // ✅ 원작챗 여부 확인 및 설정
+        const isOrigChatRoom = meta.mode === 'canon' || meta.mode === 'parallel';
+        
+        if (!isOrigChatRoom) {
+          // ✅ 일반 챗이면 아무것도 안 함 (소켓이 처리)
+          return;
+      }
+      // --- 여기서부터는 원작챗만 실행 ---
+      
+      // ✅ 2. 원작챗 상태 복원
+      setIsOrigChat(true);
+      
+      setOrigMeta({
+        turnCount: Number(meta.turn_count || meta.turnCount || 0) || 0,
+        maxTurns: Number(meta.max_turns || meta.maxTurns || 500) || 500,
+        completed: Boolean(meta.completed),
+        mode: meta.mode || null,
+        narrator_mode: Boolean(meta.narrator_mode),
+        seed_label: meta.seed_label || null,
+        init_stage: meta.init_stage || null,
+        intro_ready: typeof meta.intro_ready === 'boolean' ? meta.intro_ready : null
+      });
+      
+      // ✅ 3. 메시지 히스토리 로드 (원작챗만)
+      const response = await chatAPI.getMessages(chatRoomId);
+      if (response?.data && Array.isArray(response.data)) {
+        setMessages(response.data);
+        
+        // ✅ 4. 선택지 복원 강화
+        console.log('[선택지 복원] pending_choices_active:', meta.pending_choices_active);
+        
+        if (meta.pending_choices_active) {
+          // ✅ 백엔드에 선택지 재요청 (최신 AI 메시지 기반)
+          try {
+            console.log('[선택지 복원] 백엔드에 요청 중...');
+            const choiceResp = await origChatAPI.turn({ 
+              room_id: chatRoomId, 
+              trigger: 'choices', 
+              idempotency_key: `restore-${Date.now()}` 
+            });
+            const choiceMeta = choiceResp.data?.meta || {};
+            if (Array.isArray(choiceMeta.choices) && choiceMeta.choices.length > 0) {
+              console.log('[선택지 복원] 성공:', choiceMeta.choices);
+              setPendingChoices(choiceMeta.choices);
+            } else {
+              console.warn('[선택지 복원] 선택지 없음');
+            }
+          } catch (err) {
+            console.error('[선택지 복원] 실패:', err);
+          }
+        } else if (Array.isArray(meta.initial_choices) && meta.initial_choices.length > 0 && response.data.length <= 1) {
+          // 초기 선택지 복원 (첫 메시지만 있을 때)
+          console.log('[선택지 복원] 초기 선택지 사용:', meta.initial_choices);
+          setPendingChoices(meta.initial_choices);
+        } else {
+          console.log('[선택지 복원] 조건 불충족 - pending_active:', meta.pending_choices_active, ', initial_choices:', meta.initial_choices, ', messages:', response.data.length);
+        }
+      }
+      
+    } catch (error) {
+      console.error('원작챗 상태 로드 실패:', error);
+    }
+  };
+  
+  loadOrigChatMessages();
+}, [chatRoomId]); // ✅ isOrigChat 의존성 제거
   // 서버에서 인사말을 저장하므로, 클라이언트에서 별도 주입하지 않습니다.
 
   useEffect(() => {
@@ -934,32 +1010,39 @@ const ChatPage = () => {
 
   // 온디맨드: 선택지 요청(쿨다운/중복 방지는 서버/프론트 동시 가드)
   const requestChoices = useCallback(async () => {
-    if (!isOrigChat || !chatRoomId || origTurnLoading) return;
+    // ✅ isOrigChat 체크 제거 - 메타에서 확인
+    if (!chatRoomId || origTurnLoading) return;
+    
     try {
       setOrigTurnLoading(true);
-      const resp = await origChatAPI.turn({ room_id: chatRoomId, trigger: 'choices', idempotency_key: genIdemKey() });
+      const resp = await origChatAPI.turn({ 
+        room_id: chatRoomId, 
+        trigger: 'choices', 
+        idempotency_key: genIdemKey() 
+      });
       const meta = resp.data?.meta || {};
       if (Array.isArray(meta.choices)) setPendingChoices(meta.choices);
       const warn = meta.warning; setRangeWarning(typeof warn === 'string' ? warn : '');
+      
       // 진행도 갱신
       try {
         const metaRes = await chatAPI.getRoomMeta(chatRoomId);
         const m = metaRes?.data || {};
-          setOrigMeta({
+        setOrigMeta({
           turnCount: Number(m.turn_count || m.turnCount || 0) || 0,
           maxTurns: Number(m.max_turns || m.maxTurns || 500) || 500,
-            completed: Boolean(m.completed),
-            mode: m.mode || null,
-            narrator_mode: Boolean(m.narrator_mode),
+          completed: Boolean(m.completed),
+          mode: m.mode || null,
+          narrator_mode: Boolean(m.narrator_mode),
         });
       } catch (_) {}
-      } catch (e) {
-        console.error('선택지 요청 실패', e);
-        showToastOnce({ key: `choices-fail:${chatRoomId}`, type: 'error', message: '선택지 요청에 실패했습니다.' });
-      } finally {
+    } catch (e) {
+      console.error('선택지 요청 실패', e);
+      showToastOnce({ key: `choices-fail:${chatRoomId}`, type: 'error', message: '선택지 요청에 실패했습니다.' });
+    } finally {
       setOrigTurnLoading(false);
     }
-  }, [isOrigChat, chatRoomId, origTurnLoading, genIdemKey]);
+  }, [chatRoomId, origTurnLoading, genIdemKey]); // ✅ isOrigChat 의존성 제거
 
   // 온디맨드: 자동 진행(next_event) — 선택지 표시 중엔 서버/프론트 모두 가드
   const requestNextEvent = useCallback(async () => {
@@ -1718,7 +1801,11 @@ const ChatPage = () => {
                   size="icon"
                   title="선택지 요청"
                 >
-                  <ListTree className="w-5 h-5" />
+                  {origTurnLoading ? (
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                  ) : (
+                    <ListTree className="w-5 h-5" />
+                  )}
                 </Button>
               )}
 
