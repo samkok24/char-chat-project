@@ -55,20 +55,46 @@ const AgentDrawerPage = () => {
 
   const handlePublish = async (id) => {
     try {
-      await chatAPI.publishAgentContent(id, true);
+      console.log('[AgentDrawer] 발행 요청 시작:', id);
+      
+      const response = await chatAPI.publishAgentContent(id, true);
+      console.log('[AgentDrawer] 발행 성공:', response);
+      
+      // 🔥 1초 후 unread 설정 (캐릭터 로드 완료 대기)
+      // setTimeout(() => {
+      //   window.dispatchEvent(new CustomEvent('set-all-unread', { detail: { count: 5 } }));
+      //   console.log('[AgentDrawer] ✅ unread 설정 이벤트 발생 (1초 후)');
+      // }, 1000);
+      
+      window.dispatchEvent(new CustomEvent('toast', { 
+        detail: { type: 'success', message: '피드에 발행되었습니다' } 
+      }));
+      
+      navigate('/agent/feed');
+    } catch (err) {
+      console.error('[AgentDrawer] 발행 실패:', err);
+      window.dispatchEvent(new CustomEvent('toast', { 
+        detail: { type: 'error', message: '발행에 실패했습니다' } 
+      }));
+    }
+  };
+  const handleUnpublish = async (id) => {
+    try {
+      console.log('[AgentDrawer] 발행 취소 요청 시작:', id);
+      await chatAPI.unpublishAgentContent(id);
       window.dispatchEvent(new CustomEvent('toast', { 
         detail: { 
           type: 'success', 
-          message: '피드에 발행되었습니다' 
+          message: '발행이 취소되었습니다' 
         } 
       }));
       loadContents(activeTab, page);
     } catch (err) {
-      console.error('Failed to publish:', err);
+      console.error('[AgentDrawer] 발행 취소 실패:', err);
       window.dispatchEvent(new CustomEvent('toast', { 
         detail: { 
           type: 'error', 
-          message: '발행에 실패했습니다' 
+          message: '발행 취소에 실패했습니다' 
         } 
       }));
     }
@@ -225,10 +251,16 @@ const AgentDrawerPage = () => {
                                         발행됨
                                       </Badge>
                                       <button
+                                        onClick={(e) => { e.stopPropagation(); handleUnpublish(item.id); }}
+                                        className="text-xs px-2 py-1 rounded bg-gray-600 hover:bg-gray-700 text-white transition-colors"
+                                      >
+                                        취소
+                                      </button>
+                                      <button
                                         onClick={() => navigate('/agent/feed')}
                                         className="text-xs text-pink-400 hover:text-pink-300"
                                       >
-                                        피드 보기 →
+                                        피드 →
                                       </button>
                                     </>
                                   ) : (

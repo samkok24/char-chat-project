@@ -17,6 +17,7 @@ from sqlalchemy import text
 
 # API 라우터 임포트 (우선순위 순서)
 from app.api.chat import router as chat_router          # 🔥 최우선: 채팅 API
+from app.api.chat_read import router as chat_read_router  # 📖 채팅 읽음 상태 (분리)
 from app.api.auth import router as auth_router          # ✅ 필수: 인증 API  
 from app.api.characters import router as characters_router  # ✅ 필수: 캐릭터 API
 # from app.api.generation import router as generation_router # ✨ 신규: 생성 API (임시 비활성화)
@@ -203,6 +204,7 @@ if settings.ENVIRONMENT == "production":
 # 라우터 등록 (CAVEDUCK 스타일 우선순위)
 # 🔥 Phase 4: 채팅 중심 API (최우선 완성)
 app.include_router(chat_router, prefix="/chat", tags=["🔥 채팅 (최우선)"])
+app.include_router(chat_read_router, tags=["📖 채팅 읽음 상태"])
 app.include_router(auth_router, prefix="/auth", tags=["✅ 인증 (필수)"])
 app.include_router(characters_router, prefix="/characters", tags=["✅ 캐릭터 (필수)"])
 app.include_router(users_router, prefix="", tags=["✅ 유저 (필수)"])  # prefix 없음 - /users/{id} 형태

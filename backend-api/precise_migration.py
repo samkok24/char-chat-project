@@ -53,6 +53,18 @@ TABLES_TO_CREATE = {
         "created_at DATETIME DEFAULT (CURRENT_TIMESTAMP)",
         "updated_at DATETIME DEFAULT (CURRENT_TIMESTAMP)",
         "FOREIGN KEY(user_id) REFERENCES users(id)"
+    ],
+    "chat_room_read_status": [
+        "id CHAR(36) PRIMARY KEY",
+        "room_id CHAR(36) NOT NULL",
+        "user_id CHAR(36) NOT NULL",
+        "last_read_at DATETIME DEFAULT (CURRENT_TIMESTAMP)",
+        "unread_count INTEGER DEFAULT 0",
+        "created_at DATETIME DEFAULT (CURRENT_TIMESTAMP)",
+        "updated_at DATETIME DEFAULT (CURRENT_TIMESTAMP)",
+        "UNIQUE(room_id, user_id)",
+        "FOREIGN KEY(room_id) REFERENCES chat_rooms(id) ON DELETE CASCADE",
+        "FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE"
     ]
 }
 
@@ -106,7 +118,8 @@ COLUMNS_TO_ADD = {
     "agent_contents": [  # ✅ 피드 발행 기능
         ("is_published", "INTEGER DEFAULT 0 NOT NULL"),
         ("published_at", "DATETIME")
-    ]
+    ],
+    "chat_room_read_status": []  # Phase 2: 읽음 상태 추적
 }
 
 def _resolve_db_path():

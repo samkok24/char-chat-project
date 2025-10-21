@@ -17,6 +17,9 @@ APScheduler==3.10.4
 tzlocal==5.2
 pytz==2024.1
 
+# Celery (백그라운드 작업)
+celery==5.4.0
+
 # 인증 및 보안
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4

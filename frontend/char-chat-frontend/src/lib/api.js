@@ -363,6 +363,12 @@ export const chatAPI = {
   getChatRooms: (params = {}) =>
     api.get('/chat/rooms', { params }),
   
+  getRoomsWithUnread: (params = {}) =>
+    api.get('/chat/read/rooms/with-unread', { params }),
+  
+  markRoomAsRead: (roomId) =>
+    api.post(`/chat/read/rooms/${roomId}/mark`),
+  
   createChatRoom: (data) =>
     api.post('/chat/rooms', data),
   

@@ -660,22 +660,26 @@ def build_image_grounding_block(tags: dict, pov: str | None = None, style_prompt
     # 이미지 내 텍스트(최우선 사실)
     in_texts = [str(x) for x in (tags.get("in_image_text") or []) if str(x).strip()]
     numeric_phrases = [str(x) for x in (tags.get("numeric_phrases") or []) if str(x).strip()]
+    
+    # 🆕 "unknown" 필터링 헬퍼
+    def _valid(val: str) -> bool:
+        return val and val.lower() != "unknown"
 
     lines = [
         "[고정 조건 - 이미지 그라운딩]",
         ("[최우선 사실 - 이미지 내 텍스트] " + "; ".join(in_texts)) if in_texts else None,
         ("[수치/단위 문구] " + "; ".join(numeric_phrases)) if numeric_phrases else None,
-        f"장소: {place}" if place else None,
+        f"장소: {place}" if _valid(place) else None,
         f"오브젝트: {objects}" if objects else None,
-        f"조명/시간대: {lighting}" if lighting else None,
-        f"날씨: {weather}" if weather else None,
-        f"무드: {mood}" if mood else None,
+        f"조명/시간대: {lighting}" if _valid(lighting) else None,
+        f"날씨: {weather}" if _valid(weather) else None,
+        f"무드: {mood}" if _valid(mood) else None,
         f"주요 색상: {colors}" if colors else None,
         f"질감/재질: {textures}" if textures else None,
         f"암시되는 소리: {sounds}" if sounds else None,
         f"암시되는 냄새: {smells}" if smells else None,
-        f"체감 온도: {temperature}" if temperature else None,
-        f"움직임/동적 요소: {movement}" if movement else None,
+        f"체감 온도: {temperature}" if _valid(temperature) else None,
+        f"움직임/동적 요소: {movement}" if _valid(movement) else None,
         f"시선 집중점: {focal_point}" if focal_point else None,
         "",
         "규칙: 이미지에 포함된 텍스트(위 최우선 사실)를 1순위로 반영하라. 숫자/단위를 절대 왜곡하지 말라.",

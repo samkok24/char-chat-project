@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { chatAPI } from '../lib/api';
 import AppLayout from '../components/layout/AppLayout';
 import AgentSidebar from '../components/layout/AgentSidebar';
+import CharacterQuickAccessPanel from '../components/CharacterQuickAccessPanel';
 import { Button } from '../components/ui/button';
 import { ArrowLeft, Loader2, Heart, MessageCircle, Share2, X } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
@@ -85,14 +86,16 @@ const AgentFeedPage = () => {
         isNewChatButtonDisabled: false,
       }}
     >
-      <div className="min-h-screen bg-gray-900 text-white p-6">
-        <div className="max-w-6xl mx-auto">
+      <div className="flex h-full w-full overflow-hidden">
+        <div className="flex-1 overflow-y-auto overflow-x-hidden">
+          <div className="min-h-screen bg-gray-900 text-white p-6">
+        <div className="w-full max-w-3xl mx-auto">
           {/* 헤더 */}
           <div className="flex items-center justify-between mb-6">
             <div className="flex items-center gap-4">
               <Button
                 variant="ghost"
-                onClick={() => navigate('/agent')}
+                onClick={() => navigate('/agent/drawer')}
                 className="text-gray-300 hover:text-white"
               >
                 <ArrowLeft className="w-5 h-5" />
@@ -203,7 +206,12 @@ const AgentFeedPage = () => {
               })}
             </div>
           )}
+          </div>
         </div>
+        </div>
+        
+        {/* 미니 사이드바 */}
+        <CharacterQuickAccessPanel />
       </div>
     </AppLayout>
   );

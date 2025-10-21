@@ -86,6 +86,15 @@ const ChatPage = () => {
   const [character, setCharacter] = useState(null);
   const [chatRoomId, setChatRoomId] = useState(null);
   const [aiThinking, setAiThinking] = useState(false);
+  
+  // 채팅방 입장 시 읽음 처리
+  useEffect(() => {
+    if (chatRoomId) {
+      chatAPI.markRoomAsRead(chatRoomId).catch(err => {
+        console.error('[ChatPage] Failed to mark room as read:', err);
+      });
+    }
+  }, [chatRoomId]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [showModelModal, setShowModelModal] = useState(false);
