@@ -87,7 +87,7 @@ const AgentFeedPage = () => {
       }}
     >
       <div className="flex h-full w-full overflow-hidden">
-        <div className="flex-1 overflow-y-auto overflow-x-hidden">
+        <div className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-feed">
           <div className="min-h-screen bg-gray-900 text-white p-6">
         <div className="w-full max-w-3xl mx-auto">
           {/* 헤더 */}

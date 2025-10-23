@@ -25,6 +25,7 @@ from app.api.users import router as users_router
 from app.api.story_importer import router as story_importer_router # ✨ 신규: 스토리 임포터 API
 from app.api.rankings import router as rankings_router
 from app.api.media import router as media_router
+from app.api.storydive import router as storydive_router  # 🏊 스토리 다이브
 import os
 try:
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -213,6 +214,7 @@ app.include_router(story_importer_router, prefix="/story-importer", tags=["✨ �
 app.include_router(memory_notes_router, prefix="/memory-notes", tags=["✨ 기억노트 (신규)"])
 app.include_router(user_personas_router, prefix="/user-personas", tags=["👤 유저 페르소나 (신규)"])
 app.include_router(agent_contents_router, prefix="/agent/contents", tags=["📦 에이전트 콘텐츠 (내 서랍)"])
+app.include_router(storydive_router, prefix="/storydive", tags=["🏊 스토리 다이브"])
 app.include_router(files_router, prefix="/files", tags=["🗂️ 파일"])
 app.include_router(tags_router, prefix="/tags", tags=["🏷️ 태그"])
 app.include_router(media_router, prefix="/media", tags=["🖼️ 미디어"])

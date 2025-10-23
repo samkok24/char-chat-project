@@ -34,20 +34,59 @@
     }
   }
   
-  /* 다크 테마 얇은 스크롤바 */
+  /* 다크 테마 세련된 스크롤바 */
   .scrollbar-dark::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
+    width: 10px;
+    height: 10px;
   }
   .scrollbar-dark::-webkit-scrollbar-track {
-    background: #0b0b0b; /* 아주 짙은 회색 */
+    background: transparent;
+    margin: 8px 0; /* 상하 여백 */
   }
   .scrollbar-dark::-webkit-scrollbar-thumb {
-    background: #3a3a3a; /* 기본 썸 */
-    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.12); /* 반투명 흰색 */
+    border-radius: 10px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+    transition: background 0.2s ease;
   }
   .scrollbar-dark::-webkit-scrollbar-thumb:hover {
-    background: #525252; /* 호버 시 조금 더 밝게 */
+    background: rgba(255, 255, 255, 0.24); /* 호버 시 더 밝게 */
+    border-radius: 10px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+  .scrollbar-dark::-webkit-scrollbar-thumb:active {
+    background: rgba(168, 85, 247, 0.5); /* 클릭 시 보라색 */
+  }
+  
+  /* 피드 페이지 전용 스크롤바 (가로 스크롤 숨김) */
+  .scrollbar-feed::-webkit-scrollbar {
+    width: 10px;
+    height: 0px; /* 가로 스크롤바 숨김 */
+  }
+  .scrollbar-feed::-webkit-scrollbar-track {
+    background: transparent;
+    margin: 8px 0;
+  }
+  .scrollbar-feed::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.12);
+    border-radius: 10px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+    transition: background 0.2s ease;
+  }
+  .scrollbar-feed::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.24);
+    border-radius: 10px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+  .scrollbar-feed::-webkit-scrollbar-thumb:active {
+    background: rgba(168, 85, 247, 0.5);
+  }
+  .scrollbar-feed::-webkit-scrollbar:horizontal {
+    display: none;
   }
   
   /* 하이라이트 플래시 효과 (내 서랍에서 스크롤 시) */
@@ -92,10 +131,14 @@
     border: 4px solid rgba(168, 85, 247, 1) !important;
     border-radius: 50% !important;
   }
-  /* Firefox */
+  /* Firefox - 세련된 스크롤바 */
   .scrollbar-dark {
     scrollbar-width: thin;
-    scrollbar-color: #3a3a3a #0b0b0b;
+    scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
+  }
+  .scrollbar-feed {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
   }
 
   /* 스크롤바 숨기기 */

@@ -64,6 +64,23 @@ const HomePage = () => {
   const [showLoginRequired, setShowLoginRequired] = useState(false);
   const [sourceFilter, setSourceFilter] = useState(null); // null | 'IMPORTED' | 'ORIGINAL'
 
+  // 스토리 다이브용 소설 목록 조회
+  const { data: novels = [] } = useQuery({
+    queryKey: ['storydive-novels'],
+    queryFn: async () => {
+      try {
+        const { storydiveAPI } = await import('../lib/api');
+        const response = await storydiveAPI.getNovels();
+        return response.data || [];
+      } catch (err) {
+        console.error('Failed to load novels:', err);
+        return [];
+      }
+    },
+    enabled: isAuthenticated,
+    staleTime: 5 * 60 * 1000,
+  });
+
   // 🚀 무한스크롤: useInfiniteQuery + skip/limit 페이지네이션
   const LIMIT = 24;
   const [selectedTags, setSelectedTags] = useState([]); // slug 배열
@@ -294,11 +311,11 @@ const HomePage = () => {
           <div className="mb-6">
             <div className="flex items-center gap-3">
               <button
-                onClick={() => setSourceFilter(prev => prev === 'IMPORTED' ? null : 'IMPORTED')}
-                className={`px-3 py-1 rounded-full border ${sourceFilter === 'IMPORTED' ? 'bg-yellow-500 text-black border-yellow-400' : 'bg-gray-800 text-gray-200 border-gray-700'}`}
+                onClick={() => setSourceFilter(null)}
+                className={`px-3 py-1 rounded-full border ${sourceFilter === null ? 'bg-yellow-500 text-black border-yellow-400' : 'bg-gray-800 text-gray-200 border-gray-700'}`}
               >전체</button>
               <button
-                onClick={() => setSourceFilter(prev => prev === 'ORIGINAL' ? null : 'ORIGINAL')}
+                onClick={() => setSourceFilter('ORIGINAL')}
                 className={`px-3 py-1 rounded-full border ${sourceFilter === 'ORIGINAL' ? 'bg-yellow-500 text-black border-yellow-400' : 'bg-gray-800 text-gray-200 border-gray-700'}`}
               >일상</button>
               <button
@@ -380,37 +397,61 @@ const HomePage = () => {
                 { 
                   title: '로또1등이라 엄청 즐겁게 회사생활하기', 
                   badge: '로또1등도 출근합니다',
-                  image: '로또1등도.jpg'
+                  image: '로또1등도.jpg',
+                  novelTitle: '로또1등이라 엄청 즐겁게 회사생활하기'
                 },
                 { 
                   title: '전셋집에서 쫓겨나서 부동산 재벌되기', 
                   badge: '회귀해서 부동산 재벌',
-                  image: '부동산.jpg'
+                  image: '부동산.jpg',
+                  novelTitle: '전셋집에서 시작하는 나의 히어로 아카데미아'
                 },
                 { 
                   title: '1998년부터 시작해서 K-컬쳐의 제왕되기', 
                   badge: 'K-문화의 제왕',
-                  image: 'K문화.jpg'
+                  image: 'K문화.jpg',
+                  novelTitle: null
                 },
                 { 
                   title: '망한 아이돌멤버에서 빌보드 프로듀서까지', 
                   badge: '두번 사는 프로듀서',
-                  image: '프로듀서.jpg'
+                  image: '프로듀서.jpg',
+                  novelTitle: null
                 },
                 { 
                   title: '회사사람들과 다 같이 생존게임 참여하기', 
                   badge: '구조조정에서 살아남는법',
-                  image: '구조조정.jpg'
+                  image: '구조조정.jpg',
+                  novelTitle: null
                 }
-              ].map((item, idx) => (
-                <div
-                  key={idx}
-                  className="flex-shrink-0 w-[200px] cursor-pointer group"
-                  onClick={() => {
-                    // TODO: 스토리 시뮬레이터로 이동
-                    console.log(`Start story simulator: ${item.title}`);
-                  }}
-                >
+              ].map((item, idx) => {
+                // novelTitle이 있으면 실제 소설과 매칭
+                const matchedNovel = item.novelTitle 
+                  ? novels.find(n => n.title === item.novelTitle)
+                  : null;
+
+                return (
+                  <div
+                    key={idx}
+                    className="flex-shrink-0 w-[200px] cursor-pointer group"
+                    onClick={() => {
+                      if (!isAuthenticated) {
+                        setShowLoginRequired(true);
+                      } else if (matchedNovel) {
+                        // 바로 원문 페이지로 이동
+                        navigate(`/storydive/novels/${matchedNovel.id}`);
+                      } else {
+                        // 매칭되는 소설이 없으면 준비중 알림
+                        window.dispatchEvent(new CustomEvent('toast', {
+                          detail: {
+                            type: 'info',
+                            message: '준비 중인 콘텐츠입니다'
+                          }
+                        }));
+                      }
+                    }}
+                  >
+                
                   <div className="relative aspect-[3/4] rounded-lg overflow-hidden mb-2 bg-gray-900 border border-gray-700/50 group-hover:border-gray-600 transition-colors">
                     <img 
                       src={`/image/${item.image}`}
@@ -436,8 +477,9 @@ const HomePage = () => {
                       {item.badge}
                     </Badge>
                   </div>
-                </div>
-              ))}
+                  </div>
+                );
+              })}
             </div>
           </section>
 

@@ -2121,6 +2121,9 @@ async def origchat_turn(
             )
             await db.commit()
 
+            from app.services import character_service
+            await character_service.sync_character_chat_count(db, room.character_id)
+            
             tti_ms = int((time.time() - t0) * 1000)
 
             # 6. resp 객체 생성 (기존 코드와 호환)

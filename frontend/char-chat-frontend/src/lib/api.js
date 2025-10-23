@@ -759,5 +759,32 @@ export const userPersonasAPI = {
     api.get('/user-personas/active/current'),
 };
 
+// 🏊 스토리 다이브 관련 API
+export const storydiveAPI = {
+  // 소설 목록 조회
+  getNovels: (skip = 0, limit = 20) =>
+    api.get('/storydive/novels', { params: { skip, limit } }),
+
+  // 소설 상세 조회
+  getNovel: (novelId) =>
+    api.get(`/storydive/novels/${novelId}`),
+
+  // 세션 생성
+  createSession: (novelId, entryPoint) =>
+    api.post('/storydive/sessions', { novel_id: novelId, entry_point: entryPoint }),
+
+  // 세션 조회
+  getSession: (sessionId) =>
+    api.get(`/storydive/sessions/${sessionId}`),
+
+  // 턴 진행
+  processTurn: (sessionId, mode, input, action = 'turn') =>
+    api.post(`/storydive/sessions/${sessionId}/turn`, { mode, input, action }),
+
+  // 마지막 턴 삭제 (Erase)
+  eraseTurn: (sessionId) =>
+    api.delete(`/storydive/sessions/${sessionId}/erase`),
+};
+
 export { api, API_BASE_URL, SOCKET_URL };
 

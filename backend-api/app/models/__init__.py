@@ -24,6 +24,9 @@ from .bookmark import CharacterBookmark
 from .memory_note import MemoryNote
 from .user_persona import UserPersona
 from .tag import Tag, CharacterTag
+from .agent_content import AgentContent
+from .novel import Novel
+from .storydive_session import StoryDiveSession
 
 __all__ = [
     "User",
@@ -48,5 +51,8 @@ __all__ = [
     "UserPersona",
     "Tag",
     "CharacterTag",
+    "AgentContent",
+    "Novel",
+    "StoryDiveSession",
 ]
 

@@ -187,7 +187,7 @@ const CharacterQuickAccessPanel = () => {
   console.log('[Panel] 🎨 렌더링, characters.unread:', characters.map(c => `${c.name}:${c.unread}`));
   
   return (
-    <div className="w-20 flex-shrink-0 bg-gray-900 border-l border-gray-700 flex flex-col items-center py-4 space-y-4 sticky top-0 h-screen overflow-y-auto">
+    <div className="w-20 flex-shrink-0 bg-gray-900 border-l border-gray-700 flex flex-col items-center py-4 space-y-4 sticky top-0 h-screen overflow-y-auto scrollbar-hide">
       {characters.length === 0 && (
         <div className="text-xs text-gray-500 text-center mt-4">
           최근 채팅 없음

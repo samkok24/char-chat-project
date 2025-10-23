@@ -66,6 +66,7 @@ const StoryEditPage = React.lazy(() => import('./pages/StoryEditPage'));
 const ChapterReaderPage = React.lazy(() => import('./pages/ChapterReaderPage'));
 const CreatorInfoPage = React.lazy(() => import('./pages/CreatorInfoPage'));
 const MetricsSummaryPage = React.lazy(() => import('./pages/MetricsSummaryPage'));
+const StoryDiveNovelPage = React.lazy(() => import('./pages/StoryDiveNovelPage'));
 
 // 로딩 컴포넌트 (CAVEDUCK 스타일 - 심플)
 const PageLoader = () => (
@@ -138,6 +139,9 @@ const AppRouter = () => {
           
           {/* 실제 웹소켓 채팅이 이루어지는 페이지 */}
           <Route path="/ws/chat/:characterId" element={<ProtectedRoute><ChatPage /></ProtectedRoute>} />
+
+          {/* 🏊 스토리 다이브 라우트 */}
+          <Route path="/storydive/novels/:novelId" element={<ProtectedRoute><StoryDiveNovelPage /></ProtectedRoute>} />
 
           {/* ⏳ 나중에 필요한 페이지들 (지연 로딩) */}
           <Route
