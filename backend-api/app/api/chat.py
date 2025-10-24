@@ -418,17 +418,11 @@ async def agent_simulate(
             history = []  # staged 형식은 보통 새로운 대화
         else:
             # 기존 형식 처리
-        content = (payload.get("content") or "").strip()
-        history = payload.get("history") or []
+            content = (payload.get("content") or "").strip()
+            history = payload.get("history") or []
             image_url = None
             image_style = None
             story_mode = None  # 기존 형식에서는 story_mode가 없음
-            
-            # 히스토리에서 이미지 URL 추출 (기존 로직)
-            for h in reversed(history or []):
-                if h.get("type") == "image" and h.get("content"):
-                    image_url = h.get("content")
-                    break
         
         ui_model = (payload.get("model") or "").lower()
         ui_sub = (payload.get("sub_model") or ui_model or "").lower()
@@ -436,7 +430,7 @@ async def agent_simulate(
         # UI 모델명을 ai_service 기대 형식으로 매핑
         # [임시] GPT와 Gemini 비활성화 - 모든 요청을 Claude로 강제 전환
         from app.services.ai_service import CLAUDE_MODEL_PRIMARY
-            preferred_model = "claude"
+        preferred_model = "claude"
         preferred_sub_model = CLAUDE_MODEL_PRIMARY
         # from app.services.ai_service import GPT_MODEL_PRIMARY
         # preferred_model = "gpt"  # Claude → GPT 전환
@@ -1141,7 +1135,7 @@ async def send_message(
             raise HTTPException(status_code=403, detail="권한이 없거나 캐릭터 불일치")
         character = room.character
     else:
-    room = await chat_service.get_or_create_chat_room(db, current_user.id, request.character_id)
+        room = await chat_service.get_or_create_chat_room(db, current_user.id, request.character_id)
     if not room:
         raise HTTPException(status_code=404, detail="채팅방을 찾을 수 없습니다.")
     character = room.character
