@@ -112,12 +112,21 @@ async def get_novel_detail(
     if not novel:
         raise HTTPException(status_code=404, detail="Novel not found")
     
+    # story_cards가 문자열로 저장된 경우 JSON 파싱
+    import json
+    story_cards = novel.story_cards
+    if isinstance(story_cards, str):
+        try:
+            story_cards = json.loads(story_cards)
+        except json.JSONDecodeError:
+            story_cards = {}
+    
     return NovelResponse(
         id=str(novel.id),
         title=novel.title,
         author=novel.author,
         full_text=novel.full_text,
-        story_cards=novel.story_cards or {},
+        story_cards=story_cards or {},
         created_at=novel.created_at
     )
 
