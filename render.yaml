@@ -74,7 +74,7 @@ services:
         sync: false
     # Optional: run a migration step right after each deploy
     # postDeployCommand: python -m app.scripts.precise_migration
-
+    postDeployCommand: python postgres_migration.py
   # Frontend (Vite static site)
   - type: web
     name: char-frontend

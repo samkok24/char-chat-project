@@ -418,8 +418,8 @@ async def agent_simulate(
             history = []  # staged 형식은 보통 새로운 대화
         else:
             # 기존 형식 처리
-            content = (payload.get("content") or "").strip()
-            history = payload.get("history") or []
+        content = (payload.get("content") or "").strip()
+        history = payload.get("history") or []
             image_url = None
             image_style = None
             story_mode = None  # 기존 형식에서는 story_mode가 없음
@@ -436,7 +436,7 @@ async def agent_simulate(
         # UI 모델명을 ai_service 기대 형식으로 매핑
         # [임시] GPT와 Gemini 비활성화 - 모든 요청을 Claude로 강제 전환
         from app.services.ai_service import CLAUDE_MODEL_PRIMARY
-        preferred_model = "claude"
+            preferred_model = "claude"
         preferred_sub_model = CLAUDE_MODEL_PRIMARY
         # from app.services.ai_service import GPT_MODEL_PRIMARY
         # preferred_model = "gpt"  # Claude → GPT 전환
@@ -540,12 +540,12 @@ async def agent_simulate(
                     "- 다음이 궁금해지는 마무리"
                 )
 
-            text = await ai_service.get_ai_chat_response(
+        text = await ai_service.get_ai_chat_response(
                 character_prompt=character_prompt,
-                user_message=content,
-                history=history,
-                preferred_model=preferred_model,
-                preferred_sub_model=preferred_sub_model,
+            user_message=content,
+            history=history,
+            preferred_model=preferred_model,
+            preferred_sub_model=preferred_sub_model,
                 response_length_pref="short" if story_mode == "snap" else "medium",
             )
         
@@ -1141,11 +1141,11 @@ async def send_message(
             raise HTTPException(status_code=403, detail="권한이 없거나 캐릭터 불일치")
         character = room.character
     else:
-        room = await chat_service.get_or_create_chat_room(db, current_user.id, request.character_id)
-        if not room:
-            raise HTTPException(status_code=404, detail="채팅방을 찾을 수 없습니다.")
-        character = room.character
-
+    room = await chat_service.get_or_create_chat_room(db, current_user.id, request.character_id)
+    if not room:
+        raise HTTPException(status_code=404, detail="채팅방을 찾을 수 없습니다.")
+    character = room.character
+    
     _merge_character_tokens(character, current_user)
 
     # settings를 별도로 로드
@@ -1302,7 +1302,7 @@ async def send_message(
         if hasattr(request, 'response_length_override') and request.response_length_override
         else getattr(current_user, 'response_length_pref', 'medium')
     )
-    
+
     ai_response_text = await ai_service.get_ai_chat_response(
         character_prompt=character_prompt,
         user_message=effective_user_message,
