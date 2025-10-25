@@ -423,6 +423,12 @@ async def agent_simulate(
             image_url = None
             image_style = None
             story_mode = None  # 기존 형식에서는 story_mode가 없음
+            
+            # 히스토리에서 이미지 URL 추출 (기존 로직)
+            for h in reversed(history or []):
+                if h.get("type") == "image" and h.get("content"):
+                    image_url = h.get("content")
+                    break
         
         ui_model = (payload.get("model") or "").lower()
         ui_sub = (payload.get("sub_model") or ui_model or "").lower()
@@ -534,12 +540,12 @@ async def agent_simulate(
                     "- 다음이 궁금해지는 마무리"
                 )
 
-        text = await ai_service.get_ai_chat_response(
+            text = await ai_service.get_ai_chat_response(
                 character_prompt=character_prompt,
-            user_message=content,
-            history=history,
-            preferred_model=preferred_model,
-            preferred_sub_model=preferred_sub_model,
+                user_message=content,
+                history=history,
+                preferred_model=preferred_model,
+                preferred_sub_model=preferred_sub_model,
                 response_length_pref="short" if story_mode == "snap" else "medium",
             )
         
@@ -1136,10 +1142,10 @@ async def send_message(
         character = room.character
     else:
         room = await chat_service.get_or_create_chat_room(db, current_user.id, request.character_id)
-    if not room:
-        raise HTTPException(status_code=404, detail="채팅방을 찾을 수 없습니다.")
-    character = room.character
-    
+        if not room:
+            raise HTTPException(status_code=404, detail="채팅방을 찾을 수 없습니다.")
+        character = room.character
+
     _merge_character_tokens(character, current_user)
 
     # settings를 별도로 로드
@@ -1296,7 +1302,7 @@ async def send_message(
         if hasattr(request, 'response_length_override') and request.response_length_override
         else getattr(current_user, 'response_length_pref', 'medium')
     )
-
+    
     ai_response_text = await ai_service.get_ai_chat_response(
         character_prompt=character_prompt,
         user_message=effective_user_message,
