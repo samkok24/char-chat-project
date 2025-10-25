@@ -4,8 +4,7 @@ databases:
   - name: charchat-db
     databaseName: char_chat
     user: char
-    plan: basic
-    instanceType: basic-256mb
+    plan: basic-256mb
 
 services:
   # Redis (cache/queues)
