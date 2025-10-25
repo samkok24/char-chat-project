@@ -4,7 +4,7 @@ databases:
   - name: charchat-db
     databaseName: char_chat
     user: char
-    plan: basic
+    plan: starter
 
 services:
   # Redis (cache/queues)
