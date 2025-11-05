@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../co
 import { Textarea } from '../components/ui/textarea';
 import { Input } from '../components/ui/input';
 import { Alert, AlertDescription } from '../components/ui/alert';
-import { AlertCircle, ArrowLeft, Wand2, Menu, Trash2, Edit, Plus } from 'lucide-react';
+import { AlertCircle, ArrowLeft, Wand2, Menu, Trash2, Edit, Plus, Image as ImageIcon } from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import ErrorBoundary from '../components/ErrorBoundary';
 import ImageGenerateInsertModal from '../components/ImageGenerateInsertModal';
@@ -20,6 +20,7 @@ const WorkCreatePage = () => {
   const [genre, setGenre] = useState('');
   const [keywords, setKeywords] = useState('');
   const [synopsis, setSynopsis] = useState('');
+  const [isWebtoon, setIsWebtoon] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [coverUrl, setCoverUrl] = useState('');
@@ -43,6 +44,8 @@ const WorkCreatePage = () => {
       title: '',
       content: '',
       expanded: true,
+      image: null,
+      imagePreview: null,
     }));
   });
   const [openImporter, setOpenImporter] = useState(false);
@@ -97,6 +100,7 @@ const WorkCreatePage = () => {
         genre: genre || undefined,
         keywords: kw,
         is_public: true,
+        is_webtoon: isWebtoon,
       };
       const res = await storiesAPI.createStory(payload);
       const id = res?.data?.id;
@@ -111,22 +115,45 @@ const WorkCreatePage = () => {
           } catch (_) {}
           const filled = (episodes || []).filter((e) => (e?.content || '').trim().length > 0);
           const nowIso = new Date().toISOString();
-          const payload = {
-            updatedAt: nowIso,
-            episodes: filled.map((e, idx) => ({
-              no: idx + 1,
-              title: (e.title || `${idx + 1}화`).trim(),
-              content: (e.content || '').trim(),
-              created_at: nowIso,
-            })),
-          };
-          // 서버에 회차 저장 (안전하게 순차/병렬 혼합, 실패 시도는 무시)
+          
+          // 서버에 회차 저장 (이미지 업로드 포함)
           try {
-            await Promise.allSettled(
-              payload.episodes.map((ep) =>
-                chaptersAPI.create({ story_id: id, no: ep.no, title: ep.title, content: ep.content })
-              )
-            );
+            for (let idx = 0; idx < filled.length; idx++) {
+              const e = filled[idx];
+              const no = idx + 1;
+              const title = (e.title || `${no}화`).trim();
+              const content = (e.content || '').trim();
+              
+              // 1. 회차 생성 (텍스트)
+              const chapterRes = await chaptersAPI.create({ 
+                story_id: id, 
+                no, 
+                title, 
+                content 
+              });
+              
+              // 2. 이미지가 있으면 업로드 후 image_url 업데이트
+              if (e.image && chapterRes.data?.id) {
+                try {
+                  const formData = new FormData();
+                  formData.append('files', e.image);
+                  
+                  // 기존 media API 사용
+                  const uploadRes = await mediaAPI.upload(formData);
+                  const imageUrl = uploadRes.data?.items?.[0]?.url;
+                  
+                  if (imageUrl) {
+                    // 회차에 image_url 업데이트
+                    await chaptersAPI.update(chapterRes.data.id, {
+                      image_url: imageUrl
+                    });
+                  }
+                } catch (imgErr) {
+                  console.error('이미지 업로드 실패:', imgErr);
+                  // 이미지 업로드 실패해도 회차는 저장됨 (텍스트만)
+                }
+              }
+            }
           } catch (_) { /* no-op */ }
           // 폴백: 로컬스토리지에도 저장해둠 (임시)
           try { localStorage.setItem(`cc:chapters:${id}`, JSON.stringify(payload)); } catch {}
@@ -154,7 +181,7 @@ const WorkCreatePage = () => {
 
   const handleManualSave = async () => {
     try {
-      const draft = { title, genre, keywords, synopsis, coverUrl };
+      const draft = { title, genre, keywords, synopsis, coverUrl, isWebtoon };
       localStorage.setItem('cc:work-new', JSON.stringify(draft));
       localStorage.setItem('cc:episodes:new', JSON.stringify(episodes));
       localStorage.setItem('cc:work-new:gallery', JSON.stringify(draftGallery));
@@ -181,6 +208,7 @@ const WorkCreatePage = () => {
           if (typeof draft.keywords === 'string') setKeywords(draft.keywords);
           if (typeof draft.synopsis === 'string') setSynopsis(draft.synopsis);
           if (typeof draft.coverUrl === 'string') setCoverUrl(draft.coverUrl);
+          if (typeof draft.isWebtoon === 'boolean') setIsWebtoon(draft.isWebtoon);
         }
         try {
           const graw = localStorage.getItem('cc:work-new:gallery');
@@ -200,6 +228,7 @@ const WorkCreatePage = () => {
     setGenre('');
     setKeywords('');
     setSynopsis('');
+    setIsWebtoon(false);
     setCoverUrl('');
     setDraftGallery([]);
     setEpisodes(Array.from({ length: 3 }, () => ({ id: (crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`), title: '', content: '', expanded: true })));
@@ -214,8 +243,36 @@ const WorkCreatePage = () => {
   };
 
   const addEpisode = () => {
-    setEpisodes(prev => [...prev, { id: (crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`), title: '', content: '', expanded: true }]);
+    setEpisodes(prev => [...prev, { id: (crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`), title: '', content: '', expanded: true, image: null, imagePreview: null }]);
     markDirty();
+  };
+
+  // 이미지 선택 핸들러
+  const handleImageChange = (id, file) => {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      setError('이미지 파일만 업로드 가능합니다.');
+      return;
+    }
+    const preview = URL.createObjectURL(file);
+    updateEpisode(id, { image: file, imagePreview: preview });
+  };
+
+  // 이미지 제거 (더블클릭 또는 컨텍스트 메뉴에서)
+  const removeImage = (id) => {
+    const ep = episodes.find(e => e.id === id);
+    if (ep?.imagePreview) {
+      URL.revokeObjectURL(ep.imagePreview);
+    }
+    updateEpisode(id, { image: null, imagePreview: null });
+  };
+
+  // 이미지 아이콘 더블클릭 시 제거
+  const handleImageIconDoubleClick = (id, e) => {
+    e.stopPropagation();
+    if (window.confirm('업로드한 이미지를 제거하시겠습니까?')) {
+      removeImage(id);
+    }
   };
   const updateEpisode = (id, patch) => {
     setEpisodes(prev => prev.map(e => e.id === id ? { ...e, ...patch } : e));
@@ -245,6 +302,8 @@ const WorkCreatePage = () => {
     title: (c.title || (c.no ? `${c.no}화` : '회차')).trim(),
     content: c.content || '',
     expanded: true,
+    image: null,
+    imagePreview: null,
   }));
   // 추가(append): 기존 기본 3개부터 차례로 채우고, 남으면 뒤에 추가
   const handleImporterAppend = (parsed) => {
@@ -356,6 +415,18 @@ const WorkCreatePage = () => {
                 <label className="block text-sm">소개글 (최소 20자)</label>
                 <Textarea value={synopsis} onChange={(e)=>{ setSynopsis(e.target.value); markDirty(); }} rows={10} className="mt-2" />
               </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="is-webtoon"
+                  checked={isWebtoon}
+                  onChange={(e)=>{ setIsWebtoon(e.target.checked); markDirty(); }}
+                  className="w-4 h-4"
+                />
+                <label htmlFor="is-webtoon" className="text-sm text-gray-300 cursor-pointer">
+                  웹툰
+                </label>
+              </div>
               {/* 등록 버튼은 우측 회차 관리 하단으로 이동 */}
             </CardContent>
           </Card>
@@ -370,7 +441,7 @@ const WorkCreatePage = () => {
                   <Button variant="outline" onClick={addEpisode}>+ 회차 추가</Button>
                   <Button variant="outline" onClick={()=>{
                     if (!window.confirm('추출/입력한 회차를 초기 상태로 되돌릴까요? (1~3화 기본 슬롯)')) return;
-                    setEpisodes(Array.from({ length: 3 }, () => ({ id: (crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`), title: '', content: '', expanded: true })));
+                    setEpisodes(Array.from({ length: 3 }, () => ({ id: (crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`), title: '', content: '', expanded: true, image: null, imagePreview: null })));
                     setHasUnsaved(true);
                   }}>회차 초기화</Button>
                 </div>
@@ -411,6 +482,30 @@ const WorkCreatePage = () => {
                           )}
                         </div>
                         <div className="flex items-center gap-1">
+                          {/* 이미지 업로드 아이콘 */}
+                          <label className="cursor-pointer" onClick={(e) => e.stopPropagation()}>
+                            <input
+                              type="file"
+                              accept="image/*"
+                              onChange={(e) => handleImageChange(ep.id, e.target.files?.[0])}
+                              className="hidden"
+                              id={`image-input-${ep.id}`}
+                            />
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className={ep.imagePreview ? "text-blue-400" : "text-gray-300"}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                document.getElementById(`image-input-${ep.id}`)?.click();
+                              }}
+                              onDoubleClick={(e) => handleImageIconDoubleClick(ep.id, e)}
+                              title={ep.imagePreview ? "이미지 변경 (더블클릭: 제거)" : "웹툰 이미지 업로드"}
+                            >
+                              <ImageIcon className="w-4 h-4" />
+                            </Button>
+                          </label>
                           <Button
                             variant="ghost"
                             size="icon"
@@ -433,14 +528,21 @@ const WorkCreatePage = () => {
                       </div>
                       {ep.expanded && (
                         <div className="px-3 pb-3">
-                          <label className="block text-sm text-gray-300 mt-2">내용</label>
+                          <label className="block text-sm text-gray-300 mt-2">
+                            내용 <span className="text-red-400">*</span> (필수 - AI 프롬프팅용)
+                          </label>
                           <Textarea
                             value={ep.content}
                             onChange={(e)=> updateEpisode(ep.id, { content: e.target.value })}
                             rows={10}
-                            placeholder="회차 내용을 입력하세요"
+                            placeholder="회차 내용을 입력하세요 (AI가 이 텍스트를 읽습니다)"
                             className="mt-2"
                           />
+                          {ep.imagePreview && (
+                            <div className="mt-2 text-xs text-gray-400">
+                              ✓ 웹툰 이미지가 업로드되었습니다. 독자에게는 이미지만 표시됩니다.
+                            </div>
+                          )}
                         </div>
                       )}
                     </li>

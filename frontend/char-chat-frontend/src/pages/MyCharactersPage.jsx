@@ -286,7 +286,11 @@ const MyCharactersPage = () => {
           <main className="px-8 py-6">
             <div className="flex items-center justify-between mb-6">
               <div className="flex items-center gap-3">
-                <Button variant="ghost" disabled className="p-2 rounded-full text-gray-500 hover:bg-gray-800">
+                <Button
+                  variant="ghost"
+                  onClick={() => navigate('/')}
+                  className="p-2 rounded-full text-gray-300 hover:text-white hover:bg-gray-800"
+                >
                   <ArrowLeft className="w-5 h-5" />
                 </Button>
                 <h2 className="text-xl font-normal text-white">내 캐릭터</h2>
@@ -313,7 +317,7 @@ const MyCharactersPage = () => {
           <div className="flex items-center gap-3">
             <Button
               variant="ghost"
-              onClick={() => navigate('/dashboard')}
+              onClick={() => navigate('/')}
               className="p-2 rounded-full text-gray-300 hover:text-white hover:bg-gray-800"
             >
               <ArrowLeft className="w-5 h-5" />

@@ -270,6 +270,7 @@ def _story_to_response(story: Story) -> StoryResponse:
         "keywords": None,
         "genre": getattr(story, "genre", None),
         "is_public": bool(getattr(story, "is_public", True)),
+        "is_webtoon": bool(getattr(story, "is_webtoon", False)),
         "cover_url": getattr(story, "cover_url", None),
         "is_origchat": bool(getattr(story, "is_origchat", False)),
         "like_count": int(getattr(story, "like_count", 0) or 0),
@@ -562,6 +563,7 @@ async def get_stories(
             genre=s.genre,
             is_public=bool(s.is_public),
             is_origchat=bool(getattr(s, "is_origchat", False)),
+            is_webtoon=bool(getattr(s, "is_webtoon", False)),
             like_count=int(s.like_count or 0),
             view_count=int(s.view_count or 0),
             comment_count=int(s.comment_count or 0),
@@ -601,12 +603,22 @@ async def get_my_stories(
         except Exception:
             text = ""
         excerpt = " ".join(text.split())[:140] if text else None
+        # 태그 슬러그 추출
+        tag_slugs = []
+        try:
+            for t in (getattr(s, "tags", []) or []):
+                slug = getattr(t, "slug", None)
+                if slug and not str(slug).startswith("cover:"):
+                    tag_slugs.append(slug)
+        except Exception:
+            pass
         items.append(StoryListItem(
             id=s.id,
             title=s.title,
             genre=s.genre,
             is_public=bool(s.is_public),
             is_origchat=bool(getattr(s, "is_origchat", False)),
+            is_webtoon=bool(getattr(s, "is_webtoon", False)),
             like_count=int(s.like_count or 0),
             view_count=int(s.view_count or 0),
             comment_count=int(s.comment_count or 0),
@@ -615,6 +627,7 @@ async def get_my_stories(
             character_name=(s.character.name if getattr(s, "character", None) else None),
             cover_url=getattr(s, "cover_url", None),
             excerpt=excerpt,
+            tags=tag_slugs,
         ))
 
     return StoryListResponse(
@@ -696,7 +709,11 @@ async def update_story(
         raise HTTPException(status_code=403, detail="수정 권한이 없습니다")
     
     updated_story = await story_service.update_story(db, story_id, story_data)
-    return StoryResponse.model_validate(updated_story)
+    
+    # Tag 객체를 문자열 리스트로 변환
+    response_data = StoryResponse.model_validate(updated_story).model_dump()
+    response_data["tags"] = [tag.slug for tag in (updated_story.tags or [])]
+    return response_data
 
 
 @router.delete("/{story_id}")

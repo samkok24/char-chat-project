@@ -24,6 +24,8 @@ class Story(Base):
     is_public = Column(Boolean, default=True, index=True)
     # 원작챗 여부(스토리 기반 대화용 플래그)
     is_origchat = Column(Boolean, default=False, index=True)
+    # 웹툰 여부 (웹소설/웹툰 구분)
+    is_webtoon = Column(Boolean, default=False, index=True)
     is_featured = Column(Boolean, default=False)
     view_count = Column(Integer, default=0)
     like_count = Column(Integer, default=0)

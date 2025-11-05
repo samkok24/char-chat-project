@@ -86,7 +86,7 @@ const Sidebar = () => {
 
   // 캐시 설정
   const CACHE_KEY = 'sidebar:chatRooms:cache';
-  const CACHE_DURATION = 0.5 * 1000; 
+  const CACHE_DURATION = 5 * 60 * 1000; // 5분 
 
   const loadRooms = async (forceRefresh = false) => {
     try {
@@ -188,40 +188,62 @@ const Sidebar = () => {
     }
   }, [isAuthenticated]);
 
-  // 프로필 업데이트 신호 수신 시 즉시 리렌더/리로드
+  // 프로필 업데이트 신호 수신 시 즉시 리렌더/리로드 (디바운스 적용)
   useEffect(() => {
+    let debounceTimer = null;
     const onProfileUpdated = () => {
       setAvatarVersion(Date.now());
       try { setCharacterImageById(prev => ({ ...prev })); } catch (_) {}
-      try { loadRooms(); } catch (_) {}
+      // 디바운스: 1초 내 여러 번 호출되어도 마지막 호출만 실행
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        try { loadRooms(); } catch (_) {}
+      }, 1000);
     };
     try { window.addEventListener('profile:updated', onProfileUpdated); } catch (_) {}
-    return () => { try { window.removeEventListener('profile:updated', onProfileUpdated); } catch (_) {} };
+    return () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      try { window.removeEventListener('profile:updated', onProfileUpdated); } catch (_) {}
+    };
   }, [isAuthenticated]);
 
-  // 로컬스토리지 변경 시(다른 탭 등) 최근 웹소설 갱신
+  // 로컬스토리지 변경 시(다른 탭 등) 최근 웹소설 갱신 (디바운스 적용)
   useEffect(() => {
+    let debounceTimer = null;
     const onStorage = (e) => {
       if (!e) return;
       if (typeof e.key === 'string' && (e.key.startsWith('reader_progress:') || e.key.startsWith('reader_progress_at:'))) {
-        loadRecentStories();
+        // 디바운스: 1초 내 여러 번 호출되어도 마지막 호출만 실행
+        if (debounceTimer) clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+          loadRecentStories();
+        }, 1000);
       }
     };
     try { window.addEventListener('storage', onStorage); } catch(_) {}
-    return () => { try { window.removeEventListener('storage', onStorage); } catch(_) {} };
+    return () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      try { window.removeEventListener('storage', onStorage); } catch(_) {}
+    };
   }, []);
 
   useEffect(() => {
     if (!isAuthenticated) return;
     let suppressOnce = false;
+    let debounceTimer = null;
     const handler = () => {
       if (suppressOnce) { suppressOnce = false; return; }
-      loadRooms(true); // 강제 새로고침 (캐시 무시)
+      // 디바운스: 2초 내 여러 번 호출되어도 마지막 호출만 실행
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        loadRooms(true); // 강제 새로고침 (캐시 무시)
+      }, 2000);
     };
     const handlerSuppress = () => { suppressOnce = true; };
     try { window.addEventListener('chat:roomsChanged', handler); } catch (_) {}
     try { window.addEventListener('chat:roomsChanged:suppressOnce', handlerSuppress); } catch (_) {}
     return () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
       try { window.removeEventListener('chat:roomsChanged', handler); } catch (_) {}
       try { window.removeEventListener('chat:roomsChanged:suppressOnce', handlerSuppress); } catch (_) {}
     };

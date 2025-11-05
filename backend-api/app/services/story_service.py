@@ -458,7 +458,8 @@ async def update_story(
     story_data: StoryUpdate
 ) -> Optional[Story]:
     """스토리 정보 수정"""
-    update_data = story_data.model_dump(exclude_unset=True)
+    # keywords는 Story 모델에 없는 필드이므로 제외
+    update_data = story_data.model_dump(exclude_unset=True, exclude={"keywords"})
     
     if update_data:
         await db.execute(

@@ -296,7 +296,10 @@ const OrigChatStartModal = ({ open, onClose, storyId, totalChapters = 1, lastRea
       else navigate(`/ws/chat/${selectedId}`);
     } catch (e) {
       vibrate();
-      setToast({ show: true, type: 'error', message: '원작챗 시작 실패' });
+      const errorMsg = e?.response?.data?.detail || e?.message || '알 수 없는 오류';
+      const status = e?.response?.status;
+      console.error('원작챗 시작 실패:', e);
+      setToast({ show: true, type: 'error', message: `원작챗 시작 실패${status ? ` (${status})` : ''}: ${errorMsg}` });
     } finally {
       setStarting(false);
     }

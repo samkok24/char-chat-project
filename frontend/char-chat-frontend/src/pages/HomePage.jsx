@@ -50,6 +50,7 @@ import StoryExploreCard from '../components/StoryExploreCard';
 import AppLayout from '../components/layout/AppLayout';
 import ErrorBoundary from '../components/ErrorBoundary';
 import TrendingCharacters from '../components/TrendingCharacters';
+import TopWebtoons from '../components/TopWebtoons';
 import TopStories from '../components/TopStories';
 import TopOrigChat from '../components/TopOrigChat';
 import WebNovelSection from '../components/WebNovelSection';
@@ -486,6 +487,11 @@ const HomePage = () => {
           {/* 인기 캐릭터 TOP (4x2) */}
           <ErrorBoundary>
             <TrendingCharacters />
+          </ErrorBoundary>
+
+          {/* 웹툰 TOP10 */}
+          <ErrorBoundary>
+            <TopWebtoons />
           </ErrorBoundary>
 
           {/* 웹소설 TOP10 (블루) */}

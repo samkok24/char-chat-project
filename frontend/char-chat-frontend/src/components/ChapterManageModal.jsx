@@ -5,8 +5,8 @@ import { Textarea } from './ui/textarea';
 import { Input } from './ui/input';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
 import { Alert, AlertDescription } from './ui/alert';
-import { AlertCircle, Edit, Menu, Trash2, Upload } from 'lucide-react';
-import { chaptersAPI } from '../lib/api';
+import { AlertCircle, Edit, Menu, Trash2, Upload, Image as ImageIcon, X } from 'lucide-react';
+import { chaptersAPI, mediaAPI } from '../lib/api';
 import StoryChapterImporterModal from './StoryChapterImporterModal';
 
 const ChapterManageModal = ({ open, onClose, storyId, onAfterSave }) => {
@@ -35,9 +35,9 @@ const ChapterManageModal = ({ open, onClose, storyId, onAfterSave }) => {
         if (count === 0) {
           // 회차가 0개일 때는 1~3화 기본 슬롯을 미리 제공
           setEpisodes([
-            { id: crypto?.randomUUID?.() || `${Date.now()}-a`, title: '1화', content: '', expanded: true },
-            { id: crypto?.randomUUID?.() || `${Date.now()}-b`, title: '2화', content: '', expanded: true },
-            { id: crypto?.randomUUID?.() || `${Date.now()}-c`, title: '3화', content: '', expanded: true },
+            { id: crypto?.randomUUID?.() || `${Date.now()}-a`, title: '1화', content: '', expanded: true, image: null, imagePreview: null },
+            { id: crypto?.randomUUID?.() || `${Date.now()}-b`, title: '2화', content: '', expanded: true, image: null, imagePreview: null },
+            { id: crypto?.randomUUID?.() || `${Date.now()}-c`, title: '3화', content: '', expanded: true, image: null, imagePreview: null },
           ]);
         } else {
           setEpisodes([]);
@@ -46,9 +46,9 @@ const ChapterManageModal = ({ open, onClose, storyId, onAfterSave }) => {
         setExistingCount(0);
         // API 실패 시에도 기본 3개 제공
         setEpisodes([
-          { id: crypto?.randomUUID?.() || `${Date.now()}-a`, title: '1화', content: '', expanded: true },
-          { id: crypto?.randomUUID?.() || `${Date.now()}-b`, title: '2화', content: '', expanded: true },
-          { id: crypto?.randomUUID?.() || `${Date.now()}-c`, title: '3화', content: '', expanded: true },
+          { id: crypto?.randomUUID?.() || `${Date.now()}-a`, title: '1화', content: '', expanded: true, image: null, imagePreview: null },
+          { id: crypto?.randomUUID?.() || `${Date.now()}-b`, title: '2화', content: '', expanded: true, image: null, imagePreview: null },
+          { id: crypto?.randomUUID?.() || `${Date.now()}-c`, title: '3화', content: '', expanded: true, image: null, imagePreview: null },
         ]);
       } finally {
         setLoading(false);
@@ -58,10 +58,30 @@ const ChapterManageModal = ({ open, onClose, storyId, onAfterSave }) => {
 
   const addEpisode = () => {
     setEpisodes((prev) => {
-      const next = [...prev, { id: crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`, title: '', content: '', expanded: true }];
+      const next = [...prev, { id: crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`, title: '', content: '', expanded: true, image: null, imagePreview: null }];
       setTimeout(scrollToEnd, 0);
       return next;
     });
+  };
+
+  // 이미지 선택 핸들러
+  const handleImageChange = (id, file) => {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      setError('이미지 파일만 업로드 가능합니다.');
+      return;
+    }
+    const preview = URL.createObjectURL(file);
+    updateEpisode(id, { image: file, imagePreview: preview });
+  };
+
+  // 이미지 제거
+  const removeImage = (id) => {
+    const ep = episodes.find(e => e.id === id);
+    if (ep?.imagePreview) {
+      URL.revokeObjectURL(ep.imagePreview);
+    }
+    updateEpisode(id, { image: null, imagePreview: null });
   };
 
   const updateEpisode = (id, patch) => {
@@ -82,6 +102,8 @@ const ChapterManageModal = ({ open, onClose, storyId, onAfterSave }) => {
     title: (c.title || (c.no ? `${c.no}화` : '회차')).trim(),
     content: c.content || '',
     expanded: true,
+    image: null,  // 이미지 파일
+    imagePreview: null,  // 미리보기 URL
   }));
 
   const handleImporterAppend = (parsed) => {
@@ -108,7 +130,37 @@ const ChapterManageModal = ({ open, onClose, storyId, onAfterSave }) => {
       let no = existingCount + 1;
       for (const ep of valid) {
         const title = (ep.title || `${no}화`).trim();
-        await chaptersAPI.create({ story_id: storyId, no, title, content: ep.content });
+        
+        // 1. 회차 생성 (텍스트)
+        const chapterRes = await chaptersAPI.create({ 
+          story_id: storyId, 
+          no, 
+          title, 
+          content: ep.content 
+        });
+        
+        // 2. 이미지가 있으면 업로드 후 image_url 업데이트
+        if (ep.image) {
+          try {
+            const formData = new FormData();
+            formData.append('files', ep.image);
+            
+            // 기존 media API 사용
+            const uploadRes = await mediaAPI.upload(formData);
+            const imageUrl = uploadRes.data?.items?.[0]?.url;
+            
+            if (imageUrl && chapterRes.data?.id) {
+              // 회차에 image_url 업데이트
+              await chaptersAPI.update(chapterRes.data.id, {
+                image_url: imageUrl
+              });
+            }
+          } catch (imgErr) {
+            console.error('이미지 업로드 실패:', imgErr);
+            // 이미지 업로드 실패해도 회차는 저장됨 (텍스트만)
+          }
+        }
+        
         no += 1;
       }
       setEpisodes([]);
@@ -186,9 +238,62 @@ const ChapterManageModal = ({ open, onClose, storyId, onAfterSave }) => {
                       </div>
                     </div>
                     {ep.expanded && (
-                      <div className="px-3 pb-3">
-                        <label className="block text-sm text-gray-300 mt-2">내용</label>
-                        <Textarea value={ep.content} onChange={(e)=> updateEpisode(ep.id, { content: e.target.value })} rows={10} placeholder="회차 내용을 입력하세요" className="mt-2" />
+                      <div className="px-3 pb-3 space-y-3">
+                        {/* 텍스트 내용 */}
+                        <div>
+                          <label className="block text-sm text-gray-300 mt-2">
+                            내용 <span className="text-red-400">*</span> (필수 - AI 프롬프팅용)
+                          </label>
+                          <Textarea 
+                            value={ep.content} 
+                            onChange={(e)=> updateEpisode(ep.id, { content: e.target.value })} 
+                            rows={10} 
+                            placeholder="회차 내용을 입력하세요 (AI가 이 텍스트를 읽습니다)" 
+                            className="mt-2" 
+                          />
+                        </div>
+
+                        {/* 이미지 업로드 (선택) */}
+                        <div>
+                          <label className="block text-sm text-gray-300 mb-2">
+                            웹툰 이미지 (선택사항)
+                          </label>
+                          {ep.imagePreview ? (
+                            // 이미지 미리보기
+                            <div className="relative">
+                              <img 
+                                src={ep.imagePreview} 
+                                alt="미리보기" 
+                                className="max-h-64 mx-auto rounded border border-gray-600" 
+                              />
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="destructive"
+                                className="absolute top-2 right-2"
+                                onClick={() => removeImage(ep.id)}
+                              >
+                                <X className="w-4 h-4" />
+                              </Button>
+                              <div className="mt-2 text-xs text-gray-400 text-center">
+                                이미지가 있으면 독자에게는 이미지만 표시됩니다
+                              </div>
+                            </div>
+                          ) : (
+                            // 업로드 버튼
+                            <label className="flex flex-col items-center justify-center h-32 border-2 border-dashed border-gray-600 rounded-lg cursor-pointer hover:border-gray-500 transition-colors">
+                              <ImageIcon className="w-8 h-8 text-gray-400 mb-2" />
+                              <span className="text-sm text-gray-400">클릭하여 웹툰 이미지 업로드</span>
+                              <span className="text-xs text-gray-500 mt-1">이미지가 없으면 텍스트로 표시됩니다</span>
+                              <input
+                                type="file"
+                                accept="image/*"
+                                onChange={(e) => handleImageChange(ep.id, e.target.files?.[0])}
+                                className="hidden"
+                              />
+                            </label>
+                          )}
+                        </div>
                       </div>
                     )}
                   </li>

@@ -18,6 +18,7 @@ const StoryEditPage = () => {
   const [genre, setGenre] = useState('');
   const [keywords, setKeywords] = useState('');
   const [synopsis, setSynopsis] = useState('');
+  const [isWebtoon, setIsWebtoon] = useState(false);
   const [coverUrl, setCoverUrl] = useState('');
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -31,6 +32,7 @@ const StoryEditPage = () => {
         setTitle(s.title || '');
         setGenre(s.genre || '');
         setSynopsis(s.content || '');
+        setIsWebtoon(s.is_webtoon || false);
         const kws = Array.isArray(s.keywords) ? s.keywords : [];
         // cover: 메타 제거, 키워드 입력은 순수 태그만 유지
         setKeywords(kws.filter(k => !String(k).startsWith('cover:')).join(', '));
@@ -49,7 +51,7 @@ const StoryEditPage = () => {
     setSaving(true);
     try {
       const kw = keywords.split(',').map(s=>s.trim()).filter(Boolean).slice(0,10);
-      await storiesAPI.updateStory(storyId, { title: title.trim(), content: synopsis.trim(), genre: genre || null, keywords: kw, cover_url: coverUrl || null });
+      await storiesAPI.updateStory(storyId, { title: title.trim(), content: synopsis.trim(), genre: genre || null, keywords: kw, cover_url: coverUrl || null, is_webtoon: isWebtoon });
       navigate(`/stories/${storyId}`);
     } catch (_) {
       setError('저장에 실패했습니다.');
@@ -111,6 +113,18 @@ const StoryEditPage = () => {
         <div>
           <label className="block text-sm">소개글</label>
           <Textarea className="mt-2" rows={10} value={synopsis} onChange={(e)=>setSynopsis(e.target.value)} />
+        </div>
+        <div className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            id="is-webtoon-edit"
+            checked={isWebtoon}
+            onChange={(e)=>setIsWebtoon(e.target.checked)}
+            className="w-4 h-4"
+          />
+          <label htmlFor="is-webtoon-edit" className="text-sm text-gray-300 cursor-pointer">
+            웹툰
+          </label>
         </div>
         <div className="flex justify-end gap-2">
           <Button variant="outline" onClick={()=>navigate(`/stories/${storyId}`)}>취소</Button>

@@ -21,6 +21,7 @@ import { Skeleton } from '../components/ui/skeleton';
 import CharacterProfileInline from '../components/inline/CharacterProfileInline';
 import OrigChatStartModal from '../components/OrigChatStartModal';
 import ChapterManageModal from '../components/ChapterManageModal';
+import ChapterEditModal from '../components/ChapterEditModal';
 import ImageGenerateInsertModal from '../components/ImageGenerateInsertModal';
 
 const StoryDetailPage = () => {
@@ -36,6 +37,7 @@ const StoryDetailPage = () => {
   const [confirmRebuildOpen, setConfirmRebuildOpen] = useState(false);
   const [origModalOpen, setOrigModalOpen] = useState(false);
   const [preselectedCharacterId, setPreselectedCharacterId] = useState(null);
+  const [editingChapter, setEditingChapter] = useState(null);
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ['story', storyId],
@@ -435,7 +437,9 @@ const StoryDetailPage = () => {
                 )}
                 <span className="sr-only" aria-live="polite">{`${galleryImages.indexOf(activeImage) + 1} / ${galleryImages.length}`}</span>
                 <div className="absolute top-2 left-2">
-                  <Badge className="bg-blue-600 text-white hover:bg-blue-600">웹소설</Badge>
+                  <Badge className="bg-blue-600 text-white hover:bg-blue-600">
+                    {story.is_webtoon ? '웹툰' : '웹소설'}
+                  </Badge>
                 </div>
               </div>
               {/* 미니 갤러리: 가로 스크롤 썸네일 */}
@@ -719,7 +723,10 @@ const StoryDetailPage = () => {
                 </div>
                 {episodesSorted.length > 0 ? (
                   <ul className="divide-y divide-gray-800 rounded-md border border-gray-700 overflow-hidden">
-                    {episodesSorted.map((ch, idx) => (
+                    {episodesSorted.map((ch, idx) => {
+                      const hasImage = !!ch.image_url; // 웹툰 이미지 유무 확인
+                      
+                      return (
                       <li
                         key={ch.id ? `id:${ch.id}` : `no:${ch.no ?? 'NA'}|title:${(ch.title || '').slice(0,50)}|i:${idx}`}
                         className={`flex items-center justify-between bg-gray-800/30 px-3 py-2 cursor-pointer hover:bg-gray-700/40 ${Number(ch.no) === Number(progressChapterNo) ? 'ring-1 ring-purple-500/40 bg-gray-800/50' : ''}`}
@@ -728,15 +735,52 @@ const StoryDetailPage = () => {
                         tabIndex={0}
                         onKeyDown={(e) => { if (e.key === 'Enter') navigate(`/stories/${storyId}/chapters/${ch.no || (idx + 1)}`); }}
                       >
-                        <div className="text-sm text-gray-200 truncate">
-                          <span className="truncate max-w-[60vw] lg:max-w-[40vw]">{ch.title || '제목 없음'}</span>
-                        </div>
-                        <div className="flex items-center gap-3">
-                          <span className="inline-flex items-center gap-1 text-xs text-gray-500"><Eye className="w-3 h-3" />{Number(ch.view_count || 0).toLocaleString()}</span>
-                          <span className="text-xs text-gray-500 hidden sm:inline">{ch.created_at ? new Date(ch.created_at).toLocaleDateString() : ''}</span>
+                        {/* 웹툰 썸네일 (있으면만 표시) */}
+                        {hasImage && (
+                          <div className="flex items-center gap-3 flex-1 min-w-0">
+                            <div className="flex-shrink-0 w-12 h-16 overflow-hidden rounded">
+                              <img 
+                                src={ch.image_url} 
+                                alt={ch.title || '웹툰'}
+                                className="w-full h-full object-cover object-top"
+                              />
+                            </div>
+                            <div className="text-sm text-gray-200 truncate max-w-[60vw] lg:max-w-[40vw]">
+                              {ch.title || '제목 없음'}
+                            </div>
+                          </div>
+                        )}
+                        {!hasImage && (
+                          <div className="text-sm text-gray-200 truncate max-w-[60vw] lg:max-w-[40vw]">
+                            {ch.title || '제목 없음'}
+                          </div>
+                        )}
+                        <div className="flex items-center gap-3 flex-shrink-0">
+                          {isOwner && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7 text-gray-400 hover:text-white hover:bg-gray-700"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setEditingChapter(ch);
+                              }}
+                              title="회차 수정"
+                            >
+                              <Edit className="w-4 h-4" />
+                            </Button>
+                          )}
+                          <span className="inline-flex items-center gap-1 text-xs text-gray-500">
+                            <Eye className="w-3 h-3" />
+                            {Number(ch.view_count || 0).toLocaleString()}
+                          </span>
+                          <span className="text-xs text-gray-500 hidden sm:inline">
+                            {ch.created_at ? new Date(ch.created_at).toLocaleDateString() : ''}
+                          </span>
                         </div>
                       </li>
-                    ))}
+                      );
+                    })}
                   </ul>
                 ) : (
                   <div className="bg-gray-800/30 border border-gray-700 rounded-md p-4 text-sm text-gray-400">연재된 회차가 없습니다</div>
@@ -802,6 +846,17 @@ const StoryDetailPage = () => {
         storyId={storyId}
         onAfterSave={() => {
           try { queryClient.invalidateQueries({ queryKey: ['chapters-by-story', storyId] }); } catch {}
+        }}
+      />
+      <ChapterEditModal
+        open={!!editingChapter}
+        onClose={() => setEditingChapter(null)}
+        chapter={editingChapter}
+        onAfterSave={() => {
+          try {
+            queryClient.invalidateQueries({ queryKey: ['chapters-by-story', storyId] });
+            queryClient.invalidateQueries({ queryKey: ['story', storyId] });
+          } catch {}
         }}
       />
       <ImageGenerateInsertModal

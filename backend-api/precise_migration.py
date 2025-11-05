@@ -107,10 +107,12 @@ COLUMNS_TO_ADD = {
     ],
     "stories": [
         ("is_origchat", "BOOLEAN DEFAULT 0"),
+        ("is_webtoon", "BOOLEAN DEFAULT 0"),
         ("cover_url", "VARCHAR(500)"),
     ],
     "story_chapters": [
         ("view_count", "INTEGER DEFAULT 0"),
+        ("image_url", "VARCHAR(500)"),  # ← 이 한 줄만 추가
     ],
     "chat_rooms": [  # ✅ 새로 추가: chat_rooms 테이블에 session_id 컬럼
         ("session_id", "VARCHAR(100) DEFAULT NULL")  # ✅ session_id 필드 (VARCHAR로 문자열, NULL 허용)

@@ -27,7 +27,9 @@ const StoryExploreCard = ({ story, compact = false, onClick }) => {
           <div className="absolute inset-0 bg-gray-900 flex items-center justify-center text-gray-500">NO COVER</div>
         )}
         <div className="absolute top-1 left-1">
-          <Badge className="bg-blue-600 text-white hover:bg-blue-600">웹소설</Badge>
+          <Badge className="bg-blue-600 text-white hover:bg-blue-600">
+            {story.is_webtoon ? '웹툰' : '웹소설'}
+          </Badge>
         </div>
         {/* 우하단 메트릭: 조회수 + 좋아요수 (이미지 영역) */}
         <div className={`absolute bottom-1 right-1 py-0.5 px-1.5 rounded bg-black/60 ${compact ? 'text-[10px]' : 'text-xs'} text-gray-100 flex items-center gap-2`}>

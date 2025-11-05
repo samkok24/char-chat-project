@@ -4,14 +4,14 @@ import { rankingAPI } from '../lib/api';
 import StoryExploreCard from './StoryExploreCard';
 import ErrorBoundary from './ErrorBoundary';
 
-const TopStories = () => {
+const TopWebtoons = () => {
   const { data = [], isLoading, isError, refetch } = useQuery({
-    queryKey: ['top-stories-daily'],
+    queryKey: ['top-webtoons-daily'],
     queryFn: async () => {
       const res = await rankingAPI.getDaily({ kind: 'story' });
       const items = Array.isArray(res.data?.items) ? res.data.items : [];
-      // 웹소설만 필터링 (is_webtoon !== true 또는 false인 것만)
-      return items.filter(story => !story.is_webtoon);
+      // 웹툰만 필터링 (is_webtoon === true)
+      return items.filter(story => story.is_webtoon === true);
     },
     staleTime: 0,
     refetchOnWindowFocus: true,
@@ -28,7 +28,7 @@ const TopStories = () => {
   return (
     <section className="mt-8">
       <div className="flex items-center justify-between mb-3">
-        <h2 className="text-lg font-bold text-white">웹소설 TOP10 <span className="ml-2 text-xs text-gray-400 align-middle">(조회수 기준)</span></h2>
+        <h2 className="text-lg font-bold text-white">웹툰 TOP10 <span className="ml-2 text-xs text-gray-400 align-middle">(조회수 기준)</span></h2>
       </div>
       <ErrorBoundary>
         <ul className="grid grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-3">
@@ -43,7 +43,7 @@ const TopStories = () => {
           {!isLoading && !isError && empty && (
             <li className="col-span-4 md:col-span-6 lg:col-span-8 text-center text-gray-400 py-8">
               <div className="space-y-1">
-                <div>노출할 웹소설이 없습니다.</div>
+                <div>노출할 웹툰이 없습니다.</div>
               </div>
             </li>
           )}
@@ -53,6 +53,5 @@ const TopStories = () => {
   );
 };
 
-export default TopStories;
-
+export default TopWebtoons;
 

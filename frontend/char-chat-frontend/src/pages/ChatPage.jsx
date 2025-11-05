@@ -1248,7 +1248,7 @@ const ChatPage = () => {
         </div>
 
         <div
-          className={`max-w-full sm:max-w-[85%] px-3 py-2 rounded-2xl shadow-md ${isUser ? 'rounded-tr-none' : 'rounded-tl-none'}
+          className={`max-w-full sm:max-w-[85%] px-3 py-2 rounded-2xl shadow-md overflow-hidden ${isUser ? 'rounded-tr-none' : 'rounded-tl-none'}
             ${isUser
               ? (resolvedTheme === 'light' ? 'bg-white border border-gray-300' : 'bg-white text-black')
               : (resolvedTheme === 'light' ? 'bg-white border border-gray-300' : 'bg-white/10 lg:bg-white/10')}
@@ -1268,7 +1268,7 @@ const ChatPage = () => {
             </div>
           ) : (
             <>
-              <p className={`whitespace-pre-wrap select-text ${isUser && (message.isNarration || message.messageType==='narration' || message.content?.startsWith('*')) ? 'italic' : ''}`}>
+              <p className={`whitespace-pre-wrap break-words select-text ${isUser && (message.isNarration || message.messageType==='narration' || message.content?.startsWith('*')) ? 'italic' : ''}`} style={{ wordBreak: 'break-word', overflowWrap: 'break-word', hyphens: 'auto' }}>
                 {isUser ? (message.isNarration ? `* ${message.content}` : message.content) : sanitizeAiText(message.content)}
             {message.isStreaming && <span className="streaming-cursor"></span>}
           </p>

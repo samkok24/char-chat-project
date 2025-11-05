@@ -405,8 +405,8 @@ export const origChatAPI = {
     api.get(`/stories/${storyId}/context-pack`, { params: { anchor, characterId, mode, rangeFrom, rangeTo, sceneId } }),
 
   // 세션 시작(기존 채팅방 구조 재사용)
-  start: ({ story_id, character_id, mode = 'canon', start = null, focus_character_id = null, range_from = null, range_to = null }) =>
-    api.post('/chat/origchat/start', { story_id, character_id, mode, start, focus_character_id, range_from, range_to }),
+  start: ({ story_id, character_id, mode = 'canon', start = null, focus_character_id = null, range_from = null, range_to = null, narrator_mode = null, pov = null }) =>
+    api.post('/chat/origchat/start', { story_id, character_id, mode, start, focus_character_id, range_from, range_to, narrator_mode, pov }),
 
   // 턴 진행(스텁 응답)
   turn: ({ room_id, user_text = null, choice_id = null, trigger = null, situation_text = null, idempotency_key = null, settings_patch = null }) =>

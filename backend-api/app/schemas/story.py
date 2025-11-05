@@ -15,6 +15,7 @@ class StoryBase(BaseModel):
     keywords: Optional[List[str]] = Field(None, max_items=10)
     genre: Optional[str] = Field(None, max_length=50)
     is_public: bool = True
+    is_webtoon: bool = False
     cover_url: Optional[str] = None
 
 
@@ -31,6 +32,7 @@ class StoryUpdate(BaseModel):
     keywords: Optional[List[str]] = Field(None, max_items=10)
     genre: Optional[str] = Field(None, max_length=50)
     is_public: Optional[bool] = None
+    is_webtoon: Optional[bool] = None
     cover_url: Optional[str] = None
 
 
@@ -60,6 +62,7 @@ class StoryListItem(BaseModel):
     genre: Optional[str]
     is_public: bool = True
     is_origchat: bool = False
+    is_webtoon: bool = False
     like_count: int
     view_count: int
     comment_count: int
@@ -124,6 +127,7 @@ class ChapterBase(BaseModel):
     no: int = Field(..., ge=0)
     title: Optional[str] = Field(None, max_length=200)
     content: str = Field(..., min_length=1)
+    image_url: Optional[str] = None
 
 
 class ChapterCreate(ChapterBase):
@@ -133,9 +137,11 @@ class ChapterCreate(ChapterBase):
 class ChapterUpdate(BaseModel):
     title: Optional[str] = Field(None, min_length=1, max_length=200)
     content: Optional[str] = Field(None, min_length=1)
+    image_url: Optional[str] = None
 
 
 class ChapterResponse(ChapterBase):
     model_config = ConfigDict(from_attributes=True)
     id: uuid.UUID
+    view_count: int = 0
     created_at: datetime
