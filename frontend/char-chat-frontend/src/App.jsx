@@ -9,6 +9,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { persistQueryClient } from '@tanstack/react-query-persist-client';
 import { createSyncStoragePersister } from '@tanstack/query-sync-storage-persister';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
+import { LoginModalProvider } from './contexts/LoginModalContext';
 import { SocketProvider } from './contexts/SocketContext';
 import { Loader2 } from 'lucide-react';
 import './App.css';
@@ -262,12 +263,14 @@ function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
-        <SocketProvider>
-          <div className="App">
-            <MediaEventsBridge />
-            <AppRouter />
-          </div>
-        </SocketProvider>
+        <LoginModalProvider>
+          <SocketProvider>
+            <div className="App">
+              <MediaEventsBridge />
+              <AppRouter />
+            </div>
+          </SocketProvider>
+        </LoginModalProvider>
       </AuthProvider>
     </QueryClientProvider>
   );

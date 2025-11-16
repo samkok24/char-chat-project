@@ -123,7 +123,11 @@ services:
       - "80:80"
       - "443:443"
     volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx.production.conf:/etc/nginx/nginx.conf:ro
+      # SSL 인증서 마운트 (Let's Encrypt)
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      # Certbot 인증 경로
+      - /var/www/certbot:/var/www/certbot:ro
     depends_on:
       - frontend
       - backend

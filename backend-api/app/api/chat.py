@@ -10,7 +10,7 @@ except Exception:
     import logging as _logging
     logger = _logging.getLogger(__name__)
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update
+from sqlalchemy import select, update, func
 from typing import List, Optional, Dict, Any
 import uuid
 import json
@@ -104,9 +104,70 @@ async def _set_room_meta(room_id: uuid.UUID | str, data: Dict[str, Any], ttl: in
         pass
 
 
-async def _build_light_context(db: AsyncSession, story_id, player_max: Optional[int]) -> Optional[str]:
+async def _build_light_context(db: AsyncSession, story_id, player_max: Optional[int], character_id: Optional[uuid.UUID] = None) -> Optional[str]:
     if not story_id:
         return None
+    
+    # character_id를 UUID로 변환 (문자열일 수 있음)
+    char_uuid = None
+    if character_id:
+        try:
+            if isinstance(character_id, str):
+                char_uuid = uuid.UUID(character_id)
+            else:
+                char_uuid = character_id
+        except Exception:
+            char_uuid = None  # 변환 실패 시 None으로 설정
+    
+    # 1순위: Redis 캐시에서 combined 텍스트 가져오기 (SSOT)
+    try:
+        from app.core.database import redis_client
+        cached = await redis_client.get(f"story:combined:{story_id}")
+        if cached:
+            combined_text = cached.decode('utf-8') if isinstance(cached, bytes) else cached
+            # 앞부분 우선 (설정 정보 확실히 포함)
+            return combined_text[:5000]
+    except Exception:
+        pass
+    
+    # 2순위: 캐시가 없으면 동적으로 생성하고 캐싱 (Lazy Loading)
+    try:
+        from app.services.origchat_service import _chunk_windows_from_chapters
+        
+        # 회차 텍스트 수집
+        stmt = (
+            select(StoryChapter.no, StoryChapter.title, StoryChapter.content)
+            .where(StoryChapter.story_id == story_id)
+            .order_by(StoryChapter.no.asc())
+        )
+        rows = await db.execute(stmt)
+        chapters = rows.all()
+        
+        if chapters:
+            # 기존 함수 재사용
+            windows = _chunk_windows_from_chapters(chapters, max_chars=6000)
+            if windows:
+                combined_text = "\n\n".join(windows)
+                if len(combined_text) > 20000:
+                    combined_text = combined_text[:20000]
+                
+                # Redis 캐싱 (SSOT: 같은 키 사용)
+                try:
+                    from app.core.database import redis_client
+                    await redis_client.set(
+                        f"story:combined:{story_id}",
+                        combined_text.encode('utf-8'),
+                        ex=86400 * 365
+                    )
+                except Exception:
+                    pass
+                
+                # 앞부분 우선 (설정 정보 확실히 포함)
+                return combined_text[:5000]
+    except Exception:
+        pass
+    
+    # 3순위: 기존 방식 (fallback)
     anchor = int(player_max or 1)
     summary = None
     excerpt = None
@@ -1447,10 +1508,12 @@ async def get_chat_room_meta(
         "init_stage": meta.get("init_stage"),
         "intro_ready": meta.get("intro_ready"),
         "updated_at": meta.get("updated_at"),
-        # ✅ 추가: 선택지 복원을 위한 필드
-        "pending_choices_active": meta.get("pending_choices_active"),
-        "initial_choices": meta.get("initial_choices"),
     }
+    # ✅ 추가: 선택지 복원을 위한 필드 (plain 모드에서는 제외)
+    mode = meta.get("mode", "canon")
+    if mode != "plain":
+        allowed["pending_choices_active"] = meta.get("pending_choices_active")
+        allowed["initial_choices"] = meta.get("initial_choices")
     return allowed
 
 @router.get("/rooms/{room_id}/messages", response_model=List[ChatMessageResponse])
@@ -1488,8 +1551,40 @@ async def origchat_start(
         character_id = payload.get("character_id")
         if not character_id:
             raise HTTPException(status_code=400, detail="character_id가 필요합니다")
-        # 원작챗은 모드별로 별도의 방을 생성하여 기존 일대일 기록과 분리
-        room = await chat_service.create_chat_room(db, current_user.id, character_id)
+        
+        # mode 확인
+        mode = (payload.get("mode") or "canon").lower()
+        
+        # ✅ plain 모드인 경우 기존 room 재사용 시도
+        room = None
+        is_reusing_existing_room = False
+        if mode == "plain":
+            try:
+                # user_id + character_id로 최근 ChatRoom 조회 (최신순)
+                result = await db.execute(
+                    select(ChatRoom)
+                    .where(ChatRoom.user_id == current_user.id)
+                    .where(ChatRoom.character_id == character_id)
+                    .order_by(ChatRoom.created_at.desc())
+                    .limit(10)  # 최근 10개만 확인
+                )
+                existing_rooms = result.scalars().all()
+                
+                # 각 room의 Redis meta에서 mode 확인
+                for existing_room in existing_rooms:
+                    meta = await _get_room_meta(existing_room.id)
+                    if meta.get("mode") == "plain":
+                        room = existing_room
+                        is_reusing_existing_room = True
+                        logger.info(f"[origchat_start] 기존 plain 모드 room 재사용: {room.id}")
+                        break
+            except Exception as e:
+                logger.warning(f"[origchat_start] 기존 room 찾기 실패, 새로 생성: {e}")
+        
+        # 기존 room이 없으면 새로 생성
+        if not room:
+            # 원작챗은 모드별로 별도의 방을 생성하여 기존 일대일 기록과 분리
+            room = await chat_service.create_chat_room(db, current_user.id, character_id)
 
         # 원작 스토리 플래그 지정(베스트 에포트)
         try:
@@ -1519,6 +1614,7 @@ async def origchat_start(
             "range_from": payload.get("range_from"),
             "range_to": payload.get("range_to"),
             "pov": (payload.get("pov") or "possess"),
+            "response_length_pref": payload.get("response_length_pref") or "medium",  # 추가
             "max_turns": 500,
             "turn_count": 0,
             "completed": False,
@@ -1551,12 +1647,13 @@ async def origchat_start(
             meta_payload["player_max"] = player_max
         elif _start_chapter:
             meta_payload["player_max"] = _start_chapter
-        light = await _build_light_context(db, story_id, meta_payload.get("player_max")) if story_id else None
+        light = await _build_light_context(db, story_id, meta_payload.get("player_max"), character_id=character_id) if story_id else None
         if light:
             meta_payload["light_context"] = light[:2000]
-        # 초기 선택지 제안(메타에 탑재하여 프론트가 바로 표시)
+        # 초기 선택지 제안(메타에 탑재하여 프론트가 바로 표시) - plain 모드 제외
         try:
-            if story_id and _start_chapter:
+            mode = meta_payload.get("mode", "canon")
+            if mode != "plain" and story_id and _start_chapter:
                 pack = await origchat_service.build_context_pack(db, story_id, _start_chapter, character_id=str(payload.get("focus_character_id") or payload.get("character_id")))
                 if isinstance(pack, dict) and isinstance(pack.get("initial_choices"), list):
                     meta_payload["initial_choices"] = pack["initial_choices"][:3]
@@ -1567,9 +1664,267 @@ async def origchat_start(
         meta_payload["intro_ready"] = False
         await _set_room_meta(room.id, meta_payload)
 
-        # 컨텍스트 워밍(비동기)
+        # ✅ mode == 'plain'일 때 인사말을 동기적으로 먼저 생성 (기존 room 재사용 시 제외)
+        mode = meta_payload.get("mode", "canon")
+        if mode == "plain" and story_id and not is_reusing_existing_room:
+            try:
+                from app.services.origchat_service import generate_backward_weighted_recap, get_scene_anchor_text
+                # import google.generativeai as genai
+                from app.services.ai_service import get_claude_completion, CLAUDE_MODEL_PRIMARY
+                
+                # character_id를 UUID로 변환 (문자열일 수 있음)
+                try:
+                    if isinstance(character_id, str):
+                        char_uuid = uuid.UUID(character_id)
+                    else:
+                        char_uuid = character_id
+                except Exception:
+                    char_uuid = character_id  # 변환 실패 시 원본 사용
+                
+                _anchor_for_greeting = meta_payload.get("player_max") or meta_payload.get("anchor") or 1
+                _scene_id_for_greeting = (payload.get("start") or {}).get("scene_id") if isinstance(payload.get("start"), dict) else None
+                
+                # 원작 텍스트 맥락 수집
+                story_title = ""
+                story_summary = ""
+                chapter_content = ""
+                recap_text = ""
+                scene_quote = ""
+                char_name = ""
+                char_personality = ""
+                char_speech_style = ""
+                char_greeting = ""  # 캐릭터의 기존 인사말
+                
+                # 스토리 정보
+                try:
+                    srow = await db.execute(select(Story.title, Story.summary).where(Story.id == story_id))
+                    sdata = srow.first()
+                    if sdata:
+                        story_title = (sdata[0] or "").strip()
+                        story_summary = (sdata[1] or "").strip()
+                except Exception as e:
+                    logger.warning(f"스토리 정보 조회 실패: {e}")
+                
+                # 현재 회차 본문 (원작 텍스트 본문을 충분히 포함)
+                try:
+                    ch_row = await db.execute(
+                        select(StoryChapter.content)
+                        .where(StoryChapter.story_id == story_id, StoryChapter.no == int(_anchor_for_greeting))
+                    )
+                    ch_data = ch_row.first()
+                    if ch_data and ch_data[0]:
+                        chapter_content = (ch_data[0] or "").strip()
+                        # 원작 텍스트 본문을 최대 2000자까지 포함 (더 많은 맥락)
+                        chapter_content = chapter_content[:2000] if len(chapter_content) > 2000 else chapter_content
+                except Exception as e:
+                    logger.warning(f"회차 본문 조회 실패: {e}")
+                
+                # 역진가중 리캡 (이전 상황 요약)
+                try:
+                    if int(_anchor_for_greeting) > 1:
+                        recap_text = await generate_backward_weighted_recap(db, story_id, anchor=int(_anchor_for_greeting), max_chars=500)
+                except Exception as e:
+                    logger.warning(f"리캡 생성 실패: {e}")
+                    recap_text = ""
+                
+                # 현재 장면 앵커 텍스트
+                try:
+                    scene_quote = await get_scene_anchor_text(db, story_id, chapter_no=int(_anchor_for_greeting), scene_id=_scene_id_for_greeting, max_len=500)
+                except Exception as e:
+                    logger.warning(f"장면 앵커 텍스트 조회 실패: {e}")
+                    scene_quote = ""
+                
+                # 캐릭터 정보
+                try:
+                    crow = await db.execute(
+                        select(Character.name, Character.personality, Character.speech_style, Character.greeting)
+                        .where(Character.id == char_uuid)
+                    )
+                    cdata = crow.first()
+                    if cdata:
+                        char_name = (cdata[0] or "").strip()
+                        char_personality = (cdata[1] or "").strip()
+                        char_speech_style = (cdata[2] or "").strip()
+                        char_greeting = (cdata[3] or "").strip()  # 캐릭터의 기존 인사말
+                except Exception as e:
+                    logger.warning(f"캐릭터 정보 조회 실패: {e}")
+                
+                # 페르소나 정보 (pov == 'persona'일 때) - 로깅 추가
+                pov = meta_payload.get("pov", "possess")
+                logger.info(f"[인사말 생성] pov: {pov}, mode: {mode}")
+                logger.info(f"[인사말 생성] meta_payload: {meta_payload}")
+                
+                # 변수 초기화 - 스코프 문제 해결
+                persona_name = ""
+                persona_desc = ""
+                
+                if pov == "persona":
+                    try:
+                        persona = await get_active_persona_by_user(db, current_user.id)
+                        if persona:
+                            persona_name = (getattr(persona, 'name', '') or '').strip()
+                            persona_desc = (getattr(persona, 'description', '') or '').strip()
+                            logger.info(f"[인사말 생성] 페르소나 로드 성공: {persona_name}, 설명: {persona_desc[:50] if persona_desc else '없음'}")
+                        else:
+                            logger.warning(f"[인사말 생성] 페르소나를 찾을 수 없음: user_id={current_user.id}")
+                    except Exception as e:
+                        logger.error(f"[인사말 생성] 페르소나 정보 조회 실패: {e}", exc_info=True)
+                
+                # 인사말 생성 또는 사용
+                # ✅ 1순위: 캐릭터의 기존 인사말 사용 (등장인물 그리드에서 생성된 것)
+                # 단, 페르소나 모드일 때는 기존 인사말이 페르소나를 반영하지 않으므로 LLM으로 재생성
+                if char_greeting and len(char_greeting) > 20 and pov != "persona":
+                    try:
+                        # 페르소나 토큰 머지 ({{user}}, {{character}} 등)
+                        temp_char = Character()
+                        temp_char.greeting = char_greeting
+                        temp_char.name = char_name
+                        _merge_character_tokens(temp_char, current_user)
+                        final_greeting = temp_char.greeting
+                        
+                        await chat_service.save_message(db, room.id, sender_type="character", content=final_greeting, message_metadata={"kind":"intro"})
+                        await db.commit()
+                        await _set_room_meta(room.id, {"intro_ready": True, "init_stage": "ready"})
+                        logger.info(f"캐릭터 기존 인사말 사용: {char_name}")
+                    except Exception as e:
+                        logger.warning(f"캐릭터 기존 인사말 사용 실패: {e}, LLM으로 생성 시도")
+                        char_greeting = ""  # 실패 시 LLM 생성으로 폴백
+                
+                # ✅ 2순위: LLM으로 인사말 생성 (기존 인사말이 없거나, 페르소나 모드이거나, 실패한 경우)
+                if not char_greeting or len(char_greeting) <= 20 or pov == "persona":
+                    try:
+                        if not settings.GEMINI_API_KEY:
+                            raise ValueError("GEMINI_API_KEY가 설정되지 않았습니다")
+                        
+                        # genai.configure(api_key=settings.GEMINI_API_KEY)
+                        # model = genai.GenerativeModel('gemini-2.5-pro')
+                        
+                        # 원작 텍스트 맥락을 충분히 포함한 프롬프트
+                        prompt_parts = [f"당신은 웹소설 '{story_title}'의 캐릭터 '{char_name}'입니다."]
+                        
+                        if char_personality:
+                            prompt_parts.append(f"\n【캐릭터 성격】\n{char_personality}")
+                        if char_speech_style:
+                            prompt_parts.append(f"\n【말투】\n{char_speech_style}")
+                        if story_summary:
+                            prompt_parts.append(f"\n【작품 배경】\n{story_summary[:300]}")
+                        
+                        # 원작 텍스트 본문 포함 (가장 중요) - 더 많이 포함
+                        if chapter_content:
+                            # 원작 텍스트 본문을 최대 2000자까지 포함 (더 많은 맥락)
+                            extended_content = chapter_content[:2000] if len(chapter_content) > 2000 else chapter_content
+                            prompt_parts.append(f"\n【현재 회차 본문 (원작 텍스트 - 반드시 이 내용을 기반으로 인사말 작성)】\n{extended_content}")
+                        
+                        if recap_text:
+                            prompt_parts.append(f"\n【이전 상황 요약】\n{recap_text}")
+                        elif not chapter_content:
+                            prompt_parts.append("\n【이전 상황 요약】\n이야기의 시작입니다.")
+                        
+                        if scene_quote:
+                            prompt_parts.append(f"\n【현재 장면 발췌】\n{scene_quote}")
+                        
+                        # 페르소나 정보 (있을 때만) - 강조 및 로깅
+                        if pov == "persona":
+                            if persona_name:
+                                logger.info(f"[인사말 생성] 페르소나 정보 포함: {persona_name}")
+                                prompt_parts.append(f"\n【⚠️ 매우 중요: 대화 상대】\n당신의 대화 상대는 원작 스토리의 등장인물이 아닙니다.")
+                                prompt_parts.append(f"당신의 대화 상대는 '{persona_name}'입니다. (이미 알고 있는 사이입니다)")
+                                prompt_parts.append(f"'{persona_name}'님과 편하게 대화하세요. 이름을 자연스럽게 부르세요.")
+                                if persona_desc:
+                                    prompt_parts.append(f"이 페르소나의 성격/특성: {persona_desc}")
+                                prompt_parts.append(f"\n중요: 원작 텍스트에 나온 다른 인물(예: '폐하', '군주' 등)과 대화하는 것이 아닙니다.")
+                                prompt_parts.append(f"당신은 '{persona_name}'과 직접 대화하고 있습니다. 원작 텍스트의 상황은 배경일 뿐이며, 실제 대화 상대는 '{persona_name}'입니다.")
+                            else:
+                                logger.warning(f"[인사말 생성] 페르소나 모드인데 페르소나 정보가 없음!")
+                        
+                        # 페르소나 모드일 때 특별 지시
+                        if pov == "persona" and persona_name:
+                            prompt_parts.append(f"""
+---
+⚠️⚠️⚠️ 매우 중요한 지시사항 ⚠️⚠️⚠️
+
+당신은 '{char_name}'입니다.
+당신이 지금 대화하는 상대의 이름은 '{persona_name}'입니다.
+상대방 이름을 반드시 기억하세요: {persona_name}
+
+반드시 지켜야 할 규칙:
+1. 인사말에 '{persona_name}'이라는 이름을 반드시 포함시키세요.
+2. "누구세요?" "이름이 뭐죠?" 같은 질문 금지 - 이미 '{persona_name}'이라는 이름을 알고 있습니다.
+3. '{persona_name}'과 이미 아는 사이처럼 대화하세요.
+
+반드시 이런 형식으로 시작하세요:
+"아, {persona_name}! [인사말]"
+또는
+"{persona_name}, [인사말]"
+
+절대 하지 말아야 할 것:
+- 이름을 묻지 마세요
+- "누구신지 모르겠는데" 같은 말 금지
+- 자기 이름만 소개하지 마세요
+
+150-300자로 자연스러운 인사말을 작성하세요.
+평문으로만 출력:""")
+                        else:
+                            prompt_parts.append("""
+---
+
+위 원작 텍스트를 충분히 이해하고, 캐릭터의 현재 상황과 맥락을 정확히 파악한 후, 자연스러운 인사말을 생성하세요.
+
+중요:
+- 원작 텍스트의 맥락을 정확히 이해하고 반영하세요.
+- 캐릭터의 성격과 말투를 일관되게 유지하세요.
+- 150-300자 내외로 작성하세요.
+- 대화체로 작성하세요.
+- 원작 텍스트에 나온 구체적인 상황을 반영하세요.
+
+평문으로만 출력:""")
+                        
+                        prompt = "\n".join(prompt_parts)
+                        
+                        # response = model.generate_content(
+                        #     prompt,
+                        #     generation_config={
+                        #         'temperature': 0.9,  # 더 창의적이고 자연스러운 인사말을 위해 온도 상승
+                        #         'max_output_tokens': 600,  # 더 긴 인사말 허용
+                        #     }
+                        # )
+                        greeting = await get_claude_completion(
+                            prompt=prompt,
+                            temperature=0.9,
+                            max_tokens=600,
+                            model=CLAUDE_MODEL_PRIMARY
+                        )
+                        greeting = greeting.strip()
+                        
+                        if greeting and len(greeting) > 20:
+                            await chat_service.save_message(db, room.id, sender_type="character", content=greeting, message_metadata={"kind":"intro"})
+                            await db.commit()
+                        else:
+                            fallback = f"안녕하세요. {story_title or '이야기'}의 세계에 오신 것을 환영합니다.\n\n지금부터 이야기가 시작됩니다. 어떻게 하시겠습니까?"
+                            await chat_service.save_message(db, room.id, sender_type="character", content=fallback, message_metadata={"kind":"intro"})
+                            await db.commit()
+                        
+                        await _set_room_meta(room.id, {"intro_ready": True, "init_stage": "ready"})
+                        
+                    except Exception as e:
+                        logger.error(f"인사말 LLM 생성 실패: {e}", exc_info=True)
+                        fallback = f"안녕하세요. {story_title or '이야기'}를 시작하겠습니다.\n\n어떻게 하시겠습니까?"
+                        try:
+                            await chat_service.save_message(db, room.id, sender_type="character", content=fallback, message_metadata={"kind":"intro"})
+                            await db.commit()
+                            await _set_room_meta(room.id, {"intro_ready": True, "init_stage": "ready"})
+                        except Exception as save_err:
+                            logger.error(f"인사말 저장 실패: {save_err}", exc_info=True)
+            except Exception as e:
+                logger.error(f"plain 모드 인사말 생성 실패: {e}", exc_info=True)
+                try:
+                    await _set_room_meta(room.id, {"intro_ready": True, "init_stage": "ready"})
+                except Exception:
+                    pass
+
+        # 컨텍스트 워밍(비동기) - plain 모드가 아닐 때만
         try:
-            if story_id and isinstance(meta_payload.get("player_max"), int) and bool(meta_payload.get("prewarm_on_start", True)):
+            if story_id and isinstance(meta_payload.get("player_max"), int) and bool(meta_payload.get("prewarm_on_start", True)) and mode != "plain":
                 import asyncio
                 from app.services.origchat_service import build_context_pack, warm_context_basics, detect_style_profile, generate_backward_weighted_recap, get_scene_anchor_text
 
@@ -1609,156 +1964,53 @@ async def origchat_start(
                                 await _r.setex(f"ctx:warm:{sid}:scene_anchor", 600, excerpt)
                         except Exception:
                             pass
-        # 인사말 말풍선: 사전 준비 결과가 있으면 즉시 사용(없으면 생략)
-                        try:
-                            # 컨텍스트 수집
-                            story_title = ""
-                            story_summary = ""
-                            recap_text = ""
-                            scene_quote = ""
-                            char_name = ""
-                            char_personality = ""
-                            
-                            try:
-                                srow = await _db.execute(select(Story.title, Story.summary, Story.content).where(Story.id == sid))
-                                sdata = srow.first()
-                                if sdata:
-                                    story_title = (sdata[0] or "").strip()
-                                    story_summary = (sdata[1] or "").strip() or (sdata[2] or "").strip()
-                            except Exception:
-                                pass
-                            
-                            try:
-                                if int(anchor or 1) > 1:
-                                    recap_text = await generate_backward_weighted_recap(_db, sid, anchor=int(anchor or 1), max_chars=300)
-                            except Exception:
-                                recap_text = ""
-                            
-                            try:
-                                scene_quote = await get_scene_anchor_text(_db, sid, chapter_no=int(anchor or 1), scene_id=scene_id, max_len=200)
-                            except Exception:
-                                scene_quote = ""
-                            
-                            try:
-                                crow = await _db.execute(select(Character.name, Character.personality).where(Character.id == room.character_id))
-                                cdata = crow.first()
-                                if cdata:
-                                    char_name = (cdata[0] or "").strip()
-                                    char_personality = (cdata[1] or "").strip()
-                            except Exception:
-                                pass
-                            
-                            # Gemini로 자연스러운 인사말 생성
-                            try:
-                                import google.generativeai as genai
-                                from app.core.config import settings
-                                
-                                genai.configure(api_key=settings.GEMINI_API_KEY)
-                                model = genai.GenerativeModel('gemini-2.5-pro')
-                                
-                                prompt = f"""당신은 웹소설 '{story_title}'의 캐릭터 '{char_name}'입니다.
-
-【캐릭터 성격】
-{char_personality or '정보 없음'}
-
-【작품 배경】
-{story_summary[:200] if story_summary else '정보 없음'}
-
-【현재 상황까지의 줄거리】
-{recap_text or '이야기의 시작'}
-
-【현재 장면】
-{scene_quote or '이야기가 시작됩니다'}
-
----
-
-위 정보를 바탕으로, 캐릭터 시점에서 자연스러운 인사말을 생성하세요.
-
-조건:
-1. 1인칭 시점으로 작성
-2. 150-250자 내외
-3. 현재 상황을 간략히 설명
-4. 마지막에 사용자에게 질문이나 행동 유도
-5. 대화체로 작성 (소설체 X)
-6. 요약이 아니라 캐릭터가 직접 말하는 것처럼
-
-형식:
-안녕하세요/인사말
-[현재 상황 간단 설명 2-3문장]
-[질문이나 행동 유도]
-
-평문으로만 출력:"""
-
-                                response = model.generate_content(
-                                    prompt,
-                                    generation_config={
-                                        'temperature': 0.7,
-                                        'max_output_tokens': 400,
-                                    }
-                                )
-                                
-                                greeting = response.text.strip()
-                                
-                                if greeting and len(greeting) > 20:
-                                    await chat_service.save_message(_db, room_id, sender_type="character", content=greeting, message_metadata={"kind":"intro"})
-                                else:
-                                    fallback = f"안녕하세요. {story_title}의 세계에 오신 것을 환영합니다.\n\n지금부터 이야기가 시작됩니다. 어떻게 하시겠습니까?"
-                                    await chat_service.save_message(_db, room_id, sender_type="character", content=fallback, message_metadata={"kind":"intro"})
-                                    
-                            except Exception as e:
-                                import logging
-                                logging.warning(f"인사말 LLM 생성 실패: {e}")
-                                fallback = "안녕하세요. 이야기를 시작하겠습니다.\n\n어떻게 하시겠습니까?"
-                                await chat_service.save_message(_db, room_id, sender_type="character", content=fallback, message_metadata={"kind":"intro"})
-                            
-                            await _set_room_meta(room_id, {"intro_ready": True, "init_stage": "ready"})
-                            
-                            # ✅ 초기 선택지 생성 및 메타에 추가
-                            try:
-                                from app.services.origchat_service import propose_choices_from_anchor
-                                
-                                # 앵커 텍스트나 리캡으로 선택지 생성
-                                choices = propose_choices_from_anchor(scene_quote or recap_text, None)
-                                if choices and len(choices) > 0:
-                                    # 룸 메타에 초기 선택지 저장
-                                    current_meta = await _get_room_meta(room_id)
-                                    if isinstance(current_meta, dict):
-                                        current_meta["initial_choices"] = choices[:3]
-                                        await _set_room_meta(room_id, current_meta)
-                            except Exception as e:
-                                import logging
-                                logging.warning(f"초기 선택지 생성 실패: {e}")
-                                pass
-                                
-                        except Exception:
-                            try:
-                                await _set_room_meta(room_id, {"intro_ready": True, "init_stage": "ready"})
-                            except Exception:
-                                pass
                 _anchor_for_warm = meta_payload.get("player_max") or meta_payload.get("anchor") or 1
                 _scene_id = (meta_payload.get("start") or {}).get("scene_id") if isinstance(meta_payload.get("start"), dict) else None
                 asyncio.create_task(_warm_ctx_async(story_id, _anchor_for_warm, room.id, _scene_id))
         except Exception:
             pass
 
-        # 인사말 말풍선: 사전 준비 결과가 있으면 즉시 사용(없으면 생략)
+        # 인사말 말풍선: 사전 준비 결과가 있으면 즉시 사용(없으면 생략) - plain 모드에서는 제외 (이미 생성됨)
         try:
-            from app.core.database import redis_client as _r
-            _scene_id = None
-            try:
-                _scene_id = (payload.get("start") or {}).get("scene_id")
-            except Exception:
+            mode = meta_payload.get("mode", "canon")
+            if mode != "plain":
+                from app.core.database import redis_client as _r
                 _scene_id = None
-            prep_key = f"ctx:warm:{story_id}:prepared_intro:{character_id}:{int(_start_chapter or 1)}:{_scene_id or 'none'}"
-            txt = await _r.get(prep_key) if story_id else None
-            if txt:
                 try:
-                    txt_str = txt.decode("utf-8") if isinstance(txt, (bytes, bytearray)) else str(txt)
+                    _scene_id = (payload.get("start") or {}).get("scene_id")
                 except Exception:
-                    txt_str = str(txt)
-                await chat_service.save_message(db, room.id, sender_type="character", content=txt_str, message_metadata={"kind":"intro"})
+                    _scene_id = None
+                prep_key = f"ctx:warm:{story_id}:prepared_intro:{character_id}:{int(_start_chapter or 1)}:{_scene_id or 'none'}"
+                txt = await _r.get(prep_key) if story_id else None
+                if txt:
+                    try:
+                        txt_str = txt.decode("utf-8") if isinstance(txt, (bytes, bytearray)) else str(txt)
+                    except Exception:
+                        txt_str = str(txt)
+                    await chat_service.save_message(db, room.id, sender_type="character", content=txt_str, message_metadata={"kind":"intro"})
+                    await db.commit()
         except Exception:
             pass
+
+        # ✅ character 관계 로드 (ChatRoomResponse 스키마 검증을 위해 필요)
+        try:
+            from sqlalchemy.orm import selectinload
+            from sqlalchemy import select as sql_select
+            from app.models.chat import ChatMessage
+            stmt = sql_select(ChatRoom).where(ChatRoom.id == room.id).options(selectinload(ChatRoom.character))
+            result = await db.execute(stmt)
+            room = result.scalar_one()
+            
+            # ✅ 기존 room 재사용 시 실제 메시지 개수 조회하여 message_count 업데이트
+            if is_reusing_existing_room:
+                msg_count_result = await db.execute(
+                    select(func.count(ChatMessage.id)).where(ChatMessage.chat_room_id == room.id)
+                )
+                actual_count = msg_count_result.scalar() or 0
+                room.message_count = actual_count
+                logger.info(f"[origchat_start] 기존 room 메시지 개수 업데이트: {actual_count}")
+        except Exception as e:
+            logger.warning(f"room 관계 로드 실패: {e}")
 
         return room
     except HTTPException:
@@ -1788,6 +2040,7 @@ async def origchat_turn(
         if room.user_id != current_user.id:
             raise HTTPException(status_code=403, detail="권한이 없습니다")
         # 안전망: 캐릭터에 연결된 원작 스토리가 있으면 플래그 지정
+        sid = None  # 명시적 초기화
         try:
             crow = await db.execute(select(Character.origin_story_id).where(Character.id == room.character_id))
             sid = (crow.first() or [None])[0]
@@ -1799,15 +2052,28 @@ async def origchat_turn(
         user_text = (payload.get("user_text") or "").strip()
         choice_id = (payload.get("choice_id") or "").strip()
         situation_text = (payload.get("situation_text") or "").strip()
-        # ✅ 선택지를 선택한 경우 사용자 메시지로 저장
-        if choice_id and user_text:
-            user_msg = await chat_service.save_message(
-                db, 
-                room_id, 
-                "user", 
-                user_text,
-                message_metadata={"choice_id": choice_id, "kind": "choice"}
-            )
+        
+        # ✅ 사용자 메시지 저장 (선택지 선택 또는 일반 텍스트 입력)
+        user_message = None
+        if user_text:
+            if choice_id:
+                # 선택지를 선택한 경우
+                user_message = await chat_service.save_message(
+                    db, 
+                    room_id, 
+                    "user", 
+                    user_text,
+                    message_metadata={"choice_id": choice_id, "kind": "choice"}
+                )
+            else:
+                # 일반 텍스트 입력
+                user_message = await chat_service.save_message(
+                    db, 
+                    room_id, 
+                    "user", 
+                    user_text,
+                    message_metadata={"kind": "text"}
+                )
             await db.commit()
         trigger = (payload.get("trigger") or "").strip()
         settings_patch = payload.get("settings_patch") or {}
@@ -1816,6 +2082,7 @@ async def origchat_turn(
         # 룸 메타 로드
         meta_state = await _get_room_meta(room_id)
         player_max = meta_state.get("player_max") if isinstance(meta_state, dict) else None
+        logger.info(f"[origchat_turn] meta_state에서 pov: {meta_state.get('pov')}, mode: {meta_state.get('mode')}")
 
         # idempotency: if the same key is observed, short-circuit with last AI message
         if idempotency_key:
@@ -1907,42 +2174,50 @@ async def origchat_turn(
 
         # 간단 스포일러/완결 가드 + 세계관/반복 방지 규칙 + 경량 컨텍스트 주입
         guarded_text = user_text
-        if isinstance(player_max, int) and player_max >= 1:
+        mode = (meta_state.get("mode") or "canon").lower()
+        if mode != "plain" and isinstance(player_max, int) and player_max >= 1:
             hint = f"[스포일러 금지 규칙] {player_max}화 이후의 사건/정보는 언급/암시 금지. 범위 내에서만 대답."
             if guarded_text:
                 guarded_text = f"{hint}\n{guarded_text}"
             else:
                 guarded_text = hint
-        # 500턴 완결 진행 가이드(역산 전개)
-        progress_hint = f"[진행] {turn_count}/{max_turns}턴. 남은 턴 내에 기승전결을 완성하도록 다음 사건을 전개하라. 반복 금지, 캐릭터/세계관 일관성 유지."
-        if completed:
-            progress_hint = "[완결 이후 자유 모드] 이전 사건을 재탕하지 말고, 소소한 일상/번외 에피소드로 반복 패턴을 변주하라."
-        mode = (meta_state.get("mode") or "canon").lower()
-        # 작가 페르소나 + 막(Act) 진행 가이드
-        ratio = 0.0
-        try:
-            ratio = (turn_count / max_turns) if max_turns else 0.0
-        except Exception:
+        # 500턴 완결 진행 가이드(역산 전개) - plain 모드에서는 제외
+        progress_hint = ""
+        if mode != "plain":
+            progress_hint = f"[진행] {turn_count}/{max_turns}턴. 남은 턴 내에 기승전결을 완성하도록 다음 사건을 전개하라. 반복 금지, 캐릭터/세계관 일관성 유지."
+            if completed:
+                progress_hint = "[완결 이후 자유 모드] 이전 사건을 재탕하지 말고, 소소한 일상/번외 에피소드로 반복 패턴을 변주하라."
+        # 작가 페르소나 + 막(Act) 진행 가이드 (plain 모드에서는 제외)
+        author_block = ""
+        if mode != "plain":
             ratio = 0.0
-        if ratio <= 0.2:
-            stage_name = "도입"
-            stage_guide = "주인공의 욕구/결핍 제시, 세계관 톤 확립, 시발 사건 제시, 후반을 위한 복선 씨앗 심기."
-        elif ratio <= 0.8:
-            stage_name = "대립/심화"
-            stage_guide = "불가역 사건으로 갈등 증폭, 선택에는 대가가 따른다. 서브플롯을 주제와 연결하며 긴장/완급 조절."
-        else:
-            stage_name = "절정/해결"
-            stage_guide = "클라이맥스에서 핵심 갈등을 정면 돌파, 주제 명료화, 감정적 수확과 여운 제공. 느슨한 매듭 정리."
-        author_block = (
-            "[작가 페르소나] 당신은 20년차 베스트셀러 장르/웹소설 작가(히트작 10권). 리듬/복선/서스펜스/클리프행어 운용에 탁월.\n"
-            "각 턴은 '한 장면·한 사건·한 감정' 원칙. 중복/공회전 금지. show-don't-tell. 감각/행동/대사가 중심.\n"
-            f"[현재 막] {stage_name} — {stage_guide}"
-        )
+            try:
+                ratio = (turn_count / max_turns) if max_turns else 0.0
+            except Exception:
+                ratio = 0.0
+            if ratio <= 0.2:
+                stage_name = "도입"
+                stage_guide = "주인공의 욕구/결핍 제시, 세계관 톤 확립, 시발 사건 제시, 후반을 위한 복선 씨앗 심기."
+            elif ratio <= 0.8:
+                stage_name = "대립/심화"
+                stage_guide = "불가역 사건으로 갈등 증폭, 선택에는 대가가 따른다. 서브플롯을 주제와 연결하며 긴장/완급 조절."
+            else:
+                stage_name = "절정/해결"
+                stage_guide = "클라이맥스에서 핵심 갈등을 정면 돌파, 주제 명료화, 감정적 수확과 여운 제공. 느슨한 매듭 정리."
+            author_block = (
+                "[작가 페르소나] 당신은 20년차 베스트셀러 장르/웹소설 작가(히트작 10권). 리듬/복선/서스펜스/클리프행어 운용에 탁월.\n"
+                "각 턴은 '한 장면·한 사건·한 감정' 원칙. 중복/공회전 금지. show-don't-tell. 감각/행동/대사가 중심.\n"
+                f"[현재 막] {stage_name} — {stage_guide}"
+            )
         rule_lines = [
             "[일관성 규칙] 세계관/인물/설정의 내적 일관성을 유지하라. 원작과 모순되는 사실/타작품 요소 도입 금지.",
             "[반복 금지] 이전 대사/서술을 재탕하거나 공회전하는 전개 금지. 매 턴 새로운 상황/감정/행동/갈등을 진행.",
         ]
-        if mode == "parallel":
+        if mode == "plain":
+            rule_lines.append("[일대일 대화 모드] 스토리 진행이나 서술은 하지 마세요. 캐릭터와 사용자가 직접 대화하는 모드입니다.")
+            rule_lines.append("[일대일 대화 모드] 원작 텍스트의 맥락은 기억하되, 스토리를 전개하거나 새로운 사건을 만들지 마세요.")
+            rule_lines.append("[일대일 대화 모드] 사용자와 자연스럽게 대화하고, 질문하고, 교감하세요.")
+        elif mode == "parallel":
             rule_lines.append("[평행세계] 원작과 다른 전개 허용. 다만 세계관/인물 심리의 개연성을 유지하고 스포일러 금지.")
         else:
             rule_lines.append("[정사] 원작 설정을 존중하되 창의적으로 변주. 스포일러 금지.")
@@ -1950,8 +2225,24 @@ async def origchat_turn(
         if bool(meta_state.get("narrator_mode") or False):
             rule_lines.append("[관전가] 사용자의 입력은 서술/묘사/해설이며 직접 대사를 생성하지 않는다. 인물의 대사/행동은 AI가 주도한다.")
             rule_lines.append("[관전가] 사용자 서술을 장면 맥락에 자연스럽게 접합하고, 필요한 대사/행동을 AI가 창의적으로 이어간다.")
+        # 컨텍스트 활용 규칙 추가 (메타 발언 방지)
+        if mode == "plain":
+            rule_lines.append("[컨텍스트 활용] 제공된 배경 정보를 자연스럽게 활용하되, '컨텍스트에 따르면', '정보에 따르면' 같은 메타 발언은 절대 금지. 마치 직접 경험한 것처럼 자연스럽게 대화하세요.")
         rules_block = "\n".join(rule_lines)
-        ctx = (meta_state.get("light_context") or "").strip()
+        # ctx = (meta_state.get("light_context") or "").strip()
+        # 캐릭터 중심 컨텍스트 생성 (대화 중에도 적용)
+        ctx = None
+        if sid and room.character_id:
+            try:
+                ctx = await _build_light_context(db, sid, player_max, character_id=room.character_id)
+            except Exception:
+                pass
+
+        # 실패하거나 sid가 없으면 기존 방식 사용
+        if not ctx:
+            ctx = (meta_state.get("light_context") or "").strip()
+        else:
+            ctx = ctx.strip()
         ctx_block = f"[컨텍스트]\n{ctx}" if ctx else ""
         # 원작 문체 스타일 프롬프트 주입(있다면)
         style_prompt = None
@@ -1989,9 +2280,47 @@ async def origchat_turn(
                     recap_block = (recap_block + "\n\n[장면 앵커]\n" + scene_text) if recap_block else ("[장면 앵커]\n" + scene_text)
         except Exception:
             recap_block = ""
-        parts = [progress_hint, rules_block, author_block]
-        if ctx_block:
-            parts.append(ctx_block)
+        parts = []
+
+        # ✅ 캐릭터 정보 추가 (가장 먼저)
+        try:
+            char_row = await db.execute(
+                select(Character.name, Character.personality, Character.speech_style, Character.description, Character.world_setting, Character.background_story)
+                .where(Character.id == room.character_id)
+            )
+            char_data = char_row.first()
+            if char_data:
+                char_name = (char_data[0] or "").strip()
+                char_personality = (char_data[1] or "").strip()
+                char_speech = (char_data[2] or "").strip()
+                char_desc = (char_data[3] or "").strip()
+                char_world_setting = (char_data[4] or "").strip()
+                char_background_story = (char_data[5] or "").strip()
+
+                char_block = [f"당신은 '{char_name}'입니다."]
+                if char_personality:
+                    char_block.append(f"성격: {char_personality}")
+                if char_speech:
+                    char_block.append(f"말투: {char_speech}")
+                if char_desc:
+                    char_block.append(f"설명: {char_desc}")
+                if char_world_setting:
+                    char_block.append(f"세계관/배경: {char_world_setting}")
+                if char_background_story:
+                    char_block.append(f"배경 스토리: {char_background_story}") 
+                
+                parts.insert(0, "\n".join(char_block))  # 가장 앞에 배치
+        except Exception as e:
+            logger.warning(f"캐릭터 정보 로드 실패: {e}")
+
+
+        if progress_hint:
+            parts.append(progress_hint)
+        parts.append(rules_block)
+        if author_block:
+            parts.append(author_block)
+        # if ctx_block:
+        #     parts.append(ctx_block)
         if style_block:
             parts.append(style_block)
         if recap_block:
@@ -2009,12 +2338,16 @@ async def origchat_turn(
         try:
             pov = (meta_state.get("pov") or "possess").lower()
             if pov == "persona":
+                logger.info(f"[origchat_turn] 페르소나 모드 활성화 - pov: {pov}")
                 # 사용자 활성 페르소나 로드
                 from app.services.user_persona_service import get_active_persona_by_user
                 persona = await get_active_persona_by_user(db, current_user.id)
+                logger.info(f"[origchat_turn] 페르소나 조회 결과: {persona}")
                 if persona:
                     pn = (getattr(persona, 'name', '') or '').strip()
                     pd = (getattr(persona, 'description', '') or '').strip()
+                    logger.info(f"[origchat_turn] 페르소나 로드 성공: {pn}, 설명: {pd[:50] if pd else '없음'}")
+                    
                     fb = ["[시점·문체]"]
                     if pn:
                         fb.append(f"고정 시점: 사용자 페르소나 '{pn}'의 1인칭 또는 근접 3인칭.")
@@ -2022,6 +2355,31 @@ async def origchat_turn(
                         fb.append(f"성격/정서 결: {pd}")
                     fb.append("대사·지문은 페르소나 어휘/톤을 유지.")
                     parts.append("\n".join(fb))
+                    # ✅ [대화 상대] 섹션 추가 - 가장 앞에 배치하여 강조
+                    partner_block = [
+                        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+                        f"당신은 지금 '{pn}'과(와) 대화하고 있습니다.",
+                        f"'{pn}'은(는) 당신이 이미 알고 있는 사람입니다.",
+                        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                    ]
+                    if pd:
+                        partner_block.append(f"'{pn}'의 정보: {pd}")
+                    partner_block.append("")
+                    partner_block.append(f"⚠️ 절대 규칙:")
+                    partner_block.append(f"- 상대를 '{pn}'(이)라고 부르세요")
+                    partner_block.append(f"- 이름을 모르는 척 하지 마세요")
+                    partner_block.append(f"- '폐하', '군주' 등 다른 호칭 금지")
+                    partner_block.append(f"- 자연스럽게 '{pn}'의 이름을 언급하세요")
+                    # 가장 앞에 배치
+                    parts.insert(0, "\n".join(partner_block))
+                    # 원작 컨텍스트를 2순위로 배치 (페르소나 블록 다음)
+                    if ctx_block:
+                        parts.insert(2, ctx_block)
+                else:
+                    logger.warning(f"[origchat_turn] 페르소나를 찾을 수 없음: user_id={current_user.id}")
+                    # 페르소나가 없어도 원작 컨텍스트는 2순위로 배치
+                    if ctx_block:
+                        parts.insert(1, ctx_block)  # 캐릭터 정보(0) 다음
             else:
                 fcid = meta_state.get("focus_character_id")
                 if fcid:
@@ -2043,6 +2401,9 @@ async def origchat_turn(
                             fb_lines.append(f"대사 말투: {fc_speech}")
                         fb_lines.append("묘사는 시점 인물의 지각/어휘 결을 따르고, 과잉 해설 금지.")
                         parts.append("\n".join(fb_lines))
+                    # 페르소나 모드가 아닐 때도 원작 컨텍스트는 2순위로 배치
+                    if ctx_block:
+                        parts.insert(1, ctx_block)  # 캐릭터 정보(0) 다음
         except Exception:
             pass
         # parallel seed가 있으면 주입
@@ -2058,6 +2419,10 @@ async def origchat_turn(
         if guarded_text:
             parts.append(guarded_text)
         guarded_text = "\n".join([p for p in parts if p])
+        
+        # 디버깅: 최종 프롬프트 로그
+        logger.info(f"[origchat_turn] 최종 프롬프트 (앞 1000자):\n{guarded_text[:1000]}")
+        
         # 단계 정보를 메타로 전달(선택적)
         meta_stage = locals().get("stage_name", None)
 
@@ -2091,6 +2456,8 @@ async def origchat_turn(
             # 1. 히스토리 조회
             history = await chat_service.get_messages_by_room_id(db, room.id, limit=20)
             history_for_ai = []
+            
+            
             for msg in history[-20:]:
                 if msg.sender_type == "user":
                     history_for_ai.append({"role": "user", "parts": [msg.content]})
@@ -2110,9 +2477,9 @@ async def origchat_turn(
                 character_prompt=character_prompt,
                 user_message=actual_user_input,
                 history=history_for_ai,
-                preferred_model=current_user.preferred_model or "gemini-pro",
+                preferred_model="claude",
                 preferred_sub_model=current_user.preferred_sub_model,
-                response_length_pref=getattr(current_user, 'response_length_pref', 'medium')
+                response_length_pref=meta_state.get("response_length_pref") or getattr(current_user, 'response_length_pref', 'medium')
             )
 
             # 5. AI 응답만 저장
@@ -2129,7 +2496,7 @@ async def origchat_turn(
             # 6. resp 객체 생성 (기존 코드와 호환)
             from app.schemas.chat import ChatMessageResponse, SendMessageResponse
             resp = SendMessageResponse(
-                user_message=None,  # 사용자 메시지는 이미 1800-1808줄에서 저장됨
+                user_message=ChatMessageResponse.model_validate(user_message) if user_message else None,
                 ai_message=ChatMessageResponse.model_validate(ai_message)
             )
 
@@ -2197,28 +2564,31 @@ async def origchat_turn(
 
         meta_resp: Dict[str, Any] = {"turn_count": turn_count, "max_turns": max_turns, "completed": completed}
 
-        # ✅ 온디맨드 선택지: 쿨다운 무시
-        if want_choices:
-            from app.services.origchat_service import propose_choices_from_anchor as _pc
-            choices = _pc(getattr(resp.ai_message, 'content', ''), None)
-            meta_resp["choices"] = choices
-            meta_state["last_choice_ts"] = now
-            meta_state["pending_choices_active"] = True
-            await _set_room_meta(room.id, {"last_choice_ts": now, "pending_choices_active": True})
+        # ✅ 선택지 생성 - plain 모드에서는 선택지 생성 안 함
+        mode = meta_state.get("mode", "canon")
+        if mode != "plain":
+            # ✅ 온디맨드 선택지: 쿨다운 무시
+            if want_choices:
+                from app.services.origchat_service import propose_choices_from_anchor as _pc
+                choices = _pc(getattr(resp.ai_message, 'content', ''), None)
+                meta_resp["choices"] = choices
+                meta_state["last_choice_ts"] = now
+                meta_state["pending_choices_active"] = True
+                await _set_room_meta(room.id, {"last_choice_ts": now, "pending_choices_active": True})
 
-        # ✅ 자동 선택지: 쿨다운 적용 (온디맨드와 충돌 안 함)
-        elif cooldown_met:  # ✅ want_choices가 False일 때만 실행
-            try:
-                from app.services.origchat_service import compute_branch_score_from_text, propose_choices_from_anchor as _pc
-                ai_text = getattr(resp.ai_message, 'content', '') or ''
-                score = compute_branch_score_from_text(ai_text)
-                if score >= 1.5:
-                    meta_resp["choices"] = _pc(ai_text, None)
-                    meta_state["last_choice_ts"] = now
-                    meta_state["pending_choices_active"] = True
-                    await _set_room_meta(room.id, {"last_choice_ts": now, "pending_choices_active": True})
-            except Exception:
-                pass
+            # ✅ 자동 선택지: 쿨다운 적용 (온디맨드와 충돌 안 함)
+            elif cooldown_met:  # ✅ want_choices가 False일 때만 실행
+                try:
+                    from app.services.origchat_service import compute_branch_score_from_text, propose_choices_from_anchor as _pc
+                    ai_text = getattr(resp.ai_message, 'content', '') or ''
+                    score = compute_branch_score_from_text(ai_text)
+                    if score >= 1.5:
+                        meta_resp["choices"] = _pc(ai_text, None)
+                        meta_state["last_choice_ts"] = now
+                        meta_state["pending_choices_active"] = True
+                        await _set_room_meta(room.id, {"last_choice_ts": now, "pending_choices_active": True})
+                except Exception:
+                    pass
         # # 분기 가치가 높을 때 자동 제안(과잉 방지: 쿨다운 준수, 온디맨드가 아닌 경우만)
         # if not want_choices and cooldown_met:
         #     try:

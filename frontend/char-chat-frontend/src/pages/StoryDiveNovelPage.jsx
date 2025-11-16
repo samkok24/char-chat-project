@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { storydiveAPI } from '../lib/api';
@@ -27,6 +27,12 @@ const StoryDiveNovelPage = () => {
   const [entryPoint, setEntryPoint] = useState(null);
   const [contextParagraphs, setContextParagraphs] = useState([]); // 마지막 5문장 (하이라이트)
   const [nextHistory, setNextHistory] = useState([]); // NEXT 버튼 히스토리
+
+  // localStorage 키 생성 (SSOT: novelId 기반) - useCallback으로 메모이제이션
+  const getStorageKey = useCallback((novelId) => `storydive_session_${novelId}`, []);
+  
+  // 세션 복원 알림 중복 방지용 ref
+  const restoreToastShownRef = useRef(false);
   
   // 플레이 상태
   const [mode, setMode] = useState('do');
@@ -57,7 +63,39 @@ const StoryDiveNovelPage = () => {
     },
     enabled: !!sessionId && isDived,
     refetchInterval: isGenerating ? 3000 : false,
+    retry: false,
+    onError: (error) => {
+      // 세션이 유효하지 않으면 localStorage에서 제거 (SSOT)
+      if (error.response?.status === 404 || error.response?.status === 403) {
+        if (novelId) {
+          localStorage.removeItem(getStorageKey(novelId));
+        }
+        setSessionId(null);
+        setIsDived(false);
+        toast.error('저장된 세션을 찾을 수 없습니다. 새로 시작해주세요.');
+      }
+    },
   });
+
+  // 세션 복원 시 entryPoint 및 컨텍스트 설정 (SSOT: session에서 가져옴)
+  useEffect(() => {
+    if (session && !entryPoint && paragraphs.length > 0) {
+      setEntryPoint(session.entry_point);
+      // 컨텍스트 복원
+      const endIdx = session.entry_point + 1;
+      const startIdx = Math.max(0, endIdx - 5);
+      setContextParagraphs(paragraphs.slice(startIdx, endIdx).map(p => p.index));
+      
+      // 진행 상황 복원 알림 (한 번만 표시)
+      if (!restoreToastShownRef.current) {
+        const activeTurns = (session.turns || []).filter(t => !t.deleted);
+        if (activeTurns.length > 0) {
+          toast.success(`${activeTurns.length}턴째에서 이어서 진행합니다`);
+          restoreToastShownRef.current = true;
+        }
+      }
+    }
+  }, [session, entryPoint, paragraphs]);
 
   // 소설 데이터 로드 시 문단 파싱
   useEffect(() => {
@@ -71,12 +109,28 @@ const StoryDiveNovelPage = () => {
     }
   }, [novel]);
 
+  // 페이지 로드 시 세션 복원 (SSOT: localStorage에서 sessionId 복원)
+  useEffect(() => {
+    if (!novelId || !novel) return;
+    
+    const savedSessionId = localStorage.getItem(getStorageKey(novelId));
+    if (savedSessionId) {
+      // 세션 복원 시도
+      setSessionId(savedSessionId);
+      setIsDived(true);
+      restoreToastShownRef.current = false; // 복원 알림 리셋
+    }
+  }, [novelId, novel, getStorageKey]);
+
   // 다이브 세션 생성
   const createSessionMutation = useMutation({
     mutationFn: ({ novelId, entryPoint }) => storydiveAPI.createSession(novelId, entryPoint),
     onSuccess: (response) => {
       const newSessionId = response.data.id;
       setSessionId(newSessionId);
+      
+      // localStorage에 sessionId 저장 (SSOT)
+      localStorage.setItem(getStorageKey(novelId), newSessionId);
       
       // 다이브 지점 이전 5문장을 컨텍스트로 설정 (마지막 5문장)
       const endIdx = entryPoint + 1;
@@ -215,6 +269,12 @@ const StoryDiveNovelPage = () => {
       setMode('do');
       setShowInputArea(false);
       setIsGenerating(false);
+      restoreToastShownRef.current = false; // 복원 알림 리셋
+      
+      // localStorage에서 세션 삭제 (SSOT)
+      if (novelId) {
+        localStorage.removeItem(getStorageKey(novelId));
+      }
       
       // 쿼리 무효화
       queryClient.invalidateQueries(['storydive-session']);

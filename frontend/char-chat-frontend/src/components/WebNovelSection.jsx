@@ -4,14 +4,12 @@ import { charactersAPI } from '../lib/api';
 import { Badge } from './ui/badge';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import { useAuth } from '../contexts/AuthContext';
-import LoginRequiredModal from './LoginRequiredModal';
+import useRequireAuth from '../hooks/useRequireAuth';
 import { HistoryChatCard, HistoryChatCardSkeleton } from './HistoryChatCard';
 
 const WebNovelSection = () => {
   const navigate = useNavigate();
-  const { isAuthenticated } = useAuth();
-  const [showLoginRequired, setShowLoginRequired] = React.useState(false);
+  const requireAuth = useRequireAuth();
   const { data = [], isLoading, isError } = useQuery({
     queryKey: ['webnovel-characters'],
     queryFn: async () => {
@@ -78,10 +76,7 @@ const WebNovelSection = () => {
             <HistoryChatCard
               character={c}
               onClick={() => {
-                if (!isAuthenticated) {
-                  setShowLoginRequired(true);
-                  return;
-                }
+                if (!requireAuth('웹소설 캐릭터 채팅')) return;
                 navigate(`/ws/chat/${c.id}`);
               }}
             />
@@ -91,12 +86,6 @@ const WebNovelSection = () => {
           </div>
         ))}
       </div>
-      <LoginRequiredModal
-        isOpen={showLoginRequired}
-        onClose={() => setShowLoginRequired(false)}
-        onLogin={() => { setShowLoginRequired(false); navigate('/login?tab=login'); }}
-        onRegister={() => { setShowLoginRequired(false); navigate('/login?tab=register'); }}
-      />
     </section>
   );
 };

@@ -16,56 +16,64 @@ const TrendingItem = ({ character }) => {
   const charId = character?.id || character?.character_id || character?.characterId || character?.target_id;
   const raw = character?.thumbnail_url || character?.avatar_url;
   const withV = raw ? `${raw}${raw.includes('?') ? '&' : '?'}v=${Date.now()}` : raw;
-  const imgSrc = getThumbnailUrl(withV, 276) || DEFAULT_SQUARE_URI;
+  const imgSrc = getThumbnailUrl(withV, 400) || DEFAULT_SQUARE_URI;
   const username = character?.creator_username;
   const isWebNovel = character?.source_type === 'IMPORTED';
   const isOrigChat = !!(character?.origin_story_id || character?.is_origchat);
 
   return (
     <li>
-      <Link to={charId ? `/characters/${charId}` : '#'} className="flex gap-3 items-start" onClick={(e)=>{ if(!charId){ e.preventDefault(); e.stopPropagation(); } }}>
-        <div className={`relative rounded-xl overflow-hidden flex-shrink-0 border ${isOrigChat ? 'border-orange-500/60' : (isWebNovel ? 'border-blue-500/40' : 'border-purple-500/40')}`} style={{ width: 89, height: 138 }}>
-          <img
-            src={imgSrc}
-            alt={character?.name}
-            className="w-full h-full object-cover object-top"
-            onError={(e) => { e.currentTarget.src = DEFAULT_SQUARE_URI; }}
-            draggable="false"
-            loading="lazy"
-          />
-          <div className="absolute top-1 left-1">
-            {isOrigChat ? (
-              <Badge className="bg-orange-400 text-black hover:bg-orange-400">원작챗</Badge>
-            ) : (isWebNovel ? (
-              <Badge className="bg-blue-600 text-white hover:bg-blue-600">웹소설</Badge>
-            ) : (
-              <Badge className="bg-purple-600 text-white hover:bg-purple-600">캐릭터</Badge>
-            ))}
+      <Link 
+        to={charId ? `/characters/${charId}` : '#'} 
+        className="block group cursor-pointer" 
+        onClick={(e)=>{ if(!charId){ e.preventDefault(); e.stopPropagation(); } }}
+      >
+        <div className="bg-gray-800/50 rounded-lg overflow-hidden border border-gray-700/50 group-hover:border-gray-600 transition-colors">
+          {/* 이미지 영역 */}
+          <div className="relative aspect-[3/4] overflow-hidden bg-gray-900">
+            <img
+              src={imgSrc}
+              alt={character?.name}
+              className="w-full h-full object-cover object-top group-hover:scale-105 transition-transform duration-300"
+              onError={(e) => { e.currentTarget.src = DEFAULT_SQUARE_URI; }}
+              draggable="false"
+              loading="lazy"
+            />
           </div>
-          <div className="absolute bottom-1 right-1 py-0.5 px-1.5 rounded bg-black/60 text-xs text-gray-100 flex items-center gap-2">
-            <span className="inline-flex items-center gap-1"><MessageCircle className="w-3 h-3" />{formatCount(character?.chat_count ?? 0)}</span>
-            <span className="inline-flex items-center gap-1"><Heart className="w-3 h-3" />{formatCount(character?.like_count ?? 0)}</span>
+          
+          {/* 텍스트 영역 */}
+          <div className="p-3 space-y-2">
+            {/* 제목 */}
+            <h4 className="text-white font-bold text-sm leading-tight line-clamp-1">{character?.name}</h4>
+            
+            {/* 통계 */}
+            <div className="flex items-center gap-3 text-xs text-gray-400">
+              <span className="inline-flex items-center gap-1">
+                <MessageCircle className="w-3 h-3" />
+                {formatCount(character?.chat_count ?? 0)}
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <Heart className="w-3 h-3" />
+                {formatCount(character?.like_count ?? 0)}
+              </span>
+            </div>
+            
+            {/* 설명 */}
+            <p className="text-xs text-gray-400 line-clamp-2 leading-relaxed min-h-[2.5rem]">
+              {character?.description || '설명이 없습니다.'}
+            </p>
+            
+            {/* 작성자 */}
+            {username && character?.creator_id && (
+              <div
+                onClick={(e) => { e.preventDefault(); e.stopPropagation(); navigate(`/users/${character.creator_id}/creator`); }}
+                className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-300 cursor-pointer pt-1"
+              >
+                <span>@</span>
+                <span className="truncate">{username}</span>
+              </div>
+            )}
           </div>
-        </div>
-        <div className="flex-initial min-w-0 w-[200px] relative pb-8 min-h-[138px]">
-          <div className="flex items-center gap-2">
-            <h4 className="text-white text-[15px] font-semibold truncate max-w-full">{character?.name}</h4>
-          </div>
-          <div className="mt-2 text-sm text-gray-400 line-clamp-2 max-w-full max-h-10 overflow-hidden pr-1">
-            {character?.description || '설명이 없습니다.'}
-          </div>
-          {username && character?.creator_id && (
-            <span
-              onClick={(e) => { e.preventDefault(); e.stopPropagation(); navigate(`/users/${character.creator_id}/creator`); }}
-              className="absolute left-0 bottom-0 inline-flex items-center gap-2 text-sm text-gray-300 hover:text-white cursor-pointer"
-            >
-              <Avatar className="w-5 h-5">
-                <AvatarImage src={resolveImageUrl(character.creator_avatar_url ? `${character.creator_avatar_url}${character.creator_avatar_url.includes('?') ? '&' : '?'}v=${profileVersion}` : '')} alt={username} />
-                <AvatarFallback className="text-[10px]">{username?.charAt(0)?.toUpperCase() || 'U'}</AvatarFallback>
-              </Avatar>
-              <span className="truncate max-w-[140px]">{username}</span>
-            </span>
-          )}
         </div>
       </Link>
     </li>
@@ -73,13 +81,19 @@ const TrendingItem = ({ character }) => {
 };
 
 const TrendingSkeleton = () => (
-  <li className="flex gap-3 items-start animate-pulse">
-    <div className="bg-gray-700 rounded-xl" style={{ width: 89, height: 138 }} />
-    <div className="flex-1 min-w-0 space-y-2">
-      <div className="h-4 bg-gray-700 rounded w-2/3" />
-      <div className="h-3 bg-gray-700 rounded w-full" />
-      <div className="h-3 bg-gray-700 rounded w-5/6" />
-      <div className="h-4 bg-gray-700 rounded w-24" />
+  <li className="animate-pulse">
+    <div className="bg-gray-800/50 rounded-lg overflow-hidden border border-gray-700/50">
+      <div className="aspect-[3/4] bg-gray-700" />
+      <div className="p-3 space-y-2">
+        <div className="h-4 bg-gray-700 rounded w-3/4" />
+        <div className="flex gap-3">
+          <div className="h-3 bg-gray-700 rounded w-12" />
+          <div className="h-3 bg-gray-700 rounded w-12" />
+        </div>
+        <div className="h-3 bg-gray-700 rounded w-full" />
+        <div className="h-3 bg-gray-700 rounded w-5/6" />
+        <div className="h-3 bg-gray-700 rounded w-20" />
+      </div>
     </div>
   </li>
 );
@@ -96,13 +110,17 @@ const TrendingCharacters = () => {
     refetchOnMount: 'always',
   });
 
-  const pageSize = 8;
+  const pageSize = 14; // 2행 x 7열 = 14개
   const [page, setPage] = useState(0);
   const items = data || [];
   const pageCount = Math.max(1, Math.ceil(items.length / pageSize));
   const hasCarousel = items.length > pageSize;
 
   const visibleItems = useMemo(() => {
+    // 첫 페이지는 항상 14개 표시 (7x2)
+    if (page === 0) {
+      return items.slice(0, 14);
+    }
     if (!hasCarousel) return items;
     const start = page * pageSize;
     return items.slice(start, start + pageSize);
@@ -117,14 +135,14 @@ const TrendingCharacters = () => {
 
   return (
     <section className="mt-8">
-      <div className="flex items-center justify-between mb-3">
-        <h2 className="text-lg font-bold text-white">인기 캐릭터 TOP</h2>
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-xl font-bold text-white">인기 캐릭터 TOP</h2>
         {hasCarousel && (
           <div className="flex items-center gap-2">
             <button
               type="button"
               aria-label="이전"
-              className="w-8 h-8 rounded-full bg-gray-800 hover:bg-gray-700 text-gray-200 inline-flex items-center justify-center"
+              className="w-8 h-8 rounded-full bg-gray-800 hover:bg-gray-700 text-gray-200 inline-flex items-center justify-center transition-colors"
               onClick={gotoPrev}
             >
               <ChevronLeft className="w-4 h-4" />
@@ -132,22 +150,24 @@ const TrendingCharacters = () => {
             <button
               type="button"
               aria-label="다음"
-              className="w-8 h-8 rounded-full bg-gray-800 hover:bg-gray-700 text-gray-200 inline-flex items-center justify-center"
+              className="w-10 h-10 rounded-lg bg-gray-800 hover:bg-gray-700 text-white inline-flex items-center justify-center transition-colors"
               onClick={gotoNext}
             >
-              <ChevronRight className="w-4 h-4" />
+              <ChevronRight className="w-5 h-5" />
             </button>
           </div>
         )}
       </div>
-      <ul className="grid grid-cols-4 gap-6">
-        {isLoading && Array.from({ length: 8 }).map((_, idx) => (
-          <TrendingSkeleton key={idx} />
-        ))}
-        {!isLoading && !isError && visibleItems.map((c) => (
-          <TrendingItem key={c.id} character={c} />
-        ))}
-      </ul>
+      <div className="relative">
+        <ul className="grid grid-cols-7 gap-4">
+          {isLoading && Array.from({ length: 14 }).map((_, idx) => (
+            <TrendingSkeleton key={idx} />
+          ))}
+          {!isLoading && !isError && visibleItems.map((c) => (
+            <TrendingItem key={c.id} character={c} />
+          ))}
+        </ul>
+      </div>
     </section>
   );
 };

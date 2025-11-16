@@ -210,7 +210,15 @@ const StoryDetailPage = () => {
   const handleDeleteStory = async () => {
     if (!(user && story?.creator_id === user.id)) return;
     if (!window.confirm('작품을 삭제하시겠습니까?')) return;
-    try { await storiesAPI.deleteStory(storyId); navigate('/dashboard'); } catch (_) {}
+    try {
+      await storiesAPI.deleteStory(storyId);
+      setPageToast({ show: true, type: 'success', message: '작품이 삭제되었습니다.' });
+      setTimeout(() => navigate('/dashboard'), 1000);
+    } catch (e) {
+      console.error('작품 삭제 실패:', e);
+      const errorMsg = e?.response?.data?.detail || e?.message || '작품 삭제에 실패했습니다.';
+      setPageToast({ show: true, type: 'error', message: errorMsg });
+    }
   };
 
   const handleSubmitComment = async (e) => {
@@ -243,11 +251,24 @@ const StoryDetailPage = () => {
   };
 
   const handleTogglePublic = async () => {
+    if (!story) return;
+    const next = !story.is_public;
+    // 낙관적 업데이트: 먼저 UI 업데이트
+    queryClient.setQueryData(['story', storyId], (prev) => ({ ...(prev || {}), is_public: next }));
     try {
-      const next = !story.is_public;
       await storiesAPI.updateStory(storyId, { is_public: next });
-      queryClient.setQueryData(['story', storyId], (prev) => ({ ...(prev || {}), is_public: next }));
-    } catch (_) {}
+      setPageToast({ 
+        show: true, 
+        type: 'success', 
+        message: next ? '작품이 공개되었습니다.' : '작품이 비공개로 설정되었습니다.' 
+      });
+    } catch (e) {
+      console.error('공개/비공개 설정 실패:', e);
+      // 실패 시 원래 상태로 롤백
+      queryClient.setQueryData(['story', storyId], (prev) => ({ ...(prev || {}), is_public: !next }));
+      const errorMsg = e?.response?.data?.detail || e?.message || '설정 변경에 실패했습니다.';
+      setPageToast({ show: true, type: 'error', message: errorMsg });
+    }
   };
 
   // 주의: 훅 순서 보장을 위해 조기 return을 제거하고, 상태별 UI는 아래에서 조건부 렌더링
@@ -508,7 +529,7 @@ const StoryDetailPage = () => {
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end" className="bg-gray-800 text-white border-gray-700">
-                      {(user && story?.creator_id === user.id && locationState.fromMyGrid) ? (
+                      {isOwner ? (
                         <>
                           <DropdownMenuItem onClick={() => navigate(`/stories/${storyId}/edit`)}>
                             <Edit className="w-4 h-4 mr-2" /> 수정
@@ -724,7 +745,17 @@ const StoryDetailPage = () => {
                 {episodesSorted.length > 0 ? (
                   <ul className="divide-y divide-gray-800 rounded-md border border-gray-700 overflow-hidden">
                     {episodesSorted.map((ch, idx) => {
-                      const hasImage = !!ch.image_url; // 웹툰 이미지 유무 확인
+                      // image_url이 배열인지 확인하고 첫 번째 이미지를 썸네일로 사용
+                      const getThumbnailUrl = (imageUrl) => {
+                        if (!imageUrl) return null;
+                        if (Array.isArray(imageUrl)) {
+                          return imageUrl.length > 0 ? imageUrl[0] : null;
+                        }
+                        return imageUrl; // 단일 문자열인 경우 (하위 호환)
+                      };
+                      
+                      const thumbnailUrl = getThumbnailUrl(ch.image_url);
+                      const hasImage = !!thumbnailUrl;
                       
                       return (
                       <li
@@ -740,11 +771,11 @@ const StoryDetailPage = () => {
                           <div className="flex items-center gap-3 flex-1 min-w-0">
                             <div className="flex-shrink-0 w-12 h-16 overflow-hidden rounded">
                               <img 
-                                src={ch.image_url} 
+                                src={thumbnailUrl} 
                                 alt={ch.title || '웹툰'}
                                 className="w-full h-full object-cover object-top"
                               />
-                            </div>
+                        </div>
                             <div className="text-sm text-gray-200 truncate max-w-[60vw] lg:max-w-[40vw]">
                               {ch.title || '제목 없음'}
                             </div>

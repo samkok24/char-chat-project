@@ -12,42 +12,50 @@ const ChapterEditModal = ({ open, onClose, chapter, onAfterSave }) => {
   const [error, setError] = useState('');
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
-  const [imageFile, setImageFile] = useState(null);
-  const [imagePreview, setImagePreview] = useState(null);
-  const [currentImageUrl, setCurrentImageUrl] = useState(null);
+  const [imageFiles, setImageFiles] = useState([]);
+  const [imagePreviews, setImagePreviews] = useState([]);
+  const [currentImageUrls, setCurrentImageUrls] = useState([]);
 
   useEffect(() => {
     if (chapter && open) {
       setTitle(chapter.title || '');
       setContent(chapter.content || '');
-      setCurrentImageUrl(chapter.image_url || null);
-      setImagePreview(null);
-      setImageFile(null);
+      // image_url이 배열인지 확인
+      const urls = Array.isArray(chapter.image_url) 
+        ? chapter.image_url.filter(url => url)
+        : (chapter.image_url ? [chapter.image_url] : []);
+      setCurrentImageUrls(urls);
+      setImagePreviews([]);
+      setImageFiles([]);
     }
   }, [chapter, open]);
 
   const handleImageChange = (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
     
-    if (!file.type.startsWith('image/')) {
+    const imageFiles = files.filter(file => file.type.startsWith('image/'));
+    if (imageFiles.length !== files.length) {
       setError('이미지 파일만 업로드 가능합니다.');
       return;
     }
     
-    const preview = URL.createObjectURL(file);
-    setImageFile(file);
-    setImagePreview(preview);
+    const previews = imageFiles.map(file => URL.createObjectURL(file));
+    setImageFiles(prev => [...prev, ...imageFiles]);
+    setImagePreviews(prev => [...prev, ...previews]);
     setError('');
   };
 
-  const removeImage = () => {
-    if (imagePreview) {
-      URL.revokeObjectURL(imagePreview);
+  const removeImage = (index, isPreview) => {
+    if (isPreview) {
+      // 새로 추가한 이미지 제거
+      URL.revokeObjectURL(imagePreviews[index]);
+      setImagePreviews(prev => prev.filter((_, i) => i !== index));
+      setImageFiles(prev => prev.filter((_, i) => i !== index));
+    } else {
+      // 기존 이미지 제거
+      setCurrentImageUrls(prev => prev.filter((_, i) => i !== index));
     }
-    setImageFile(null);
-    setImagePreview(null);
-    setCurrentImageUrl(null); // 이미지 제거 시 currentImageUrl도 null로 설정
   };
 
   const handleSave = async () => {
@@ -67,16 +75,17 @@ const ChapterEditModal = ({ open, onClose, chapter, onAfterSave }) => {
       };
 
       // 2. 이미지 업로드 (새 이미지가 있는 경우)
-      if (imageFile) {
+      const allImageUrls = [...currentImageUrls];
+      
+      if (imageFiles.length > 0) {
         try {
           const formData = new FormData();
-          formData.append('files', imageFile);
+          imageFiles.forEach(file => {
+            formData.append('files', file);
+          });
           const uploadRes = await mediaAPI.upload(formData);
-          const imageUrl = uploadRes.data?.items?.[0]?.url;
-          
-          if (imageUrl) {
-            updateData.image_url = imageUrl;
-          }
+          const uploadedUrls = uploadRes.data?.items?.map(item => item.url).filter(Boolean) || [];
+          allImageUrls.push(...uploadedUrls);
         } catch (imgErr) {
           console.error('이미지 업로드 실패:', imgErr);
           setError('이미지 업로드에 실패했습니다.');
@@ -85,9 +94,11 @@ const ChapterEditModal = ({ open, onClose, chapter, onAfterSave }) => {
         }
       }
 
-      // 3. 이미지 제거 처리 (이미지가 있었는데 제거한 경우)
-      // currentImageUrl이 null이면 이미지가 제거된 것으로 간주
-      if (!imageFile && !imagePreview && !currentImageUrl && chapter.image_url) {
+      // 3. 이미지 URL 배열 설정
+      if (allImageUrls.length > 0) {
+        updateData.image_url = allImageUrls;
+      } else {
+        // 모든 이미지가 제거된 경우
         updateData.image_url = null;
       }
 
@@ -108,8 +119,6 @@ const ChapterEditModal = ({ open, onClose, chapter, onAfterSave }) => {
       setLoading(false);
     }
   };
-
-  const displayImage = imagePreview || currentImageUrl;
 
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!v) onClose?.(); }}>
@@ -153,50 +162,77 @@ const ChapterEditModal = ({ open, onClose, chapter, onAfterSave }) => {
 
           <div>
             <label className="block text-sm text-gray-300 mb-2">
-              웹툰 이미지 (선택사항)
+              웹툰 이미지 (선택사항) - 여러 컷 업로드 가능
             </label>
-            {displayImage ? (
-              <div className="relative">
-                <img
-                  src={displayImage}
-                  alt="웹툰 미리보기"
-                  className="w-full max-h-96 object-contain bg-gray-800 rounded border border-gray-700"
-                />
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="absolute top-2 right-2 bg-red-600 hover:bg-red-700 text-white"
-                  onClick={removeImage}
-                  title="이미지 제거"
-                >
-                  <X className="w-4 h-4" />
-                </Button>
-                {currentImageUrl && !imagePreview && (
-                  <div className="mt-2 text-xs text-gray-400">
-                    현재 이미지: 기존 이미지가 유지됩니다.
+            
+            {/* 기존 이미지들 */}
+            {currentImageUrls.length > 0 && (
+              <div className="space-y-2 mb-4">
+                {currentImageUrls.map((url, index) => (
+                  <div key={`current-${index}`} className="relative">
+                    <img
+                      src={url}
+                      alt={`기존 이미지 ${index + 1}`}
+                      className="w-full max-h-96 object-contain bg-gray-800 rounded border border-gray-700"
+                    />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="absolute top-2 right-2 bg-red-600 hover:bg-red-700 text-white"
+                      onClick={() => removeImage(index, false)}
+                      title="이미지 제거"
+                    >
+                      <X className="w-4 h-4" />
+                    </Button>
                   </div>
-                )}
-              </div>
-            ) : (
-              <label className="flex items-center justify-center w-full h-32 border-2 border-dashed border-gray-700 rounded-lg cursor-pointer hover:border-gray-600 bg-gray-800">
-                <div className="flex flex-col items-center gap-2">
-                  <ImageIcon className="w-8 h-8 text-gray-400" />
-                  <span className="text-sm text-gray-400">이미지 업로드</span>
-                </div>
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={handleImageChange}
-                  className="hidden"
-                />
-              </label>
-            )}
-            {!displayImage && (
-              <div className="mt-2 text-xs text-gray-400">
-                이미지를 업로드하면 웹툰 모드로 표시됩니다. 텍스트는 AI 프롬프팅용으로만 사용됩니다.
+                ))}
               </div>
             )}
+            
+            {/* 새로 추가한 이미지 미리보기 */}
+            {imagePreviews.length > 0 && (
+              <div className="space-y-2 mb-4">
+                {imagePreviews.map((preview, index) => (
+                  <div key={`preview-${index}`} className="relative">
+                    <img
+                      src={preview}
+                      alt={`새 이미지 ${index + 1}`}
+                      className="w-full max-h-96 object-contain bg-gray-800 rounded border border-gray-700"
+                    />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="absolute top-2 right-2 bg-red-600 hover:bg-red-700 text-white"
+                      onClick={() => removeImage(index, true)}
+                      title="이미지 제거"
+                    >
+                      <X className="w-4 h-4" />
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
+            
+            {/* 이미지 업로드 버튼 */}
+            <label className="flex items-center justify-center w-full h-32 border-2 border-dashed border-gray-700 rounded-lg cursor-pointer hover:border-gray-600 bg-gray-800">
+              <div className="flex flex-col items-center gap-2">
+                <ImageIcon className="w-8 h-8 text-gray-400" />
+                <span className="text-sm text-gray-400">이미지 추가 (여러 개 선택 가능)</span>
+              </div>
+              <input
+                type="file"
+                accept="image/*"
+                multiple
+                onChange={handleImageChange}
+                className="hidden"
+              />
+            </label>
+            
+            <div className="mt-2 text-xs text-gray-400">
+              여러 컷을 업로드하면 세로로 이어져서 웹툰처럼 표시됩니다. 텍스트는 AI 프롬프팅용으로만 사용됩니다.
+            </div>
           </div>
         </div>
 

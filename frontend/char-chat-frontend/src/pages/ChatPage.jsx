@@ -263,35 +263,42 @@ const ChatPage = () => {
         });
 
         // 캐릭터 기본 이미지 수집
+        let baseImages = [];
         try {
           const main = data?.avatar_url ? [data.avatar_url] : [];
           const gallery = Array.isArray(data?.image_descriptions)
             ? data.image_descriptions.map((d) => d?.url).filter(Boolean)
             : [];
           const fallback = !main.length && !gallery.length && data?.thumbnail_url ? [data.thumbnail_url] : [];
-          const unique = Array.from(new Set([...main, ...gallery, ...fallback]));
-          setCharacterImages(unique);
-          setCurrentImageIndex(0);
+          baseImages = [...main, ...gallery, ...fallback];
         } catch (_) {
           showToastOnce({ key: `ctx-warm-fail:${storyIdParam}`, type: 'warning', message: '컨텍스트 준비가 지연되고 있습니다.' });
         }
 
-        // mediaAPI 자산 우선 적용
+        // mediaAPI 자산과 병합
         try {
           const mediaRes = await mediaAPI.listAssets({ entityType: 'character', entityId: characterId, presign: false, expiresIn: 300 });
           const assets = Array.isArray(mediaRes.data?.items) ? mediaRes.data.items : (Array.isArray(mediaRes.data) ? mediaRes.data : []);
           setMediaAssets(assets);
-          const urls = Array.from(new Set(assets.map(a => a.url).filter(Boolean)));
-          if (urls.length) {
-            setCharacterImages(urls);
+          const mediaUrls = assets.map(a => a.url).filter(Boolean);
+          // mediaAPI와 기본 이미지 병합 (중복 제거)
+          const allImages = Array.from(new Set([...baseImages, ...mediaUrls]));
+          if (allImages.length) {
+            setCharacterImages(allImages);
             if (isPinnedRef.current && pinnedUrlRef.current) {
-              const idx = urls.findIndex(u => u === pinnedUrlRef.current);
+              const idx = allImages.findIndex(u => u === pinnedUrlRef.current);
               setCurrentImageIndex(idx >= 0 ? idx : 0);
             } else {
               setCurrentImageIndex(0);
             }
           }
-        } catch (_) {}
+        } catch (_) {
+          // mediaAPI 실패 시 baseImages만 사용
+          if (baseImages.length) {
+            setCharacterImages(baseImages);
+            setCurrentImageIndex(0);
+          }
+        }
 
         // 2. 🔥 채팅방 정보 가져오기 또는 생성
         const params = new URLSearchParams(location.search || '');
@@ -571,16 +578,34 @@ const ChatPage = () => {
       try {
         const d = e?.detail || {};
         if (d.entityType === 'character' && String(d.entityId) === String(characterId)) {
-          mediaAPI.listAssets({ entityType: 'character', entityId: characterId, presign: false, expiresIn: 300 }).then((res) => {
-            const assets = Array.isArray(res.data?.items) ? res.data.items : (Array.isArray(res.data) ? res.data : []);
+          // 캐릭터 기본 정보 다시 로드
+          Promise.all([
+            charactersAPI.getCharacter(characterId),
+            mediaAPI.listAssets({ entityType: 'character', entityId: characterId, presign: false, expiresIn: 300 })
+          ]).then(([charRes, mediaRes]) => {
+            const charData = charRes.data;
+            // 기본 이미지
+            const main = charData?.avatar_url ? [charData.avatar_url] : [];
+            const gallery = Array.isArray(charData?.image_descriptions)
+              ? charData.image_descriptions.map((d) => d?.url).filter(Boolean)
+              : [];
+            const baseImages = [...main, ...gallery];
+            
+            // mediaAPI 이미지
+            const assets = Array.isArray(mediaRes.data?.items) ? mediaRes.data.items : (Array.isArray(mediaRes.data) ? mediaRes.data : []);
             setMediaAssets(assets);
-            const urls = Array.from(new Set(assets.map(a => a.url).filter(Boolean)));
-            setCharacterImages(urls);
+            const mediaUrls = assets.map(a => a.url).filter(Boolean);
+            
+            // 병합
+            const allImages = Array.from(new Set([...baseImages, ...mediaUrls]));
+            if (allImages.length) {
+              setCharacterImages(allImages);
             if (isPinnedRef.current && pinnedUrlRef.current) {
-              const idx = urls.findIndex(u => u === pinnedUrlRef.current);
+                const idx = allImages.findIndex(u => u === pinnedUrlRef.current);
               setCurrentImageIndex(idx >= 0 ? idx : 0);
             } else {
               setCurrentImageIndex(0);
+              }
             }
           }).catch(()=>{});
         }
@@ -636,8 +661,8 @@ const ChatPage = () => {
         const metaRes = await chatAPI.getRoomMeta(chatRoomId);
         const meta = metaRes?.data || {};
 
-        // ✅ 원작챗 여부 확인 및 설정
-        const isOrigChatRoom = meta.mode === 'canon' || meta.mode === 'parallel';
+        // ✅ 원작챗 여부 확인 및 설정 (plain 모드도 포함)
+        const isOrigChatRoom = meta.mode === 'canon' || meta.mode === 'parallel' || meta.mode === 'plain';
         
         if (!isOrigChatRoom) {
           // ✅ 일반 챗이면 아무것도 안 함 (소켓이 처리)
@@ -660,9 +685,22 @@ const ChatPage = () => {
       });
       
       // ✅ 3. 메시지 히스토리 로드 (원작챗만)
-      const response = await chatAPI.getMessages(chatRoomId);
-      if (response?.data && Array.isArray(response.data)) {
-        setMessages(response.data);
+      let response = await chatAPI.getMessages(chatRoomId);
+      let messages = Array.isArray(response?.data) ? response.data : [];
+      
+      // ✅ plain 모드일 때 인사말이 백그라운드에서 생성되므로 폴링
+      if (meta.mode === 'plain' && messages.length === 0) {
+        // 인사말이 생성될 때까지 최대 10초 대기
+        for (let i = 0; i < 20; i++) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+          response = await chatAPI.getMessages(chatRoomId);
+          messages = Array.isArray(response?.data) ? response.data : [];
+          if (messages.length > 0) break;
+        }
+      }
+      
+      if (messages.length > 0) {
+        setMessages(messages);
         
         // ✅ 4. 선택지 복원 강화
         console.log('[선택지 복원] pending_choices_active:', meta.pending_choices_active);
@@ -686,12 +724,12 @@ const ChatPage = () => {
           } catch (err) {
             console.error('[선택지 복원] 실패:', err);
           }
-        } else if (Array.isArray(meta.initial_choices) && meta.initial_choices.length > 0 && response.data.length <= 1) {
+        } else if (Array.isArray(meta.initial_choices) && meta.initial_choices.length > 0 && messages.length <= 1) {
           // 초기 선택지 복원 (첫 메시지만 있을 때)
           console.log('[선택지 복원] 초기 선택지 사용:', meta.initial_choices);
           setPendingChoices(meta.initial_choices);
         } else {
-          console.log('[선택지 복원] 조건 불충족 - pending_active:', meta.pending_choices_active, ', initial_choices:', meta.initial_choices, ', messages:', response.data.length);
+          console.log('[선택지 복원] 조건 불충족 - pending_active:', meta.pending_choices_active, ', initial_choices:', meta.initial_choices, ', messages:', messages.length);
         }
       }
       
@@ -1482,9 +1520,10 @@ const ChatPage = () => {
 
       {/* 본문: 데스크톱 좌측 이미지 패널, 모바일은 배경 이미지 */}
       <div className="flex-1 overflow-hidden bg-[var(--app-bg)] text-[var(--app-fg)]">
-        <div className="grid grid-cols-1 lg:grid-cols-[480px_auto] lg:justify-center h-[calc(100vh-4rem)]">
-          <aside className="hidden lg:block border-r bg-black/10 relative">
-            <div className="sticky top-16 h-[calc(100vh-4rem)] relative">
+        <div className="grid grid-cols-1 lg:grid-cols-[480px_560px] lg:justify-center h-[calc(100vh-4rem)]">
+          <aside className="hidden lg:flex flex-col border-r bg-black/10 w-[480px] flex-shrink-0">
+            {/* 대표 이미지 영역 */}
+            <div className="flex-1 relative min-h-0">
               {/* 캐러셀: 상반신 기준 포트레이트 */}
               {(() => {
                 const primary = getCharacterPrimaryImage(character);
@@ -1503,6 +1542,7 @@ const ChatPage = () => {
                     alt={character?.name}
                     loading="eager"
                     aria-live="polite"
+                    style={{ imageRendering: 'high-quality' }}
                     aria-label={`${Math.min(characterImages.length, Math.max(1, currentImageIndex + 1))} / ${characterImages.length}`}
                   />
                 );
@@ -1527,16 +1567,70 @@ const ChatPage = () => {
                   </Tooltip>
                 </div>
               )}
-              
             </div>
+            
+            {/* 미니 갤러리: 대표이미지 아래 별도 영역 */}
+            {characterImages && characterImages.length > 1 && (
+              <div className="flex-shrink-0 bg-black/90 px-3 py-2.5">
+                <div className="flex items-center justify-start gap-2 pl-2">
+                  {/* Prev */}
+                  <Button
+                    onClick={handlePrevImage}
+                    disabled={isPrevDisabled}
+                    className={`rounded-full w-7 h-7 p-0 flex-shrink-0 transition-all ${
+                      isPrevDisabled ? 'bg-white/5 text-white/30 cursor-not-allowed' : 'bg-white/10 hover:bg-white/20 text-white'
+                    }`}
+                    size="icon"
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                  </Button>
+
+                  {/* Thumbnails */}
+                  <div id="thumbnail-gallery-footer" className="flex gap-1.5 overflow-x-auto scrollbar-hide">
+                    {characterImages.map((img, idx) => (
+                      <button
+                        key={idx}
+                        onClick={() => setCurrentImageIndex(idx)}
+                        className={`relative flex-shrink-0 transition-all ${
+                          idx === currentImageIndex 
+                            ? 'ring-2 ring-purple-500 ring-offset-1 ring-offset-black' 
+                            : 'opacity-70 hover:opacity-100'
+                        }`}
+                        aria-label={`이미지 ${idx + 1}`}
+                      >
+                        <img
+                          src={resolveImageUrl(img)}
+                          alt={`썸네일 ${idx + 1}`}
+                          className={`w-12 h-12 object-cover object-top rounded ${
+                            idx === currentImageIndex ? 'brightness-100' : 'brightness-80'
+                          }`}
+                        />
+                      </button>
+                    ))}
+            </div>
+
+                  {/* Next */}
+                  <Button
+                    onClick={handleNextImage}
+                    disabled={isNextDisabled}
+                    className={`rounded-full w-7 h-7 p-0 flex-shrink-0 transition-all ${
+                      isNextDisabled ? 'bg-white/5 text-white/30 cursor-not-allowed' : 'bg-white/10 hover:bg-white/20 text-white'
+                    }`}
+                    size="icon"
+                  >
+                    <ChevronRight className="w-4 h-4" />
+                  </Button>
+                </div>
+              </div>
+            )}
           </aside>
           <main
             ref={chatContainerRef}
             onScroll={handleScroll}
-            className="relative overflow-y-auto p-4 md:p-6 lg:px-8 pt-24 lg:pt-28 bg-[var(--app-bg)] scrollbar-dark"
-            style={{}}
+            className="relative overflow-y-auto p-4 md:p-6 lg:px-8 pt-24 lg:pt-28 bg-[var(--app-bg)] scrollbar-dark w-full"
+            style={{ scrollbarGutter: 'stable' }}
           >
-            <div className={`relative z-10 w-full lg:max-w-[560px] mx-auto space-y-6 mt-2 ${textSizeClass} ${
+            <div className={`relative z-10 w-full space-y-6 mt-2 ${textSizeClass} ${
               uiLetterSpacing==='tighter'?'tracking-tighter':uiLetterSpacing==='tight'?'tracking-tight':uiLetterSpacing==='wide'?'tracking-wide':uiLetterSpacing==='wider'?'tracking-wider':'tracking-normal'
             } ${uiFontFamily==='serif'?'font-serif':'font-sans'}`}>
           {historyLoading && (
@@ -1649,67 +1743,12 @@ const ChatPage = () => {
       {/* 입력 폼 */}
       <footer className="bg-[var(--footer-bg)] text-[var(--app-fg)] border-t border-gray-800 md:p-1">
         <ErrorBoundary>
-        <div className="hidden lg:flex lg:w-[1040px] lg:mx-auto lg:items-center">
-          {/* 왼쪽: 미니 갤러리 (이미지 아래) */}
-          <div className="w-[480px] pr-4 items-center">
-            {characterImages && characterImages.length > 1 && (
-              <div className="bg-black/70 backdrop-blur-sm rounded-lg p-2">
-                <div className="flex items-center justify-center gap-2">
-                  {/* Prev */}
-                  <Button
-                    onClick={handlePrevImage}
-                    disabled={isPrevDisabled}
-                    className={`rounded-full w-8 h-8 p-0 flex-shrink-0 transition-colors ${
-                      isPrevDisabled ? 'bg-white/5 text-white/30 cursor-not-allowed' : 'bg-white/10 hover:bg-white/20 text-white'
-                    }`}
-                    size="icon"
-                  >
-                    <ChevronLeft className="w-5 h-5" />
-                  </Button>
-
-                  {/* Thumbnails */}
-                  <div id="thumbnail-gallery-footer" className="flex gap-1 overflow-x-auto max-w-[320px]">
-                    {characterImages.map((img, idx) => (
-                      <button
-                        key={idx}
-                        onClick={() => setCurrentImageIndex(idx)}
-                        className={`relative flex-shrink-0 transition-all ${
-                          idx === currentImageIndex ? 'ring-2 ring-purple-500 ring-offset-1 ring-offset-black/50' : 'opacity-70 hover:opacity-100'
-                        }`}
-                        aria-label={`이미지 ${idx + 1}`}
-                      >
-                        <img
-                          src={resolveImageUrl(img)}
-                          alt={`썸네일 ${idx + 1}`}
-                          className={`w-12 h-12 object-cover object-top rounded ${
-                            idx === currentImageIndex ? 'brightness-100' : 'brightness-90'
-                          }`}
-                        />
-                        {idx === currentImageIndex && (
-                          <div className="absolute inset-0 border-2 border-purple-500 rounded pointer-events-none" />
-                        )}
-                      </button>
-                    ))}
-                  </div>
-
-                  {/* Next */}
-                  <Button
-                    onClick={handleNextImage}
-                    disabled={isNextDisabled}
-                    className={`rounded-full w-8 h-8 p-0 flex-shrink-0 transition-colors ${
-                      isNextDisabled ? 'bg-white/5 text-white/30 cursor-not-allowed' : 'bg-white/10 hover:bg-white/20 text-white'
-                    }`}
-                    size="icon"
-                  >
-                    <ChevronRight className="w-5 h-5" />
-                  </Button>
-                </div>
-              </div>
-            )}
-          </div>
+        <div className="hidden lg:grid lg:grid-cols-[480px_560px] lg:justify-center lg:mx-auto lg:items-center">
+          {/* 왼쪽: 빈 공간 (미니 갤러리는 이미지 아래로 이동) */}
+          <div className="w-[480px]"></div>
           
           {/* 오른쪽: 채팅 입력 컨테이너 (채팅 메시지 영역 아래) */}
-          <div className="w-[560px]">
+          <div className="w-full">
           <ErrorBoundary>
           <form onSubmit={handleSendMessage} className="flex w-full items-center gap-2">
             {/* 모델 선택 버튼 */}

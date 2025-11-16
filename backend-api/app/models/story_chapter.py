@@ -22,7 +22,8 @@ class StoryChapter(Base):
     view_count = Column(Integer, default=0)
     # 웹툰 이미지 URL (선택사항)
     # NULL이면 텍스트 표시, 값이 있으면 이미지만 표시 (텍스트는 AI 프롬프팅용)
-    image_url = Column(String(500), nullable=True)
+    # JSON 배열 문자열로 저장 (예: '["url1", "url2"]') 또는 단일 URL 문자열 (하위 호환)
+    image_url = Column(Text, nullable=True)
 
     __table_args__ = (
         UniqueConstraint('story_id', 'no', name='uq_story_chapter_no'),

@@ -35,6 +35,9 @@
   }
   
   /* 다크 테마 세련된 스크롤바 */
+  .scrollbar-dark {
+    scrollbar-gutter: stable; /* 스크롤바 공간 항상 예약하여 레이아웃 흔들림 방지 */
+  }
   .scrollbar-dark::-webkit-scrollbar {
     width: 10px;
     height: 10px;

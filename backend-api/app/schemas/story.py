@@ -2,10 +2,11 @@
 스토리 관련 Pydantic 스키마
 """
 
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, field_serializer, field_validator
 from typing import Optional, List
 from datetime import datetime
 import uuid
+import json
 
 
 class StoryBase(BaseModel):
@@ -127,7 +128,7 @@ class ChapterBase(BaseModel):
     no: int = Field(..., ge=0)
     title: Optional[str] = Field(None, max_length=200)
     content: str = Field(..., min_length=1)
-    image_url: Optional[str] = None
+    image_url: Optional[List[str]] = None  # 여러 이미지 URL 배열
 
 
 class ChapterCreate(ChapterBase):
@@ -137,7 +138,7 @@ class ChapterCreate(ChapterBase):
 class ChapterUpdate(BaseModel):
     title: Optional[str] = Field(None, min_length=1, max_length=200)
     content: Optional[str] = Field(None, min_length=1)
-    image_url: Optional[str] = None
+    image_url: Optional[List[str]] = None  # 여러 이미지 URL 배열
 
 
 class ChapterResponse(ChapterBase):
@@ -145,3 +146,29 @@ class ChapterResponse(ChapterBase):
     id: uuid.UUID
     view_count: int = 0
     created_at: datetime
+    
+    @field_validator('image_url', mode='before')
+    @classmethod
+    def parse_image_url(cls, v):
+        """DB에서 가져온 image_url을 배열로 변환 (하위 호환)"""
+        if v is None:
+            return None
+        if isinstance(v, list):
+            return v
+        if isinstance(v, str):
+            # JSON 배열인지 확인
+            try:
+                parsed = json.loads(v)
+                if isinstance(parsed, list):
+                    return parsed
+                # 단일 문자열인 경우 (하위 호환)
+                return [parsed] if parsed else None
+            except (json.JSONDecodeError, TypeError):
+                # JSON이 아닌 단일 URL 문자열인 경우 (하위 호환)
+                return [v] if v else None
+        return None
+    
+    @field_serializer('image_url')
+    def serialize_image_url(self, value):
+        """응답 시 배열 그대로 반환"""
+        return value

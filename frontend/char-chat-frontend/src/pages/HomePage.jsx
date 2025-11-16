@@ -7,6 +7,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../contexts/AuthContext';
+import useRequireAuth from '../hooks/useRequireAuth';
 import { charactersAPI, usersAPI, tagsAPI, storiesAPI } from '../lib/api';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -54,15 +55,14 @@ import TopWebtoons from '../components/TopWebtoons';
 import TopStories from '../components/TopStories';
 import TopOrigChat from '../components/TopOrigChat';
 import WebNovelSection from '../components/WebNovelSection';
-import LoginRequiredModal from '../components/LoginRequiredModal';
 
 const HomePage = () => {
   const queryClient = useQueryClient();
   const [searchQuery, setSearchQuery] = useState('');
   const { user, isAuthenticated, logout } = useAuth();
+  const requireAuth = useRequireAuth();
   const navigate = useNavigate();
   const location = useLocation();
-  const [showLoginRequired, setShowLoginRequired] = useState(false);
   const [sourceFilter, setSourceFilter] = useState(null); // null | 'IMPORTED' | 'ORIGINAL'
 
   // 스토리 다이브용 소설 목록 조회
@@ -238,11 +238,7 @@ const HomePage = () => {
   };
 
   const startChat = (characterId) => {
-    if (!isAuthenticated) {
-      navigate('/login');
-      return;
-    }
-    // "대화하기" 버튼은 실제 채팅 페이지로 바로 이동
+    if (!requireAuth('캐릭터 채팅')) return;
     navigate(`/ws/chat/${characterId}`);
   };
 
@@ -259,10 +255,7 @@ const HomePage = () => {
   });
 
   const createCharacter = () => {
-    if (!isAuthenticated) {
-      setShowLoginRequired(true);
-      return;
-    }
+    if (!requireAuth('캐릭터 생성')) return;
     navigate('/characters/create');
   };
 
@@ -436,9 +429,10 @@ const HomePage = () => {
                     key={idx}
                     className="flex-shrink-0 w-[200px] cursor-pointer group"
                     onClick={() => {
-                      if (!isAuthenticated) {
-                        setShowLoginRequired(true);
-                      } else if (matchedNovel) {
+                      if (!requireAuth('스토리 에이전트')) {
+                        return;
+                      }
+                      if (matchedNovel) {
                         // 바로 원문 페이지로 이동
                         navigate(`/storydive/novels/${matchedNovel.id}`);
                       } else {
@@ -605,12 +599,6 @@ const HomePage = () => {
       </main>
       </div>
       {/* 로그인 유도 모달 */}
-      <LoginRequiredModal
-        isOpen={showLoginRequired}
-        onClose={() => setShowLoginRequired(false)}
-        onLogin={() => { setShowLoginRequired(false); navigate('/login?tab=login'); }}
-        onRegister={() => { setShowLoginRequired(false); navigate('/login?tab=register'); }}
-      />
     </AppLayout>
   );
 };

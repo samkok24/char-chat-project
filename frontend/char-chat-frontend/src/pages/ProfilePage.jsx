@@ -40,6 +40,16 @@ import {
 } from 'lucide-react';
 import { RecentCharactersList } from '../components/RecentCharactersList'; // RecentCharactersList 추가
 import { Separator } from '../components/ui/separator';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '../components/ui/alert-dialog';
 
 // import { PageLoader } from '../App';
 
@@ -78,6 +88,8 @@ const ProfilePage = () => {
   const [seriesRange, setSeriesRange] = useState('24h'); // '24h' | '7d'
   const [topChars, setTopChars] = useState([]);
   const [showEdit, setShowEdit] = useState(false);
+  const [deleteAvatarDialogOpen, setDeleteAvatarDialogOpen] = useState(false);
+  const [statsError, setStatsError] = useState(false);
 
   // [추가] API를 호출하여 데이터를 가져오는 useEffect 로직입니다.
   useEffect(() => {
@@ -94,21 +106,38 @@ const ProfilePage = () => {
     }
     const loadProfile = async () => {
       setLoading(true);
+      setError('');
       try {
         const response = await usersAPI.getUserProfile(uid);
         setProfile(response.data);
       } catch (err) {
-        setError('프로필 정보를 불러올 수 없습니다.');
+        // 에러 타입별 구체적인 메시지 제공
+        const status = err?.response?.status;
+        const isNetworkError = !err.response || err.code === 'ERR_NETWORK' || err.code === 'ECONNABORTED';
+        
+        if (isNetworkError) {
+          setError('네트워크 연결을 확인해주세요. 인터넷 연결 상태를 확인한 후 다시 시도해주세요.');
+        } else if (status === 401 || status === 403) {
+          setError('프로필을 조회할 권한이 없습니다. 다시 로그인해주세요.');
+          setTimeout(() => navigate('/login'), 2000);
+        } else if (status === 404) {
+          setError('요청하신 프로필을 찾을 수 없습니다.');
+        } else if (status >= 500) {
+          setError('서버에 일시적인 문제가 발생했습니다. 잠시 후 다시 시도해주세요.');
+        } else {
+          setError(err?.response?.data?.detail || '프로필 정보를 불러올 수 없습니다.');
+        }
       } finally {
         setLoading(false);
       }
     };
     loadProfile();
-  }, [paramUserId, currentUser, isAuthenticated, authLoading, navigate]);
+  }, [paramUserId, currentUser?.id, isAuthenticated, authLoading, navigate]);
 
   // 통계 로드 (profile이 준비된 후 실행)
   useEffect(() => {
     if (!profile) return;
+    setStatsError(false);
     (async () => {
       try {
         const [ov, ts, top] = await Promise.all([
@@ -122,6 +151,17 @@ const ProfilePage = () => {
       } catch (e) {
         // 백엔드 통계 API가 없거나 실패한 경우, 사용자 캐릭터 목록으로 대체 집계
         console.warn('통계 API 미구현/실패 - 사용자 캐릭터 목록으로 대체 집계');
+        setStatsError(true);
+        // 사용자에게 알림 (toast)
+        try {
+          window.dispatchEvent(new CustomEvent('toast', { 
+            detail: { 
+              type: 'warning', 
+              message: '통계 데이터를 불러오는 중 문제가 발생했습니다. 기본 정보만 표시됩니다.' 
+            } 
+          }));
+        } catch (_) {}
+        
         try {
           const res = await usersAPI.getUserCharacters(profile.id, { limit: 1000 });
           const chars = res.data || [];
@@ -141,10 +181,18 @@ const ProfilePage = () => {
           setTopChars(top5);
         } catch (err) {
           console.error('대체 집계도 실패:', err);
+          try {
+            window.dispatchEvent(new CustomEvent('toast', { 
+              detail: { 
+                type: 'error', 
+                message: '통계 정보를 불러올 수 없습니다.' 
+              } 
+            }));
+          } catch (_) {}
         }
       }
     })();
-  }, [profile, seriesRange]);
+  }, [profile?.id, seriesRange]);
 
   // [추가] 통계 카드를 위한 재사용 컴포넌트입니다.
   const StatCard = ({ title, value, icon: Icon, onClick, clickable = false }) => (
@@ -216,7 +264,14 @@ const ProfilePage = () => {
     const files = Array.from(e.target.files || []);
     if (!files.length) return;
     if (!validateExt(files[0])) {
-      alert('jpg, jpeg, png, webp, gif 형식만 업로드할 수 있습니다.');
+      try {
+        window.dispatchEvent(new CustomEvent('toast', { 
+          detail: { 
+            type: 'error', 
+            message: 'jpg, jpeg, png, webp, gif 형식만 업로드할 수 있습니다.' 
+          } 
+        }));
+      } catch (_) {}
       e.target.value = '';
       return;
     }
@@ -227,16 +282,44 @@ const ProfilePage = () => {
     if (e.target) e.target.value = '';
   };
 
-  const handleDeleteAvatar = async () => {
+  const handleDeleteAvatarClick = () => {
     if (!profile.avatar_url) return;
-    if (!window.confirm('프로필 이미지를 삭제할까요?')) return;
+    setDeleteAvatarDialogOpen(true);
+  };
+
+  const handleDeleteAvatarConfirm = async () => {
+    setDeleteAvatarDialogOpen(false);
     setAvatarDeleting(true);
     try {
       await usersAPI.updateUserProfile(profile.id, { avatar_url: null });
       setProfile(prev => ({ ...prev, avatar_url: null }));
+      try {
+        window.dispatchEvent(new CustomEvent('toast', { 
+          detail: { 
+            type: 'success', 
+            message: '프로필 이미지가 삭제되었습니다.' 
+          } 
+        }));
+      } catch (_) {}
+      try { await checkAuth?.(); } catch (_) {}
+      try { refreshProfileVersion?.(); } catch (_) {}
     } catch (err) {
       console.error('프로필 이미지 삭제 실패:', err);
-      alert('프로필 이미지 삭제에 실패했습니다.');
+      const status = err?.response?.status;
+      const errorMessage = status === 401 || status === 403 
+        ? '권한이 없습니다. 다시 로그인해주세요.'
+        : status >= 500
+        ? '서버 오류가 발생했습니다. 잠시 후 다시 시도해주세요.'
+        : '프로필 이미지 삭제에 실패했습니다.';
+      
+      try {
+        window.dispatchEvent(new CustomEvent('toast', { 
+          detail: { 
+            type: 'error', 
+            message: errorMessage 
+          } 
+        }));
+      } catch (_) {}
     } finally {
       setAvatarDeleting(false);
     }
@@ -248,7 +331,7 @@ const ProfilePage = () => {
       <div className="max-w-5xl mx-auto p-4 sm:p-6 lg:p-8 text-gray-200">
         {/* [수정] 뒤로가기 버튼 추가 */}
         <header className="mb-6">
-          <Button variant="ghost" onClick={() => navigate(-1)}>
+          <Button variant="ghost" onClick={() => window.history.back()}>
             <ArrowLeft className="w-5 h-5 mr-2" />
             뒤로 가기
           </Button>
@@ -266,9 +349,9 @@ const ProfilePage = () => {
               {profile.avatar_url && (
                 <button
                   type="button"
-                  onClick={handleDeleteAvatar}
+                  onClick={handleDeleteAvatarClick}
                   disabled={avatarDeleting}
-                  className="absolute -top-2 -right-2 bg-black/70 hover:bg-black text-white rounded-full p-1"
+                  className="absolute -top-2 -right-2 bg-black/70 hover:bg-black text-white rounded-full p-1 disabled:opacity-50 disabled:cursor-not-allowed"
                   title="프로필 이미지 삭제"
                 >
                   <Trash2 className="w-4 h-4" />
@@ -333,7 +416,21 @@ const ProfilePage = () => {
                   setProfile(prev => ({ ...prev, avatar_url: uploadedUrl }));
                 } catch (err) {
                   console.error('프로필 이미지 업로드 실패:', err);
-                  alert('프로필 이미지 업로드에 실패했습니다.');
+                  const status = err?.response?.status;
+                  const errorMessage = status === 401 || status === 403 
+                    ? '권한이 없습니다. 다시 로그인해주세요.'
+                    : status >= 500
+                    ? '서버 오류가 발생했습니다. 잠시 후 다시 시도해주세요.'
+                    : '프로필 이미지 업로드에 실패했습니다.';
+                  
+                  try {
+                    window.dispatchEvent(new CustomEvent('toast', { 
+                      detail: { 
+                        type: 'error', 
+                        message: errorMessage 
+                      } 
+                    }));
+                  } catch (_) {}
                 } finally {
                   setAvatarUploading(false);
                   try { URL.revokeObjectURL(cropSrc); } catch (_) {}
@@ -443,11 +540,59 @@ const ProfilePage = () => {
       {/* 프로필 수정 모달 */}
       <ProfileEditModal
         isOpen={showEdit}
-        onClose={(reason)=>{ setShowEdit(false); if (reason==='saved') { // 저장 후 최신 프로필 재로딩
-          (async()=>{ try{ const r=await usersAPI.getUserProfile(profile.id); setProfile(r.data);}catch(_){}})();
-        }}}
+        onClose={(reason)=>{ 
+          setShowEdit(false); 
+          if (reason==='saved') { 
+            // 저장 후 최신 프로필 재로딩
+            (async()=>{ 
+              try{ 
+                const r = await usersAPI.getUserProfile(profile.id); 
+                setProfile(r.data);
+                try {
+                  window.dispatchEvent(new CustomEvent('toast', { 
+                    detail: { 
+                      type: 'success', 
+                      message: '프로필이 업데이트되었습니다.' 
+                    } 
+                  }));
+                } catch (_) {}
+              } catch(err) {
+                console.error('프로필 재로딩 실패:', err);
+                try {
+                  window.dispatchEvent(new CustomEvent('toast', { 
+                    detail: { 
+                      type: 'warning', 
+                      message: '프로필이 저장되었지만 최신 정보를 불러오지 못했습니다. 페이지를 새로고침해주세요.' 
+                    } 
+                  }));
+                } catch (_) {}
+              }
+            })();
+          }
+        }}
         profile={profile}
       />
+
+      {/* 프로필 이미지 삭제 확인 다이얼로그 */}
+      <AlertDialog open={deleteAvatarDialogOpen} onOpenChange={setDeleteAvatarDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>프로필 이미지 삭제</AlertDialogTitle>
+            <AlertDialogDescription>
+              프로필 이미지를 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>취소</AlertDialogCancel>
+            <AlertDialogAction 
+              onClick={handleDeleteAvatarConfirm}
+              className="bg-red-600 hover:bg-red-700 text-white"
+            >
+              삭제
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </AppLayout>
   );
 };

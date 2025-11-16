@@ -75,6 +75,7 @@ const CreateCharacterPage = () => {
       personality: '',
       speech_style: '',
       greeting: '',
+      greetings: [''], // UI에서 배열로 사용, 저장 시 greeting 단일 문자열로 변환
       world_setting: '',
       user_display_description: '',
       use_custom_description: false,
@@ -308,9 +309,8 @@ const CreateCharacterPage = () => {
       publish: 0,
       total: 0,
     };
-    // 기본 정보 필수값
+    // 기본 정보 필수값 (name만 필수, description은 선택)
     if (!formData.basic_info.name?.trim()) errors.basic += 1;
-    if (!formData.basic_info.description?.trim()) errors.basic += 1;
 
     // 허용되지 않은 토큰 사용 검사
     const tokenFields = [
@@ -498,6 +498,8 @@ const CreateCharacterPage = () => {
           personality: char.personality || '',
           speech_style: char.speech_style || '',
           greeting: char.greeting || '',
+          // greeting 문자열을 greetings 배열로 변환 (UI에서 배열 사용)
+          greetings: char.greeting ? char.greeting.split('\n').filter(g => g.trim()) : [''],
           world_setting: char.world_setting || '',
           user_display_description: char.user_display_description || '',
           use_custom_description: char.use_custom_description || false,
@@ -675,12 +677,21 @@ const CreateCharacterPage = () => {
         { assistantName: formData.basic_info.name || '캐릭터', userName: '나' }
       );
 
+      // greetings 배열을 greeting 단일 문자열로 변환
+      // UI에서는 greetings 배열을 사용하지만, 백엔드는 greeting 단일 문자열을 기대함
+      const greetingsArray = formData.basic_info.greetings || [];
+      const greetingValue = Array.isArray(greetingsArray) && greetingsArray.length > 0
+        ? greetingsArray.filter(g => g?.trim()).join('\n')
+        : (formData.basic_info.greeting || '');
+
       const characterData = {
         ...formData,
         basic_info: {
           ...formData.basic_info,
           description: safeDescription,
           user_display_description: safeUserDisplay,
+          greeting: greetingValue, // greetings 배열을 greeting 단일 문자열로 변환
+          greetings: undefined, // 백엔드에 전송하지 않도록 제거
         },
         media_settings: {
           ...formData.media_settings,
@@ -888,23 +899,6 @@ const CreateCharacterPage = () => {
           </Select>
         </div>
 
-        <div>
-          <Label htmlFor="base_language">기준 언어</Label>
-          <Select 
-            value={formData.basic_info.base_language} 
-            onValueChange={(value) => updateFormData('basic_info', 'base_language', value)}
-          >
-            <SelectTrigger className="mt-4">
-              <SelectValue placeholder="언어 선택" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="ko">한국어</SelectItem>
-              <SelectItem value="en">English</SelectItem>
-              <SelectItem value="ja">日本語</SelectItem>
-              <SelectItem value="zh">中文</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
 
         <div>
           <Label htmlFor="description">캐릭터 설명 *</Label>
@@ -1512,24 +1506,6 @@ const CreateCharacterPage = () => {
         </p>
       </div>
 
-      <Separator />
-
-      <div className="space-y-4">
-        <h3 className="text-lg font-semibold">고급 설정</h3>
-        
-        <div className="flex items-center space-x-2">
-          <Switch
-            id="use_translation"
-            checked={formData.publish_settings.use_translation}
-            onCheckedChange={(checked) => updateFormData('publish_settings', 'use_translation', checked)}
-          />
-          <Label htmlFor="use_translation">프롬프트 구성시 번역본 활용</Label>
-        </div>
-        
-        <p className="text-sm text-gray-500">
-          대화를 하는 유저가 사용하는 언어를 보고 번역본을 선택하여 프롬프트를 작성합니다.
-        </p>
-      </div>
 
       <div className="bg-blue-50 p-4 rounded-lg">
         <h4 className="font-semibold mb-2 text-blue-900">💡 공개 캐릭터 가이드라인</h4>
@@ -1661,7 +1637,7 @@ const CreateCharacterPage = () => {
 
         <Card id="section-publish" className="shadow-lg bg-gray-800 text-white border border-gray-700">
           <CardHeader>
-            <CardTitle className="text-lg text-white">공개/고급 설정 & 태그</CardTitle>
+            <CardTitle className="text-lg text-white">공개 설정 & 태그</CardTitle>
           </CardHeader>
                 {renderPublishTab()}
           </Card>

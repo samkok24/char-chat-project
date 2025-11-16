@@ -65,6 +65,23 @@ const api = axios.create({
   },
 });
 
+const notifyAuthRequired = (detail = {}) => {
+  try {
+    window.dispatchEvent(new CustomEvent('auth:required', { detail }));
+  } catch (_) {
+    // noop
+  }
+};
+
+const clearStoredTokens = () => {
+  try {
+    localStorage.removeItem('access_token');
+    localStorage.removeItem('refresh_token');
+  } catch (_) {
+    // noop
+  }
+};
+
 // 요청 인터셉터 - 토큰 자동 추가
 api.interceptors.request.use(
   (config) => {
@@ -113,8 +130,10 @@ api.interceptors.response.use(
       path.startsWith('/tags')
     );
 
+    const shouldHandleAuthError = (status === 401 || status === 403) && !isPublicEndpoint;
+
     // 401 Unauthorized 또는 403 Forbidden에서 토큰 갱신 시도 (공개 GET 엔드포인트 제외)
-    if ((status === 401 || status === 403) && !originalRequest._retry && !isPublicEndpoint) {
+    if (shouldHandleAuthError && !originalRequest._retry) {
       originalRequest._retry = true;
 
       try {
@@ -122,6 +141,15 @@ api.interceptors.response.use(
         if (newAccess) originalRequest.headers.Authorization = `Bearer ${newAccess}`;
         return api(originalRequest);
       } catch (_) {}
+    }
+
+    if (shouldHandleAuthError && !originalRequest._handledAuthFailure) {
+      originalRequest._handledAuthFailure = true;
+      clearStoredTokens();
+      notifyAuthRequired({
+        reason: status === 401 ? 'unauthorized' : 'forbidden',
+        path,
+      });
     }
 
     return Promise.reject(error);

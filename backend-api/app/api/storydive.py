@@ -290,8 +290,8 @@ async def process_turn(
             context_text=context_text,
             history=history,
             mode=last_mode or "do",
-            preferred_model=getattr(current_user, 'preferred_model', 'gemini-pro'),
-            preferred_sub_model=getattr(current_user, 'preferred_sub_model', None),
+            preferred_model='claude',
+            preferred_sub_model='claude-sonnet-4-20250514',
             response_length_pref=getattr(current_user, 'response_length_pref', 'medium')
         )
         
@@ -355,8 +355,8 @@ async def process_turn(
             story_cards=novel.story_cards or {},
             context_text=context_text,
             history=history,
-            preferred_model=getattr(current_user, 'preferred_model', 'gemini-pro'),
-            preferred_sub_model=getattr(current_user, 'preferred_sub_model', None),
+            preferred_model='claude',
+            preferred_sub_model='claude-sonnet-4-20250514',
             response_length_pref=getattr(current_user, 'response_length_pref', 'medium')
         )
         
@@ -395,8 +395,8 @@ async def process_turn(
         user_input=request.input,
         mode=request.mode,
         history=history,
-        preferred_model=getattr(current_user, 'preferred_model', 'gemini-pro'),
-        preferred_sub_model=getattr(current_user, 'preferred_sub_model', None),
+        preferred_model='claude',
+        preferred_sub_model='claude-sonnet-4-20250514',
         response_length_pref=getattr(current_user, 'response_length_pref', 'medium')
     )
     

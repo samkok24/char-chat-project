@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { NotebookText, Image as ImageIcon, Brain, MessageSquarePlus, User, Gem, Settings, LogOut, LogIn, UserPlus, Trash2 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
+import { useLoginModal } from '../../contexts/LoginModalContext';
 import { Avatar, AvatarFallback, AvatarImage } from '../ui/avatar';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
@@ -13,13 +14,12 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
-import LoginModal from '../LoginModal';
 import { resolveImageUrl } from '../../lib/images';
 
 const AgentSidebar = ({ onCreateSession, activeSessionId, onSessionSelect, onDeleteSession, isGuest, isNewChatButtonDisabled }) => {
   const { user, isAuthenticated, logout } = useAuth();
   const navigate = useNavigate();
-  const [showLoginModal, setShowLoginModal] = useState(false);
+  const { openLoginModal } = useLoginModal();
   const [sessionCount, setSessionCount] = useState(0);
   const [sessionList, setSessionList] = useState([]);
 
@@ -246,7 +246,7 @@ const AgentSidebar = ({ onCreateSession, activeSessionId, onSessionSelect, onDel
         ) : (
           <div className="mt-4 p-3 rounded-lg bg-gray-900 border border-gray-700 text-center">
             <p className="text-sm text-gray-300 mb-3">로그인하여 히스토리를 저장하고 더 많은 기능을 이용해보세요.</p>
-            <Button className="w-full bg-gradient-to-r from-purple-600 via-fuchsia-600 to-pink-600 hover:brightness-105 text-white shadow-md" onClick={() => setShowLoginModal(true)}>
+            <Button className="w-full bg-gradient-to-r from-purple-600 via-fuchsia-600 to-pink-600 hover:brightness-105 text-white shadow-md" onClick={() => openLoginModal({ initialTab: 'login' })}>
               <LogIn className="w-4 h-4 mr-2" /> 로그인/가입
             </Button>
           </div>
@@ -318,10 +318,10 @@ const AgentSidebar = ({ onCreateSession, activeSessionId, onSessionSelect, onDel
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <Button className="bg-gradient-to-r from-purple-600 via-fuchsia-600 to-pink-600 hover:brightness-105 text-white shadow-md" onClick={() => setShowLoginModal(true)}>
+              <Button className="bg-gradient-to-r from-purple-600 via-fuchsia-600 to-pink-600 hover:brightness-105 text-white shadow-md" onClick={() => openLoginModal({ initialTab: 'login' })}>
                 <LogIn className="w-4 h-4 mr-2" /> 로그인
               </Button>
-              <Button variant="outline" onClick={() => { setShowLoginModal(true); }}>
+              <Button variant="outline" onClick={() => openLoginModal({ initialTab: 'register' })}>
                 <UserPlus className="w-4 h-4 mr-2" /> 회원가입
               </Button>
             </div>
@@ -329,7 +329,6 @@ const AgentSidebar = ({ onCreateSession, activeSessionId, onSessionSelect, onDel
         )}
       </div>
 
-      <LoginModal isOpen={showLoginModal} onClose={() => setShowLoginModal(false)} />
     </aside>
   );
 };

@@ -972,6 +972,90 @@ def _norm_name(name: str) -> str:
     return (name or "").strip().lower()
 
 
+def extract_character_context_from_combined(
+    combined_text: str,
+    character_name: str,
+    max_chars: int = 5000,
+    context_before: int = 1000,
+    context_after: int = 4000,
+    max_positions: int = 5
+) -> str:
+    """combined 텍스트에서 캐릭터 이름이 등장하는 부분을 중심으로 컨텍스트를 추출합니다.
+    
+    Args:
+        combined_text: 전체 combined 텍스트
+        character_name: 추출할 캐릭터 이름
+        max_chars: 최종 반환할 최대 문자 수 (기본: 5000)
+        context_before: 캐릭터 이름 위치 기준 앞쪽 컨텍스트 길이 (기본: 1000)
+        context_after: 캐릭터 이름 위치 기준 뒤쪽 컨텍스트 길이 (기본: 4000)
+        max_positions: 최대 검색할 위치 수 (기본: 5)
+    
+    Returns:
+        캐릭터가 등장하는 부분을 중심으로 추출된 텍스트 (최대 max_chars자)
+    """
+    if not combined_text or not character_name:
+        return combined_text[:max_chars] if combined_text else ""
+    
+    # 캐릭터 이름이 등장하는 위치 찾기 (대소문자 무시)
+    positions = []
+    search_text = combined_text.lower()
+    char_lower = character_name.strip().lower()
+    
+    if not char_lower:
+        return combined_text[:max_chars]
+    
+    start = 0
+    while len(positions) < max_positions:
+        pos = search_text.find(char_lower, start)
+        if pos == -1:
+            break
+        positions.append(pos)
+        start = pos + len(char_lower)
+    
+    # 위치를 찾지 못한 경우 전체 텍스트의 중간 부분 반환
+    if not positions:
+        total_len = len(combined_text)
+        if total_len > max_chars:
+            start_idx = int(total_len * 0.3)
+            end_idx = int(total_len * 0.7)
+            return combined_text[start_idx:end_idx][:max_chars]
+        return combined_text[:max_chars]
+    
+    # 각 위치 주변 추출
+    segments = []
+    for pos in positions:
+        seg_start = max(0, pos - context_before)
+        seg_end = min(len(combined_text), pos + context_after)
+        segments.append((seg_start, seg_end))
+    
+    # 구간 병합 (겹치는 부분 제거)
+    if len(segments) > 1:
+        segments.sort()
+        merged = [segments[0]]
+        for seg in segments[1:]:
+            last_start, last_end = merged[-1]
+            if seg[0] <= last_end:
+                # 겹치는 경우 병합
+                merged[-1] = (last_start, max(last_end, seg[1]))
+            else:
+                merged.append(seg)
+        segments = merged
+    
+    # 추출된 구간들을 합치기
+    result_parts = []
+    for seg_start, seg_end in segments:
+        result_parts.append(combined_text[seg_start:seg_end])
+    
+    result = "\n\n".join(result_parts)
+    
+    # 최대 길이로 제한
+    if len(result) > max_chars:
+        # 앞부분 우선 (최신 맥락 유지)
+        return result[-max_chars:]
+    
+    return result
+
+
 async def extract_characters_from_story(db: AsyncSession, story_id, max_chapters: int | None = None) -> int:
     """LLM을 사용하여 스토리에서 주요 등장인물 3~5명을 추출해 영속화한다.
     - max_chapters가 None이면 모든 회차를 대상으로 한다.
@@ -1190,6 +1274,20 @@ async def extract_characters_from_story(db: AsyncSession, story_id, max_chapters
                 await db.rollback()
             except Exception:
                 pass
+    
+    # combined 텍스트 Redis 캐싱 (SSOT: 같은 키 사용)
+    # combined는 이미 위에서 생성되었으므로 재사용
+    try:
+        from app.core.database import redis_client
+        if 'combined' in locals() and combined:
+            await redis_client.set(
+                f"story:combined:{story_id}",
+                combined.encode('utf-8'),
+                ex=86400 * 365  # 1년 TTL
+            )
+    except Exception:
+        pass  # 캐싱 실패해도 계속 진행
+    
     return created_count
 
 

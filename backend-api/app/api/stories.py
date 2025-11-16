@@ -54,10 +54,20 @@ async def get_context_pack(
     rangeTo: Optional[int] = Query(None),
     sceneId: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional),
 ):
     """경량 컨텍스트 팩: actor/director/guard 필드 반환.
     - 기존 프론트 호환을 위해 쿼리 파라미터는 유연하게 수용하되 anchor/characterId만 사용.
     """
+    # 스토리 존재 및 공개 여부 확인
+    story = await story_service.get_story_by_id(db, story_id)
+    if not story:
+        raise HTTPException(status_code=404, detail="스토리를 찾을 수 없습니다")
+    
+    # 비공개 스토리는 작성자만 접근 가능
+    if not story.is_public and (not current_user or story.creator_id != current_user.id):
+        raise HTTPException(status_code=403, detail="접근 권한이 없습니다")
+    
     try:
         pack = await build_context_pack(db, story_id, int(anchor or 1), characterId)
         # 백그라운드로 컨텍스트/요약/스타일/인트로 준비
@@ -132,11 +142,21 @@ async def get_context_pack(
 async def get_start_options_v2(
     story_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional),
 ):
     """시작 옵션(경량): 개요/모드/단순 장면 인덱스/추천 시작점.
     - 정확한 scene 분할이 없으면 문단 길이 기반 근사로 반환.
     - 전체 회차를 대상으로 하되, 너무 큰 작품은 안전 상한을 둘 수 있음(프론트에서 페이징 고려).
     """
+    # 스토리 존재 및 공개 여부 확인
+    story = await story_service.get_story_by_id(db, story_id)
+    if not story:
+        raise HTTPException(status_code=404, detail="스토리를 찾을 수 없습니다")
+    
+    # 비공개 스토리는 작성자만 접근 가능
+    if not story.is_public and (not current_user or story.creator_id != current_user.id):
+        raise HTTPException(status_code=403, detail="접근 권한이 없습니다")
+    
     # 간단 개요(스토리 content 앞 240자)
     s = await story_service.get_story_by_id(db, story_id)
     overview = (getattr(s, "content", "") or "").strip().replace("\n", " ")[:240] if s else None
@@ -228,7 +248,17 @@ async def get_backward_weighted_recap_endpoint(
     story_id: uuid.UUID,
     anchor: int = Query(1, ge=1),
     db: AsyncSession = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional),
 ):
+    # 스토리 존재 및 공개 여부 확인
+    story = await story_service.get_story_by_id(db, story_id)
+    if not story:
+        raise HTTPException(status_code=404, detail="스토리를 찾을 수 없습니다")
+    
+    # 비공개 스토리는 작성자만 접근 가능
+    if not story.is_public and (not current_user or story.creator_id != current_user.id):
+        raise HTTPException(status_code=403, detail="접근 권한이 없습니다")
+    
     try:
         from app.services.origchat_service import generate_backward_weighted_recap
         text = await generate_backward_weighted_recap(db, story_id, anchor=int(anchor or 1))
@@ -243,7 +273,17 @@ async def get_scene_excerpt_endpoint(
     chapter: int = Query(1, ge=1),
     sceneId: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional),
 ):
+    # 스토리 존재 및 공개 여부 확인
+    story = await story_service.get_story_by_id(db, story_id)
+    if not story:
+        raise HTTPException(status_code=404, detail="스토리를 찾을 수 없습니다")
+    
+    # 비공개 스토리는 작성자만 접근 가능
+    if not story.is_public and (not current_user or story.creator_id != current_user.id):
+        raise HTTPException(status_code=403, detail="접근 권한이 없습니다")
+    
     try:
         from app.services.origchat_service import get_scene_anchor_text
         text = await get_scene_anchor_text(db, story_id, chapter_no=int(chapter or 1), scene_id=sceneId)
@@ -824,6 +864,10 @@ async def get_extracted_characters_endpoint(
     story = await story_service.get_story_by_id(db, story_id)
     if not story:
         raise HTTPException(status_code=404, detail="스토리를 찾을 수 없습니다")
+    
+    # 비공개 스토리는 작성자만 등장인물 조회 가능
+    if not story.is_public and (not current_user or story.creator_id != current_user.id):
+        raise HTTPException(status_code=403, detail="접근 권한이 없습니다")
 
     # 최초 요청 시 비어있다면 간이 보장 로직 수행(회차가 있으면 최소 3인 구성)
     rows = await db.execute(
@@ -1152,7 +1196,8 @@ async def create_story_comment_endpoint(
             detail="스토리를 찾을 수 없습니다."
         )
     
-    if not story.is_public:
+    # 비공개 스토리는 작성자만 댓글 작성 가능
+    if not story.is_public and story.creator_id != current_user.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="비공개 스토리에는 댓글을 작성할 수 없습니다."
@@ -1167,7 +1212,8 @@ async def get_story_comments_endpoint(
     story_id: uuid.UUID,
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional)
 ):
     """스토리 댓글 목록 조회"""
     story = await story_service.get_story_by_id(db, story_id)
@@ -1175,6 +1221,13 @@ async def get_story_comments_endpoint(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="스토리를 찾을 수 없습니다."
+        )
+    
+    # 비공개 스토리는 작성자만 댓글 조회 가능
+    if not story.is_public and (not current_user or story.creator_id != current_user.id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="접근 권한이 없습니다."
         )
     
     comments = await get_story_comments(db, story_id, skip, limit)

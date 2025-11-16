@@ -477,6 +477,10 @@ async def get_characters(
         )
     else:
         # 공개 캐릭터 조회
+        # 탐색에서는 기본적으로 원작챗 캐릭터 제외 (only 파라미터가 없을 때)
+        exclude_origchat = only is None
+        if exclude_origchat:
+            only = "regular"  # 원작챗 제외
         characters = await get_public_characters(
             db=db,
             skip=skip,

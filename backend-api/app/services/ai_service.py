@@ -1313,10 +1313,17 @@ async def get_claude_completion(
 
         # 1) SDK가 Message 객체를 돌려주는 일반적인 경우
         if hasattr(message, "content"):
-            return message.content[0].text
+            text = message.content[0].text
+            # UTF-8 인코딩 보장
+            if isinstance(text, bytes):
+                text = text.decode('utf-8', errors='replace')
+            return text
 
         # 2) 어떤 이유로 문자열만 돌려준 경우
         if isinstance(message, str):
+            # UTF-8 인코딩 보장
+            if isinstance(message, bytes):
+                return message.decode('utf-8', errors='replace')
             return message
 
         # 3) dict 형태(HTTP 응답 JSON)로 돌려준 경우
@@ -1324,11 +1331,21 @@ async def get_claude_completion(
             # {'content': [{'text': '...'}], ...} 형태를 기대
             content = message.get("content")
             if isinstance(content, list) and content and isinstance(content[0], dict):
-                return content[0].get("text", "")
-            return str(message)
+                text = content[0].get("text", "")
+                # UTF-8 인코딩 보장
+                if isinstance(text, bytes):
+                    text = text.decode('utf-8', errors='replace')
+                return text
+            result = str(message)
+            if isinstance(result, bytes):
+                result = result.decode('utf-8', errors='replace')
+            return result
 
         # 그 밖의 예상치 못한 타입은 문자열로 강제 변환
-        return str(message)
+        result = str(message)
+        if isinstance(result, bytes):
+            result = result.decode('utf-8', errors='replace')
+        return result
 
     except Exception as e:
         print(f"Claude API 호출 중 오류 발생: {e}")

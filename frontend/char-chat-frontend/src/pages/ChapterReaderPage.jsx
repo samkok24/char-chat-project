@@ -9,6 +9,7 @@ import { ArrowLeft, ArrowRight, Home, MessageCircle } from 'lucide-react';
 import { resolveImageUrl } from '../lib/images';
 import ChapterViewer from '../components/ChapterViewer';
 import OrigChatStartModal from '../components/OrigChatStartModal';
+import MiniChatWindow from '../components/MiniChatWindow';
 
 const ChapterReaderPage = () => {
   const { storyId: storyIdFromPath, chapterNumber } = useParams();
@@ -18,6 +19,7 @@ const ChapterReaderPage = () => {
   const chatOpen = sp.get('chat') === '1';
   const storyId = storyIdFromPath || sp.get('storyId');
   const [origChatModalOpen, setOrigChatModalOpen] = useState(false);
+  const [miniChatOpen, setMiniChatOpen] = useState(false);
   // 스토리 상세 (헤더/좌측 표지용)
   const { data: story } = useQuery({
     queryKey: ['story', storyId],
@@ -74,7 +76,15 @@ const ChapterReaderPage = () => {
   const coverUrl = useMemo(() => galleryImages[0] || '', [galleryImages]);
 
   const hasChapter = !!chapter;
-  const isWebtoon = !!(chapter?.image_url);
+  // image_url이 배열인지 확인
+  const getImageUrl = (imageUrl) => {
+    if (!imageUrl) return null;
+    if (Array.isArray(imageUrl)) {
+      return imageUrl.length > 0 ? imageUrl[0] : null;
+    }
+    return imageUrl; // 단일 문자열인 경우 (하위 호환)
+  };
+  const isWebtoon = !!getImageUrl(chapter?.image_url);
   
   // 디버깅용 로그
   React.useEffect(() => {
@@ -83,7 +93,7 @@ const ChapterReaderPage = () => {
         id: chapter.id,
         no: chapter.no,
         image_url: chapter.image_url,
-        hasImage: !!chapter.image_url,
+        hasImage: !!getImageUrl(chapter.image_url),
         isWebtoon: isWebtoon
       });
     }
@@ -136,17 +146,31 @@ const ChapterReaderPage = () => {
       <div className="min-h-screen bg-white w-full overflow-x-hidden">
         <ChapterViewer chapter={chapter} />
         
-        {/* 우측 하단 플로팅 버튼: 원작챗 */}
+        {/* 우측 하단 플로팅 버튼들 */}
         {story && (
-          <div className="fixed bottom-24 right-6 z-50">
-            <Button 
-              className="rounded-full w-14 h-14 bg-purple-600 hover:bg-purple-700 text-white shadow-lg" 
-              onClick={() => setOrigChatModalOpen(true)}
-              title="원작챗 시작"
-            >
-              <MessageCircle className="w-6 h-6" />
-            </Button>
-          </div>
+          <>
+            {/* 미니 채팅 버튼 (상단) */}
+            <div className="fixed bottom-40 right-6 z-50">
+              <Button 
+                className="rounded-full w-14 h-14 bg-pink-600 hover:bg-pink-700 text-white shadow-lg" 
+                onClick={() => setMiniChatOpen(true)}
+                title="빠른 채팅"
+              >
+                <MessageCircle className="w-6 h-6" />
+              </Button>
+            </div>
+            
+            {/* 원작챗 버튼 (하단) */}
+            <div className="fixed bottom-24 right-6 z-50">
+              <Button 
+                className="rounded-full w-14 h-14 bg-purple-600 hover:bg-purple-700 text-white shadow-lg" 
+                onClick={() => setOrigChatModalOpen(true)}
+                title="원작챗 시작"
+              >
+                <MessageCircle className="w-6 h-6" />
+              </Button>
+            </div>
+          </>
         )}
 
         {/* 하단 내비게이션만 표시 */}
@@ -205,6 +229,14 @@ const ChapterReaderPage = () => {
             lastReadNo={Number(chapter?.no || chapterNumber || getReadingProgress(storyId)) || 0}
           />
         )}
+
+        {/* 미니 채팅창 */}
+        <MiniChatWindow 
+          open={miniChatOpen}
+          onClose={() => setMiniChatOpen(false)}
+          storyId={storyId}
+          currentChapterNo={Number(chapter?.no || chapterNumber) || 1}
+        />
       </div>
     );
   }
@@ -327,24 +359,31 @@ const ChapterReaderPage = () => {
           </div>
         </div>
 
-        {/* 우측 하단 플로팅 버튼: 원작챗 */}
+        {/* 우측 하단 플로팅 버튼들 */}
         {hasChapter && story && (
-          <div className="fixed bottom-24 right-6 z-40">
-            <Button 
-              className="rounded-full w-14 h-14 bg-purple-600 hover:bg-purple-700 text-white shadow-lg" 
-              onClick={() => setOrigChatModalOpen(true)}
-              title="원작챗 시작"
-            >
-              <MessageCircle className="w-6 h-6" />
-            </Button>
-          </div>
-        )}
-
-        {/* 하단 고정 챗 버튼 (유지) */}
-        {hasChapter && (
-          <div className="fixed bottom-40 right-6 z-40">
-            <Button className="rounded-full w-14 h-14 bg-pink-600 hover:bg-pink-700" onClick={() => navigate(`/stories/${storyId}/chapters/${chapter.no}?chat=1`)}>챗</Button>
-          </div>
+          <>
+            {/* 미니 채팅 버튼 (상단) */}
+            <div className="fixed bottom-40 right-6 z-40">
+              <Button 
+                className="rounded-full w-14 h-14 bg-pink-600 hover:bg-pink-700 text-white shadow-lg" 
+                onClick={() => setMiniChatOpen(true)}
+                title="빠른 채팅"
+              >
+                <MessageCircle className="w-6 h-6" />
+              </Button>
+            </div>
+            
+            {/* 원작챗 버튼 (하단) */}
+            <div className="fixed bottom-24 right-6 z-40">
+              <Button 
+                className="rounded-full w-14 h-14 bg-purple-600 hover:bg-purple-700 text-white shadow-lg" 
+                onClick={() => setOrigChatModalOpen(true)}
+                title="원작챗 시작"
+              >
+                <MessageCircle className="w-6 h-6" />
+              </Button>
+            </div>
+          </>
         )}
 
         {/* 심플 챗 시트 (MVP: 열기/닫기만) */}
@@ -376,6 +415,14 @@ const ChapterReaderPage = () => {
             lastReadNo={Number(chapter?.no || chapterNumber || getReadingProgress(storyId)) || 0}
           />
         )}
+
+        {/* 미니 채팅창 */}
+        <MiniChatWindow 
+          open={miniChatOpen}
+          onClose={() => setMiniChatOpen(false)}
+          storyId={storyId}
+          currentChapterNo={Number(chapter?.no || chapterNumber) || 1}
+        />
       </div>
     </AppLayout>
   );

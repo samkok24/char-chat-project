@@ -21,7 +21,8 @@ const OrigChatStartModal = ({ open, onClose, storyId, totalChapters = 1, lastRea
   const [previewLoading, setPreviewLoading] = useState(false);
   const [activeImg, setActiveImg] = useState('');
   // 모드 선택: canon | parallel | plain(일대일 일반 챗)
-  const [modeSel, setModeSel] = useState('canon');
+  // 배포 후 서비스 편의를 위해 plain 모드만 사용
+  const [modeSel, setModeSel] = useState('plain');
   // 시작 옵션/미리보기
   const [startOpts, setStartOpts] = useState(null);
   const [optsLoading, setOptsLoading] = useState(false);
@@ -32,13 +33,18 @@ const OrigChatStartModal = ({ open, onClose, storyId, totalChapters = 1, lastRea
   const [narratorMode, setNarratorMode] = useState(false);
   const [selectedSeed, setSelectedSeed] = useState(null);
   // 시점 선택: possess(선택 캐릭터 빙의) | persona(내 페르소나)
-  const [povMode, setPovMode] = useState('possess');
+  const [povMode, setPovMode] = useState('persona');  // 기본값을 페르소나로 변경
   // 사전 준비(프리워밍) 상태
   const [preparing, setPreparing] = useState(false);
   const [prepReady, setPrepReady] = useState(false);
   const [prepEtaSec, setPrepEtaSec] = useState(0);
   const [prepKeys, setPrepKeys] = useState([]);
   const prepTimerRef = useRef(null);
+  // 드래그 관련 상태
+  const [position, setPosition] = useState({ x: 0, y: 0 });
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+  const dialogContentRef = useRef(null);
   const gallery = useMemo(() => {
     const list = [];
     if (preview?.avatar_url) list.push(preview.avatar_url);
@@ -46,6 +52,92 @@ const OrigChatStartModal = ({ open, onClose, storyId, totalChapters = 1, lastRea
     for (const u of imgs) if (!list.includes(u)) list.push(u);
     return list;
   }, [preview]);
+
+  // 드래그 핸들러
+  const handleDragStart = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+    // 드래그 시작 시점의 마우스 위치와 현재 모달 위치 저장
+    setDragStart({ 
+      x: clientX - position.x, 
+      y: clientY - position.y 
+    });
+  };
+
+  // 드래그 이벤트 리스너
+  useEffect(() => {
+    if (!isDragging) return;
+
+    const handleMouseMove = (e) => {
+      e.preventDefault();
+      const clientX = e.clientX;
+      const clientY = e.clientY;
+      // 마우스 위치 변화량만큼 모달 이동
+      const newX = clientX - dragStart.x;
+      const newY = clientY - dragStart.y;
+      
+      // 화면 경계 체크
+      if (dialogContentRef.current) {
+        const rect = dialogContentRef.current.getBoundingClientRect();
+        const maxX = (window.innerWidth - rect.width) / 2;
+        const maxY = (window.innerHeight - rect.height) / 2;
+        setPosition({
+          x: Math.max(-maxX, Math.min(maxX, newX)),
+          y: Math.max(-maxY, Math.min(maxY, newY))
+        });
+      }
+    };
+
+    const handleTouchMove = (e) => {
+      e.preventDefault();
+      const clientX = e.touches[0].clientX;
+      const clientY = e.touches[0].clientY;
+      // 터치 위치 변화량만큼 모달 이동
+      const newX = clientX - dragStart.x;
+      const newY = clientY - dragStart.y;
+      
+      // 화면 경계 체크
+      if (dialogContentRef.current) {
+        const rect = dialogContentRef.current.getBoundingClientRect();
+        const maxX = (window.innerWidth - rect.width) / 2;
+        const maxY = (window.innerHeight - rect.height) / 2;
+        setPosition({
+          x: Math.max(-maxX, Math.min(maxX, newX)),
+          y: Math.max(-maxY, Math.min(maxY, newY))
+        });
+      }
+    };
+
+    const handleMouseUp = () => {
+      setIsDragging(false);
+    };
+
+    const handleTouchEnd = () => {
+      setIsDragging(false);
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    document.addEventListener('touchmove', handleTouchMove, { passive: false });
+    document.addEventListener('touchend', handleTouchEnd);
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.removeEventListener('touchmove', handleTouchMove);
+      document.removeEventListener('touchend', handleTouchEnd);
+    };
+  }, [isDragging, dragStart]);
+
+  // 모달이 열릴 때 위치 초기화
+  useEffect(() => {
+    if (open) {
+      setPosition({ x: 0, y: 0 });
+    }
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -276,11 +368,23 @@ const OrigChatStartModal = ({ open, onClose, storyId, totalChapters = 1, lastRea
     try {
       setStarting(true);
       if (!isOrigMode) {
-        // 일반 일대일 챗 시작
-        const res = await chatAPI.startChat(selectedId);
-        const roomId = res.data?.id || res.data?.room_id;
+        // 일대일 모드: 원작챗 API를 사용하되 mode='plain'으로 설정하여 페르소나 지원
+        const payload = { 
+          story_id: storyId, 
+          character_id: selectedId, 
+          mode: 'plain',  // 일대일 모드
+          start: null, 
+          range_from: null, 
+          range_to: null, 
+          focus_character_id: selectedId, 
+          narrator_mode: false, 
+          pov: povMode  // 페르소나 모드 전달
+        };
+        const startRes = await origChatAPI.start(payload);
+        const roomId = startRes.data?.id || startRes.data?.room_id;
         onClose?.();
-        navigate(`/ws/chat/${selectedId}`);
+        if (roomId) navigate(`/ws/chat/${selectedId}?source=origchat&storyId=${storyId}&room=${roomId}`);
+        else navigate(`/ws/chat/${selectedId}`);
         return;
       }
       // 원작챗 시작(canon/parallel)
@@ -308,63 +412,37 @@ const OrigChatStartModal = ({ open, onClose, storyId, totalChapters = 1, lastRea
   if (!open) return null;
   return (
     <Dialog open={open} onOpenChange={onClose}>
-      <DialogContent className="bg-gray-900 text-white border border-gray-700 w-[92vw] max-w-5xl md:max-w-6xl">
-        <DialogHeader>
+      <DialogContent 
+        ref={dialogContentRef}
+        className="bg-gray-900 text-white border border-gray-700 w-[92vw] max-w-5xl md:max-w-6xl !translate-x-0 !translate-y-0"
+        style={{
+          left: '50%',
+          top: '50%',
+          transform: `translate(calc(-50% + ${position.x}px), calc(-50% + ${position.y}px))`,
+          cursor: isDragging ? 'grabbing' : 'default',
+          transition: isDragging ? 'none' : 'transform 0.1s ease-out'
+        }}
+      >
+        <DialogHeader
+          onMouseDown={handleDragStart}
+          onTouchStart={handleDragStart}
+          className="cursor-grab active:cursor-grabbing select-none"
+          style={{ userSelect: 'none' }}
+        >
           <DialogTitle className="text-white">원작챗 시작</DialogTitle>
           <DialogDescription className="sr-only">원작 기반 채팅을 시작할 캐릭터와 회차 범위를 선택하세요.</DialogDescription>
         </DialogHeader>
         <div className="space-y-5 max-h-[70vh] overflow-auto pr-1">
-          {/* 모드 선택: 제목 바로 아래 */}
-          <div className="space-y-2">
-            <div className="text-sm text-gray-300">모드를 선택하세요</div>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={()=> { setModeSel('parallel'); }}
-                aria-pressed={modeSel==='parallel'}
-                className={`px-3 py-1 rounded-full border ${modeSel==='parallel' ? 'bg-white text-black border-white' : 'bg-gray-800 text-gray-300 border-gray-700'}`}
-              >내맘대로 전개(평행세계)</button>
-              <button
-                type="button"
-                onClick={()=> { setModeSel('canon'); setNarratorMode(false); }}
-                aria-pressed={modeSel==='canon'}
-                className={`px-3 py-1 rounded-full border ${modeSel==='canon' ? 'bg-white text-black border-white' : 'bg-gray-800 text-gray-300 border-gray-700'}`}
-              >원작대로 전개</button>
-              <button
-                type="button"
-                onClick={()=> { setModeSel('plain'); setNarratorMode(false); }}
-                aria-pressed={modeSel==='plain'}
-                className={`px-3 py-1 rounded-full border ${modeSel==='plain' ? 'bg-white text-black border-white' : 'bg-gray-800 text-gray-300 border-gray-700'}`}
-              >그냥 일대일 채팅</button>
-            </div>
-          </div>
+          {/* 모드 선택: 배포 후 서비스 편의를 위해 평행세계/원작대로 버튼 비노출 */}
+          {/* 기본적으로 plain 모드(일대일 채팅)만 사용 */}
 
           {/* 장면 선택 (범위 아래로 이동) → 아래 범위 섹션 후 표시됨 */}
 
-          {/* 그리드: 관전가(서술자) + 캐릭터 선택 */}
+          {/* 그리드: 캐릭터 선택 (관전가 타일은 평행세계 모드에서만 사용되므로 비노출) */}
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 max-h-[60vh] overflow-auto pr-1" role="listbox" aria-label="등장인물 목록" onKeyDown={handleGridKeyDown}>
             {loading && Array.from({ length: 8 }).map((_, i) => (
               <div key={`sk-${i}`} className="h-32 bg-gray-800/40 border border-gray-700 rounded-md" />
             ))}
-            {!loading && (
-              <div
-                key="observer-tile"
-                className={`relative bg-gray-800/40 border rounded-xl p-4 ${modeSel==='parallel' ? 'cursor-pointer' : 'opacity-50 cursor-not-allowed'} ${narratorMode ? 'border-orange-500' : 'border-gray-700'}`}
-                role="option"
-                aria-selected={narratorMode}
-                aria-disabled={modeSel!=='parallel'}
-                onClick={() => { if (modeSel !== 'parallel') return; setNarratorMode(!narratorMode); }}
-              >
-                <div className="flex items-center gap-4">
-                  <div className="w-14 h-14 rounded-full bg-white text-black flex items-center justify-center text-base font-bold">觀</div>
-                  <div>
-                    <div className="text-white font-semibold text-base">관전가(서술자)</div>
-                    <div className="text-sm text-gray-400 line-clamp-2">유저는 서술/묘사 입력, AI는 인물 대사/행동 진행</div>
-                  </div>
-                </div>
-                <div className={`absolute top-2 right-2 w-7 h-7 rounded ${narratorMode ? 'bg-orange-500 text-black' : 'bg-black/60 text-white'} flex items-center justify-center border border-white/20`}>{narratorMode ? '✓' : ' '}</div>
-              </div>
-            )}
             {!loading && items.map((c, idx) => {
               const selected = selectedId === c.character_id;
               return (

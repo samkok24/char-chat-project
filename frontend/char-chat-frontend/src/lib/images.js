@@ -28,14 +28,15 @@ export const getCharacterPrimaryImage = (character) => {
 
 
 // Cloudflare 이미지 변환을 사용하는 경우(또는 정적 이미지에도 안전) 포트레이트(srcset/sizes) 생성
-// 목표: 상반신(가로 600, 세로 900, g=top) 기준으로 동일한 크롭과 밀도별 소스 제공
+// 목표: 상반신(가로 1200, 세로 1800, g=top) 기준으로 동일한 크롭과 밀도별 소스 제공 (고해상도 대응)
 export const buildPortraitSrcSet = (rawUrl) => {
   const url = resolveImageUrl(rawUrl);
-  if (!url) return { src: '', srcSet: '', sizes: '', width: 600, height: 900 };
+  if (!url) return { src: '', srcSet: '', sizes: '', width: 1200, height: 1800 };
 
   // Cloudflare 이미지 서비스 쿼리 규칙을 사용 중인 경우를 우선 지원
-  // 기본 변환 파라미터: fit=crop, g=top, h=900, w=600
-  const baseParams = 'anim=false,f=auto,fit=crop,g=top,h=900,w=600';
+  // 기본 변환 파라미터: fit=crop, g=top, h=1800, w=1200 (고해상도 대응)
+  // quality=90으로 품질 향상
+  const baseParams = 'anim=false,f=auto,fit=crop,g=top,h=1800,w=1200,quality=90';
 
   const make = (dpr) => {
     // 이미 쿼리가 있다면 이어붙이고, 없다면 ? 추가
@@ -49,12 +50,13 @@ export const buildPortraitSrcSet = (rawUrl) => {
     `${make(1)} 1x`,
     `${make(1.5)} 1.5x`,
     `${make(2)} 2x`,
+    `${make(3)} 3x`,  // 고해상도 디스플레이 대응
   ].join(', ');
 
   // 콘텐츠 영역이 최대 720px로 제한되어 있어 모바일/데스크톱 공통으로 100vw, lg:480px 정도에 대응
   const sizes = '(max-width: 1024px) 100vw, 480px';
 
-  return { src, srcSet, sizes, width: 600, height: 900 };
+  return { src, srcSet, sizes, width: 1200, height: 1800 };
 };
 
 

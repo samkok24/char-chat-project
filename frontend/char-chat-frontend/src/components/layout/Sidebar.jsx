@@ -18,8 +18,8 @@ import {
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
 import UserPersonaModal from '../UserPersonaModal';
-import LoginRequiredModal from '../LoginRequiredModal';
-import LoginModal from '../LoginModal';
+import useRequireAuth from '../../hooks/useRequireAuth';
+import { useLoginModal } from '../../contexts/LoginModalContext';
 
 const Sidebar = () => {
   const [chatRooms, setChatRooms] = useState([]);
@@ -29,9 +29,9 @@ const Sidebar = () => {
   const [showPersonaModal, setShowPersonaModal] = useState(false);
   const { user, logout, isAuthenticated } = useAuth();
   const navigate = useNavigate();
-  const [showLoginRequired, setShowLoginRequired] = useState(false);
-  const [showLoginModal, setShowLoginModal] = useState(false);
   const [avatarVersion, setAvatarVersion] = useState(Date.now());
+  const requireAuth = useRequireAuth();
+  const { openLoginModal } = useLoginModal();
 
   const formatRelativeTime = (iso) => {
     try {
@@ -197,7 +197,7 @@ const Sidebar = () => {
       // 디바운스: 1초 내 여러 번 호출되어도 마지막 호출만 실행
       if (debounceTimer) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
-        try { loadRooms(); } catch (_) {}
+      try { loadRooms(); } catch (_) {}
       }, 1000);
     };
     try { window.addEventListener('profile:updated', onProfileUpdated); } catch (_) {}
@@ -216,7 +216,7 @@ const Sidebar = () => {
         // 디바운스: 1초 내 여러 번 호출되어도 마지막 호출만 실행
         if (debounceTimer) clearTimeout(debounceTimer);
         debounceTimer = setTimeout(() => {
-          loadRecentStories();
+        loadRecentStories();
         }, 1000);
       }
     };
@@ -236,7 +236,7 @@ const Sidebar = () => {
       // 디바운스: 2초 내 여러 번 호출되어도 마지막 호출만 실행
       if (debounceTimer) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
-        loadRooms(true); // 강제 새로고침 (캐시 무시)
+      loadRooms(true); // 강제 새로고침 (캐시 무시)
       }, 2000);
     };
     const handlerSuppress = () => { suppressOnce = true; };
@@ -249,7 +249,7 @@ const Sidebar = () => {
     };
   }, [isAuthenticated]);
 
-  const NavItem = ({ to, icon: Icon, children, requireAuth = false }) => (
+  const NavItem = ({ to, icon: Icon, children, requireAuth: mustAuth = false, authReason }) => (
     <NavLink
       to={to}
       className={({ isActive }) =>
@@ -260,9 +260,8 @@ const Sidebar = () => {
         }`
       }
       onClick={(e) => {
-        if (requireAuth && !isAuthenticated) {
+        if (mustAuth && !requireAuth(authReason || String(children))) {
           e.preventDefault();
-          setShowLoginModal(true);
         }
       }}
     >
@@ -286,9 +285,8 @@ const Sidebar = () => {
         <Link
           to="/characters/create"
           onClick={(e) => {
-            if (!isAuthenticated) {
+            if (!requireAuth('캐릭터 생성')) {
               e.preventDefault();
-              setShowLoginModal(true);
             }
           }}
           className="flex items-center justify-center w-full px-4 py-2.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors font-medium text-sm shadow-lg"
@@ -301,25 +299,24 @@ const Sidebar = () => {
         <Link
           to="/works/create"
           onClick={(e) => {
-            if (!isAuthenticated) {
+            if (!requireAuth('원작 쓰기')) {
               e.preventDefault();
-              setShowLoginModal(true);
             }
           }}
           className="flex items-center justify-center w-full px-4 py-2.5 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors font-medium text-sm"
         >
           <BookOpen className="w-5 h-5 mr-2" />
-          작품 쓰기
+          원작 쓰기
         </Link>
       </div>
 
       {/* 메인 네비게이션 */}
       <nav className="flex-1 space-y-1">
         <NavItem to="/" icon={Home}>탐색</NavItem>
-        <NavItem to="/my-characters" icon={Star} requireAuth>내 캐릭터</NavItem>
+        <NavItem to="/my-characters" icon={Star} requireAuth authReason="내 캐릭터">내 캐릭터</NavItem>
         <button
           onClick={() => {
-            if (!isAuthenticated) { setShowLoginModal(true); return; }
+            if (!requireAuth('유저 페르소나')) { return; }
             setShowPersonaModal(true);
           }}
           className="flex items-center w-full px-4 py-2 text-sm font-medium rounded-lg transition-colors text-gray-300 hover:bg-gray-700 hover:text-white"
@@ -327,7 +324,7 @@ const Sidebar = () => {
           <UserCog className="w-5 h-5 mr-3" />
           <span>유저 페르소나</span>
         </button>
-        <NavItem to="/history" icon={History} requireAuth>대화내역</NavItem>
+        <NavItem to="/history" icon={History} requireAuth authReason="대화내역">대화내역</NavItem>
         
         <div className="px-3 pt-4">
           <p className="px-1 text-xs text-gray-500 mb-2">A While Ago</p>
@@ -483,10 +480,10 @@ const Sidebar = () => {
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <Button className="bg-purple-600 hover:bg-purple-700 text-white" onClick={() => setShowLoginModal(true)}>
+              <Button className="bg-purple-600 hover:bg-purple-700 text-white" onClick={() => openLoginModal({ initialTab: 'login' })}>
                 <LogIn className="w-4 h-4 mr-2" /> 로그인
               </Button>
-              <Button variant="outline" onClick={() => { setShowLoginModal(true); }}>
+              <Button variant="outline" onClick={() => openLoginModal({ initialTab: 'register' })}>
                 <UserPlus className="w-4 h-4 mr-2" /> 회원가입
               </Button>
             </div>
@@ -500,16 +497,6 @@ const Sidebar = () => {
         onClose={() => setShowPersonaModal(false)}
       />
 
-      {/* 로그인 유도 모달 */}
-      <LoginRequiredModal
-        isOpen={showLoginRequired}
-        onClose={() => setShowLoginRequired(false)}
-        onLogin={() => { setShowLoginRequired(false); navigate('/login?tab=login'); }}
-        onRegister={() => { setShowLoginRequired(false); navigate('/login?tab=register'); }}
-      />
-
-      {/* 통합 로그인/회원가입 모달 */}
-      <LoginModal isOpen={showLoginModal} onClose={() => setShowLoginModal(false)} />
     </aside>
   );
 };
