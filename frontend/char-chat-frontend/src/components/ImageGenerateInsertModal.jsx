@@ -11,6 +11,8 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
   // 현재 갤러리(이미 삽입된 자산) 상태
   const [gallery, setGallery] = React.useState([]);
   const [galleryBusy, setGalleryBusy] = React.useState(false);
+  const [statusMessage, setStatusMessage] = React.useState('');
+  const [errorMessage, setErrorMessage] = React.useState('');
   const dragIndexRef = React.useRef(null);
   const saveTimerRef = React.useRef(null);
   const hasLoadedRef = React.useRef(false);
@@ -65,6 +67,12 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
     }, 1000);
   };
 
+  const dispatchToast = React.useCallback((type, message) => {
+    try {
+      window.dispatchEvent(new CustomEvent('toast', { detail: { type, message } }));
+    } catch (_) {}
+  }, []);
+
   const onPick = () => inputRef.current?.click();
   const canonUrl = (u) => {
     try {
@@ -90,39 +98,58 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
     if (!selected.length) return;
     setBusy(true);
     try {
+      setStatusMessage('이미지를 업로드하는 중입니다...');
+      setErrorMessage('');
       const res = await mediaAPI.upload(selected);
       const items = res.data?.items || [];
       setGallery((prev) => dedupAssets([...prev, ...items]));
-    } catch (_) {
-      // noop
+      setStatusMessage('이미지가 업로드되었습니다.');
+    } catch (err) {
+      console.error('이미지 업로드 실패', err);
+      setErrorMessage('이미지 업로드에 실패했습니다. 잠시 후 다시 시도해주세요.');
+      dispatchToast('error', '이미지 업로드에 실패했습니다.');
+      setStatusMessage('');
     } finally { setBusy(false); }
   };
 
   const confirmAttach = async () => {
     if (!gallery.length) { onClose?.(); return; }
     setBusy(true);
+    setStatusMessage('이미지를 적용하는 중입니다...');
+    setErrorMessage('');
     try {
       const focusUrl = gallery[0]?.url || '';
       const realIds = gallery.filter(s => !String(s.id).startsWith('url:')).map(s => s.id);
-      // 엔티티가 있을 때만 서버에 첨부
       if (entityType && entityId && realIds.length) {
         await mediaAPI.attach({ entityType, entityId, assetIds: realIds, asPrimary: true });
         try { window.dispatchEvent(new CustomEvent('media:updated', { detail: { entityType, entityId } })); } catch(_) {}
-        try { window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'success', message: `삽입 완료 (${gallery.length}개)` } })); } catch(_) {}
+        dispatchToast('success', `삽입 완료 (${gallery.length}개)`);
         onClose?.({ attached: true, focusUrl, gallery: gallery.map(g => ({ id: g.id, url: g.url })) });
       } else {
-        // 생성/업로드만 하고 표지로만 사용할 때(생성 페이지 등)
-        try { window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'success', message: '이미지 선택 완료' } })); } catch(_) {}
+        dispatchToast('success', '이미지 선택 완료');
         onClose?.({ attached: false, focusUrl, gallery: gallery.map(g => ({ id: g.id, url: g.url })) });
       }
+      setStatusMessage('');
+    } catch (err) {
+      console.error('이미지 첨부 실패', err);
+      setErrorMessage('이미지를 적용하지 못했습니다. 잠시 후 다시 시도해주세요.');
+      dispatchToast('error', '이미지를 적용하지 못했습니다.');
+      setStatusMessage('');
     } finally { setBusy(false); }
   };
 
   const deleteOne = async (id) => {
     setBusy(true);
-    try { await mediaAPI.deleteAssets([id]); setGallery(prev => prev.filter(s => s.id !== id)); }
-    catch(_) {}
-    finally { setBusy(false); }
+    try {
+      await mediaAPI.deleteAssets([id]);
+      setGallery(prev => prev.filter(s => s.id !== id));
+      setStatusMessage('이미지를 삭제했습니다.');
+      setErrorMessage('');
+    } catch (err) {
+      console.error('이미지 삭제 실패', err);
+      setErrorMessage('이미지를 삭제하지 못했습니다.');
+      dispatchToast('error', '이미지를 삭제하지 못했습니다.');
+    } finally { setBusy(false); }
   };
 
   const loadGallery = async () => {
@@ -155,13 +182,26 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
           setGallery([]);
         }
       }
-    } catch (_) {
+    } catch (err) {
+      console.error('갤러리 로드 실패', err);
       setGallery([]);
+      setErrorMessage('갤러리를 불러오지 못했습니다. 잠시 후 다시 시도해주세요.');
     } finally { setGalleryBusy(false); }
   };
 
   React.useEffect(() => {
-    if (!open) { hasLoadedRef.current = false; return; }
+    if (!open) {
+      hasLoadedRef.current = false;
+      setStatusMessage('');
+      setErrorMessage('');
+      clearEta();
+      if (abortRef.current) {
+        try { abortRef.current.abort(); } catch (_) {}
+        abortRef.current = null;
+      }
+      setBusy(false);
+      return;
+    }
     if (open && !hasLoadedRef.current) {
       hasLoadedRef.current = true;
       if (entityType && entityId) {
@@ -441,13 +481,26 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
     } finally { setGalleryBusy(false); }
   };
 
+  const emitLocalGallery = () => ({
+    focusUrl: gallery[0]?.url || '',
+    gallery: gallery.map(g => ({ id: g.id, url: g.url })),
+  });
+
+  const handleDismiss = () => {
+    if (!entityType || !entityId) {
+      onClose?.(emitLocalGallery());
+    } else {
+      onClose?.();
+    }
+  };
+
   return (
     <>
-    <Dialog open={open} onOpenChange={(v)=>{ if(!v) onClose?.(); }}>
+    <Dialog open={open} onOpenChange={(v)=>{ if(!v) handleDismiss(); }}>
       <DialogContent className="bg-gray-900 text-white border border-gray-800 max-w-4xl flex flex-col max-h-[85vh] overflow-hidden" aria-describedby="img-gen-insert-desc">
         <button
           type="button"
-          onClick={()=> onClose?.()}
+          onClick={handleDismiss}
           aria-label="닫기"
           className="absolute top-2 right-2 p-2 rounded-md bg-black/40 hover:bg-black/60 text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-500 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900"
         >
@@ -457,6 +510,12 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
           <DialogTitle>이미지 생성/삽입</DialogTitle>
           <div id="img-gen-insert-desc" className="sr-only">이미지를 업로드하거나 생성하여 갤러리에 추가하고 순서를 변경합니다.</div>
         </DialogHeader>
+        {(statusMessage || errorMessage) && (
+          <div className="px-4">
+            {statusMessage && <p className="text-xs text-gray-400">{statusMessage}</p>}
+            {errorMessage && <p className="text-xs text-red-400 mt-1">{errorMessage}</p>}
+          </div>
+        )}
         {/* 상단 생성/업로드 영역 */}
         <div className="flex-shrink-0 p-4 bg-gray-800 border-b border-gray-700">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -490,8 +549,10 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
               {/* 취소를 위해 AbortController 사용 */}
               
               <Button onClick={async()=>{
-                if (!genPrompt.trim()) { try { window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', message: '프롬프트를 입력해주세요.' } })); } catch(_) {} return; }
+                if (!genPrompt.trim()) { dispatchToast('error', '프롬프트를 입력해주세요.'); return; }
                 setBusy(true);
+                setStatusMessage('이미지를 생성하는 중입니다...');
+                setErrorMessage('');
                 startEta('gemini', genCount);
                 const params = { provider: 'gemini', model: genModel, ratio: genRatio, count: genCount, prompt: genPrompt };
                 lastParamsRef.current = params;
@@ -502,20 +563,29 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
                   const res = await mediaAPI.generate(params, { signal: controller.signal });
                   const items = Array.isArray(res.data?.items) ? res.data.items : [];
                   if (items.length === 0) {
-                    try { window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', message: '생성 결과가 없습니다.' } })); } catch(_) {}
-              } else {
-                setGallery(prev => dedupAssets([...prev, ...items]));
-                    try { window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'success', message: `${items.length}개 생성됨` } })); } catch(_) {}
+                    dispatchToast('warning', '생성 결과가 없습니다.');
+                  } else {
+                    setGallery(prev => dedupAssets([...prev, ...items]));
+                    dispatchToast('success', `${items.length}개 생성됨`);
                     try { await mediaAPI.trackEvent({ event: 'generate_success', entityType, entityId, count: items.length }); } catch(_) {}
                   }
+                  setStatusMessage(items.length ? `${items.length}개 생성되었습니다.` : '');
                 } catch (e) {
-                  try { window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', message: '생성 실패. 재시도 해주세요.' } })); } catch(_) {}
+                  if (e?.name === 'AbortError') {
+                    setStatusMessage('생성이 취소되었습니다.');
+                    setErrorMessage('');
+                  } else {
+                    console.error('이미지 생성 실패', e);
+                    setErrorMessage('이미지 생성에 실패했습니다. 잠시 후 다시 시도해주세요.');
+                    dispatchToast('error', '이미지 생성에 실패했습니다.');
+                    setStatusMessage('');
+                  }
                 } finally { setBusy(false); clearEta(); abortRef.current = null; }
               }} disabled={busy} className="bg-purple-600 hover:bg-purple-700 inline-flex items-center gap-2">
                 {busy && <Loader2 className="w-4 h-4 animate-spin" />}<span>생성</span>
               </Button>
               {/* 재시도 버튼 제거 */}
-              <Button onClick={async()=>{ try { if (abortRef.current) { abortRef.current.abort(); } await mediaAPI.cancelJob('ad-hoc'); await mediaAPI.trackEvent({ event: 'generate_cancel', entityType, entityId }); window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'success', message: '생성 취소됨' } })); } catch(_) {} clearEta(); setBusy(false); abortRef.current = null; }} disabled={!busy} variant="outline" className="bg-gray-800 border-gray-700 text-gray-200">취소</Button>
+              <Button onClick={async()=>{ try { if (abortRef.current) { abortRef.current.abort(); } await mediaAPI.cancelJob('ad-hoc'); await mediaAPI.trackEvent({ event: 'generate_cancel', entityType, entityId }); dispatchToast('success', '생성이 취소되었습니다.'); setStatusMessage('생성이 취소되었습니다.'); setErrorMessage(''); } catch(_) {} clearEta(); setBusy(false); abortRef.current = null; }} disabled={!busy} variant="outline" className="bg-gray-800 border-gray-700 text-gray-200">취소</Button>
             </div>
             {busy && (
               <div className="mt-2 text-xs text-gray-400">

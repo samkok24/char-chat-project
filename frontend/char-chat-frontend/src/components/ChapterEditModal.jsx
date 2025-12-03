@@ -149,13 +149,13 @@ const ChapterEditModal = ({ open, onClose, chapter, onAfterSave }) => {
 
           <div>
             <label className="block text-sm text-gray-300 mb-2">
-              내용 <span className="text-red-400">*</span> (필수 - AI 프롬프팅용)
+              내용
             </label>
             <Textarea
               value={content}
               onChange={(e) => setContent(e.target.value)}
               rows={12}
-              placeholder="회차 내용을 입력하세요 (AI가 이 텍스트를 읽습니다)"
+              placeholder="회차 내용을 입력하세요"
               className="bg-gray-800 border-gray-700 text-white"
             />
           </div>
@@ -231,7 +231,7 @@ const ChapterEditModal = ({ open, onClose, chapter, onAfterSave }) => {
             </label>
             
             <div className="mt-2 text-xs text-gray-400">
-              여러 컷을 업로드하면 세로로 이어져서 웹툰처럼 표시됩니다. 텍스트는 AI 프롬프팅용으로만 사용됩니다.
+              여러 컷을 업로드하면 세로로 이어져서 웹툰처럼 표시됩니다.
             </div>
           </div>
         </div>

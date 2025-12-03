@@ -88,8 +88,11 @@ api.interceptors.request.use(
     const token = localStorage.getItem('access_token');
     const isGet = (config.method || 'get').toLowerCase() === 'get';
     const path = normalizePath(config.url || '');
-    const isPublicCharacters = (path === '/characters' || path === '/characters/') || /^\/characters\/[0-9a-fA-F\-]+$/.test(path);
-    const isPublicStories = (path === '/stories' || path === '/stories/') || /^\/stories\/[0-9a-fA-F\-]+$/.test(path);
+    // 개별 리소스 조회는 비공개일 수 있으므로 항상 토큰 포함
+    const isIndividualResource = /^\/characters\/[0-9a-fA-F\-]+$/.test(path) || /^\/stories\/[0-9a-fA-F\-]+$/.test(path);
+    // 목록 조회만 공개로 처리
+    const isPublicCharacters = (path === '/characters' || path === '/characters/');
+    const isPublicStories = (path === '/stories' || path === '/stories/');
     const isPublicTags = path.startsWith('/tags');
     // 회원가입 관련 공개 API
     const isPublicAuth = path === '/auth/check-email' 
@@ -99,7 +102,8 @@ api.interceptors.request.use(
       || path === '/auth/login';
     const isPublicGet = isGet && (isPublicCharacters || isPublicStories || isPublicTags);
     const isPublicEndpoint = isPublicGet || isPublicAuth;
-    if (token && !isPublicEndpoint) {
+    // 개별 리소스 조회이거나 공개 엔드포인트가 아니면 토큰 포함
+    if (token && (isIndividualResource || !isPublicEndpoint)) {
       config.headers.Authorization = `Bearer ${token}`;
     } else {
       // 공개 요청은 Authorization 제거 (백엔드에서 500 방지)
@@ -124,11 +128,14 @@ api.interceptors.response.use(
     const status = error.response?.status;
     const path = normalizePath(originalRequest.url || '');
     const isGet = (originalRequest.method || 'get').toLowerCase() === 'get';
+    // 개별 리소스 조회는 비공개일 수 있으므로 공개 엔드포인트에서 제외
+    const isIndividualResource = /^\/characters\/[0-9a-fA-F\-]+$/.test(path) || /^\/stories\/[0-9a-fA-F\-]+$/.test(path);
+    // 목록 조회만 공개로 처리
     const isPublicEndpoint = isGet && (
-      (path === '/characters' || path === '/characters/' || /^\/characters\/[0-9a-fA-F\-]+$/.test(path)) ||
-      (path === '/stories' || path === '/stories/' || /^\/stories\/[0-9a-fA-F\-]+$/.test(path)) ||
+      (path === '/characters' || path === '/characters/') ||
+      (path === '/stories' || path === '/stories/') ||
       path.startsWith('/tags')
-    );
+    ) && !isIndividualResource;
 
     const shouldHandleAuthError = (status === 401 || status === 403) && !isPublicEndpoint;
 
@@ -195,6 +202,12 @@ export const authAPI = {
   generateUsername: () => api.get('/auth/generate-username'),
   updatePassword: (current_password, new_password) =>
     api.post('/auth/update-password', { current_password, new_password }),
+  
+  forgotPassword: (email) =>
+    api.post('/auth/forgot-password', { email }),
+  
+  resetPassword: (token, new_password) =>
+    api.post('/auth/reset-password', { token, new_password }),
 };
 
 // 👤 사용자 관련 API

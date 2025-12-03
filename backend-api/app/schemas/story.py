@@ -7,6 +7,16 @@ from typing import Optional, List
 from datetime import datetime
 import uuid
 import json
+import re
+
+
+def _sanitize_story_text(value: Optional[str], max_length: Optional[int] = None) -> Optional[str]:
+    if value is None:
+        return None
+    text = re.sub(r'<[^>]*>', '', str(value)).strip()
+    if max_length is not None and len(text) > max_length:
+        raise ValueError(f'최대 {max_length}자까지 입력할 수 있습니다.')
+    return text or None
 
 
 class StoryBase(BaseModel):
@@ -19,22 +29,62 @@ class StoryBase(BaseModel):
     is_webtoon: bool = False
     cover_url: Optional[str] = None
 
+    @field_validator('title', 'content', 'genre', mode='before')
+    @classmethod
+    def sanitize_story_fields(cls, v, info):
+        max_map = {'title': 200, 'content': 50000, 'genre': 50}
+        return _sanitize_story_text(v, max_map.get(info.field_name))
+
+    @field_validator('keywords', mode='before')
+    @classmethod
+    def sanitize_keywords(cls, v):
+        if v is None:
+            return None
+        if not isinstance(v, list):
+            raise ValueError('keywords는 배열이어야 합니다.')
+        cleaned = []
+        for kw in v[:10]:
+            text = _sanitize_story_text(kw, 50)
+            if text:
+                cleaned.append(text)
+        return cleaned
+
 
 class StoryCreate(StoryBase):
-    """스토리 생성 스키마 (요청용: 본문 최소 100자)"""
-    content: str = Field(..., min_length=100, max_length=50000)
+    """스토리 생성 스키마 (요청용: 본문 최소 20자)"""
+    content: str = Field(..., min_length=20, max_length=50000)
     character_id: Optional[uuid.UUID] = None
 
 
 class StoryUpdate(BaseModel):
     """스토리 업데이트 스키마"""
     title: Optional[str] = Field(None, min_length=1, max_length=200)
-    content: Optional[str] = Field(None, min_length=100, max_length=50000)
+    content: Optional[str] = Field(None, min_length=20, max_length=50000)
     keywords: Optional[List[str]] = Field(None, max_items=10)
     genre: Optional[str] = Field(None, max_length=50)
     is_public: Optional[bool] = None
     is_webtoon: Optional[bool] = None
     cover_url: Optional[str] = None
+
+    @field_validator('title', 'content', 'genre', mode='before')
+    @classmethod
+    def sanitize_story_update(cls, v, info):
+        max_map = {'title': 200, 'content': 50000, 'genre': 50}
+        return _sanitize_story_text(v, max_map.get(info.field_name))
+
+    @field_validator('keywords', mode='before')
+    @classmethod
+    def sanitize_update_keywords(cls, v):
+        if v is None:
+            return None
+        if not isinstance(v, list):
+            raise ValueError('keywords는 배열이어야 합니다.')
+        cleaned = []
+        for kw in v[:10]:
+            text = _sanitize_story_text(kw, 50)
+            if text:
+                cleaned.append(text)
+        return cleaned
 
 
 class StoryResponse(StoryBase):
@@ -69,6 +119,7 @@ class StoryListItem(BaseModel):
     comment_count: int
     created_at: datetime
     creator_username: Optional[str] = None
+    creator_avatar_url: Optional[str] = None
     character_name: Optional[str] = None
     cover_url: Optional[str] = None
     # 목록 카드에서 사용할 간단 소개(요약)
@@ -127,7 +178,7 @@ class ChapterBase(BaseModel):
     story_id: uuid.UUID
     no: int = Field(..., ge=0)
     title: Optional[str] = Field(None, max_length=200)
-    content: str = Field(..., min_length=1)
+    content: str = Field(..., min_length=1, max_length=50000)
     image_url: Optional[List[str]] = None  # 여러 이미지 URL 배열
 
 
@@ -137,8 +188,14 @@ class ChapterCreate(ChapterBase):
 
 class ChapterUpdate(BaseModel):
     title: Optional[str] = Field(None, min_length=1, max_length=200)
-    content: Optional[str] = Field(None, min_length=1)
+    content: Optional[str] = Field(None, min_length=1, max_length=50000)
     image_url: Optional[List[str]] = None  # 여러 이미지 URL 배열
+
+    @field_validator('title', 'content', mode='before')
+    @classmethod
+    def sanitize_chapter_text(cls, v, info):
+        max_map = {'title': 200, 'content': 50000}
+        return _sanitize_story_text(v, max_map.get(info.field_name))
 
 
 class ChapterResponse(ChapterBase):

@@ -77,20 +77,10 @@ const ChapterViewer = ({ chapter }) => {
           </div>
         </div>
       ) : (
-        // 웹소설 모드: 텍스트 표시
+        // 웹소설 모드: 텍스트 표시 (본문만)
         <div className="novel-mode max-w-4xl mx-auto px-4 py-12">
-          {/* 웹소설 헤더 표시 */}
-          <div className="mb-8">
-            <h2 className="text-2xl font-bold text-white mb-2">
-              {chapter.no}화{chapter.title && ` - ${chapter.title}`}
-            </h2>
-            <div className="text-gray-400 text-sm">
-              조회수 {chapter.view_count || 0}
-            </div>
-          </div>
-
           {/* 텍스트 콘텐츠 */}
-          <div className="prose prose-invert max-w-none">
+          <div className="prose prose-invert max-w-none mt-0">
             <div className="text-white text-lg leading-relaxed whitespace-pre-wrap">
               {chapter.content}
             </div>

@@ -50,6 +50,10 @@ const ChatPage = React.lazy(() => import('./pages/ChatPage'));
 const CharacterDetailPage = React.lazy(() => import('./pages/CharacterDetailPage'));
 const ChatRedirectPage = React.lazy(() => import('./pages/ChatRedirectPage')); // 새로 추가
 const VerifyPage = React.lazy(() => import('./pages/VerifyPage'));
+const ResetPasswordPage = React.lazy(() => import('./pages/ResetPasswordPage'));
+const ForgotPasswordPage = React.lazy(() => import('./pages/ForgotPasswordPage'));
+const ContactPage = React.lazy(() => import('./pages/ContactPage'));
+const FAQPage = React.lazy(() => import('./pages/FAQPage'));
 
 // ⏳ 나중에 필요한 페이지들 (지연 로딩)
 const ProfilePage = React.lazy(() => import('./pages/ProfilePage'));
@@ -126,6 +130,10 @@ const AppRouter = () => {
           />
 
           <Route path="/verify" element={<VerifyPage />} />
+          <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+          <Route path="/reset-password" element={<ResetPasswordPage />} />
+          <Route path="/contact" element={<ContactPage />} />
+          <Route path="/faq" element={<FAQPage />} />
 
           <Route
             path="/characters/:characterId"

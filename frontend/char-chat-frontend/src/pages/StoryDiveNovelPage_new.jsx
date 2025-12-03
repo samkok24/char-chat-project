@@ -457,10 +457,10 @@ const StoryDiveNovelPage = () => {
           </div>
         </div>
 
-        {/* 하단 입력 툴바 (다이브 후에만 표시) - AI Dungeon 스타일 */}
+        {/* 하단 입력 섹션 (다이브 후 표시) */}
         {isDived && (
-          <div className="fixed bottom-0 left-0 right-0 z-30 bg-gradient-to-t from-gray-900 via-gray-900 to-gray-900/80 backdrop-blur-sm border-t border-gray-800">
-            <div className="max-w-4xl mx-auto px-4 py-4">
+          <div className="bg-gray-900 border-t border-gray-800 mt-10">
+            <div className="max-w-4xl mx-auto px-4 py-5">
               {/* 입력창 */}
               <div className="mb-3">
                 <Textarea

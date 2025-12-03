@@ -16,10 +16,13 @@ from app.core.security import (
     verify_token,
     get_current_user,
     generate_verification_token,
-    verify_verification_token
+    verify_verification_token,
+    generate_password_reset_token,
+    verify_password_reset_token
 )
 from app.core.config import settings
-from app.schemas.auth import Token, RefreshTokenRequest, PasswordResetRequest, EmailVerificationRequest, EmailOnly, PasswordUpdateRequest
+from app.schemas.auth import Token, RefreshTokenRequest, PasswordResetRequest, EmailVerificationRequest, EmailOnly, PasswordUpdateRequest, PasswordResetConfirm
+import asyncio
 from app.schemas.user import UserCreate, UserLogin, UserResponse
 from app.services.user_service import (
     get_user_by_email, 
@@ -97,9 +100,18 @@ async def register(
         gender=user_data.gender
     )
     
-    # 자동 인증 처리 (이메일 인증 없이 바로 사용 가능)
-    await update_user_verification_status(db, user.id, True)
-
+    if settings.EMAIL_VERIFICATION_REQUIRED:
+        # 인증 메일 발송
+        try:
+            token = generate_verification_token(user_data.email)
+            await send_verification_email_async(user_data.email, token)
+        except Exception as e:
+            # 메일 발송 실패해도 회원가입은 성공 처리
+            import logging
+            logging.warning(f"이메일 발송 실패: {e}")
+    else:
+        # 개발 환경 등에서는 즉시 인증 처리
+        await update_user_verification_status(db, user.id, True)
 
     return user
 
@@ -123,6 +135,13 @@ async def login(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="비활성화된 계정입니다."
+        )
+    
+    # 이메일 미인증 유저 체크
+    if settings.EMAIL_VERIFICATION_REQUIRED and not user.is_verified:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="이메일 인증이 필요합니다. 메일함을 확인해주세요."
         )
     
     # 토큰 생성
@@ -258,37 +277,89 @@ async def update_password(
     user.hashed_password = get_password_hash(payload.new_password)
     await db.commit()
     return {"message": "비밀번호가 변경되었습니다."}
-    # 재발송 제한: 60초 쿨다운, 하루 5회
-    cooldown_key = f"verify:cooldown:{current_user.id}"
-    daily_key = f"verify:daily:{current_user.id}"
 
-    # 60초 쿨다운 체크
-    if await redis.exists(cooldown_key):
-        raise HTTPException(status_code=429, detail="잠시 후 다시 시도해주세요 (60초)")
 
-    # 일일 카운트 체크
-    daily = await redis.get(daily_key)
-    daily_count = int(daily) if daily and daily.isdigit() else 0
-    if daily_count >= 5:
-        raise HTTPException(status_code=429, detail="일일 재발송 횟수를 초과했습니다 (5회)")
-
+@router.post("/forgot-password")
+async def forgot_password(
+    payload: PasswordResetRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """비밀번호 재설정 메일 발송"""
+    # 사용자 확인
+    user = await get_user_by_email(db, payload.email)
+    if not user:
+        # 보안상 이메일이 없어도 성공 응답 (계정 존재 여부 노출 방지)
+        return {"message": "비밀번호 재설정 메일을 발송했습니다. 메일함을 확인해주세요."}
+    
     # 토큰 생성 및 메일 발송
-    token = generate_verification_token(current_user.email)
-    await send_verification_email_async(current_user.email, token)
+    try:
+        token = generate_password_reset_token(payload.email)
+        reset_url = f"{settings.FRONTEND_BASE_URL}/reset-password?token={token}"
+        
+        # 비밀번호 재설정 메일 내용
+        subject = "[AI 캐릭터 챗] 비밀번호 재설정"
+        text = f"비밀번호를 재설정하려면 다음 링크를 클릭하세요:\n{reset_url}\n\n이 링크는 1시간 동안만 유효합니다."
+        html = f"""
+        <div style="font-family: Pretendard, system-ui, -apple-system, Segoe UI, Roboto, Noto Sans, sans-serif; color:#111;">
+          <h2>비밀번호 재설정</h2>
+          <p>안녕하세요, AI 캐릭터 챗입니다.</p>
+          <p>비밀번호 재설정 요청을 받았습니다. 아래 버튼을 눌러 새 비밀번호를 설정해주세요.</p>
+          <p>
+            <a href="{reset_url}" style="display:inline-block;padding:12px 16px;background:#7c3aed;color:#fff;text-decoration:none;border-radius:8px;">비밀번호 재설정하기</a>
+          </p>
+          <p>만약 버튼이 동작하지 않으면 다음 링크를 복사해 브라우저 주소창에 붙여넣으세요.</p>
+          <p><a href="{reset_url}">{reset_url}</a></p>
+          <p style="color:#dc2626;font-weight:600;">이 링크는 1시간 동안만 유효합니다.</p>
+          <p>본인이 요청하지 않았다면 이 메일을 무시하셔도 됩니다.</p>
+          <hr style="margin:20px 0;border:none;border-top:1px solid #e5e7eb;" />
+          <p style="font-size:12px;color:#6b7280;">본 메일은 발신 전용입니다.</p>
+        </div>
+        """
+        
+        from app.services.mail_service import _send_email_sync
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, _send_email_sync, payload.email, subject, text, html)
+    except Exception as e:
+        import logging
+        logging.warning(f"비밀번호 재설정 메일 발송 실패: {e}")
+    
+    return {"message": "비밀번호 재설정 메일을 발송했습니다. 메일함을 확인해주세요."}
 
-    # 키 업데이트 (cooldown 60초, daily 24시간)
-    await redis.setex(cooldown_key, 60, 1)
-    # 하루 키 TTL 없으면 24시간 설정
-    if not await redis.exists(daily_key):
-        await redis.setex(daily_key, 24 * 3600, 1)
-    else:
-        try:
-            # INCR는 자동으로 정수 증가
-            await redis.incr(daily_key)
-        except Exception:
-            await redis.setex(daily_key, 24 * 3600, daily_count + 1)
 
-    return {"message": "인증 이메일이 발송되었습니다."}
+@router.post("/reset-password")
+async def reset_password(
+    payload: dict,
+    db: AsyncSession = Depends(get_db)
+):
+    """비밀번호 재설정 (토큰 검증)"""
+    from app.schemas.auth import PasswordResetConfirm
+    token = payload.get("token")
+    new_password = payload.get("new_password")
+    
+    if not token or not new_password:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="토큰과 새 비밀번호가 필요합니다.")
+    
+    # 토큰 검증
+    email = verify_password_reset_token(token)
+    if not email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="유효하지 않거나 만료된 토큰입니다."
+        )
+    
+    # 사용자 조회
+    user = await get_user_by_email(db, email)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="사용자를 찾을 수 없습니다."
+        )
+    
+    # 비밀번호 업데이트
+    user.hashed_password = get_password_hash(new_password)
+    await db.commit()
+    
+    return {"message": "비밀번호가 재설정되었습니다. 새 비밀번호로 로그인해주세요."}
 
 
 @router.post("/logout")

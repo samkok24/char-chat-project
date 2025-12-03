@@ -2,14 +2,29 @@
 댓글 관련 Pydantic 스키마
 """
 
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 from datetime import datetime
 import uuid
+import re
+
+
+def _sanitize_comment(value: str) -> str:
+    text = re.sub(r'<[^>]*>', '', str(value)).strip()
+    if not text:
+        raise ValueError('댓글 내용을 입력해주세요.')
+    if len(text) > 1000:
+        raise ValueError('댓글은 최대 1000자까지 입력할 수 있습니다.')
+    return text
 
 
 class CommentBase(BaseModel):
     """댓글 기본 스키마"""
     content: str = Field(..., min_length=1, max_length=1000)
+
+    @field_validator('content', mode='before')
+    @classmethod
+    def sanitize_content(cls, v):
+        return _sanitize_comment(v)
 
 
 class CommentCreate(CommentBase):

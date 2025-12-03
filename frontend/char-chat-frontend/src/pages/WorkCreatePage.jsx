@@ -19,6 +19,7 @@ const WorkCreatePage = () => {
   const [title, setTitle] = useState('');
   const [genre, setGenre] = useState('');
   const [keywords, setKeywords] = useState('');
+  const [keywordError, setKeywordError] = useState('');
   const [synopsis, setSynopsis] = useState('');
   const [isWebtoon, setIsWebtoon] = useState(false);
   const [error, setError] = useState('');
@@ -58,6 +59,23 @@ const WorkCreatePage = () => {
 
   const markDirty = () => setHasUnsaved(true);
 
+  const validateKeywords = (value) => {
+    const entries = value
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (entries.length > 10) {
+      setKeywordError('키워드는 최대 10개까지 입력할 수 있습니다.');
+      return false;
+    }
+    if (entries.some((k) => k.length > 50)) {
+      setKeywordError('각 키워드는 50자 이하여야 합니다.');
+      return false;
+    }
+    setKeywordError('');
+    return true;
+  };
+
   // 새로고침/창닫기 가드
   useEffect(() => {
     const onBeforeUnload = (e) => {
@@ -72,31 +90,50 @@ const WorkCreatePage = () => {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
-    if (!title.trim() || !synopsis.trim()) {
-      setError('제목과 소개글을 입력하세요.');
+    const hasCover = Boolean((coverUrl && coverUrl.trim()) || (draftGallery?.length || 0) > 0);
+    if (!hasCover) {
+      setError('대표 이미지를 추가해주세요.');
+      return;
+    }
+    if (!title.trim()) {
+      setError('제목을 입력하세요.');
+      return;
+    }
+    if (!genre.trim()) {
+      setError('장르를 선택하세요.');
+      return;
+    }
+    if (!synopsis.trim()) {
+      setError('소개글을 입력하세요.');
       return;
     }
     if (synopsis.trim().length < 20) {
       setError('소개글은 최소 20자 이상이어야 합니다.');
       return;
     }
+    if (!validateKeywords(keywords)) {
+      setError('키워드 입력을 확인해주세요.');
+      return;
+    }
     setLoading(true);
     try {
       // 키워드=태그 일치. 장르를 항상 첫 태그로 포함(중복 제거)
-      const userKw = keywords
+      const userKwRaw = keywords
         .split(',')
         .map((s) => s.trim())
         .filter(Boolean);
+      const userKw = userKwRaw.map(k => k.slice(0, 50));
       let kw = Array.from(new Set(userKw));
       if ((genre || '').trim()) {
         const g = genre.trim();
         kw = [g, ...kw.filter((k) => k !== g)];
       }
       // cover: 메타 태그는 더 이상 키워드에 주입하지 않음 (탐색 태그 오염 방지)
+      const primaryCover = coverUrl || (draftGallery?.[0]?.url || '');
       const payload = {
         title: title.trim(),
         content: synopsis.trim(),
-        cover_url: coverUrl || undefined,
+        cover_url: primaryCover,
         genre: genre || undefined,
         keywords: kw,
         is_public: true,
@@ -205,7 +242,10 @@ const WorkCreatePage = () => {
           const draft = JSON.parse(raw);
           if (typeof draft.title === 'string') setTitle(draft.title);
           if (typeof draft.genre === 'string') setGenre(draft.genre);
-          if (typeof draft.keywords === 'string') setKeywords(draft.keywords);
+          if (typeof draft.keywords === 'string') {
+            setKeywords(draft.keywords);
+            validateKeywords(draft.keywords);
+          }
           if (typeof draft.synopsis === 'string') setSynopsis(draft.synopsis);
           if (typeof draft.coverUrl === 'string') setCoverUrl(draft.coverUrl);
           if (typeof draft.isWebtoon === 'boolean') setIsWebtoon(draft.isWebtoon);
@@ -227,6 +267,7 @@ const WorkCreatePage = () => {
     setTitle('');
     setGenre('');
     setKeywords('');
+    setKeywordError('');
     setSynopsis('');
     setIsWebtoon(false);
     setCoverUrl('');
@@ -330,13 +371,29 @@ const WorkCreatePage = () => {
   const handleImageModalClose = (res) => {
     setOpenImgModal(false);
     try {
-      const focus = res?.focusUrl;
-      if (typeof focus === 'string' && focus) setCoverUrl(focus);
-      const g = Array.isArray(res?.gallery) ? res.gallery : [];
-      if (g.length) setDraftGallery(g);
-      // 모달에서 이미지가 늘었는데 대표가 비어있다면 첫 장을 대표로 자동 반영
-      if (!focus && !coverUrl && g.length > 0) setCoverUrl(g[0].url);
-      if (focus || (g && g.length)) markDirty();
+      const focus = typeof res?.focusUrl === 'string' ? res.focusUrl.trim() : '';
+      const gallery = Array.isArray(res?.gallery) ? res.gallery : null;
+      let touched = false;
+
+      if (focus) {
+        setCoverUrl(focus);
+        touched = true;
+      }
+
+      if (gallery) {
+        setDraftGallery(gallery);
+        touched = true;
+
+        if (!focus && gallery.length > 0) {
+          setCoverUrl(prev => prev || gallery[0]?.url || '');
+        }
+
+        if (gallery.length === 0) {
+          setCoverUrl('');
+        }
+      }
+
+      if (touched) markDirty();
     } catch (_) {}
   };
 
@@ -370,7 +427,7 @@ const WorkCreatePage = () => {
               )}
               {/* 대표 이미지 미니 스트립 갤러리 */}
               <div>
-                <label className="block text-sm">대표 이미지</label>
+                <label className="block text-sm">대표 이미지 <span className="text-red-400">*</span></label>
                 <div className={`mt-2 flex items-center gap-2 overflow-x-auto pb-2 ${ (draftGallery?.length||0) === 0 ? 'justify-center' : 'justify-start' }`}>
                   {draftGallery.map((g, idx) => (
                     <div key={`${g.url}-${idx}`} className={`relative w-14 h-20 rounded border ${idx===0?'border-blue-500 ring-2 ring-blue-500':'border-gray-700'} flex-shrink-0 overflow-hidden bg-gray-800`} title={idx===0?'대표 이미지':''}>
@@ -387,11 +444,11 @@ const WorkCreatePage = () => {
                 )}
               </div>
               <div>
-                <label className="block text-sm">제목</label>
+                <label className="block text-sm">제목 <span className="text-red-400">*</span></label>
                 <Input value={title} onChange={(e)=>{ setTitle(e.target.value); markDirty(); }} placeholder="작품 제목" className="mt-2" />
               </div>
               <div>
-                <label className="block text-sm">장르</label>
+                <label className="block text-sm">장르 <span className="text-red-400">*</span></label>
                 <div className="mt-2">
                   <Select value={genre} onValueChange={(v)=>{ setGenre(v); markDirty(); }}>
                     <SelectTrigger>
@@ -409,10 +466,18 @@ const WorkCreatePage = () => {
               </div>
               <div>
                 <label className="block text-sm">키워드(최대 10개, 쉼표로 구분)</label>
-                <Input value={keywords} onChange={(e)=>{ setKeywords(e.target.value); markDirty(); }} placeholder="예: 성장, 히로인, 전투" className="mt-2" />
+                <Input
+                  value={keywords}
+                  onChange={(e)=>{ setKeywords(e.target.value); validateKeywords(e.target.value); markDirty(); }}
+                  placeholder="예: 성장, 히로인, 전투"
+                  className="mt-2"
+                />
+                {keywordError && (
+                  <p className="text-sm text-red-400 mt-1">{keywordError}</p>
+                )}
               </div>
               <div>
-                <label className="block text-sm">소개글 (최소 20자)</label>
+                <label className="block text-sm">소개글 <span className="text-red-400">*</span> (최소 20자)</label>
                 <Textarea value={synopsis} onChange={(e)=>{ setSynopsis(e.target.value); markDirty(); }} rows={10} className="mt-2" />
               </div>
               <div className="flex items-center gap-2">
@@ -529,13 +594,13 @@ const WorkCreatePage = () => {
                       {ep.expanded && (
                         <div className="px-3 pb-3">
                           <label className="block text-sm text-gray-300 mt-2">
-                            내용 <span className="text-red-400">*</span> (필수 - AI 프롬프팅용)
+                            내용
                           </label>
                           <Textarea
                             value={ep.content}
                             onChange={(e)=> updateEpisode(ep.id, { content: e.target.value })}
                             rows={10}
-                            placeholder="회차 내용을 입력하세요 (AI가 이 텍스트를 읽습니다)"
+                            placeholder="회차 내용을 입력하세요"
                             className="mt-2"
                           />
                           {ep.imagePreview && (
@@ -588,8 +653,8 @@ const WorkCreatePage = () => {
           </div>
         </AlertDialogContent>
       </AlertDialog>
-      {/* 고정 푸터 바: 항상 화면 하단에 표시 */}
-      <footer className="fixed bottom-0 left-0 right-0 bg-gray-900 border-t border-gray-800 py-3 z-50">
+      {/* 하단 액션 영역: 일반 섹션 */}
+      <footer className="bg-gray-900 border-t border-gray-800 py-4 mt-10">
         <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center gap-3">
             <Button

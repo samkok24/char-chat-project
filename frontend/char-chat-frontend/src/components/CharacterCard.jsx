@@ -122,10 +122,19 @@ export const CharacterCard = ({ character, onCardClick, onButtonClick, footerCon
           <Link
             to={`/users/${character.creator_id}/creator`}
             onClick={(e) => e.stopPropagation()}
-            className="absolute left-1 bottom-1 py-0.5 px-1.5 rounded bg-black/60 text-xs text-gray-100 inline-flex items-center gap-2 hover:text-white truncate"
+            className="absolute left-2 bottom-2 inline-flex items-center gap-2 text-xs text-gray-100 bg-black/60 px-1.5 py-0.5 rounded hover:text-white cursor-pointer truncate"
           >
-            <Avatar className="w-4 h-4">
-              <AvatarImage src={resolveImageUrl(character.creator_avatar_url ? `${character.creator_avatar_url}${character.creator_avatar_url.includes('?') ? '&' : '?'}v=${profileVersion}` : '')} alt={character.creator_username} />
+            <Avatar className="w-5 h-5">
+              <AvatarImage
+                src={resolveImageUrl(
+                  character.creator_avatar_url
+                    ? `${character.creator_avatar_url}${
+                        character.creator_avatar_url.includes('?') ? '&' : '?'
+                      }v=${profileVersion}`
+                    : ''
+                )}
+                alt={character.creator_username}
+              />
               <AvatarFallback className="text-[10px]">
                 {character.creator_username?.charAt(0)?.toUpperCase() || 'U'}
               </AvatarFallback>

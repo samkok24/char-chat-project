@@ -173,9 +173,9 @@ const ChapterReaderPage = () => {
           </>
         )}
 
-        {/* 하단 내비게이션만 표시 */}
-        <div className="fixed inset-x-0 bottom-0 bg-gray-900/95 backdrop-blur border-t border-gray-800 z-50">
-          <div className="max-w-6xl mx-auto px-5 py-3">
+        {/* 하단 내비게이션 */}
+        <div className="bg-gray-900/95 backdrop-blur border-t border-gray-800 mt-10">
+          <div className="max-w-6xl mx-auto px-5 py-4">
             <div className="grid grid-cols-3 items-center">
               <div className="justify-self-start">
                 <Button
@@ -244,10 +244,10 @@ const ChapterReaderPage = () => {
   return (
     <AppLayout>
       <div className={`min-h-screen ${isWebtoon ? 'bg-black' : 'bg-gray-900'} text-white`}>
-        <div className={`${isWebtoon ? 'px-0 py-0' : 'max-w-6xl mx-auto px-5 py-6'} ${chatOpen ? 'pb-64' : 'pb-28'}`}>
+        <div className={`${isWebtoon ? 'px-0 py-0' : 'max-w-6xl mx-auto px-5 py-6'} ${chatOpen ? 'pb-40' : 'pb-16'}`}>
           {/* 상단 헤더 - 웹툰 모드에서는 숨김 */}
           {!isWebtoon && (
-            <div className="flex items-start justify-between mb-4">
+            <div className="flex items-start justify-start mb-4">
               <div className="flex-1 min-w-0">
                 <button
                   type="button"
@@ -257,9 +257,19 @@ const ChapterReaderPage = () => {
                   <ArrowLeft className="w-5 h-5 mr-2" /> 작품 상세로
                 </button>
                 <h1 className="text-2xl sm:text-3xl font-bold mt-2 truncate">{story?.title || ''}</h1>
-                <div className="text-sm text-gray-400 truncate">{chapter?.title || '제목 없음'}</div>
+                {chapter && (
+                  <div className="text-sm text-gray-400 truncate">
+                    {chapter.no
+                      ? `${chapter.no}화${chapter.title ? ` - ${chapter.title}` : ''}`
+                      : (chapter.title || '제목 없음')}
+                  </div>
+                )}
+                {typeof chapter?.view_count !== 'undefined' && (
+                  <div className="text-xs text-gray-500 mt-1">
+                    조회수 {Number(chapter.view_count || 0).toLocaleString()}
+                  </div>
+                )}
               </div>
-              <div className="ml-4 shrink-0 text-gray-300">{story?.creator_username || ''}</div>
             </div>
           )}
 
@@ -273,33 +283,8 @@ const ChapterReaderPage = () => {
               </div>
             )
           ) : (
-            /* 웹소설 모드: 기존 레이아웃 유지 */
-            <div className="grid grid-cols-1 lg:grid-cols-[320px_minmax(0,1fr)] gap-6">
-              {/* 좌측: 미니 갤러리 */}
-              <aside className="hidden lg:block">
-                <div className="relative w-full rounded-lg overflow-hidden border border-gray-700 bg-gray-800" style={{ paddingTop: `${150}%` }}>
-                  {coverUrl ? (
-                    <img src={(resolveImageUrl(coverUrl) || coverUrl) + (coverUrl.includes('?') ? '&' : '?') + 'v=' + Date.now()} alt={story?.title || 'cover'} className="absolute inset-0 w-full h-full object-cover object-top" />
-                  ) : (
-                    <div className="absolute inset-0 flex items-center justify-center text-gray-500">NO COVER</div>
-                  )}
-                </div>
-                {galleryImages.length > 0 && (
-                  <div className="flex gap-2 overflow-x-auto pb-2 mt-2">
-                    {galleryImages.map((imgUrl, idx) => (
-                      <img
-                        key={`${imgUrl}-${idx}`}
-                        src={(resolveImageUrl(imgUrl) || imgUrl) + (String(imgUrl).includes('?') ? '&' : '?') + 'v=' + Date.now()}
-                        alt={`썸네일 ${idx + 1}`}
-                        className={`w-16 h-16 object-cover rounded-md ${imgUrl === coverUrl ? 'ring-2 ring-blue-500 ring-offset-1 ring-offset-gray-900' : ''}`}
-                        onClick={() => navigate(`/stories/${storyId}/chapters/${chapter?.no || chapterNumber}`, { replace: true })}
-                      />
-                    ))}
-                  </div>
-                )}
-              </aside>
-
-              {/* 우측: 콘텐츠 */}
+            /* 웹소설 모드: 본문만 표시 */
+            <div>
               <main>
                 {hasChapter ? (
                   <ChapterViewer chapter={chapter} />
@@ -313,10 +298,10 @@ const ChapterReaderPage = () => {
           )}
         </div>
 
-        {/* 하단 푸터 내비게이션 (컨테이너 너비 정렬) */}
-        <div className="fixed inset-x-0 bottom-0 bg-gray-900/95 backdrop-blur border-t border-gray-800">
-          <div className="max-w-6xl mx-auto px-5 py-3">
-            <div className="grid grid-cols-3 items-center">
+        {/* 하단 내비게이션 (콘텐츠 폭 내부) */}
+        <div className="max-w-5xl mx-auto mt-10">
+          <div className="bg-gray-900/95 backdrop-blur border border-gray-800/80 rounded-2xl px-5 py-3 shadow-xl shadow-black/40">
+            <div className="grid grid-cols-3 items-center gap-3">
               <div className="justify-self-start">
                 <Button
                   variant="ghost"
@@ -386,10 +371,10 @@ const ChapterReaderPage = () => {
           </>
         )}
 
-        {/* 심플 챗 시트 (MVP: 열기/닫기만) */}
+        {/* 심플 챗 섹션 (MVP: 열기/닫기만) */}
         {chatOpen && hasChapter && (
-          <div className="fixed inset-x-0 bottom-0 bg-gray-850/95 backdrop-blur border-t border-gray-700">
-            <div className="max-w-6xl mx-auto p-4">
+          <div className="bg-gray-850/95 backdrop-blur border border-gray-700 rounded-2xl max-w-6xl mx-auto mt-6">
+            <div className="p-4">
               <div className="flex items-center justify-between mb-2">
                 <div className="text-white font-medium">캐릭터 챗 · {chapter?.title}</div>
                 <Button variant="ghost" className="hover:bg-gray-800" onClick={() => navigate(`/stories/${storyId}/chapters/${chapter?.no}`)}>닫기</Button>

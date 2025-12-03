@@ -3014,10 +3014,10 @@ return (
           </button>
               </div>
     </div>
-       {/* 화면 하단 고정 입력창 - 새로운 심플 UI */}
+      {/* 하단 입력 섹션 - 일반 배치 */}
        {!chatFocused && (
-       <div className="fixed bottom-0 left-64 right-0 bg-gradient-to-t from-gray-900 to-transparent">
-           <div className="w-full max-w-4xl mx-auto p-3">
+      <div className="bg-gradient-to-t from-gray-900 to-transparent mt-10">
+          <div className="w-full max-w-4xl mx-auto p-4">
             {/* 새로운 Composer UI */}
             <Composer 
                 key={activeSessionId || 'no-session'} // 세션별로 독립적인 Composer
@@ -3758,7 +3758,7 @@ return (
              )}
            </div>
          </>
-       )}
+      )}
 </div>
 </AppLayout>
 );

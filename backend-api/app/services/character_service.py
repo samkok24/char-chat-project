@@ -362,12 +362,26 @@ async def get_characters_by_creator(
         query = query.where(Character.is_public == True)
     
     if search:
-        query = query.where(
-            or_(
-                Character.name.ilike(f"%{search}%"),
-                Character.description.ilike(f"%{search}%")
+        raw = search.strip()
+        if raw:
+            tag_search = raw.lstrip("#").strip() or raw
+            creator_search = raw.lstrip("@").strip() or raw
+            name_like = f"%{raw}%"
+            creator_like = f"%{creator_search}%"
+            tag_like = f"%{tag_search}%"
+            query = query.where(
+                or_(
+                    Character.name.ilike(name_like),
+                    Character.description.ilike(name_like),
+                    Character.creator.has(User.username.ilike(creator_like)),
+                    Character.tags.any(
+                        or_(
+                            Tag.slug.ilike(tag_like),
+                            Tag.name.ilike(tag_like)
+                        )
+                    )
+                )
             )
-        )
 
     # 원작챗/일반 필터
     if only:
@@ -401,12 +415,26 @@ async def get_public_characters(
     )
     
     if search:
-        query = query.where(
-            or_(
-                Character.name.ilike(f"%{search}%"),
-                Character.description.ilike(f"%{search}%")
+        raw = search.strip()
+        if raw:
+            tag_search = raw.lstrip("#").strip() or raw
+            creator_search = raw.lstrip("@").strip() or raw
+            name_like = f"%{raw}%"
+            creator_like = f"%{creator_search}%"
+            tag_like = f"%{tag_search}%"
+            query = query.where(
+                or_(
+                    Character.name.ilike(name_like),
+                    Character.description.ilike(name_like),
+                    Character.creator.has(User.username.ilike(creator_like)),
+                    Character.tags.any(
+                        or_(
+                            Tag.slug.ilike(tag_like),
+                            Tag.name.ilike(tag_like)
+                        )
+                    )
+                )
             )
-        )
 
     # 출처 유형 필터 (예: ORIGINAL, IMPORTED)
     if source_type:

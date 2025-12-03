@@ -256,7 +256,9 @@ const StoryDetailPage = () => {
     // 낙관적 업데이트: 먼저 UI 업데이트
     queryClient.setQueryData(['story', storyId], (prev) => ({ ...(prev || {}), is_public: next }));
     try {
-      await storiesAPI.updateStory(storyId, { is_public: next });
+      const payload = { is_public: next };
+      console.log('[StoryDetailPage] Toggling visibility:', { storyId, payload });
+      await storiesAPI.updateStory(storyId, payload);
       setPageToast({ 
         show: true, 
         type: 'success', 
@@ -264,9 +266,22 @@ const StoryDetailPage = () => {
       });
     } catch (e) {
       console.error('공개/비공개 설정 실패:', e);
+      console.error('Error details:', {
+        message: e?.message,
+        response: e?.response?.data,
+        status: e?.response?.status,
+        config: e?.config
+      });
       // 실패 시 원래 상태로 롤백
       queryClient.setQueryData(['story', storyId], (prev) => ({ ...(prev || {}), is_public: !next }));
-      const errorMsg = e?.response?.data?.detail || e?.message || '설정 변경에 실패했습니다.';
+      let errorMsg = '설정 변경에 실패했습니다.';
+      if (e?.response?.data?.detail) {
+        errorMsg = e.response.data.detail;
+      } else if (e?.message) {
+        errorMsg = e.message.includes('Network Error') 
+          ? '네트워크 오류가 발생했습니다. 서버 연결을 확인해주세요.' 
+          : e.message;
+      }
       setPageToast({ show: true, type: 'error', message: errorMsg });
     }
   };
@@ -522,35 +537,33 @@ const StoryDetailPage = () => {
                   <Button variant="outline" onClick={handleShare} className="bg-white text-black hover:bg-gray-100">
                     <Copy className="w-4 h-4 mr-2" /> 공유
                   </Button>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button variant="ghost" size="icon" className="rounded-full">
-                        <MoreVertical className="w-5 h-5" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" className="bg-gray-800 text-white border-gray-700">
-                      {isOwner ? (
-                        <>
-                          <DropdownMenuItem onClick={() => navigate(`/stories/${storyId}/edit`)}>
-                            <Edit className="w-4 h-4 mr-2" /> 수정
-                          </DropdownMenuItem>
-                          <DropdownMenuSeparator className="bg-gray-700" />
-                          <div className="relative flex cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none">
-                            <Label htmlFor="story-public-toggle" className="flex-1">{story.is_public ? '공개' : '비공개'}</Label>
-                            <Switch id="story-public-toggle" checked={!!story.is_public} onCheckedChange={handleTogglePublic} />
-                          </div>
-                          <DropdownMenuSeparator className="bg-gray-700" />
-                          <DropdownMenuItem onClick={handleDeleteStory} className="text-red-500">
-                            <Trash2 className="w-4 h-4 mr-2" /> 삭제
-                          </DropdownMenuItem>
-                          <DropdownMenuSeparator className="bg-gray-700" />
-                        </>
-                      ) : null}
-                      <DropdownMenuItem onClick={handleShare}>
-                        <Copy className="w-4 h-4 mr-2" /> 공유 링크 복사
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
+                  {isOwner && (
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="ghost" size="icon" className="rounded-full">
+                          <MoreVertical className="w-5 h-5" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="bg-gray-800 text-white border-gray-700">
+                        <DropdownMenuItem onClick={() => navigate(`/stories/${storyId}/edit`)}>
+                          <Edit className="w-4 h-4 mr-2" /> 수정
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator className="bg-gray-700" />
+                        <div className="relative flex cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none">
+                          <Label htmlFor="story-public-toggle" className="flex-1">{story.is_public ? '공개' : '비공개'}</Label>
+                          <Switch id="story-public-toggle" checked={!!story.is_public} onCheckedChange={handleTogglePublic} />
+                        </div>
+                        <DropdownMenuSeparator className="bg-gray-700" />
+                        <DropdownMenuItem onClick={handleDeleteStory} className="text-red-500">
+                          <Trash2 className="w-4 h-4 mr-2" /> 삭제
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator className="bg-gray-700" />
+                        <DropdownMenuItem onClick={handleShare}>
+                          <Copy className="w-4 h-4 mr-2" /> 공유 링크 복사
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  )}
                 </div>
               </div>
 

@@ -36,9 +36,14 @@ const VerifyPage = () => {
   }, [location]);
 
   const handleResend = async () => {
+    if (!email) {
+      setMessage('이메일 주소를 확인할 수 없습니다.');
+      return;
+    }
     try {
       setStatus('verifying');
-      await authAPI.sendVerificationEmail();
+      setMessage('');
+      await authAPI.sendVerificationEmail(email);
       setStatus('idle');
       setMessage('인증 메일을 다시 보냈습니다. 메일함을 확인해주세요.');
     } catch (err) {
@@ -65,13 +70,12 @@ const VerifyPage = () => {
             {!location.search.includes('token=') && (
               <>
                 <p className="text-sm text-gray-600">{email ? `${email} 주소로 ` : ''}인증 메일을 보냈습니다. 메일함에서 링크를 눌러 인증을 완료해주세요.</p>
+                <p className="text-xs text-gray-500 mt-2">메일이 보이지 않는다면 스팸함을 확인해주세요.</p>
                 <div className="flex items-center gap-2">
                   <Button onClick={() => navigate('/login')}>로그인으로</Button>
-                  {isAuthenticated && (
-                    <Button variant="secondary" onClick={handleResend} disabled={status === 'verifying'}>
-                      재발송
-                    </Button>
-                  )}
+                  <Button variant="secondary" onClick={handleResend} disabled={status === 'verifying'}>
+                    {status === 'verifying' ? '발송 중...' : '재발송'}
+                  </Button>
                 </div>
               </>
             )}

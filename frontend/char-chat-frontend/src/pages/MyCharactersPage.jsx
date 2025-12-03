@@ -2,8 +2,8 @@
  * 내 캐릭터 목록 페이지
  */
 
-import React, { useState, useEffect } from 'react';
-import { Link, useNavigate, useLocation } from 'react-router-dom';
+import React, { useState, useEffect, useCallback } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../contexts/AuthContext';
 import { charactersAPI, usersAPI, storiesAPI } from '../lib/api';
@@ -26,7 +26,10 @@ import {
   Lock,
   Globe,
   Loader2,
-  AlertCircle
+  AlertCircle,
+  ChevronLeft,
+  ChevronRight,
+  BookOpen,
 } from 'lucide-react';
 import { formatCount } from '../lib/format';
 import AppLayout from '../components/layout/AppLayout';
@@ -35,17 +38,115 @@ import StoryExploreCard from '../components/StoryExploreCard';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../components/ui/tabs';
 import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogAction } from '../components/ui/alert-dialog';
 
+const PAGE_SIZE = 24;
+
+const PaginationControls = ({
+  page,
+  onPrev,
+  onNext,
+  onSelectPage,
+  disablePrev,
+  disableNext,
+  maxPageHint,
+}) => {
+  const resolvedMax = Math.max(maxPageHint || page, page);
+  const displayMax = Math.max(resolvedMax, 4);
+  const startPage = Math.max(1, Math.min(page - 1, displayMax - 3));
+  const endPage = Math.min(displayMax, startPage + 3);
+  const pages = [];
+  for (let p = startPage; p <= endPage; p += 1) {
+    pages.push(p);
+  }
+
+  return (
+    <div className="flex justify-center items-center mt-8 mb-4">
+      <div className="flex items-center gap-1.5">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={onPrev}
+          disabled={disablePrev}
+          className={`w-8 h-8 p-0 rounded-md transition-all ${
+            disablePrev
+              ? 'text-gray-600 opacity-40 cursor-not-allowed'
+              : 'text-gray-300 hover:text-white hover:bg-gray-800'
+          }`}
+        >
+          <ChevronLeft className="w-4 h-4" />
+        </Button>
+        {pages.map((p) => (
+          <Button
+            key={p}
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              if (p > resolvedMax || p === page) return;
+              onSelectPage?.(p);
+            }}
+            disabled={p === page || p > resolvedMax}
+            className={`min-w-[32px] h-8 px-3 rounded-md text-sm transition-all ${
+              p === page
+                ? 'bg-gradient-to-r from-purple-600 to-blue-600 text-white font-semibold shadow-[0_4px_20px_rgba(104,63,204,0.4)] hover:from-purple-600 hover:to-blue-600'
+                : p > resolvedMax
+                  ? 'text-gray-600 opacity-40 cursor-not-allowed font-medium'
+                  : 'text-gray-300 font-medium hover:text-white hover:bg-gray-800'
+            }`}
+          >
+            {p}
+          </Button>
+        ))}
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={onNext}
+          disabled={disableNext}
+          className={`w-8 h-8 p-0 rounded-md transition-all ${
+            disableNext
+              ? 'text-gray-600 opacity-40 cursor-not-allowed'
+              : 'text-gray-300 hover:text-white hover:bg-gray-800'
+          }`}
+        >
+          <ChevronRight className="w-4 h-4" />
+        </Button>
+      </div>
+    </div>
+  );
+};
+
 // 좋아요한 캐릭터 탭 컴포넌트
 const FavoritesTab = () => {
-  const { data: liked = [], isLoading, isError, refetch } = useQuery({
-    queryKey: ['liked-characters-page'],
+  const [page, setPage] = useState(1);
+  const [maxPageHint, setMaxPageHint] = useState(1);
+  const { data: liked = [], isLoading, isError, isFetching } = useQuery({
+    queryKey: ['liked-characters-page', page],
     queryFn: async () => {
-      const response = await usersAPI.getLikedCharacters({ limit: 100 });
+      const response = await usersAPI.getLikedCharacters({ limit: PAGE_SIZE, page });
       return response.data || [];
     },
+    keepPreviousData: true,
     staleTime: 0,
     refetchOnMount: 'always',
   });
+
+  const items = Array.isArray(liked) ? liked : [];
+  const hasNext = items.length === PAGE_SIZE;
+
+  useEffect(() => {
+    if (!isLoading && !isFetching) {
+      setMaxPageHint((prev) => Math.max(prev, hasNext ? page + 1 : page));
+    }
+  }, [hasNext, isLoading, isFetching, page]);
+
+  useEffect(() => {
+    if (!isFetching && !isLoading && page > 1 && items.length === 0) {
+      setPage((prev) => Math.max(1, prev - 1));
+    }
+  }, [items, isFetching, isLoading, page]);
+
+  const handlePrev = () => setPage((prev) => Math.max(1, prev - 1));
+  const handleNext = () => {
+    if (hasNext) setPage((prev) => prev + 1);
+  };
 
   if (isLoading) {
     return (
@@ -61,15 +162,26 @@ const FavoritesTab = () => {
       <div className="text-red-400 mb-4">관심 캐릭터를 불러오지 못했습니다.</div>
     );
   }
-  if (!liked.length) {
+  if (!items.length) {
     return <div className="text-gray-400 mt-4">좋아요한 캐릭터가 없습니다.</div>;
   }
   return (
-    <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 mt-4">
-      {liked.map((c) => (
-        <SharedCharacterCard key={c.id} character={c} />
-      ))}
-    </div>
+    <>
+      <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 mt-4">
+        {items.map((c) => (
+          <SharedCharacterCard key={c.id} character={c} />
+        ))}
+      </div>
+      <PaginationControls
+        page={page}
+        onPrev={handlePrev}
+        onNext={handleNext}
+        onSelectPage={(p) => setPage(p)}
+        disablePrev={page === 1 || isFetching}
+        disableNext={!hasNext || isFetching}
+        maxPageHint={maxPageHint}
+      />
+    </>
   );
 };
 
@@ -78,6 +190,9 @@ const FavoritesTab = () => {
 const MyCharactersPage = () => {
   const [characters, setCharacters] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [minePage, setMinePage] = useState(1);
+  const [mineHasNext, setMineHasNext] = useState(false);
+  const [mineMaxPageHint, setMineMaxPageHint] = useState(1);
   const [error, setError] = useState('');
   // 선택삭제(내 캐릭터 탭)
   const [selectModeChars, setSelectModeChars] = useState(false);
@@ -88,26 +203,59 @@ const MyCharactersPage = () => {
   const { user } = useAuth();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const location = useLocation();
-
-  useEffect(() => {
-    loadMyCharacters();
+  const resolveTabFromHash = useCallback((hash) => {
+    switch (hash) {
+      case '#favorites':
+        return 'favorites';
+      case '#mine':
+        return 'mine';
+      case '#stories':
+        return 'stories';
+      case '#origchat':
+        return 'origchat';
+      default:
+        return 'favorites';
+    }
   }, []);
+  const [activeTab, setActiveTab] = useState(() =>
+    resolveTabFromHash(
+      typeof window !== 'undefined' ? window.location.hash : '',
+    ),
+  );
 
-  const loadMyCharacters = async () => {
+  const loadMyCharacters = useCallback(async (targetPage = 1) => {
     setLoading(true);
     try {
-      // 서버 사이드 필터: regular만
-      const response = await charactersAPI.getMyCharacters({ only: 'regular', limit: 100 });
+      const skip = (targetPage - 1) * PAGE_SIZE;
+      const response = await charactersAPI.getMyCharacters({ only: 'regular', limit: PAGE_SIZE, skip });
       const list = Array.isArray(response.data) ? response.data : [];
       setCharacters(list);
+      const hasNext = list.length === PAGE_SIZE;
+      setMineHasNext(hasNext);
+      setMineMaxPageHint((prev) => Math.max(prev, hasNext ? targetPage + 1 : targetPage));
+      setError('');
     } catch (err) {
       console.error('내 캐릭터 목록 로드 실패:', err);
       setError('캐릭터 목록을 불러올 수 없습니다.');
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    loadMyCharacters(minePage);
+  }, [loadMyCharacters, minePage]);
+
+  useEffect(() => {
+    if (!loading && minePage > 1 && characters.length === 0) {
+      setMinePage((prev) => Math.max(1, prev - 1));
+    }
+  }, [characters, loading, minePage]);
+
+  useEffect(() => {
+    setSelectedCharIds(new Set());
+    setSelectModeChars(false);
+  }, [minePage]);
 
   const deleteCharacter = async (characterId) => {
     if (!window.confirm('정말로 이 캐릭터를 삭제하시겠습니까?')) {
@@ -116,7 +264,7 @@ const MyCharactersPage = () => {
 
     try {
       await charactersAPI.deleteCharacter(characterId);
-      setCharacters(characters.filter(c => c.id !== characterId));
+      await loadMyCharacters(minePage);
       // 홈/탐색 섹션 즉시 갱신
       try {
         const qc = queryClient;
@@ -150,11 +298,10 @@ const MyCharactersPage = () => {
       try { await charactersAPI.deleteCharacter(id); success += 1; }
       catch (_) { failed += 1; }
     }
-    const removeSet = new Set(ids);
-    setCharacters(prev => prev.filter(c => !removeSet.has(c.id)));
     setSelectedCharIds(new Set());
     setSelectModeChars(false);
     setIsBulkDeletingChars(false);
+    await loadMyCharacters(minePage);
     setDoneModal({ open: true, message: failed ? `${success}개 삭제, ${failed}개 실패` : `${success}개 삭제 완료` });
   };
 
@@ -279,6 +426,47 @@ const MyCharactersPage = () => {
     </Card>
   );
 
+  const isStoryContext = activeTab === 'stories' || activeTab === 'origchat';
+
+  const renderPrimaryAction = () => {
+    if (isStoryContext) {
+      return (
+        <Link
+          to="/works/create"
+          className="flex items-center justify-center px-4 py-2.5 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors font-medium text-sm"
+        >
+          <BookOpen className="w-5 h-5 mr-2" />
+          원작 쓰기
+        </Link>
+      );
+    }
+    return (
+      <Link
+        to="/characters/create"
+        className="flex items-center justify-center px-4 py-2.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors font-medium text-sm shadow-lg"
+      >
+        <Plus className="w-5 h-5 mr-2" />
+        캐릭터 생성
+      </Link>
+    );
+  };
+
+  const handleTabChange = (value) => {
+    setActiveTab(value);
+    try {
+      if (typeof window !== 'undefined') {
+        const basePath = `${window.location.pathname}${window.location.search || ''}`;
+        window.history.replaceState(
+          null,
+          '',
+          value === 'favorites' ? basePath : `${basePath}#${value}`,
+        );
+      }
+    } catch (_) {
+      // no-op
+    }
+  };
+
   if (loading) {
     return (
       <AppLayout>
@@ -288,7 +476,7 @@ const MyCharactersPage = () => {
               <div className="flex items-center gap-3">
                 <Button
                   variant="ghost"
-                  onClick={() => navigate('/')}
+                  onClick={() => navigate('/dashboard')}
                   className="p-2 rounded-full text-gray-300 hover:text-white hover:bg-gray-800"
                 >
                   <ArrowLeft className="w-5 h-5" />
@@ -317,29 +505,27 @@ const MyCharactersPage = () => {
           <div className="flex items-center gap-3">
             <Button
               variant="ghost"
-              onClick={() => navigate('/')}
+              onClick={() => navigate('/dashboard')}
               className="p-2 rounded-full text-gray-300 hover:text-white hover:bg-gray-800"
             >
               <ArrowLeft className="w-5 h-5" />
             </Button>
             <h2 className="text-xl font-normal text-white">내 캐릭터</h2>
           </div>
-          <Button
-            onClick={() => navigate('/characters/create')}
-            className="bg-purple-600 text-white px-4 py-2 rounded-lg font-medium border-0 transition-none hover:bg-purple-600"
-          >
-            <Plus className="w-4 h-4 mr-2" />
-            새 캐릭터 만들기
-          </Button>
+          {renderPrimaryAction()}
         </div>
 
-        <Tabs defaultValue={location.hash === '#favorites' ? 'favorites' : (location.hash === '#stories' ? 'stories' : (location.hash === '#origchat' ? 'origchat' : 'mine'))} className="mt-2">
+        <Tabs value={activeTab} onValueChange={handleTabChange} className="mt-2">
           <TabsList className="bg-gray-800 border border-gray-700">
+            <TabsTrigger value="favorites" className="text-gray-200 data-[state=active]:bg-yellow-500 data-[state=active]:text-black">내가 좋아하는 캐릭터</TabsTrigger>
             <TabsTrigger value="mine" className="text-gray-200 data-[state=active]:bg-yellow-500 data-[state=active]:text-black">내가 만든 캐릭터</TabsTrigger>
             <TabsTrigger value="stories" className="text-gray-200 data-[state=active]:bg-yellow-500 data-[state=active]:text-black">내가 쓴 작품</TabsTrigger>
-            <TabsTrigger value="favorites" className="text-gray-200 data-[state=active]:bg-yellow-500 data-[state=active]:text-black">내가 좋아하는 캐릭터</TabsTrigger>
             <TabsTrigger value="origchat" className="text-gray-200 data-[state=active]:bg-yellow-500 data-[state=active]:text-black">내가 만든 원작챗</TabsTrigger>
           </TabsList>
+          {/* 내가 좋아하는 캐릭터 탭 */}
+          <TabsContent value="favorites">
+            <FavoritesTab />
+          </TabsContent>
           {/* 내가 만든 캐릭터 탭 */}
           <TabsContent value="mine">
             {error && (<div className="text-red-400 mb-4">{error}</div>)}
@@ -397,16 +583,22 @@ const MyCharactersPage = () => {
                 </Button>
               </div>
             )}
+            {characters.length > 0 && (
+              <PaginationControls
+                page={minePage}
+                onPrev={() => setMinePage((prev) => Math.max(1, prev - 1))}
+                onNext={() => { if (mineHasNext) setMinePage((prev) => prev + 1); }}
+                onSelectPage={(p) => setMinePage(p)}
+                disablePrev={minePage === 1 || loading}
+                disableNext={!mineHasNext || loading}
+                maxPageHint={mineMaxPageHint}
+              />
+            )}
           </TabsContent>
 
           {/* 내가 쓴 작품 탭 */}
           <TabsContent value="stories">
             <MyStoriesTab />
-          </TabsContent>
-
-          {/* 내가 좋아하는 캐릭터 탭 */}
-          <TabsContent value="favorites">
-            <FavoritesTab />
           </TabsContent>
 
           {/* 내가 만든 원작챗 탭 */}
@@ -437,14 +629,34 @@ const MyStoriesTab = () => {
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [isBulkDeleting, setIsBulkDeleting] = useState(false);
   const [doneModal, setDoneModal] = useState({ open: false, message: '' });
-  const { data, isLoading, isError, refetch } = useQuery({
-    queryKey: ['my-stories'],
+  const [page, setPage] = useState(1);
+  const skip = (page - 1) * PAGE_SIZE;
+  const { data, isLoading, isError, isFetching, refetch } = useQuery({
+    queryKey: ['my-stories', page],
     queryFn: async () => {
-      const res = await storiesAPI.getMyStories({ limit: 100 });
+      const res = await storiesAPI.getMyStories({ limit: PAGE_SIZE, skip });
       const items = Array.isArray(res.data?.stories) ? res.data.stories : [];
-      return items;
-    }
+      const apiTotal = typeof res.data?.total === 'number' ? res.data.total : undefined;
+      const fallbackTotal = skip + items.length + (items.length === PAGE_SIZE ? PAGE_SIZE : 0);
+      return { items, total: apiTotal ?? fallbackTotal };
+    },
+    keepPreviousData: true,
   });
+  const stories = data?.items || [];
+  const total = data?.total || 0;
+  const totalPages = Math.max(1, Math.ceil(Math.max(total, page * PAGE_SIZE) / PAGE_SIZE));
+  const hasNext = page < totalPages;
+
+  useEffect(() => {
+    if (!isFetching && !isLoading && page > 1 && stories.length === 0) {
+      setPage((prev) => Math.max(1, prev - 1));
+    }
+  }, [stories, isFetching, isLoading, page]);
+
+  useEffect(() => {
+    setSelectedIds(new Set());
+    setSelectMode(false);
+  }, [page]);
 
   const handleDelete = async (id) => {
     if (!window.confirm('작품을 삭제하시겠습니까?')) return;
@@ -470,7 +682,7 @@ const MyStoriesTab = () => {
   if (isError) {
     return <div className="text-red-400 mt-4">내가 쓴 작품을 불러오지 못했습니다.</div>;
   }
-  if (!data || data.length === 0) {
+  if (!stories.length) {
     return <div className="text-gray-400 mt-4">아직 작성한 작품이 없습니다.</div>;
   }
 
@@ -496,7 +708,7 @@ const MyStoriesTab = () => {
         </Button>
       </div>
       <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 mt-4">
-        {data.map(story => (
+        {stories.map(story => (
           <div key={story.id} className="relative group" onClick={()=>{ if(!selectMode) navigate(`/stories/${story.id}`, { state: { fromMyGrid: true } }); }}>
             {selectMode && (
               <label className="absolute top-2 right-2 z-20 inline-flex items-center gap-1 bg-black/60 backdrop-blur-sm text-white text-xs px-2 py-1 rounded-md ring-1 ring-white/20 shadow-sm cursor-pointer">
@@ -525,6 +737,15 @@ const MyStoriesTab = () => {
           </div>
         ))}
       </div>
+      <PaginationControls
+        page={page}
+        onPrev={() => setPage((prev) => Math.max(1, prev - 1))}
+        onNext={() => { if (hasNext) setPage((prev) => prev + 1); }}
+        onSelectPage={(p) => setPage(p)}
+        disablePrev={page === 1 || isFetching}
+        disableNext={!hasNext || isFetching}
+        maxPageHint={totalPages}
+      />
     </>
   );
 };
@@ -534,16 +755,46 @@ const MyOrigChatTab = () => {
   const queryClient = useQueryClient();
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState(new Set());
-  const { data = [], isLoading, isError, refetch } = useQuery({
-    queryKey: ['my-origchat-chars'],
+  const [page, setPage] = useState(1);
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false);
+  const [maxPageHint, setMaxPageHint] = useState(1);
+  const skip = (page - 1) * PAGE_SIZE;
+  const { data = [], isLoading, isError, isFetching, refetch } = useQuery({
+    queryKey: ['my-origchat-chars', page],
     queryFn: async () => {
-      const res = await charactersAPI.getMyCharacters();
+      const res = await charactersAPI.getMyCharacters({ only: 'origchat', limit: PAGE_SIZE, skip });
       const list = Array.isArray(res.data) ? res.data : [];
-      return list.filter(c => !!c.origin_story_id);
+      return list;
     },
+    keepPreviousData: true,
     staleTime: 0,
     refetchOnMount: 'always',
   });
+  const items = Array.isArray(data) ? data : [];
+  const hasNext = items.length === PAGE_SIZE;
+
+  useEffect(() => {
+    if (!isLoading && !isFetching) {
+      setMaxPageHint((prev) => Math.max(prev, hasNext ? page + 1 : page));
+    }
+  }, [hasNext, isLoading, isFetching, page]);
+
+  useEffect(() => {
+    if (!isFetching && !isLoading && page > 1 && items.length === 0) {
+      setPage((prev) => Math.max(1, prev - 1));
+    }
+  }, [items, page, isFetching, isLoading]);
+
+  useEffect(() => {
+    setSelectedIds(new Set());
+    setSelectMode(false);
+  }, [page]);
+
+  const notify = (message, variant = 'success') => {
+    try {
+      window.dispatchEvent(new CustomEvent('toast', { detail: { title: message, variant } }));
+    } catch (_) {}
+  };
 
   if (isLoading) {
     return (
@@ -557,41 +808,60 @@ const MyOrigChatTab = () => {
   if (isError) {
     return <div className="text-red-400 mt-4">내가 만든 원작챗을 불러오지 못했습니다.</div>;
   }
-  if (!data.length) {
+  if (!items.length) {
     return <div className="text-gray-400 mt-4">아직 생성한 원작챗이 없습니다.</div>;
   }
   return (
     <>
       <div className="flex items-center justify-end mb-2">
         <Button variant="outline" size="sm" onClick={()=> setSelectMode(v=>!v)}>{selectMode ? '선택 해제' : '선택'}</Button>
-        <Button size="sm" className="ml-2 bg-red-600 hover:bg-red-700 disabled:opacity-50" disabled={!selectMode || selectedIds.size===0}
+        <Button
+          size="sm"
+          className="ml-2 bg-red-600 hover:bg-red-700 disabled:opacity-50"
+          disabled={!selectMode || selectedIds.size===0 || isBulkDeleting}
           onClick={async()=>{
             if (!window.confirm(`${selectedIds.size}개의 원작챗 캐릭터를 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.`)) return;
-            for (const id of Array.from(selectedIds)) { try { await charactersAPI.deleteCharacter(id); } catch(_) {} }
+            setIsBulkDeleting(true);
+            let success = 0;
+            let failed = 0;
+            for (const id of Array.from(selectedIds)) {
+              try { await charactersAPI.deleteCharacter(id); success += 1; }
+              catch(_) { failed += 1; }
+            }
             await refetch();
             setSelectedIds(new Set());
             setSelectMode(false);
+            setIsBulkDeleting(false);
             // 홈/탐색 섹션 즉시 갱신
             queryClient.invalidateQueries({ queryKey: ['top-origchat-daily'] });
             queryClient.invalidateQueries({ queryKey: ['webnovel-characters'] });
             queryClient.invalidateQueries({ queryKey: ['characters'] });
             queryClient.invalidateQueries({ queryKey: ['liked-characters'] });
             queryClient.invalidateQueries({ queryKey: ['explore-stories'] });
-            setDoneModal({ open: true, message: '삭제 완료' });
+            notify(failed ? `${success}개 삭제, ${failed}개 실패` : `${success}개 삭제 완료`);
           }}>선택삭제 ({selectedIds.size})</Button>
       </div>
       <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 mt-4">
-        {data.map((c) => (
+        {items.map((c) => (
           <div key={c.id} className="relative group" onClick={() => { if(!selectMode) navigate(`/characters/${c.id}`, { state: { fromMyGrid: true } }); }}>
             {selectMode && (
               <label className="absolute top-2 right-2 z-20 inline-flex items-center gap-1 bg-black/60 backdrop-blur-sm text-white text-xs px-2 py-1 rounded-md ring-1 ring-white/20 shadow-sm cursor-pointer">
-                <input className="w-4 h-4" type="checkbox" checked={selectedIds.has(c.id)} onChange={()=> setSelectedIds(prev=>{ const next=new Set(prev); if(next.has(c.id)) next.delete(c.id); else next.add(c.id); return next; })} /> 선택
+                <input className="w-4 h-4" disabled={isBulkDeleting} type="checkbox" checked={selectedIds.has(c.id)} onChange={()=> setSelectedIds(prev=>{ const next=new Set(prev); if(next.has(c.id)) next.delete(c.id); else next.add(c.id); return next; })} /> 선택
               </label>
             )}
             <SharedCharacterCard character={{ ...c, source_type: 'IMPORTED' }} />
           </div>
         ))}
       </div>
+      <PaginationControls
+        page={page}
+        onPrev={() => setPage((prev) => Math.max(1, prev - 1))}
+        onNext={() => { if (hasNext) setPage((prev) => prev + 1); }}
+        onSelectPage={(p) => setPage(p)}
+        disablePrev={page === 1 || isFetching}
+        disableNext={!hasNext || isFetching}
+        maxPageHint={maxPageHint}
+      />
     </>
   );
 };

@@ -2,15 +2,25 @@
 캐릭터 관련 Pydantic 스키마 - CAVEDUCK 스타일 고급 캐릭터 생성
 """
 
-from pydantic import BaseModel, Field, ConfigDict, computed_field, HttpUrl, validator
+from pydantic import BaseModel, Field, ConfigDict, computed_field, HttpUrl, field_validator
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from decimal import Decimal
 import uuid
 from uuid import UUID
+import re
 
 
 # 🔥 1단계: 기본 정보 스키마
+
+def _sanitize_text(value: Optional[str], max_length: Optional[int] = None) -> Optional[str]:
+    if value is None:
+        return None
+    text = re.sub(r'<[^>]*>', '', str(value)).strip()
+    if max_length is not None and len(text) > max_length:
+        raise ValueError(f'최대 {max_length}자까지 입력할 수 있습니다.')
+    return text or None
+
 
 class IntroductionScene(BaseModel):
     """도입부 시나리오"""
@@ -18,19 +28,25 @@ class IntroductionScene(BaseModel):
     content: str = Field(..., max_length=2000)
     secret: Optional[str] = Field(None, max_length=1000)  # 비밀 정보
 
+    @field_validator('title', 'content', 'secret', mode='before')
+    @classmethod
+    def validate_scene_text(cls, v, info):
+        max_len = {'title': 100, 'content': 2000, 'secret': 1000}.get(info.field_name, None)
+        return _sanitize_text(v, max_len)
+
 
 class CharacterBasicInfo(BaseModel):
     """캐릭터 기본 정보 (1단계)"""
     # 기본 정보
     name: str = Field(..., min_length=1, max_length=100)
-    description: Optional[str] = Field(None)
-    personality: Optional[str] = Field(None)
+    description: Optional[str] = Field(None, max_length=3000)
+    personality: Optional[str] = Field(None, max_length=2000)
     speech_style: Optional[str] = Field(None, max_length=2000)
     greeting: Optional[str] = Field(None, max_length=500)
 
     # 세계관 설정
-    world_setting: Optional[str] = Field(None)
-    user_display_description: Optional[str] = Field(None)
+    world_setting: Optional[str] = Field(None, max_length=5000)
+    user_display_description: Optional[str] = Field(None, max_length=3000)
     use_custom_description: bool = False
 
     # 도입부 시스템
@@ -48,6 +64,35 @@ class CharacterBasicInfo(BaseModel):
     tags: Optional[List[str]] = Field(default_factory=list)
     example_dialogues: Optional[Dict[str, str]] = Field(default_factory=dict)
 
+    @field_validator('introduction_scenes')
+    @classmethod
+    def limit_intro_scenes(cls, v):
+        if v is not None and len(v) > 10:
+            raise ValueError('도입부는 최대 10개까지 등록할 수 있습니다.')
+        return v
+    @field_validator(
+        'name',
+        'description',
+        'personality',
+        'speech_style',
+        'greeting',
+        'world_setting',
+        'user_display_description',
+        mode='before'
+    )
+    @classmethod
+    def sanitize_basic_fields(cls, v, info):
+        max_len_map = {
+            'name': 100,
+            'description': 3000,
+            'personality': 2000,
+            'speech_style': 2000,
+            'greeting': 500,
+            'world_setting': 5000,
+            'user_display_description': 3000,
+        }
+        return _sanitize_text(v, max_len_map.get(info.field_name))
+
 
 # 🎨 2단계: 미디어 설정 스키마
 
@@ -55,6 +100,11 @@ class ImageDescription(BaseModel):
     """이미지 설명"""
     description: str = Field(..., max_length=500)
     url: Optional[str] = Field(None, max_length=500)
+
+    @field_validator('description', mode='before')
+    @classmethod
+    def sanitize_desc(cls, v):
+        return _sanitize_text(v, 500)
 
 
 class VoiceSettings(BaseModel):
@@ -79,10 +129,23 @@ class ExampleDialogue(BaseModel):
     character_response: str = Field(..., max_length=1000)
     order_index: int = 0
 
+    @field_validator('user_message', 'character_response', mode='before')
+    @classmethod
+    def sanitize_dialogue(cls, v, info):
+        max_len = 500 if info.field_name == 'user_message' else 1000
+        return _sanitize_text(v, max_len)
+
 
 class CharacterExampleDialogues(BaseModel):
     """캐릭터 예시 대화 설정 (3단계)"""
     dialogues: List[ExampleDialogue] = Field(default_factory=list)
+
+    @field_validator('dialogues')
+    @classmethod
+    def limit_dialogues(cls, v):
+        if v is not None and len(v) > 20:
+            raise ValueError('예시 대화는 최대 20개까지 등록할 수 있습니다.')
+        return v
 
 
 # ❤️ 4단계: 호감도 시스템 스키마

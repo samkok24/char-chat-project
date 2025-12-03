@@ -10,13 +10,13 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '../components/ui/tabs'
 import { CharacterCard as SharedCharacterCard, CharacterCardSkeleton as SharedCharacterCardSkeleton } from '../components/CharacterCard';
 import StoryExploreCard from '../components/StoryExploreCard';
 import { resolveImageUrl } from '../lib/images';
-import { Loader2, ArrowLeft } from 'lucide-react';
+import { Loader2, ArrowLeft, AlertCircle } from 'lucide-react';
 
 const CreatorInfoPage = () => {
   const { userId } = useParams();
   const navigate = useNavigate();
 
-  const { data: profile, isLoading: profileLoading } = useQuery({
+  const { data: profile, isLoading: profileLoading, error: profileError } = useQuery({
     queryKey: ['creator-profile', userId],
     queryFn: async () => {
       const res = await usersAPI.getUserProfile(userId);
@@ -28,7 +28,7 @@ const CreatorInfoPage = () => {
   const [sort, setSort] = useState('latest');
   const sortParam = useMemo(() => (sort === 'popular' ? 'likes' : 'recent'), [sort]);
 
-  const { data: characters = [], isLoading: charsLoading } = useQuery({
+  const { data: characters = [], isLoading: charsLoading, error: charsError } = useQuery({
     queryKey: ['creator-characters', userId, sortParam],
     queryFn: async () => {
       const res = await charactersAPI.getCharacters({
@@ -45,33 +45,23 @@ const CreatorInfoPage = () => {
   });
 
   // 스토리: 전체 목록에서 정렬해 받아와 클라이언트에서 creator_id로 필터
-  const { data: stories = [], isLoading: storiesLoading } = useQuery({
+  const { data: stories = [], isLoading: storiesLoading, error: storiesError } = useQuery({
     queryKey: ['creator-stories', userId, sortParam],
     queryFn: async () => {
-      const extract = (res) => (Array.isArray(res.data?.stories) ? res.data.stories : (Array.isArray(res.data) ? res.data : []));
-      try {
-        const res = await storiesAPI.getStories({ sort: sortParam, limit: 100, skip: 0 });
-        const list = extract(res);
-        return list.filter(s => String(s.creator_id) === String(userId) && (s?.is_public !== false));
-      } catch (e1) {
-        try {
-          const res = await storiesAPI.getStories({ sort: sortParam, limit: 50, skip: 0 });
-          const list = extract(res);
-          return list.filter(s => String(s.creator_id) === String(userId) && (s?.is_public !== false));
-        } catch (e2) {
-          try {
-            const res = await storiesAPI.getStories({ sort: sortParam });
-            const list = extract(res);
-            return list.filter(s => String(s.creator_id) === String(userId) && (s?.is_public !== false));
-          } catch (_) {
-            return [];
-          }
-        }
-      }
+      const res = await storiesAPI.getStories({
+        sort: sortParam,
+        limit: 60,
+        creator_id: userId,
+      });
+      const list = Array.isArray(res.data?.stories) ? res.data.stories : (Array.isArray(res.data) ? res.data : []);
+      return list.filter(s => s?.is_public !== false);
     },
     enabled: !!userId,
     staleTime: 5 * 60 * 1000,
   });
+
+  const getErrorMessage = (error, fallback = '데이터를 불러오지 못했습니다.') =>
+    error?.response?.data?.detail || error?.message || fallback;
 
   return (
     <AppLayout>
@@ -93,6 +83,11 @@ const CreatorInfoPage = () => {
                     <div className="w-40 h-5 bg-gray-700 mb-2" />
                     <div className="w-64 h-4 bg-gray-700" />
                   </div>
+                </div>
+              ) : profileError ? (
+                <div className="flex items-center gap-3 text-red-400">
+                  <AlertCircle className="w-5 h-5" />
+                  <p>{getErrorMessage(profileError, '크리에이터 정보를 불러올 수 없습니다.')}</p>
                 </div>
               ) : (
                 <>
@@ -169,6 +164,12 @@ const CreatorInfoPage = () => {
 
           {/* 혼합 그리드: 캐릭터 + 웹소설 함께 */}
           <div className="mt-2">
+            {(charsError || storiesError) && (
+              <div className="flex items-center gap-2 text-red-400 text-sm mb-4">
+                <AlertCircle className="w-4 h-4" />
+                <span>{getErrorMessage(charsError || storiesError, '작품 정보를 불러올 수 없습니다.')}</span>
+              </div>
+            )}
             {(charsLoading || storiesLoading) ? (
               <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 mt-4">
                 {Array.from({ length: 12 }).map((_, i) => (

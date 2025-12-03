@@ -59,7 +59,9 @@ class Settings(BaseSettings):
     SMTP_USE_SSL: bool = False
     EMAIL_FROM_ADDRESS: str = "no-reply@char-chat.local"
     EMAIL_FROM_NAME: str = "AI 캐릭터 챗"
+    ADMIN_EMAIL: str | None = None  # 관리자 이메일 (1:1 문의 수신)
     FRONTEND_BASE_URL: str = "http://localhost:5173"
+    EMAIL_VERIFICATION_REQUIRED: bool = True
     
     JOB_EXPIRATION_SECONDS: int = 3600 # 1 hour
 

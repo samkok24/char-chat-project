@@ -242,13 +242,13 @@ const ChapterManageModal = ({ open, onClose, storyId, onAfterSave }) => {
                         {/* 텍스트 내용 */}
                         <div>
                           <label className="block text-sm text-gray-300 mt-2">
-                            내용 <span className="text-red-400">*</span> (필수 - AI 프롬프팅용)
+                            내용
                           </label>
                           <Textarea 
                             value={ep.content} 
                             onChange={(e)=> updateEpisode(ep.id, { content: e.target.value })} 
                             rows={10} 
-                            placeholder="회차 내용을 입력하세요 (AI가 이 텍스트를 읽습니다)" 
+                            placeholder="회차 내용을 입력하세요"
                             className="mt-2" 
                           />
                         </div>

@@ -2,14 +2,18 @@ import React from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { rankingAPI } from '../lib/api';
 import { Link, useNavigate } from 'react-router-dom';
-import { getThumbnailUrl } from '../lib/images';
+import { getThumbnailUrl, resolveImageUrl } from '../lib/images';
 import { DEFAULT_SQUARE_URI } from '../lib/placeholder';
 import { MessageCircle, Heart } from 'lucide-react';
 import { formatCount } from '../lib/format';
 import ErrorBoundary from './ErrorBoundary';
+import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
+import { Badge } from './ui/badge';
+import { useAuth } from '../contexts/AuthContext';
 
 const OrigChatItem = ({ character }) => {
   const navigate = useNavigate();
+  const { profileVersion } = useAuth();
   const charId = character?.id || character?.character_id || character?.characterId || character?.target_id;
   const raw = character?.thumbnail_url || character?.avatar_url;
   const withV = raw ? `${raw}${raw.includes('?') ? '&' : '?'}v=${Date.now()}` : raw;
@@ -26,6 +30,9 @@ const OrigChatItem = ({ character }) => {
         <div className="bg-gray-800/50 rounded-lg overflow-hidden border border-gray-700/50 group-hover:border-gray-600 transition-colors">
           {/* 이미지 영역 */}
           <div className="relative aspect-[3/4] overflow-hidden bg-gray-900">
+            <div className="absolute top-2 left-2 z-10">
+              <Badge className="bg-orange-400 text-black hover:bg-orange-400">원작챗</Badge>
+            </div>
             <img
               src={imgSrc}
               alt={character?.name}
@@ -62,10 +69,24 @@ const OrigChatItem = ({ character }) => {
             {username && character?.creator_id && (
               <div
                 onClick={(e) => { e.preventDefault(); e.stopPropagation(); navigate(`/users/${character.creator_id}/creator`); }}
-                className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-300 cursor-pointer pt-1"
+                className="inline-flex items-center gap-2 text-xs text-gray-100 bg-black/60 px-1.5 py-0.5 rounded hover:text-white cursor-pointer truncate"
               >
-                <span>@</span>
-                <span className="truncate">{username}</span>
+                <Avatar className="w-5 h-5">
+                  <AvatarImage
+                    src={resolveImageUrl(
+                      character.creator_avatar_url
+                        ? `${character.creator_avatar_url}${
+                            character.creator_avatar_url.includes('?') ? '&' : '?'
+                          }v=${profileVersion}`
+                        : ''
+                    )}
+                    alt={username}
+                  />
+                  <AvatarFallback className="text-[10px]">
+                    {username?.charAt(0)?.toUpperCase() || 'U'}
+                  </AvatarFallback>
+                </Avatar>
+                <span className="truncate max-w-[110px]">{username}</span>
               </div>
             )}
           </div>

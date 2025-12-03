@@ -381,12 +381,27 @@ async def get_stories_by_creator(
     )
     
     if search:
-        query = query.where(
-            or_(
-                Story.title.ilike(f"%{search}%"),
-                Story.content.ilike(f"%{search}%")
+        raw = search.strip()
+        if raw:
+            tag_search = raw.lstrip("#").strip() or raw
+            creator_search = raw.lstrip("@").strip() or raw
+            name_like = f"%{raw}%"
+            creator_like = f"%{creator_search}%"
+            tag_like = f"%{tag_search}%"
+            query = query.where(
+                or_(
+                    Story.title.ilike(name_like),
+                    Story.content.ilike(name_like),
+                    Story.creator.has(User.username.ilike(creator_like)),
+                    Story.character.has(Character.name.ilike(name_like)),
+                    Story.tags.any(
+                        or_(
+                            Tag.slug.ilike(tag_like),
+                            Tag.name.ilike(tag_like)
+                        )
+                    )
+                )
             )
-        )
     
     query = query.order_by(Story.created_at.desc()).offset(skip).limit(limit)
     
@@ -403,6 +418,8 @@ async def get_public_stories(
     *,
     sort: Optional[str] = None,
     only: Optional[str] = None,
+    creator_id: Optional[uuid.UUID] = None,
+    tags: Optional[list[str]] = None,
 ) -> List[Story]:
     """공개 스토리 목록 조회"""
     # 관계 lazy-load 금지: async 컨텍스트에서 MissingGreenlet 방지 위해 eager-load
@@ -426,6 +443,14 @@ async def get_public_stories(
     
     if genre:
         query = query.where(Story.genre == genre)
+
+    if creator_id:
+        query = query.where(Story.creator_id == creator_id)
+    
+    if tags:
+        normalized_tags = [slug.strip().lower() for slug in tags if slug and slug.strip()]
+        if normalized_tags:
+            query = query.join(Story.tags).where(func.lower(Tag.slug).in_(normalized_tags))
     # only 필터: webnovel|origchat (is_origchat 필드 기반)
     if only:
         only_key = (only or '').strip().lower()

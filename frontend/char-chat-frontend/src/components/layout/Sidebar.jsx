@@ -6,7 +6,7 @@ import { Avatar, AvatarFallback, AvatarImage } from '../ui/avatar';
 import { resolveImageUrl, getCharacterPrimaryImage } from '../../lib/images';
 import { getReadingProgress, getReadingProgressAt } from '../../lib/reading';
 import { Button } from '../ui/button';
-import { MessageSquare, Plus, Home, Star, User, History, UserCog, LogOut, Settings, Gem, BookOpen, LogIn, UserPlus } from 'lucide-react';
+import { MessageSquare, Plus, Home, Star, User, History, UserCog, LogOut, Settings, Gem, BookOpen, LogIn, UserPlus, HelpCircle } from 'lucide-react';
 import { Skeleton } from '../ui/skeleton';
 import { Badge } from '../ui/badge';
 import {
@@ -79,7 +79,11 @@ const Sidebar = () => {
         at: getReadingProgressAt(s.id)
       }));
       setRecentStories(list);
-    } catch(_) { setRecentStories([]); }
+      return list;
+    } catch(_) {
+      setRecentStories([]);
+      return [];
+    }
   };
 
   const [roomMetaById, setRoomMetaById] = React.useState({});
@@ -90,8 +94,6 @@ const Sidebar = () => {
 
   const loadRooms = async (forceRefresh = false) => {
     try {
-      setLoading(true);
-      
       // 캐시 확인 (강제 새로고침이 아닐 때만)
       if (!forceRefresh) {
         try {
@@ -105,14 +107,14 @@ const Sidebar = () => {
               setChatRooms(data.rooms);
               setRoomMetaById(data.roomMetaById);
               setCharacterImageById(data.characterImageById || {});
-              if (data.recentStories) setRecentStories(data.recentStories);
+              if (Array.isArray(data.recentStories)) setRecentStories(data.recentStories);
               setLoading(false);
               return; // API 호출 스킵
             }
           }
         } catch (_) {}
       }
-      
+      setLoading(true);
       // 백엔드에서 최근 50개만 가져오기
       const response = await chatAPI.getChatRooms({ limit: 50 });
       const rooms = response.data || [];
@@ -149,7 +151,7 @@ const Sidebar = () => {
         setCharacterImageById(charImageById);
       }
       
-      await loadRecentStories();
+      const recentList = await loadRecentStories();
       
       // 캐시 저장
       try {
@@ -158,7 +160,7 @@ const Sidebar = () => {
             rooms,
             roomMetaById: metaById,
             characterImageById: charImageById,
-            recentStories: recentStories,
+            recentStories: recentList,
           },
           timestamp: Date.now()
         }));
@@ -312,7 +314,7 @@ const Sidebar = () => {
 
       {/* 메인 네비게이션 */}
       <nav className="flex-1 space-y-1">
-        <NavItem to="/" icon={Home}>탐색</NavItem>
+        <NavItem to="/dashboard" icon={Home}>탐색</NavItem>
         <NavItem to="/my-characters" icon={Star} requireAuth authReason="내 캐릭터">내 캐릭터</NavItem>
         <button
           onClick={() => {
@@ -460,6 +462,14 @@ const Sidebar = () => {
               <DropdownMenuItem onClick={() => navigate('/settings')}>
                 <Settings className="mr-2 h-4 w-4" />
                 <span>설정</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => navigate('/faq')}>
+                <HelpCircle className="mr-2 h-4 w-4" />
+                <span>FAQ</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => navigate('/contact')}>
+                <MessageSquare className="mr-2 h-4 w-4" />
+                <span>1:1 문의</span>
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem onClick={handleLogout} className="text-red-600">

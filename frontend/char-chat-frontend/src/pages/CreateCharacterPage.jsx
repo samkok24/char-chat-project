@@ -137,6 +137,61 @@ const CreateCharacterPage = () => {
   const ALLOWED_TOKENS = [TOKEN_ASSISTANT, TOKEN_USER];
   const HEADER_OFFSET = 72;
 
+  const scrollToField = useCallback((key) => {
+    if (!key) return;
+    const sectionId = key.startsWith('basic_info')
+      ? 'section-basic'
+      : key.startsWith('example_dialogues')
+      ? 'section-dialogues'
+      : key.startsWith('affinity_system')
+      ? 'section-affinity'
+      : key.startsWith('publish_settings')
+      ? 'section-publish'
+      : 'section-basic';
+
+    const el = document.getElementById(sectionId);
+    if (el) {
+      const y = el.getBoundingClientRect().top + window.pageYOffset - HEADER_OFFSET;
+      window.scrollTo({ top: y, behavior: 'smooth' });
+    }
+  }, []);
+
+  const mapServerPathToKey = useCallback((loc = []) => {
+    if (!Array.isArray(loc)) return null;
+    const normalized = loc[0] === 'body' ? loc.slice(1) : loc;
+    return normalized.join('.');
+  }, []);
+
+  const dispatchToast = useCallback((type, message) => {
+    try {
+      window.dispatchEvent(new CustomEvent('toast', { detail: { type, message } }));
+    } catch (_) {}
+  }, []);
+
+  const applyGeneratedImages = useCallback((gallery = [], focusUrl) => {
+    if (!gallery.length) return;
+    const newUrls = gallery
+      .map(item => item?.url)
+      .filter(Boolean);
+    if (!newUrls.length) return;
+    setFormData(prev => {
+      const existing = prev.media_settings.image_descriptions || [];
+      const merged = [
+        ...existing.map(img => img.url),
+        ...newUrls,
+      ];
+      const dedup = Array.from(new Set(merged)).map(url => ({ url, description: '' }));
+      return {
+        ...prev,
+        media_settings: {
+          ...prev.media_settings,
+          image_descriptions: dedup,
+          avatar_url: focusUrl || prev.media_settings.avatar_url || dedup[0]?.url || prev.media_settings.avatar_url,
+        },
+      };
+    });
+  }, []);
+
   // Zod 스키마 정의
   const validationSchema = useMemo(() => {
     const tokenRegex = /\{\{[^}]+\}\}/g;
@@ -212,7 +267,7 @@ const CreateCharacterPage = () => {
     const result = validationSchema.safeParse(formData);
     if (result.success) {
       setFieldErrors({});
-      return result;
+      return { success: true, data: result.data };
     }
     const issues = result.error.issues || [];
     const map = {};
@@ -221,7 +276,7 @@ const CreateCharacterPage = () => {
       if (!map[key]) map[key] = issue.message;
     }
     setFieldErrors(map);
-    return result;
+    return { success: false, errors: map };
   }, [formData, validationSchema]);
 
   // 입력 디바운스 검증
@@ -602,7 +657,7 @@ const CreateCharacterPage = () => {
     const files = Array.from(e.target.files);
     if (files.length === 0) return;
     if (!validateExt(files[0])) {
-      alert('jpg, jpeg, png, webp, gif 형식만 업로드할 수 있습니다.');
+      dispatchToast('error', 'jpg, jpeg, png, webp, gif 형식만 업로드할 수 있습니다.');
       e.target.value = '';
       return;
     }
@@ -642,20 +697,12 @@ const CreateCharacterPage = () => {
 
     try {
       // Zod 검증
-      const result = validateForm();
-    if (!result.success) {
+      const validation = validateForm();
+      if (!validation.success) {
+        const firstKey = Object.keys(validation.errors || {})[0];
+        if (firstKey) scrollToField(firstKey);
+        setError('필수 입력 항목을 다시 확인해주세요.');
         setLoading(false);
-        // 앵커 이동: 첫 오류 섹션으로 스크롤 이동
-        const firstKey = Object.keys(fieldErrors)[0] || '';
-        const sectionId = firstKey.startsWith('basic_info') ? 'section-basic' :
-                          firstKey.startsWith('example_dialogues') ? 'section-dialogues' :
-                          firstKey.startsWith('affinity_system') ? 'section-affinity' :
-                          firstKey.startsWith('publish_settings') ? 'section-publish' : 'section-basic';
-        const el = document.getElementById(sectionId);
-        if (el) {
-          const y = el.getBoundingClientRect().top + window.pageYOffset - HEADER_OFFSET;
-          window.scrollTo({ top: y, behavior: 'smooth' });
-        }
         return;
       }
       let uploadedImageUrls = [];
@@ -722,34 +769,26 @@ const CreateCharacterPage = () => {
 
         // Pydantic 검증 에러 처리
       if (err.response?.data?.detail && Array.isArray(err.response.data.detail)) {
-        const validationErrors = err.response.data.detail;
-        const errorMessages = validationErrors.map(error => {
-          // 필드 위치를 한글로 변환
-          const fieldPath = error.loc.join(' > ');
-          const fieldMapping = {
-            'body > basic_info > name': '캐릭터 이름',
-            'body > basic_info > description': '캐릭터 설명',
-            'body > basic_info > greeting': '첫 인사',
-            'body > basic_info > personality': '성격',
-            'body > basic_info > speech_style': '말투',
-            'body > basic_info > world_setting': '세계관',
-          };
-          
-          const fieldName = fieldMapping[fieldPath] || fieldPath;
-          
-          // 에러 타입별 메시지
-          if (error.type === 'string_too_short') {
-            return `${fieldName}을(를) 입력해주세요.`;
-          } else if (error.type === 'string_too_long') {
-            return `${fieldName}이(가) 너무 깁니다. (최대 ${error.ctx.max_length}자)`;
-          } else if (error.type === 'missing') {
-            return `${fieldName}은(는) 필수 항목입니다.`;
-          } else {
-            return `${fieldName}: ${error.msg}`;
+        const serverErrors = {};
+        err.response.data.detail.forEach((detail) => {
+          const key = mapServerPathToKey(detail.loc);
+          if (!key) return;
+          let message = detail.msg || detail.message || '입력값을 확인해주세요.';
+          if (detail.type === 'string_too_short') {
+            message = '필수 항목입니다.';
+          } else if (detail.type === 'string_too_long' && detail.ctx?.max_length) {
+            message = `최대 ${detail.ctx.max_length}자까지 입력할 수 있습니다.`;
           }
+          serverErrors[key] = message;
         });
-        
-        setError(errorMessages.join('\n'));
+        if (Object.keys(serverErrors).length) {
+          setFieldErrors(prev => ({ ...prev, ...serverErrors }));
+          const first = Object.keys(serverErrors)[0];
+          if (first) scrollToField(first);
+          setError('입력값을 다시 확인해주세요.');
+        } else {
+          setError('입력값을 확인해주세요.');
+        }
       } else {
         const errorMessage = err.response?.data?.detail || err.message || `캐릭터 ${isEditMode ? '수정' : '생성'}에 실패했습니다.`;
         setError(errorMessage);
@@ -779,7 +818,7 @@ const CreateCharacterPage = () => {
       }
     }));
     setIsStoryImporterOpen(false); // 모달 닫기
-    alert(`'${data.name}'의 정보가 폼에 적용되었습니다. 내용을 확인하고 저장해주세요.`);
+    dispatchToast('success', `'${data.name}' 정보가 폼에 적용되었습니다. 내용을 확인해주세요.`);
   };
 
 
@@ -816,10 +855,20 @@ const CreateCharacterPage = () => {
       <div className="space-y-4">
         {/* 캐릭터 이미지 (AI 자동완성 아래) */}
         <Card className="p-4 bg-white text-black border border-gray-200">
-          <h3 className="text-lg font-semibold flex items-center mb-3 text-black">
-            <Image className="w-5 h-5 mr-2" />
-            캐릭터 이미지
-          </h3>
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-lg font-semibold flex items-center text-black">
+              <Image className="w-5 h-5 mr-2" />
+              캐릭터 이미지
+            </h3>
+            <Button
+              type="button"
+              size="sm"
+              className="bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white"
+              onClick={() => setImgModalOpen(true)}
+            >
+              이미지 생성하기
+            </Button>
+          </div>
           <ErrorBoundary>
           <DropzoneGallery
             existingImages={formData.media_settings.image_descriptions.map(img => ({ url: `${API_BASE_URL}${img.url}`, description: img.description }))}
@@ -1556,8 +1605,8 @@ const CreateCharacterPage = () => {
       <header className="bg-gray-900/80 backdrop-blur-sm shadow-sm border-b border-gray-800 sticky top-0 z-50">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between h-16">
-            <div className="flex items-center space-x-4">
-              <Link to="/" className="flex items-center space-x-2">
+            <div className="flex items-center space-x-2">
+              <Link to="/dashboard" className="flex items-center space-x-2">
                 <div className="w-8 h-8 bg-gradient-to-r from-purple-600 to-blue-600 rounded-lg flex items-center justify-center">
                   <MessageCircle className="w-5 h-5 text-white" />
                 </div>
@@ -1568,9 +1617,6 @@ const CreateCharacterPage = () => {
               <div className="text-xs text-gray-500 mr-2 hidden sm:block">
                 {isAutoSaving ? '자동저장 중…' : lastSavedAt ? `자동저장됨 • ${new Date(lastSavedAt).toLocaleTimeString()}` : ''}
               </div>
-              <Button variant="outline" onClick={()=>{ if(!isEditMode){ alert('이미지 생성/삽입은 저장 후 이용 가능합니다. 먼저 저장해주세요.'); return;} setImgModalOpen(true); }}>
-                대표이미지 생성/삽입
-              </Button>
               <Button variant="outline" onClick={() => setIsPreviewOpen(true)}>
                 <Eye className="w-4 h-4 mr-2" />
                 미리보기
@@ -1611,6 +1657,16 @@ const CreateCharacterPage = () => {
 
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_220px] gap-6">
           <div>
+            <div className="flex items-center justify-between mb-4">
+              <Button
+                variant="ghost"
+                onClick={() => navigate(-1)}
+                className="text-gray-300 hover:text-gray-900 hover:bg-gray-100 dark:hover:text-white dark:hover:bg-white/10 flex items-center gap-2 rounded-md px-2 py-1 transition-colors"
+              >
+                <ArrowLeft className="w-4 h-4" />
+                뒤로 가기
+              </Button>
+            </div>
         {/* 롱폼 섹션: 탭 제거 후 순차 배치 */}
         <Card id="section-basic" className="shadow-lg mb-8 bg-gray-800 text-white border border-gray-700">
           <CardHeader>
@@ -1721,7 +1777,7 @@ const CreateCharacterPage = () => {
             }));
           } catch (err) {
             console.error('이미지 업로드 실패:', err);
-            alert('이미지 업로드에 실패했습니다.');
+            dispatchToast('error', '이미지 업로드에 실패했습니다. 잠시 후 다시 시도해주세요.');
           } finally {
             setIsUploading(false);
             try { URL.revokeObjectURL(cropSrc); } catch(_){}
@@ -1732,9 +1788,11 @@ const CreateCharacterPage = () => {
       {/* 이미지 생성/삽입 모달 (수정 모드) */}
       <ImageGenerateInsertModal
         open={imgModalOpen}
-        onClose={(e)=>{
+        onClose={(result)=>{
           setImgModalOpen(false);
-          if (e && e.attached && isEditMode) {
+          if (!result) return;
+          const { attached, gallery, focusUrl } = result;
+          if (attached && isEditMode) {
             try {
               mediaAPI.listAssets({ entityType: 'character', entityId: characterId, presign: true, expiresIn: 300 }).then((res)=>{
                 const items = Array.isArray(res.data?.items) ? res.data.items : [];
@@ -1749,10 +1807,16 @@ const CreateCharacterPage = () => {
                 }));
               });
             } catch(_) {}
+          } else if (Array.isArray(gallery) && gallery.length) {
+            applyGeneratedImages(gallery, focusUrl);
           }
         }}
-        entityType={'character'}
-        entityId={characterId}
+        entityType={isEditMode ? 'character' : undefined}
+        entityId={isEditMode ? characterId : undefined}
+        initialGallery={formData.media_settings.image_descriptions.map((img, idx) => ({
+          id: `form:${idx}`,
+          url: img.url,
+        }))}
       />
       {/* 태그 선택 모달 */}
       <TagSelectModal

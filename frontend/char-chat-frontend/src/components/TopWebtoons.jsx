@@ -5,6 +5,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { resolveImageUrl } from '../lib/images';
 import { Eye, Heart } from 'lucide-react';
 import ErrorBoundary from './ErrorBoundary';
+import { Badge } from './ui/badge';
 
 const WebtoonItem = ({ story }) => {
   const navigate = useNavigate();
@@ -23,6 +24,9 @@ const WebtoonItem = ({ story }) => {
         <div className="bg-gray-800/50 rounded-lg overflow-hidden border border-gray-700/50 group-hover:border-gray-600 transition-colors">
           {/* 이미지 영역 */}
           <div className="relative aspect-[3/4] overflow-hidden bg-gray-900">
+            <div className="absolute top-2 left-2 z-10">
+              <Badge className="bg-blue-600 text-white hover:bg-blue-600">웹툰</Badge>
+            </div>
             {coverSrc ? (
               <img
                 src={coverSrc}

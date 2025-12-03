@@ -3,11 +3,15 @@ import { useNavigate } from 'react-router-dom';
 import { Badge } from './ui/badge';
 import { Eye, Heart } from 'lucide-react';
 import { resolveImageUrl } from '../lib/images';
+import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
+import { useAuth } from '../contexts/AuthContext';
 
 const StoryExploreCard = ({ story, compact = false, onClick }) => {
   const navigate = useNavigate();
   const cover = story?.cover_url ? `${story.cover_url}${story.cover_url.includes('?') ? '&' : '?'}v=${Date.now()}` : '';
   const username = story?.creator_username;
+  const { profileVersion } = useAuth();
+  const creatorAvatar = story?.creator_avatar_url || '';
 
   return (
     <div
@@ -47,6 +51,15 @@ const StoryExploreCard = ({ story, compact = false, onClick }) => {
         )}
         {username && (
           <span className={`absolute left-1 bottom-1 py-0.5 px-1.5 rounded bg-black/60 ${compact ? 'text-[10px]' : 'text-xs'} text-gray-100 inline-flex items-center gap-2`}>
+            <Avatar className={`${compact ? 'w-4 h-4' : 'w-5 h-5'}`}>
+              <AvatarImage
+                src={resolveImageUrl(creatorAvatar ? `${creatorAvatar}${creatorAvatar.includes('?') ? '&' : '?'}v=${profileVersion}` : '')}
+                alt={username}
+              />
+              <AvatarFallback className={`${compact ? 'text-[9px]' : 'text-[10px]'} bg-gray-700`}>
+                {username?.charAt(0)?.toUpperCase() || 'U'}
+              </AvatarFallback>
+            </Avatar>
             <span className="truncate max-w-[120px]">{username}</span>
           </span>
         )}

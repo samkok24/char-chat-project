@@ -572,11 +572,27 @@ async def get_stories(
     limit: int = Query(20, ge=1, le=100),
     search: Optional[str] = Query(None),
     genre: Optional[str] = Query(None),
+    sort: Optional[str] = Query(None, description="정렬: views|likes|recent"),
+    only: Optional[str] = Query(None, description="origchat|webnovel 필터"),
+    creator_id: Optional[uuid.UUID] = Query(None),
+    tags: Optional[str] = Query(None, description="쉼표로 구분된 태그 슬러그 목록"),
     db: AsyncSession = Depends(get_db)
 ):
     """공개 스토리 목록 조회"""
+    tag_list: list[str] = []
+    if tags:
+        if isinstance(tags, str):
+            tag_list = [slug.strip() for slug in tags.split(",") if slug.strip()]
     stories = await story_service.get_public_stories(
-        db, skip=skip, limit=limit, search=search, genre=genre
+        db,
+        skip=skip,
+        limit=limit,
+        search=search,
+        genre=genre,
+        sort=sort,
+        only=only,
+        creator_id=creator_id,
+        tags=tag_list or None,
     )
 
     # 목록용 항목으로 변환하면서 excerpt 채움
@@ -609,6 +625,7 @@ async def get_stories(
             comment_count=int(s.comment_count or 0),
             created_at=s.created_at,
             creator_username=(s.creator.username if getattr(s, "creator", None) else None),
+            creator_avatar_url=(s.creator.avatar_url if getattr(s, "creator", None) else None),
             character_name=(s.character.name if getattr(s, "character", None) else None),
             cover_url=getattr(s, "cover_url", None),
             excerpt=excerpt,
@@ -664,6 +681,7 @@ async def get_my_stories(
             comment_count=int(s.comment_count or 0),
             created_at=s.created_at,
             creator_username=(s.creator.username if getattr(s, "creator", None) else None),
+            creator_avatar_url=(s.creator.avatar_url if getattr(s, "creator", None) else None),
             character_name=(s.character.name if getattr(s, "character", None) else None),
             cover_url=getattr(s, "cover_url", None),
             excerpt=excerpt,
@@ -740,20 +758,56 @@ async def update_story(
     db: AsyncSession = Depends(get_db)
 ):
     """스토리 정보 수정"""
-    story = await story_service.get_story_by_id(db, story_id)
-    
-    if not story:
-        raise HTTPException(status_code=404, detail="스토리를 찾을 수 없습니다")
-    
-    if story.creator_id != current_user.id:
-        raise HTTPException(status_code=403, detail="수정 권한이 없습니다")
-    
-    updated_story = await story_service.update_story(db, story_id, story_data)
-    
-    # Tag 객체를 문자열 리스트로 변환
-    response_data = StoryResponse.model_validate(updated_story).model_dump()
-    response_data["tags"] = [tag.slug for tag in (updated_story.tags or [])]
-    return response_data
+    try:
+        story = await story_service.get_story_by_id(db, story_id)
+        
+        if not story:
+            raise HTTPException(status_code=404, detail="스토리를 찾을 수 없습니다")
+        
+        if story.creator_id != current_user.id:
+            raise HTTPException(status_code=403, detail="수정 권한이 없습니다")
+        
+        updated_story = await story_service.update_story(db, story_id, story_data)
+        
+        if not updated_story:
+            raise HTTPException(status_code=500, detail="스토리 업데이트에 실패했습니다")
+        
+        # Tag 객체를 문자열 리스트로 변환
+        try:
+            # StoryResponse의 from_attributes가 tags를 Tag 객체로 변환하려고 하므로
+            # 먼저 기본 필드만 직렬화하고 tags는 별도로 처리
+            # tags를 제외한 기본 필드만 먼저 직렬화
+            base_dict = {
+                'id': updated_story.id,
+                'creator_id': updated_story.creator_id,
+                'character_id': updated_story.character_id,
+                'title': updated_story.title,
+                'content': updated_story.content,
+                'summary': updated_story.summary,
+                'cover_url': updated_story.cover_url,
+                'genre': updated_story.genre,
+                'is_public': updated_story.is_public,
+                'is_webtoon': updated_story.is_webtoon,
+                'is_origchat': updated_story.is_origchat,
+                'like_count': updated_story.like_count,
+                'view_count': updated_story.view_count,
+                'comment_count': updated_story.comment_count,
+                'created_at': updated_story.created_at,
+                'updated_at': updated_story.updated_at,
+                'keywords': None,  # keywords는 Story 모델에 없으므로 None
+                'tags': [tag.slug for tag in (updated_story.tags or [])],  # 문자열 리스트로 변환
+            }
+            return StoryResponse(**base_dict)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=f"응답 변환 실패: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"스토리 업데이트 중 오류 발생: {str(e)}")
 
 
 @router.delete("/{story_id}")

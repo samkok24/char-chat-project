@@ -121,6 +121,7 @@ async def get_my_liked_characters(
                 is_public=bool(getattr(char, 'is_public', True)),
                 created_at=getattr(char, 'created_at', None),
                 creator_username=char.creator.username if char.creator else None,
+                creator_avatar_url=char.creator.avatar_url if char.creator else None,
             )
         )
     return out2

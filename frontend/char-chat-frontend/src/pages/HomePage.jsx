@@ -86,6 +86,7 @@ const HomePage = () => {
   const LIMIT = 24;
   const [selectedTags, setSelectedTags] = useState([]); // slug 배열
   const [showAllTags, setShowAllTags] = useState(false);
+  const visibleTagLimit = 18;
   const { data: allTags = [] } = useQuery({
     queryKey: ['tags-used-or-all'],
     queryFn: async () => {
@@ -120,6 +121,47 @@ const HomePage = () => {
     },
     staleTime: 5 * 60 * 1000,
   });
+  const arrangedTags = React.useMemo(() => {
+    const top = (topUsedTags || []).slice(0, 5);
+    const topSlugs = new Set(top.map(t => t.slug));
+    const base = (allTags || []).filter(t => !topSlugs.has(t.slug));
+    const combined = [...base, ...[...top].reverse()];
+    const isBad = (t) => {
+      const s = String(t?.slug || '');
+      const n = String(t?.name || '');
+      return s.startsWith('cover:') || n.startsWith('cover:');
+    };
+    return combined.filter(t => !isBad(t));
+  }, [allTags, topUsedTags]);
+
+  const derivedTagSlug = React.useMemo(() => {
+    const raw = searchQuery?.trim();
+    if (!raw) return null;
+    const normalized = raw.startsWith('#') ? raw.slice(1) : raw;
+    const lower = normalized.toLowerCase();
+    const match = arrangedTags.find(
+      (t) =>
+        String(t?.slug || '').toLowerCase() === lower ||
+        String(t?.name || '').toLowerCase() === lower
+    );
+    return match?.slug || null;
+  }, [searchQuery, arrangedTags]);
+
+  const effectiveTags = React.useMemo(() => {
+    const base = Array.isArray(selectedTags) ? [...selectedTags] : [];
+    if (derivedTagSlug && !base.includes(derivedTagSlug)) {
+      base.push(derivedTagSlug);
+    }
+    return base;
+  }, [selectedTags, derivedTagSlug]);
+
+  const effectiveTagsKey = React.useMemo(
+    () => (effectiveTags.length ? [...effectiveTags].sort().join(',') : ''),
+    [effectiveTags]
+  );
+
+  const visibleTags = showAllTags ? arrangedTags : arrangedTags.slice(0, visibleTagLimit);
+
   const {
     data: characterPages,
     isLoading: loading,
@@ -128,14 +170,14 @@ const HomePage = () => {
     fetchNextPage,
     refetch
   } = useInfiniteQuery({
-    queryKey: ['characters', 'infinite', searchQuery, selectedTags.join(','), sourceFilter],
+    queryKey: ['characters', 'infinite', searchQuery, effectiveTagsKey, sourceFilter],
     queryFn: async ({ pageParam = 0 }) => {
       try {
         const response = await charactersAPI.getCharacters({
           search: searchQuery || undefined,
           skip: pageParam,
           limit: LIMIT,
-          tags: selectedTags.length ? selectedTags.join(',') : undefined,
+          tags: effectiveTags.length ? effectiveTags.join(',') : undefined,
           source_type: sourceFilter || undefined,
         });
         const items = response.data || [];
@@ -155,16 +197,19 @@ const HomePage = () => {
 
   // 웹소설(스토리) 탐색: 공개 스토리 일부 노출
   const { data: exploreStories = [], isLoading: storiesLoading } = useQuery({
-    queryKey: ['explore-stories'],
+    queryKey: ['explore-stories', searchQuery, effectiveTagsKey],
     queryFn: async () => {
       try {
-        const res = await storiesAPI.getStories({ limit: 12 });
+        const params = { limit: 12 };
+        const trimmed = searchQuery?.trim();
+        if (trimmed) params.search = trimmed;
+        if (effectiveTags.length) params.tags = effectiveTags.join(',');
+        const res = await storiesAPI.getStories(params);
         const list = Array.isArray(res.data?.stories) ? res.data.stories : [];
-        // 공개 스토리만 노출
         return list.filter(s => s?.is_public !== false);
       } catch (_) { return []; }
     },
-    staleTime: 0, // 0 → 5분
+    staleTime: 0,
     refetchOnMount: 'always'
   });
   const sentinelRef = useRef(null);
@@ -263,23 +308,6 @@ const HomePage = () => {
     navigate(`/characters/${characterId}`);
   };
 
-  const visibleTagLimit = 18;
-  // 홈 탐색 태그 정렬: 전체 태그 + 마지막 5개에 사용량 Top5(뒤에서 5번째가 최다)
-  const arrangedTags = React.useMemo(() => {
-    const top = (topUsedTags || []).slice(0, 5);
-    const topSlugs = new Set(top.map(t => t.slug));
-    const base = (allTags || []).filter(t => !topSlugs.has(t.slug));
-    const combined = [...base, ...[...top].reverse()];
-    // 최종 방어: cover: 접두 태그는 절대 노출하지 않음
-    const isBad = (t) => {
-      const s = String(t?.slug || '');
-      const n = String(t?.name || '');
-      return s.startsWith('cover:') || n.startsWith('cover:');
-    };
-    return combined.filter(t => !isBad(t));
-  }, [allTags, topUsedTags]);
-  const visibleTags = showAllTags ? arrangedTags : arrangedTags.slice(0, visibleTagLimit);
-
   // 메인탭 진입 시 인기 캐릭터 캐시 무효화
   useEffect(() => {
     queryClient.invalidateQueries({ queryKey: ['trending-characters-daily'] });
@@ -335,6 +363,11 @@ const HomePage = () => {
               </form>
             </div>
           </div>
+          {derivedTagSlug && !selectedTags.includes(derivedTagSlug) && (
+            <p className="text-xs text-purple-300 mt-2">
+              검색어에 포함된 태그 #{derivedTagSlug} 결과가 함께 노출됩니다.
+            </p>
+          )}
 
           {/* 특화 캐릭터 바로가기 */}
           <section className="mb-10">
@@ -596,6 +629,7 @@ const HomePage = () => {
               </div>
             )}
           </section>
+
       </main>
       </div>
       {/* 로그인 유도 모달 */}

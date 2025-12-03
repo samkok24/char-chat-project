@@ -1237,7 +1237,7 @@ async def send_message(
     else:
         user_message = None
 
-    await db.commit()  # ← 즉시 커밋
+    await db.flush()  # ← 즉시 커밋
 
     # 3. AI 응답 생성 (CAVEDUCK 스타일 최적화)
     history = await chat_service.get_messages_by_room_id(db, room.id, limit=20)
@@ -1363,21 +1363,26 @@ async def send_message(
         if hasattr(request, 'response_length_override') and request.response_length_override
         else getattr(current_user, 'response_length_pref', 'medium')
     )
-    
-    ai_response_text = await ai_service.get_ai_chat_response(
-        character_prompt=character_prompt,
-        user_message=effective_user_message,
-        history=history_for_ai,
-        preferred_model=current_user.preferred_model,
-        preferred_sub_model=current_user.preferred_sub_model,
-        response_length_pref=response_length
-    )
 
-    # 4. AI 응답 메시지 저장
-    ai_message = await chat_service.save_message(
-        db, room.id, "assistant", ai_response_text
-    )
-    
+    try:
+        ai_response_text = await ai_service.get_ai_chat_response(
+            character_prompt=character_prompt,
+            user_message=effective_user_message,
+            history=history_for_ai,
+            preferred_model=current_user.preferred_model,
+            preferred_sub_model=current_user.preferred_sub_model,
+            response_length_pref=response_length
+        )
+
+        # 4. AI 응답 메시지 저장
+        ai_message = await chat_service.save_message(
+            db, room.id, "assistant", ai_response_text
+        )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise HTTPException(status_code=503, detail="AiUnavailable")
+        
     # 5. 캐릭터 채팅 수 증가 (사용자 메시지 기준으로 1회만 증가)
     from app.services import character_service
     # await character_service.increment_character_chat_count(db, room.character_id)
@@ -2472,22 +2477,26 @@ async def origchat_turn(
 
             # 4. AI 응답 생성
             from app.services import ai_service
+            try:
+                ai_response_text = await ai_service.get_ai_chat_response(
+                    character_prompt=character_prompt,
+                    user_message=actual_user_input,
+                    history=history_for_ai,
+                    preferred_model="claude",
+                    preferred_sub_model=current_user.preferred_sub_model,
+                    response_length_pref=meta_state.get("response_length_pref") or getattr(current_user, 'response_length_pref', 'medium')
+                )
 
-            ai_response_text = await ai_service.get_ai_chat_response(
-                character_prompt=character_prompt,
-                user_message=actual_user_input,
-                history=history_for_ai,
-                preferred_model="claude",
-                preferred_sub_model=current_user.preferred_sub_model,
-                response_length_pref=meta_state.get("response_length_pref") or getattr(current_user, 'response_length_pref', 'medium')
-            )
+                # 5. AI 응답만 저장
+                ai_message = await chat_service.save_message(
+                    db, room.id, "assistant", ai_response_text
+                )
 
-            # 5. AI 응답만 저장
-            ai_message = await chat_service.save_message(
-                db, room.id, "assistant", ai_response_text
-            )
-            await db.commit()
-
+                await db.commit()
+            except Exception:
+                await db.rollback()
+                raise HTTPException(status_code=503, detail="AiUnavailable")
+                
             from app.services import character_service
             await character_service.sync_character_chat_count(db, room.character_id)
             

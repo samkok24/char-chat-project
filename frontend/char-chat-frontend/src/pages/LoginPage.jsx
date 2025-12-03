@@ -265,6 +265,17 @@ const LoginPage = () => {
                       '로그인'
                     )}
                   </Button>
+                  
+                  <div className="text-center">
+                    <Button 
+                      type="button"
+                      variant="link" 
+                      onClick={() => navigate('/forgot-password')}
+                      className="text-sm text-purple-600 hover:text-purple-700"
+                    >
+                      비밀번호를 잊으셨나요?
+                    </Button>
+                  </div>
                 </form>
               </TabsContent>
 

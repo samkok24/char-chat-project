@@ -160,6 +160,16 @@ const ChatPage = () => {
   // 상황 입력 토글/값
   const [showSituation, setShowSituation] = useState(false);
   const [situationText, setSituationText] = useState('');
+  const getCarouselButtonClass = useCallback((disabled) => {
+    if (resolvedTheme === 'light') {
+      return disabled
+        ? 'bg-gray-200 text-gray-400 border border-gray-200 cursor-not-allowed'
+        : 'bg-gray-100 text-gray-900 border border-gray-200 hover:bg-gray-200';
+    }
+    return disabled
+      ? 'bg-white/5 text-white/30 cursor-not-allowed'
+      : 'bg-white/10 hover:bg-white/20 text-white';
+  }, [resolvedTheme]);
   
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
@@ -1577,9 +1587,7 @@ const ChatPage = () => {
                   <Button
                     onClick={handlePrevImage}
                     disabled={isPrevDisabled}
-                    className={`rounded-full w-7 h-7 p-0 flex-shrink-0 transition-all ${
-                      isPrevDisabled ? 'bg-white/5 text-white/30 cursor-not-allowed' : 'bg-white/10 hover:bg-white/20 text-white'
-                    }`}
+                    className={`rounded-full w-7 h-7 p-0 flex-shrink-0 transition-all ${getCarouselButtonClass(isPrevDisabled)}`}
                     size="icon"
                   >
                     <ChevronLeft className="w-4 h-4" />
@@ -1613,9 +1621,7 @@ const ChatPage = () => {
                   <Button
                     onClick={handleNextImage}
                     disabled={isNextDisabled}
-                    className={`rounded-full w-7 h-7 p-0 flex-shrink-0 transition-all ${
-                      isNextDisabled ? 'bg-white/5 text-white/30 cursor-not-allowed' : 'bg-white/10 hover:bg-white/20 text-white'
-                    }`}
+                    className={`rounded-full w-7 h-7 p-0 flex-shrink-0 transition-all ${getCarouselButtonClass(isNextDisabled)}`}
                     size="icon"
                   >
                     <ChevronRight className="w-4 h-4" />
@@ -1662,7 +1668,13 @@ const ChatPage = () => {
                 if (isIntro) {
                   return (
                     <div key={`intro-${m.id || index}`} className="mt-2 ml-12 max-w-full sm:max-w-[85%] text-left">
-                      <div className="px-4 py-3 rounded-lg border bg-white/5 border-white/10 text-sm text-white whitespace-pre-wrap text-left">
+                      <div
+                        className={`px-4 py-3 rounded-lg border text-sm whitespace-pre-wrap text-left ${
+                          resolvedTheme === 'light'
+                            ? 'bg-gray-50 border-gray-200 text-gray-900'
+                            : 'bg-white/5 border-white/10 text-white'
+                        }`}
+                      >
                         {m.content}
                       </div>
                     </div>
@@ -1723,7 +1735,13 @@ const ChatPage = () => {
                       {character?.name?.charAt(0) || <Bot className="w-4 h-4" />}
                     </AvatarFallback>
                   </Avatar>
-                  <div className="max-w-xs lg:max-w-md px-4 py-2 rounded-lg shadow-md bg-white/10 text-white">
+                  <div
+                    className={`max-w-xs lg:max-w-md px-4 py-2 rounded-lg shadow-md border ${
+                      resolvedTheme === 'light'
+                        ? 'bg-gray-100 text-gray-900 border-gray-200'
+                        : 'bg-white/10 text-white border-white/10'
+                    }`}
+                  >
                     <div className="flex space-x-1">
                       <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
                       <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>

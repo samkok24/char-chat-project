@@ -590,6 +590,7 @@ async def get_my_characters(
             is_public=char.is_public,
             created_at=char.created_at,
             creator_username=char.creator.username if getattr(char, 'creator', None) else None,
+            creator_avatar_url=char.creator.avatar_url if getattr(char, 'creator', None) else None,
         ) for char in characters
     ]
 

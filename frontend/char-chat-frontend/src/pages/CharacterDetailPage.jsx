@@ -12,7 +12,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button } from '../components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '../components/ui/avatar';
 import { Badge } from '../components/ui/badge';
-import {
+import { 
   ArrowLeft,
   MessageCircle,
   Heart,
@@ -34,9 +34,15 @@ import ImageGenerateInsertModal from '../components/ImageGenerateInsertModal';
 import { getReadingProgress } from '../lib/reading';
 import AppLayout from '../components/layout/AppLayout';
 
+const dispatchToast = (type, message) => {
+  try {
+    window.dispatchEvent(new CustomEvent('toast', { detail: { type, message } }));
+  } catch (_) {}
+};
+
 const CharacterDetailPage = () => {
   const { characterId } = useParams();
-  const { user, isAuthenticated } = useAuth();
+  const { user, isAuthenticated, loading: authLoading } = useAuth();
   const navigate = useNavigate();
   // 2. useLocation hook을 호출하여 location 객체를 가져옵니다.
   const location = useLocation();
@@ -125,7 +131,16 @@ const CharacterDetailPage = () => {
 
       } catch (err) {
         console.error('캐릭터 정보 로드 실패:', err);
-        setError('캐릭터 정보를 불러올 수 없습니다.');
+        const status = err?.response?.status;
+        if (status === 404) {
+          setError('요청하신 캐릭터를 찾을 수 없습니다.');
+        } else if (status === 403) {
+          setError('해당 캐릭터를 조회할 권한이 없습니다.');
+        } else if (!err?.response) {
+          setError('네트워크 오류가 발생했습니다. 연결을 확인해주세요.');
+        } else {
+          setError('캐릭터 정보를 불러오는 중 오류가 발생했습니다.');
+        }
       } finally {
         setLoading(false);
       }
@@ -176,6 +191,7 @@ const CharacterDetailPage = () => {
       setComments(comments.filter(c => c.id !== commentId));
     } catch (err) {
       console.error('댓글 삭제 실패:', err);
+      dispatchToast('error', '댓글 삭제에 실패했습니다.');
     }
   };
 
@@ -207,6 +223,7 @@ const CharacterDetailPage = () => {
     },
     onError: (err) => {
       console.error('좋아요 처리 실패:', err);
+      dispatchToast('error', '좋아요 처리에 실패했습니다.');
     },
   });
 
@@ -218,7 +235,7 @@ const CharacterDetailPage = () => {
     likeMutation.mutate(isLiked);
   };
 
-  const isOwner = user && character?.creator_id === user.id;
+  const isOwner = !authLoading && user && character?.creator_id === user.id;
   const originStoryId = character?.origin_story_id || null;
 
   const togglePublicMutation = useMutation({
@@ -231,7 +248,7 @@ const CharacterDetailPage = () => {
     },
     onError: (err) => {
       console.error('공개 상태 변경 실패:', err);
-      // 필요하다면 여기에서 사용자에게 오류 알림
+      dispatchToast('error', err?.response?.data?.detail || '공개 상태를 변경하지 못했습니다.');
     },
   });
 
@@ -267,33 +284,43 @@ const CharacterDetailPage = () => {
         queryClient.invalidateQueries({ queryKey: ['liked-characters'] });
         queryClient.invalidateQueries({ queryKey: ['explore-stories'] });
       } catch (_) {}
+      dispatchToast('success', '캐릭터를 삭제했습니다.');
       navigate('/dashboard');
     } catch (err) {
       console.error('캐릭터 삭제 실패:', err);
-      alert('캐릭터 삭제에 실패했습니다.');
+      const status = err?.response?.status;
+      if (status === 403) {
+        dispatchToast('error', '삭제 권한이 없습니다.');
+      } else {
+        dispatchToast('error', '캐릭터 삭제에 실패했습니다.');
+      }
     }
   };
 
-  if (loading) {
+  if (loading || authLoading) {
     return (
-      <div className="flex items-center justify-center min-h-screen bg-gray-900 text-white">
-        <Loader2 className="w-8 h-8 animate-spin" />
-      </div>
+      <AppLayout>
+        <div className="flex items-center justify-center min-h-screen bg-gray-900 text-white">
+          <Loader2 className="w-8 h-8 animate-spin" />
+        </div>
+      </AppLayout>
     );
   }
 
   if (error || !character) {
     return (
-      <div className="flex items-center justify-center min-h-screen bg-gray-900 text-white">
-        <div className="text-center">
-          <AlertCircle className="w-12 h-12 text-red-500 mx-auto mb-4" />
-          <h3 className="text-lg font-medium mb-2">오류</h3>
-          <p className="text-gray-400 mb-4">{error}</p>
-          <Button onClick={() => navigate('/dashboard')} variant="outline">
-            홈으로 돌아가기
-          </Button>
+      <AppLayout>
+        <div className="flex items-center justify-center min-h-screen bg-gray-900 text-white">
+          <div className="text-center">
+            <AlertCircle className="w-12 h-12 text-red-500 mx-auto mb-4" />
+            <h3 className="text-lg font-medium mb-2">오류</h3>
+            <p className="text-gray-400 mb-4 whitespace-pre-line">{error || '캐릭터 정보를 찾을 수 없습니다.'}</p>
+            <Button onClick={() => navigate('/dashboard')} variant="outline">
+              홈으로 돌아가기
+            </Button>
+          </div>
         </div>
-      </div>
+      </AppLayout>
     );
   }
 

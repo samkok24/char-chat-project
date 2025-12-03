@@ -412,21 +412,21 @@ export default function StoryHighlights({ highlights = [], loading = false, user
               <button
                 title="다운로드"
                 onClick={() => downloadImage(highlights[modalIndex].imageUrl, `highlight_${modalIndex+1}.jpg`)}
-                className="w-10 h-10 rounded-full bg-white/15 text-white flex items-center justify-center hover:bg-white/25"
+                className="w-10 h-10 rounded-full flex items-center justify-center transition-colors border border-gray-200 bg-gray-100 text-gray-900 hover:bg-gray-200 dark:border-white/20 dark:bg-white/15 dark:text-white dark:hover:bg-white/25"
               >
                 <Download size={18} />
               </button>
               <button
                 title="공유"
                 onClick={() => shareImage(highlights[modalIndex].imageUrl)}
-                className="w-10 h-10 rounded-full bg-white/15 text-white flex items-center justify-center hover:bg-white/25"
+                className="w-10 h-10 rounded-full flex items-center justify-center transition-colors border border-gray-200 bg-gray-100 text-gray-900 hover:bg-gray-200 dark:border-white/20 dark:bg-white/15 dark:text-white dark:hover:bg-white/25"
               >
                 <Share2 size={18} />
               </button>
               <button
                 title="닫기"
                 onClick={() => setShowModal(false)}
-                className="w-10 h-10 rounded-full bg-white/15 text-white flex items-center justify-center hover:bg-white/25"
+                className="w-10 h-10 rounded-full flex items-center justify-center transition-colors border border-gray-200 bg-gray-100 text-gray-900 hover:bg-gray-200 dark:border-white/20 dark:bg-white/15 dark:text-white dark:hover:bg-white/25"
               >
                 <X size={18} />
               </button>
