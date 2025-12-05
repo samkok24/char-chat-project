@@ -12,6 +12,7 @@ import { Avatar, AvatarFallback, AvatarImage } from '../components/ui/avatar';
 import { Badge } from '../components/ui/badge';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { useAuth } from '../contexts/AuthContext';
+import { useLoginModal } from '../contexts/LoginModalContext';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator } from '../components/ui/dropdown-menu';
 import { Switch } from '../components/ui/switch';
 import { Label } from '../components/ui/label';
@@ -30,6 +31,7 @@ const StoryDetailPage = () => {
   const queryClient = useQueryClient();
   const locationState = useLocation().state || {};
   const { user, isAuthenticated, profileVersion } = useAuth();
+  const { openLoginModal } = useLoginModal();
   const extractedRef = useRef(null);
   const [chapterModalOpen, setChapterModalOpen] = useState(false);
   const [imgModalOpen, setImgModalOpen] = useState(false);
@@ -167,7 +169,7 @@ const StoryDetailPage = () => {
   });
 
   const handleLike = () => {
-    if (!isAuthenticated) { navigate('/login'); return; }
+    if (!isAuthenticated) { openLoginModal(); return; }
     likeMutation.mutate(isLiked);
   };
 
@@ -177,7 +179,7 @@ const StoryDetailPage = () => {
 
   const handleStartOrigChatWithRange = async ({ range_from, range_to, characterId = null }) => {
     try {
-      if (!isAuthenticated) { navigate('/login'); return; }
+      if (!isAuthenticated) { openLoginModal(); return; }
       // 회차 범위 유효성 검사
       const totalChapters = Array.isArray(episodesSorted) ? episodesSorted.length : 0;
       const f = Number(range_from);
@@ -591,7 +593,7 @@ const StoryDetailPage = () => {
                   <Button
                     className="w-full bg-red-600 hover:bg-red-700 text-white font-semibold py-5"
                     onClick={() => {
-                      if (!isAuthenticated) { navigate('/login'); return; }
+                      if (!isAuthenticated) { openLoginModal(); return; }
                       // 항상 모달 먼저 오픈(후속 동작은 모달 내부에서 처리)
                       setOrigModalOpen(true);
                     }}
@@ -663,7 +665,7 @@ const StoryDetailPage = () => {
                             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                           </svg>
-                          등장인물을 생성하고 있습니다...
+                          {isOwner ? '등장인물을 생성하고 있습니다...' : '현재 원작챗을 할 캐릭터를 크리에이터가 추출하고 있습니다.'}
                         </div>
                         <div className="text-xs text-gray-500 mt-1">최대 2분이 소요될 수 있습니다. 잠시만 기다려주세요.</div>
                       </div>
@@ -697,8 +699,9 @@ const StoryDetailPage = () => {
                       )}
                     </div>
                   ) : (
+                    /* 추출 전 상태 (회차는 있지만 아직 추출되지 않음) */
                     <div className="flex items-center justify-between bg-gray-800/40 border border-gray-700 rounded-md p-3">
-                      <span className="text-sm text-gray-400">원작챗을 다시 생성해주세요.</span>
+                      <span className="text-sm text-gray-400">원작챗을 할 캐릭터가 추출되지 않았습니다.</span>
                       {isOwner && (
                         <Button
                           variant="outline"

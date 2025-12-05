@@ -93,6 +93,7 @@ class SendMessageResponse(BaseModel):
     ai_message: ChatMessageResponse
     # 선택지/경고/메타데이터 전달용 (프론트는 선택적으로 사용)
     meta: Dict[str, Any] | None = None
+    suggested_image_index: int = -1
 
 
 class ChatMessageUpdate(BaseModel):

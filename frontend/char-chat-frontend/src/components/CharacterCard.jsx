@@ -18,7 +18,7 @@ export const CharacterCard = ({ character, onCardClick, onButtonClick, footerCon
   const { profileVersion } = useAuth();
   const charId = character?.id || character?.character_id || character?.characterId || character?.target_id;
   const isWebNovel = character?.source_type === 'IMPORTED';
-  const isFromOrigChat = !!(character?.origin_story_id || character?.is_origchat);
+  const isFromOrigChat = !!(character?.origin_story_id || character?.is_origchat || character?.source === 'origchat');
   const borderClass = isFromOrigChat ? 'border-orange-500/60' : (isWebNovel ? 'border-blue-500/40' : 'border-purple-500/40');
   const hoverBorderClass = isFromOrigChat ? 'hover:border-orange-500' : (isWebNovel ? 'hover:border-blue-500' : 'hover:border-purple-500');
   const [originTitle, setOriginTitle] = React.useState(character?.origin_story_title || '');

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { NotebookText, Image as ImageIcon, Brain, MessageSquarePlus, User, Gem, Settings, LogOut, LogIn, UserPlus, Trash2 } from 'lucide-react';
+import { NotebookText, Image as ImageIcon, Brain, MessageSquarePlus, User, Gem, Settings, LogOut, LogIn, Trash2 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useLoginModal } from '../../contexts/LoginModalContext';
 import { Avatar, AvatarFallback, AvatarImage } from '../ui/avatar';
@@ -243,14 +243,7 @@ const AgentSidebar = ({ onCreateSession, activeSessionId, onSessionSelect, onDel
               </div>
             </div>
           </>
-        ) : (
-          <div className="mt-4 p-3 rounded-lg bg-gray-900 border border-gray-700 text-center">
-            <p className="text-sm text-gray-300 mb-3">로그인하여 히스토리를 저장하고 더 많은 기능을 이용해보세요.</p>
-            <Button className="w-full bg-gradient-to-r from-purple-600 via-fuchsia-600 to-pink-600 hover:brightness-105 text-white shadow-md" onClick={() => openLoginModal({ initialTab: 'login' })}>
-              <LogIn className="w-4 h-4 mr-2" /> 로그인/가입
-            </Button>
-          </div>
-        )}
+        ) : null}
       </nav>
 
       <div className="p-3 border-t border-gray-700">
@@ -310,21 +303,16 @@ const AgentSidebar = ({ onCreateSession, activeSessionId, onSessionSelect, onDel
           <div className="px-1 py-2">
             <div className="flex items-center space-x-3 mb-3">
               <Avatar className="w-8 h-8">
-                <AvatarFallback className="bg-purple-600 text-white text-sm">G</AvatarFallback>
+                <AvatarFallback className="bg-gray-600 text-white text-sm">G</AvatarFallback>
               </Avatar>
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium text-white truncate">Guest</p>
                 <p className="text-xs text-gray-400">로그인이 필요합니다</p>
               </div>
             </div>
-            <div className="flex items-center gap-2">
-              <Button className="bg-gradient-to-r from-purple-600 via-fuchsia-600 to-pink-600 hover:brightness-105 text-white shadow-md" onClick={() => openLoginModal({ initialTab: 'login' })}>
-                <LogIn className="w-4 h-4 mr-2" /> 로그인
-              </Button>
-              <Button variant="outline" onClick={() => openLoginModal({ initialTab: 'register' })}>
-                <UserPlus className="w-4 h-4 mr-2" /> 회원가입
-              </Button>
-            </div>
+            <Button className="w-full bg-purple-600 hover:bg-purple-700 text-white" onClick={() => openLoginModal({ initialTab: 'login' })}>
+              <LogIn className="w-4 h-4 mr-2" /> 로그인
+            </Button>
           </div>
         )}
       </div>

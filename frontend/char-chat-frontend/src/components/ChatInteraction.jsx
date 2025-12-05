@@ -10,9 +10,11 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { usersAPI, chatAPI } from '../lib/api';
+import { useLoginModal } from '../contexts/LoginModalContext';
 
 const ChatInteraction = ({ onStartChat, characterId, isAuthenticated, isWebNovel = false }) => {
   const navigate = useNavigate();
+  const { openLoginModal } = useLoginModal();
 
   const { data: recent = [] } = useQuery({
     queryKey: ['recent-characters-for-continue'],
@@ -39,7 +41,7 @@ const ChatInteraction = ({ onStartChat, characterId, isAuthenticated, isWebNovel
   const hasHistory = !!recentMatch;
 
   const handleContinue = async () => {
-    if (!isAuthenticated) { navigate('/login'); return; }
+    if (!isAuthenticated) { openLoginModal(); return; }
     try {
       const sessionsRes = await chatAPI.getChatSessions();
       const sessions = Array.isArray(sessionsRes.data) ? sessionsRes.data : [];
@@ -61,7 +63,7 @@ const ChatInteraction = ({ onStartChat, characterId, isAuthenticated, isWebNovel
   };
 
   const handleNew = async () => {
-    if (!isAuthenticated) { navigate('/login'); return; }
+    if (!isAuthenticated) { openLoginModal(); return; }
     try {
       // 무조건 새 방 생성 API 사용
       const roomResponse = await chatAPI.startNewChat(characterId);

@@ -1,17 +1,40 @@
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
-import { Card, CardContent, CardDescription, CardHeader } from './ui/card';
+import { Card, CardContent, CardDescription } from './ui/card';
 import { Alert, AlertDescription } from './ui/alert';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
-import { Loader2, Mail, Lock, User, MessageCircle, Check, Wand2, Eye, EyeOff } from 'lucide-react';
+import { Loader2, Mail, Lock, User, Wand2, Eye, EyeOff, CheckCircle2, ArrowLeft } from 'lucide-react';
+
+// ─── SSOT: 공통 스타일 상수 ───
+const STYLES = {
+  label: 'text-gray-900 dark:text-gray-200 font-semibold',
+  input: 'pl-10 text-gray-900 dark:text-gray-100',
+  inputFlex: 'pl-10 text-gray-900 dark:text-gray-100 flex-1', // 버튼과 함께 쓸 때
+  inputWithToggle: 'pl-10 pr-10 text-gray-900 dark:text-gray-100',
+  inputIcon: 'absolute left-3 top-3 h-4 w-4 text-gray-500 dark:text-gray-400',
+  toggleBtn: 'absolute right-3 top-3 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200',
+  primaryBtn: 'w-full bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white font-medium',
+  secondaryBtn: 'w-full border border-gray-300 dark:border-gray-600 bg-transparent hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-200 font-medium',
+  inlineBtn: 'h-10 px-3 text-sm shrink-0 bg-purple-600 hover:bg-purple-700 text-white font-medium disabled:opacity-50', // 인라인 액션 버튼
+  backLink: 'text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 inline-flex items-center gap-1',
+};
+
+// ─── SSOT: 상태 메시지 컴포넌트 ───
+const StatusMessage = ({ type, message }) => {
+  if (!message) return null;
+  const colorClass = type === 'success' ? 'text-green-500' : type === 'error' ? 'text-red-500' : 'text-gray-400';
+  return <div className={`text-sm font-semibold ${colorClass}`}>{message}</div>;
+};
 
 const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
-  const { login, register, user } = useAuth();
-  const [activeTab, setActiveTab] = useState(initialTab);
+  const { login, register } = useAuth();
+  
+  // view: 'login' | 'register' | 'success'
+  const [view, setView] = useState(initialTab === 'register' ? 'register' : 'login');
+  
   const [loginData, setLoginData] = useState({ email: '', password: '' });
   const [registerData, setRegisterData] = useState({
     email: '',
@@ -29,18 +52,41 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
   const [showLoginPassword, setShowLoginPassword] = useState(false);
   const [showRegisterPassword, setShowRegisterPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [sendingVerification, setSendingVerification] = useState(false);
+  const [verificationInfo, setVerificationInfo] = useState({ type: 'info', message: '' });
+  const [resendCooldown, setResendCooldown] = useState(0);
+  const [resetEmail, setResetEmail] = useState('');
+  const [resetStatus, setResetStatus] = useState({ type: 'info', message: '' });
+  const [resetLoading, setResetLoading] = useState(false);
 
+  // 모달 열릴 때 초기화
   useEffect(() => {
     if (isOpen) {
-      setActiveTab(initialTab || 'login');
+      setView(initialTab === 'register' ? 'register' : 'login');
       setError('');
     }
   }, [isOpen, initialTab]);
 
-  // 탭 변경 시 에러 메시지 초기화
+  // 뷰 변경 시 에러 메시지 초기화
   useEffect(() => {
     setError('');
-  }, [activeTab]);
+    if (view === 'login') {
+      setResetStatus({ type: 'info', message: '' });
+      setResetLoading(false);
+    }
+    if (view === 'forgot') {
+      setResetEmail(loginData.email || '');
+      setResetStatus({ type: 'info', message: '' });
+    }
+  }, [view]);
+
+  useEffect(() => {
+    if (resendCooldown <= 0) return;
+    const timer = setInterval(() => {
+      setResendCooldown(prev => (prev > 0 ? prev - 1 : 0));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [resendCooldown]);
 
   const handleLoginChange = (e) => {
     setLoginData({ ...loginData, [e.target.name]: e.target.value });
@@ -62,7 +108,11 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
     setError('');
     try {
       const result = await login(loginData.email, loginData.password);
-      if (result.success) onClose?.(); else setError(result.error);
+      if (result.success) {
+        onClose?.();
+      } else {
+        setError(result.error);
+      }
     } finally {
       setLoading(false);
     }
@@ -80,21 +130,17 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
       if (emailCheck.available === false) { setError('이미 등록된 이메일입니다.'); return; }
       if (!usernameCheck.checked) { setError('사용자명 중복 확인 중입니다. 잠시 후 다시 시도하세요.'); return; }
       if (usernameCheck.available === false) { setError('이미 사용 중인 사용자명입니다.'); return; }
+      
       const result = await register(registerData.email, registerData.username, registerData.password, registerData.gender);
-      if (result.success) onClose?.(); else setError(result.error);
+      if (result.success) {
+        // 회원가입 성공 → 완료 화면으로 전환
+        setView('success');
+      } else {
+        setError(result.error);
+      }
     } finally {
       setLoading(false);
     }
-  };
-
-  const handleCheckUsername = async () => {
-    setLoading(true); setError('');
-    try {
-      const { data } = await import('../lib/api').then(m => m.authAPI.checkUsername(registerData.username));
-      setUsernameCheck({ checked: true, available: data.available, message: data.available ? '사용 가능한 이름입니다.' : '이미 사용 중입니다.' });
-    } catch (_) {
-      setUsernameCheck({ checked: true, available: null, message: '확인에 실패했습니다.' });
-    } finally { setLoading(false); }
   };
 
   const handleGenerateUsername = async () => {
@@ -107,14 +153,49 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
     finally { setLoading(false); }
   };
 
-  const handleCheckEmail = async () => {
-    setLoading(true); setError('');
+  const handleSendVerificationEmail = async () => {
+    const email = registerData.email?.trim();
+    if (!email) {
+      setVerificationInfo({ type: 'error', message: '이메일을 먼저 입력해주세요.' });
+      return;
+    }
+    setSendingVerification(true);
+    setVerificationInfo({ type: 'info', message: '' });
     try {
-      const { data } = await import('../lib/api').then(m => m.authAPI.checkEmail(registerData.email));
-      setEmailCheck({ checked: true, available: data.available, message: data.available ? '사용 가능한 이메일입니다.' : '이미 등록된 이메일입니다.' });
-    } catch (_) {
-      setEmailCheck({ checked: true, available: null, message: '확인에 실패했습니다.' });
-    } finally { setLoading(false); }
+      const { authAPI } = await import('../lib/api');
+      await authAPI.sendVerificationEmail(email);
+      setVerificationInfo({ type: 'success', message: '인증 메일을 발송했습니다. 메일함을 확인해주세요.' });
+      setResendCooldown(60);
+    } catch (err) {
+      const detail = err?.response?.data?.detail;
+      let message = detail || '인증 메일 발송에 실패했습니다. 잠시 후 다시 시도해주세요.';
+      if (detail && detail.includes('이미 인증된')) {
+        message = '이미 인증이 완료된 계정입니다. 로그인으로 이동하세요.';
+      }
+      setVerificationInfo({ type: 'error', message });
+    } finally {
+      setSendingVerification(false);
+    }
+  };
+
+  const handleForgotSubmit = async (e) => {
+    e.preventDefault();
+    if (!resetEmail?.trim()) {
+      setResetStatus({ type: 'error', message: '이메일을 입력해주세요.' });
+      return;
+    }
+    setResetLoading(true);
+    setResetStatus({ type: 'info', message: '' });
+    try {
+      const { authAPI } = await import('../lib/api');
+      await authAPI.forgotPassword(resetEmail.trim());
+      setResetStatus({ type: 'success', message: '비밀번호 재설정 메일을 발송했습니다. 메일함을 확인해주세요.' });
+    } catch (err) {
+      const detail = err?.response?.data?.detail;
+      setResetStatus({ type: 'error', message: detail || '메일 발송에 실패했습니다. 잠시 후 다시 시도해주세요.' });
+    } finally {
+      setResetLoading(false);
+    }
   };
 
   // 자동 중복확인: 이메일 (디바운스 500ms)
@@ -163,185 +244,308 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
     return () => clearTimeout(t);
   }, [registerData.username]);
 
+  // 로그인하러 가기 핸들러 (success → login)
+  const handleGoToLogin = () => {
+    setView('login');
+    // 회원가입 폼 데이터 초기화
+    setRegisterData({ email: '', username: '', password: '', confirmPassword: '', gender: 'male' });
+    setEmailCheck({ checked: false, available: null, message: '' });
+    setUsernameCheck({ checked: false, available: null, message: '' });
+    setVerificationInfo({ type: 'info', message: '' });
+    setResendCooldown(0);
+  };
+
   return (
     <Dialog open={isOpen} onOpenChange={(v) => { if (!v) onClose?.(); }}>
-      <DialogContent className="sm:max-w-[480px]">
+      <DialogContent className="sm:max-w-[440px]">
         <DialogHeader>
-          <DialogTitle>로그인 / 회원가입</DialogTitle>
+          <DialogTitle className="text-xl font-bold text-center">
+            {view === 'login' && '로그인'}
+            {view === 'register' && '회원가입'}
+            {view === 'success' && '가입 완료'}
+            {view === 'forgot' && '비밀번호 재설정'}
+          </DialogTitle>
         </DialogHeader>
+        
         <div className="mt-2">
-          <Card className="shadow-none border-0">
-            <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-              <CardHeader className="pb-4">
-                <TabsList className="grid w-full grid-cols-2 bg-gray-200 dark:bg-gray-700">
-                  <TabsTrigger 
-                    value="login"
-                    className="text-gray-700 dark:text-gray-300 data-[state=active]:bg-white dark:data-[state=active]:bg-gray-800 data-[state=active]:text-gray-900 dark:data-[state=active]:text-white font-semibold"
-                  >
-                    로그인
-                  </TabsTrigger>
-                  <TabsTrigger 
-                    value="register"
-                    className="text-gray-700 dark:text-gray-300 data-[state=active]:bg-white dark:data-[state=active]:bg-gray-800 data-[state=active]:text-gray-900 dark:data-[state=active]:text-white font-semibold"
-                  >
-                    회원가입
-                  </TabsTrigger>
-                </TabsList>
-              </CardHeader>
-              <CardContent>
-                {error && (
-                  <Alert variant="destructive" className="mb-4">
-                    <AlertDescription>{error}</AlertDescription>
-                  </Alert>
-                )}
+          {error && (
+            <Alert variant="destructive" className="mb-4">
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
+          )}
 
-                <TabsContent value="login" className="space-y-4 mt-0">
-                  <div className="text-center mb-4">
-                    <CardDescription className="text-gray-600 dark:text-gray-300">
-                      계정에 로그인하여 AI 캐릭터들과 대화를 시작하세요
-                    </CardDescription>
+          {/* 로그인 뷰 */}
+          {view === 'login' && (
+            <Card className="shadow-none border-0">
+              <CardContent className="pt-4">
+                <div className="text-center mb-4">
+                  <CardDescription className="text-gray-600 dark:text-gray-300">
+                    계정에 로그인하여 AI 캐릭터들과 대화를 시작하세요
+                  </CardDescription>
+                </div>
+                <form onSubmit={handleLoginSubmit} className="space-y-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="login-email" className={STYLES.label}>이메일</Label>
+                    <div className="relative">
+                      <Mail className={STYLES.inputIcon} />
+                      <Input id="login-email" name="email" type="email" placeholder="이메일을 입력하세요" value={loginData.email} onChange={handleLoginChange} className={STYLES.input} required />
+                    </div>
                   </div>
-                  <form onSubmit={handleLoginSubmit} className="space-y-4">
-                    <div className="space-y-2">
-                      <Label htmlFor="login-email" className="text-gray-900 dark:text-gray-200 font-semibold">이메일</Label>
-                      <div className="relative">
-                        <Mail className="absolute left-3 top-3 h-4 w-4 text-gray-500 dark:text-gray-400" />
-                        <Input id="login-email" name="email" type="email" placeholder="이메일을 입력하세요" value={loginData.email} onChange={handleLoginChange} className="pl-10 text-gray-900 dark:text-gray-100" required />
-                      </div>
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <Label htmlFor="login-password" className={STYLES.label}>비밀번호</Label>
+                      <button
+                        type="button"
+                        className="text-xs text-purple-500 hover:text-purple-400"
+                        onClick={() => {
+                          setView('forgot');
+                          setResetEmail(loginData.email || '');
+                          setResetStatus({ type: 'info', message: '' });
+                        }}
+                      >
+                        비밀번호 재설정
+                      </button>
                     </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="login-password" className="text-gray-900 dark:text-gray-200 font-semibold">비밀번호</Label>
-                      <div className="relative">
-                        <Lock className="absolute left-3 top-3 h-4 w-4 text-gray-500 dark:text-gray-400" />
-                        <Input 
-                          id="login-password" 
-                          name="password" 
-                          type={showLoginPassword ? "text" : "password"} 
-                          placeholder="비밀번호를 입력하세요" 
-                          value={loginData.password} 
-                          onChange={handleLoginChange} 
-                          className="pl-10 pr-10 text-gray-900 dark:text-gray-100" 
-                          required 
-                        />
-                        <button
-                          type="button"
-                          onClick={() => setShowLoginPassword(!showLoginPassword)}
-                          className="absolute right-3 top-3 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
-                        >
-                          {showLoginPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                        </button>
-                      </div>
+                    <div className="relative">
+                      <Lock className={STYLES.inputIcon} />
+                      <Input 
+                        id="login-password" 
+                        name="password" 
+                        type={showLoginPassword ? "text" : "password"} 
+                        placeholder="비밀번호를 입력하세요" 
+                        value={loginData.password} 
+                        onChange={handleLoginChange} 
+                        className={STYLES.inputWithToggle} 
+                        required 
+                      />
+                      <button type="button" onClick={() => setShowLoginPassword(!showLoginPassword)} className={STYLES.toggleBtn}>
+                        {showLoginPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                      </button>
                     </div>
-                    <Button type="submit" className="w-full bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white font-medium" disabled={loading}>
-                      {loading ? (<><Loader2 className="mr-2 h-4 w-4 animate-spin" />로그인 중...</>) : '로그인'}
-                    </Button>
-                  </form>
-                </TabsContent>
-
-                <TabsContent value="register" className="space-y-4 mt-0">
-                  <div className="text-center mb-4">
-                    <CardDescription className="text-gray-600 dark:text-gray-300">
-                      새 계정을 만들어 AI 캐릭터들과 대화를 시작하세요
-                    </CardDescription>
                   </div>
-                  <form onSubmit={handleRegisterSubmit} className="space-y-4">
-                    <div className="space-y-2">
-                      <Label htmlFor="register-email" className="text-gray-900 dark:text-gray-200 font-semibold">이메일</Label>
-                      <div className="relative">
-                        <Mail className="absolute left-3 top-3 h-4 w-4 text-gray-500 dark:text-gray-400" />
-                        <Input id="register-email" name="email" type="email" placeholder="이메일을 입력하세요" value={registerData.email} onChange={handleRegisterChange} className="pl-10 text-gray-900 dark:text-gray-100" required />
-                      </div>
-                      {emailCheck.checked && emailCheck.message && (
-                        <div className={`text-sm font-semibold mt-1 ${emailCheck.available ? 'text-green-500' : 'text-red-500'}`}>
-                          {emailCheck.message}
-                        </div>
-                      )}
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="register-username" className="text-gray-900 dark:text-gray-200 font-semibold">사용자명</Label>
-                      <div className="relative">
-                        <User className="absolute left-3 top-3 h-4 w-4 text-gray-500 dark:text-gray-400" />
-                        <Input id="register-username" name="username" type="text" placeholder="사용자명을 입력하세요" value={registerData.username} onChange={handleRegisterChange} className="pl-10 text-gray-900 dark:text-gray-100" required minLength={2} maxLength={100} />
-                      </div>
-                      <div className="flex items-center gap-2 mt-2">
-                        <Button type="button" variant="secondary" className="h-9 bg-blue-600 hover:bg-blue-700 text-white font-medium" onClick={handleGenerateUsername} disabled={loading}>
-                          <Wand2 className="h-4 w-4 mr-1" /> 자동생성
-                        </Button>
-                        {usernameCheck.checked && usernameCheck.message && (
-                          <span className={`text-sm font-semibold ${usernameCheck.available ? 'text-green-500' : 'text-red-500'}`}>{usernameCheck.message}</span>
-                        )}
-                      </div>
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="register-password" className="text-gray-900 dark:text-gray-200 font-semibold">비밀번호</Label>
-                      <div className="relative">
-                        <Lock className="absolute left-3 top-3 h-4 w-4 text-gray-500 dark:text-gray-400" />
-                        <Input 
-                          id="register-password" 
-                          name="password" 
-                          type={showRegisterPassword ? "text" : "password"} 
-                          placeholder="영문/숫자 조합 8자 이상" 
-                          value={registerData.password} 
-                          onChange={handleRegisterChange} 
-                          className="pl-10 pr-10 text-gray-900 dark:text-gray-100" 
-                          required 
-                          minLength={8} 
-                          pattern="(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d]{8,}" 
-                        />
-                        <button
-                          type="button"
-                          onClick={() => setShowRegisterPassword(!showRegisterPassword)}
-                          className="absolute right-3 top-3 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
-                        >
-                          {showRegisterPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                        </button>
-                      </div>
-                      <p className="text-xs text-gray-600 dark:text-gray-400 font-medium">영문과 숫자를 포함해 8자 이상 입력하세요.</p>
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="register-confirmPassword" className="text-gray-900 dark:text-gray-200 font-semibold">비밀번호 확인</Label>
-                      <div className="relative">
-                        <Lock className="absolute left-3 top-3 h-4 w-4 text-gray-500 dark:text-gray-400" />
-                        <Input 
-                          id="register-confirmPassword" 
-                          name="confirmPassword" 
-                          type={showConfirmPassword ? "text" : "password"} 
-                          placeholder="비밀번호를 다시 입력하세요" 
-                          value={registerData.confirmPassword} 
-                          onChange={handleRegisterChange} 
-                          className="pl-10 pr-10 text-gray-900 dark:text-gray-100" 
-                          required 
-                        />
-                        <button
-                          type="button"
-                          onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-                          className="absolute right-3 top-3 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
-                        >
-                          {showConfirmPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                        </button>
-                      </div>
-                    </div>
-                    <div className="space-y-2">
-                      <Label className="text-gray-900 dark:text-gray-200 font-semibold">성별</Label>
-                      <div className="flex items-center gap-4">
-                        <label className="flex items-center gap-2 cursor-pointer">
-                          <input type="radio" name="gender" value="male" checked={registerData.gender === 'male'} onChange={handleRegisterChange} required />
-                          <span className="text-gray-900 dark:text-gray-100">남성</span>
-                        </label>
-                        <label className="flex items-center gap-2 cursor-pointer">
-                          <input type="radio" name="gender" value="female" checked={registerData.gender === 'female'} onChange={handleRegisterChange} required />
-                          <span className="text-gray-900 dark:text-gray-100">여성</span>
-                        </label>
-                      </div>
-                    </div>
-                    <Button type="submit" className="w-full bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white font-medium" disabled={loading}>
-                      {loading ? (<><Loader2 className="mr-2 h-4 w-4 animate-spin" />가입 중...</>) : '회원가입'}
-                    </Button>
-                  </form>
-                </TabsContent>
+                  <Button type="submit" className={STYLES.primaryBtn} disabled={loading}>
+                    {loading ? (<><Loader2 className="mr-2 h-4 w-4 animate-spin" />로그인 중...</>) : '로그인'}
+                  </Button>
+                </form>
+                
+                {/* 회원가입 링크 */}
+                <div className="mt-6 text-center border-t border-gray-200 dark:border-gray-700 pt-4">
+                  <p className="text-sm text-gray-600 dark:text-gray-400">
+                    계정이 없으신가요?{' '}
+                    <button 
+                      type="button" 
+                      onClick={() => setView('register')} 
+                      className="text-purple-600 hover:text-purple-700 font-semibold hover:underline"
+                    >
+                      회원가입
+                    </button>
+                  </p>
+                </div>
               </CardContent>
-            </Tabs>
-          </Card>
+            </Card>
+          )}
+
+          {/* 회원가입 뷰 */}
+          {view === 'register' && (
+            <Card className="shadow-none border-0">
+              <CardContent className="pt-4">
+                <div className="text-center mb-4">
+                  <CardDescription className="text-gray-600 dark:text-gray-300">
+                    새 계정을 만들어 AI 캐릭터들과 대화를 시작하세요
+                  </CardDescription>
+                </div>
+                <form onSubmit={handleRegisterSubmit} className="space-y-4">
+                  {/* 이메일 + 인증 버튼 (같은 줄) */}
+                  <div className="space-y-2">
+                    <Label htmlFor="register-email" className={STYLES.label}>이메일</Label>
+                    <div className="flex items-center gap-2">
+                      <div className="relative flex-1">
+                        <Mail className={STYLES.inputIcon} />
+                        <Input id="register-email" name="email" type="email" placeholder="이메일을 입력하세요" value={registerData.email} onChange={handleRegisterChange} className={STYLES.input} required />
+                      </div>
+                      <Button
+                        type="button"
+                        onClick={handleSendVerificationEmail}
+                        disabled={sendingVerification || resendCooldown > 0 || !emailCheck.available || !registerData.email}
+                        className={STYLES.inlineBtn}
+                      >
+                        {sendingVerification ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : resendCooldown > 0 ? (
+                          `${resendCooldown}s`
+                        ) : (
+                          '인증발송'
+                        )}
+                      </Button>
+                    </div>
+                    {/* 상태 메시지: 이메일 중복 확인 + 인증 메일 발송 결과 */}
+                    <StatusMessage type={emailCheck.available ? 'success' : 'error'} message={emailCheck.checked ? emailCheck.message : ''} />
+                    <StatusMessage type={verificationInfo.type} message={verificationInfo.message} />
+                  </div>
+
+                  {/* 사용자명 + 자동생성 (같은 줄) */}
+                  <div className="space-y-2">
+                    <Label htmlFor="register-username" className={STYLES.label}>사용자명</Label>
+                    <div className="flex items-center gap-2">
+                      <div className="relative flex-1">
+                        <User className={STYLES.inputIcon} />
+                        <Input id="register-username" name="username" type="text" placeholder="사용자명을 입력하세요" value={registerData.username} onChange={handleRegisterChange} className={STYLES.input} required minLength={2} maxLength={100} />
+                      </div>
+                      <Button type="button" onClick={handleGenerateUsername} disabled={loading} className={STYLES.inlineBtn}>
+                        <Wand2 className="h-4 w-4 mr-1" /> 자동
+                      </Button>
+                    </div>
+                    <StatusMessage type={usernameCheck.available ? 'success' : 'error'} message={usernameCheck.checked ? usernameCheck.message : ''} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="register-password" className={STYLES.label}>비밀번호</Label>
+                    <div className="relative">
+                      <Lock className={STYLES.inputIcon} />
+                      <Input 
+                        id="register-password" 
+                        name="password" 
+                        type={showRegisterPassword ? "text" : "password"} 
+                        placeholder="영문/숫자 조합 8자 이상" 
+                        value={registerData.password} 
+                        onChange={handleRegisterChange} 
+                        className={STYLES.inputWithToggle} 
+                        required 
+                        minLength={8} 
+                      />
+                      <button type="button" onClick={() => setShowRegisterPassword(!showRegisterPassword)} className={STYLES.toggleBtn}>
+                        {showRegisterPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                      </button>
+                    </div>
+                    <p className="text-xs text-gray-600 dark:text-gray-400 font-medium">영문과 숫자를 포함해 8자 이상 입력하세요.</p>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="register-confirmPassword" className={STYLES.label}>비밀번호 확인</Label>
+                    <div className="relative">
+                      <Lock className={STYLES.inputIcon} />
+                      <Input 
+                        id="register-confirmPassword" 
+                        name="confirmPassword" 
+                        type={showConfirmPassword ? "text" : "password"} 
+                        placeholder="비밀번호를 다시 입력하세요" 
+                        value={registerData.confirmPassword} 
+                        onChange={handleRegisterChange} 
+                        className={STYLES.inputWithToggle} 
+                        required 
+                      />
+                      <button type="button" onClick={() => setShowConfirmPassword(!showConfirmPassword)} className={STYLES.toggleBtn}>
+                        {showConfirmPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                      </button>
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <Label className={STYLES.label}>성별</Label>
+                    <div className="flex items-center gap-4">
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input type="radio" name="gender" value="male" checked={registerData.gender === 'male'} onChange={handleRegisterChange} required />
+                        <span className="text-gray-900 dark:text-gray-100">남성</span>
+                      </label>
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input type="radio" name="gender" value="female" checked={registerData.gender === 'female'} onChange={handleRegisterChange} required />
+                        <span className="text-gray-900 dark:text-gray-100">여성</span>
+                      </label>
+                    </div>
+                  </div>
+                  <Button type="submit" className={STYLES.primaryBtn} disabled={loading}>
+                    {loading ? (<><Loader2 className="mr-2 h-4 w-4 animate-spin" />가입 중...</>) : '회원가입'}
+                  </Button>
+                </form>
+
+                {/* 로그인으로 돌아가기 */}
+                <div className="mt-4 text-center">
+                  <button type="button" onClick={() => setView('login')} className={STYLES.backLink}>
+                    <ArrowLeft className="h-3 w-3" /> 로그인으로 돌아가기
+                  </button>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* 비밀번호 재설정 뷰 */}
+          {view === 'forgot' && (
+            <Card className="shadow-none border-0">
+              <CardContent className="pt-4 space-y-4">
+                <div className="text-center mb-2">
+                  <CardDescription className="text-gray-600 dark:text-gray-300">
+                    가입하신 이메일 주소로 비밀번호 재설정 링크를 보내드립니다.
+                  </CardDescription>
+                </div>
+                <form onSubmit={handleForgotSubmit} className="space-y-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="forgot-email" className={STYLES.label}>이메일</Label>
+                    <div className="relative">
+                      <Mail className={STYLES.inputIcon} />
+                      <Input
+                        id="forgot-email"
+                        name="forgot-email"
+                        type="email"
+                        placeholder="가입한 이메일을 입력하세요"
+                        value={resetEmail}
+                        onChange={(e) => setResetEmail(e.target.value)}
+                        className={STYLES.input}
+                        required
+                      />
+                    </div>
+                  </div>
+                  <StatusMessage type={resetStatus.type} message={resetStatus.message} />
+                  <Button type="submit" className={STYLES.primaryBtn} disabled={resetLoading}>
+                    {resetLoading ? (<><Loader2 className="mr-2 h-4 w-4 animate-spin" />메일 발송 중...</>) : '재설정 링크 보내기'}
+                  </Button>
+                </form>
+                <div className="text-center">
+                  <button type="button" onClick={() => setView('login')} className={STYLES.backLink}>
+                    <ArrowLeft className="h-3 w-3" /> 로그인으로 돌아가기
+                  </button>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* 가입 완료 뷰 */}
+          {view === 'success' && (
+            <div className="text-center py-6 space-y-6">
+              <div className="flex justify-center">
+                <div className="w-16 h-16 bg-green-100 dark:bg-green-900/30 rounded-full flex items-center justify-center">
+                  <CheckCircle2 className="w-10 h-10 text-green-600 dark:text-green-400" />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <h3 className="text-lg font-bold text-gray-900 dark:text-white">회원가입이 완료되었습니다!</h3>
+                <p className="text-sm text-gray-600 dark:text-gray-300">
+                  입력하신 이메일로 인증 메일을 발송했습니다.<br />
+                  메일함에서 인증 버튼을 클릭한 후 로그인해주세요.
+                </p>
+              </div>
+              {registerData.email && (
+                <div className="space-y-3">
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    현재 이메일: <span className="font-semibold text-gray-800 dark:text-gray-200">{registerData.email}</span>
+                  </p>
+                  <StatusMessage type={verificationInfo.type} message={verificationInfo.message} />
+                  {resendCooldown > 0 && (
+                    <p className="text-xs text-gray-500">재발송은 {resendCooldown}초 후에 다시 시도할 수 있습니다.</p>
+                  )}
+                  <Button
+                    type="button"
+                    onClick={handleSendVerificationEmail}
+                    disabled={sendingVerification || resendCooldown > 0 || !registerData.email}
+                    className={STYLES.secondaryBtn}
+                  >
+                    {sendingVerification ? (
+                      <><Loader2 className="mr-2 h-4 w-4 animate-spin" />발송 중...</>
+                    ) : resendCooldown > 0 ? `재발송 (${resendCooldown}s)` : '인증 메일 다시 보내기'}
+                  </Button>
+                </div>
+              )}
+              <Button onClick={handleGoToLogin} className={STYLES.primaryBtn}>
+                로그인하러 가기
+              </Button>
+            </div>
+          )}
         </div>
       </DialogContent>
     </Dialog>
@@ -349,5 +553,3 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
 };
 
 export default LoginModal;
-
-

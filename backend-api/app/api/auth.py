@@ -369,4 +369,3 @@ async def logout(
     """로그아웃"""
     # TODO: 토큰 블랙리스트 구현 (Redis 사용)
     return {"message": "로그아웃되었습니다."}
-

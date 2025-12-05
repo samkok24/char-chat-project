@@ -128,5 +128,3 @@ def delete_from_daily_rankings_sql(date_str: str):
         Column("metric", Integer),
     )
     return t.delete().where(t.c.date == date_str)
-
-

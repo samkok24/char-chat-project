@@ -97,14 +97,33 @@ class CharacterBasicInfo(BaseModel):
 # 🎨 2단계: 미디어 설정 스키마
 
 class ImageDescription(BaseModel):
-    """이미지 설명"""
-    description: str = Field(..., max_length=500)
+    """이미지 설명 및 키워드 트리거"""
+    description: str = Field(default='', max_length=500)
     url: Optional[str] = Field(None, max_length=500)
+    keywords: List[str] = Field(default_factory=list, max_length=20)  # 키워드 트리거 (최대 20개)
 
     @field_validator('description', mode='before')
     @classmethod
     def sanitize_desc(cls, v):
         return _sanitize_text(v, 500)
+    
+    @field_validator('keywords', mode='before')
+    @classmethod
+    def sanitize_keywords(cls, v):
+        if not v:
+            return []
+        if isinstance(v, str):
+            # 쉼표로 구분된 문자열 처리
+            v = [k.strip() for k in v.split(',') if k.strip()]
+        # 각 키워드 정리 및 중복 제거
+        cleaned = []
+        seen = set()
+        for kw in v[:20]:  # 최대 20개
+            kw_clean = str(kw).strip()[:50]  # 각 키워드 최대 50자
+            if kw_clean and kw_clean.lower() not in seen:
+                cleaned.append(kw_clean)
+                seen.add(kw_clean.lower())
+        return cleaned
 
 
 class VoiceSettings(BaseModel):
@@ -308,6 +327,7 @@ class CharacterListResponse(BaseModel):
     description: Optional[str]
     greeting: Optional[str]
     avatar_url: Optional[str]
+    source_type: Optional[str] = "ORIGINAL"
     # 썸네일(목록/카드용): avatar가 없으면 첫 갤러리 이미지를 사용
     thumbnail_url: Optional[str] = None
     # 계산을 위해 목록 응답에도 이미지 설명 배열을 전달(옵션)
@@ -315,6 +335,7 @@ class CharacterListResponse(BaseModel):
     chat_count: int
     like_count: int
     origin_story_id: Optional[uuid.UUID] = None
+    is_origchat: bool = False
     is_public: bool
     created_at: datetime
     creator_username: Optional[str] = None

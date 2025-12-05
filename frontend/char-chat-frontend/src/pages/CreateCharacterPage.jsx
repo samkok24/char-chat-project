@@ -8,6 +8,7 @@ import { useNavigate, Link, useParams, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useQueryClient } from '@tanstack/react-query';
 import { charactersAPI, filesAPI, API_BASE_URL, tagsAPI, api, mediaAPI } from '../lib/api';
+import { resolveImageUrl } from '../lib/images';
 import { replacePromptTokens } from '../lib/prompt';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -130,6 +131,29 @@ const CreateCharacterPage = () => {
   const [fieldErrors, setFieldErrors] = useState({}); // zod 인라인 오류 맵
   const [draftRestored, setDraftRestored] = useState(false);
   const [imgModalOpen, setImgModalOpen] = useState(false);
+  
+  // 이미지 확대 모달 상태
+  const [imageViewerOpen, setImageViewerOpen] = useState(false);
+  const [imageViewerSrc, setImageViewerSrc] = useState('');
+  const insertKeywordToken = useCallback((index, token) => {
+    if (!token) return;
+    setFormData((prev) => {
+      const updated = [...prev.media_settings.image_descriptions];
+      const currentKeywords = updated[index]?.keywords || [];
+      if (currentKeywords.includes(token)) return prev;
+      updated[index] = {
+        ...updated[index],
+        keywords: [...currentKeywords, token],
+      };
+      return {
+        ...prev,
+        media_settings: {
+          ...prev.media_settings,
+          image_descriptions: updated,
+        },
+      };
+    });
+  }, [setFormData]);
 
   // 토큰 정의
   const TOKEN_ASSISTANT = '{{assistant}}';
@@ -227,7 +251,11 @@ const CreateCharacterPage = () => {
       }),
       media_settings: z.object({
         avatar_url: z.string().optional(),
-        image_descriptions: z.array(z.object({ url: z.string(), description: z.string().optional() })).optional(),
+        image_descriptions: z.array(z.object({ 
+          url: z.string(), 
+          description: z.string().optional(),
+          keywords: z.array(z.string()).optional()  // 키워드 트리거
+        })).optional(),
         newly_added_files: z.array(z.any()).optional(),
         voice_settings: z.object({
           voice_id: z.any().nullable().optional(),
@@ -742,7 +770,21 @@ const CreateCharacterPage = () => {
         },
         media_settings: {
           ...formData.media_settings,
-          image_descriptions: finalImageUrls.map(url => ({ description: '', url }))
+          // 기존 이미지의 description/keywords 유지
+          image_descriptions: (() => {
+            const existingMap = {};
+            (formData.media_settings.image_descriptions || []).forEach(img => {
+              if (img.url) existingMap[img.url] = img;
+            });
+            return finalImageUrls.map(url => {
+              const existing = existingMap[url];
+              return {
+                url,
+                description: existing?.description || '',
+                keywords: existing?.keywords || []
+              };
+            });
+          })()
         }
       };
 
@@ -912,9 +954,113 @@ const CreateCharacterPage = () => {
               }));
               return urls;
             }}
+            onImageClick={(url) => {
+              setImageViewerSrc(url);
+              setImageViewerOpen(true);
+            }}
           />
           </ErrorBoundary>
         </Card>
+
+        {/* 🎯 이미지 키워드 트리거 설정 */}
+        {formData.media_settings.image_descriptions.length > 0 && (
+          <Card className="mt-6 border border-gray-200/70 dark:border-gray-700/80 bg-white dark:bg-gray-900/60 shadow-sm text-gray-900 dark:text-gray-100">
+            <CardHeader className="pb-2 space-y-2">
+              <div className="flex items-center gap-2">
+                <div className="inline-flex items-center justify-center rounded-full bg-purple-600/15 text-purple-700 dark:text-purple-200 p-2">
+                  <Sparkles className="w-4 h-4" />
+                </div>
+                <CardTitle className="text-base font-semibold text-gray-900 dark:text-gray-100">이미지 키워드 트리거</CardTitle>
+              </div>
+              <CardDescription className="text-sm text-gray-600 dark:text-gray-400">
+                이미지마다 감정/상황 키워드를 지정하면, 대화 중 해당 단어가 나오면 자동으로 이미지가 전환됩니다.
+              </CardDescription>
+              <p className="text-xs text-gray-500 dark:text-gray-500">
+                쉼표로 구분해 간결하게 작성하세요. 예: 웃음, 기쁨, 행복
+              </p>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {formData.media_settings.image_descriptions.map((img, index) => {
+                // URL 처리 로직 강화 (DropzoneGallery와 동일한 방식 적용)
+                let displayUrl = img.url;
+                if (img.url && !img.url.startsWith('http') && !img.url.startsWith('blob:')) {
+                    // 상대 경로인 경우 API_BASE_URL 결합
+                    displayUrl = `${API_BASE_URL}${img.url.startsWith('/') ? '' : '/'}${img.url}`;
+                }
+                
+                return (
+                <div
+                  key={`keyword-${img.url}-${index}`}
+                  className="flex gap-4 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/80 dark:bg-gray-800/60 p-3"
+                >
+                  <div className="relative w-24 h-24 flex-shrink-0">
+                    {displayUrl ? (
+                      <img
+                        src={displayUrl}
+                        alt={`이미지 ${index + 1}`}
+                        className="w-full h-full object-cover rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-100 dark:bg-gray-800"
+                        onError={(e) => {
+                          e.target.style.display = 'none';
+                          e.target.parentElement.classList.add('bg-gray-100', 'flex', 'items-center', 'justify-center');
+                          e.target.parentElement.innerHTML = '<span class="text-xs text-gray-400">이미지 로드 실패</span>';
+                        }}
+                      />
+                    ) : (
+                      <div className="w-full h-full rounded-lg border border-dashed border-gray-300 dark:border-gray-700 flex items-center justify-center text-xs text-gray-400">
+                        이미지 없음
+                      </div>
+                    )}
+                    <span className="absolute -top-2 -left-2 px-2 py-0.5 rounded-full text-[11px] font-medium bg-white shadow border border-gray-200 dark:bg-gray-900 dark:border-gray-700 text-gray-700 dark:text-gray-200">
+                      #{index + 1}
+                    </span>
+                  </div>
+                  <div className="flex-1">
+                    <Label className="text-xs text-gray-500 dark:text-gray-400">키워드 (쉼표로 구분)</Label>
+                    <Input
+                      value={(img.keywords || []).join(', ')}
+                      onChange={(e) => {
+                        const keywords = e.target.value
+                          .split(',')
+                          .map((k) => k.trim())
+                          .filter(Boolean)
+                          .slice(0, 20);
+                        setFormData((prev) => {
+                          const updated = [...prev.media_settings.image_descriptions];
+                          updated[index] = { ...updated[index], keywords };
+                          return { ...prev, media_settings: { ...prev.media_settings, image_descriptions: updated } };
+                        });
+                      }}
+                      placeholder="예: 웃음, 기쁨, 행복"
+                      className="mt-1 text-sm bg-white dark:bg-gray-900 border-gray-300 dark:border-gray-700 text-gray-900 dark:text-gray-100 placeholder:text-gray-400"
+                    />
+                    <p className="mt-1 text-[11px] text-gray-400">캐릭터 응답에 키워드가 포함되면 자동으로 캐릭터가 이 이미지를 노출합니다.</p>
+                    <div className="mt-2 flex items-center justify-end gap-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-7 px-2 text-xs border-gray-300 dark:border-gray-600"
+                        onClick={() => insertKeywordToken(index, '{{character}}')}
+                      >
+                        캐릭터+
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-7 px-2 text-xs border-gray-300 dark:border-gray-600"
+                        onClick={() => insertKeywordToken(index, '{{user}}')}
+                      >
+                        사용자+
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              );
+              })}
+            </CardContent>
+          </Card>
+        )}
 
         <div>
           <Label htmlFor="name">캐릭터 이름 *</Label>
@@ -1826,6 +1972,26 @@ const CreateCharacterPage = () => {
         selectedSlugs={selectedTagSlugs}
         onSave={(slugs) => setSelectedTagSlugs(slugs)}
       />
+
+      {/* 이미지 확대 모달 */}
+      <Dialog open={imageViewerOpen} onOpenChange={setImageViewerOpen}>
+        <DialogContent className="max-w-4xl p-0 bg-transparent border-none shadow-none">
+          <div className="relative w-full h-full flex items-center justify-center" onClick={() => setImageViewerOpen(false)}>
+            <img 
+              src={imageViewerSrc} 
+              alt="확대 이미지" 
+              className="max-w-full max-h-[90vh] object-contain mx-auto rounded-lg" 
+              onClick={(e) => e.stopPropagation()} 
+            />
+            <button
+              onClick={() => setImageViewerOpen(false)}
+              className="absolute top-2 right-2 p-2 bg-black/60 text-white rounded-full hover:bg-black/80 transition-colors"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

@@ -2,6 +2,7 @@ import React from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
 import { Button } from './ui/button';
 import { mediaAPI, charactersAPI, storiesAPI } from '../lib/api';
+import { resolveImageUrl } from '../lib/images';
 import { Loader2, Trash2, X } from 'lucide-react';
 
 const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initialGallery }) => {
@@ -629,7 +630,7 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
                 {idx===0 && (
                   <div className="absolute top-1 left-1 z-10 bg-blue-600 text-white text-[10px] px-1.5 py-0.5 rounded">대표</div>
                 )}
-                <img src={g.url} alt={`갤러리 이미지 ${idx+1}`} className="w-full h-28 object-cover" draggable={false} />
+                <img src={resolveImageUrl(g.url)} alt={`갤러리 이미지 ${idx+1}`} className="w-full h-28 object-cover" draggable={false} />
                 <button
                   type="button"
                   onMouseDown={(e)=> { e.stopPropagation(); e.preventDefault(); }}

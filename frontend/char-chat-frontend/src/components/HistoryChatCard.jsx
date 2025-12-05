@@ -35,7 +35,7 @@ export const HistoryChatCard = ({ character, onClick, onPin, onDelete, displayTi
 
   const formatChatCount = (count) => formatCount(count);
   const isWebNovel = character?.source_type === 'IMPORTED';
-  const isOrigChat = !!(character?.origin_story_id || character?.is_origchat);
+  const isOrigChat = !!(character?.origin_story_id || character?.is_origchat || character?.source === 'origchat');
 
   return (
     <div className="relative">

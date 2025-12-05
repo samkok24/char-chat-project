@@ -477,10 +477,7 @@ async def get_characters(
         )
     else:
         # 공개 캐릭터 조회
-        # 탐색에서는 기본적으로 원작챗 캐릭터 제외 (only 파라미터가 없을 때)
-        exclude_origchat = only is None
-        if exclude_origchat:
-            only = "regular"  # 원작챗 제외
+        # only 파라미터가 없으면 전체(원작챗 포함) 조회
         characters = await get_public_characters(
             db=db,
             skip=skip,
@@ -514,8 +511,10 @@ async def get_characters(
                     description=getattr(char, 'description', None),
                     greeting=getattr(char, 'greeting', None),
                     avatar_url=getattr(char, 'avatar_url', None),
+                    source_type=getattr(char, 'source_type', 'ORIGINAL'),
                     image_descriptions=imgs if isinstance(imgs, list) else None,
                     origin_story_id=getattr(char, 'origin_story_id', None),
+                    is_origchat=bool(getattr(char, 'origin_story_id', None)),
                     chat_count=int(getattr(char, 'chat_count', 0) or 0),
                     like_count=int(getattr(char, 'like_count', 0) or 0),
                     is_public=bool(getattr(char, 'is_public', True)),
@@ -540,11 +539,13 @@ async def get_characters(
                 description=char.description,
                 greeting=char.greeting,
                 avatar_url=char.avatar_url,
+                source_type=getattr(char, 'source_type', 'ORIGINAL'),
                 image_descriptions=[
                     img for img in (getattr(char, 'image_descriptions', []) or [])
                     if not (isinstance(img, dict) and str(img.get('url','')).startswith('cover:'))
                 ],
                 origin_story_id=getattr(char, 'origin_story_id', None),
+                is_origchat=bool(getattr(char, 'origin_story_id', None)),
                 chat_count=char.chat_count,
                 like_count=char.like_count,
                 is_public=char.is_public,
@@ -583,8 +584,10 @@ async def get_my_characters(
             description=char.description,
             greeting=char.greeting,
             avatar_url=char.avatar_url,
+            source_type=getattr(char, 'source_type', 'ORIGINAL'),
             image_descriptions=getattr(char, 'image_descriptions', []),
             origin_story_id=getattr(char, 'origin_story_id', None),
+            is_origchat=bool(getattr(char, 'origin_story_id', None)),
             chat_count=char.chat_count,
             like_count=char.like_count,
             is_public=char.is_public,

@@ -6,7 +6,7 @@ import { Avatar, AvatarFallback, AvatarImage } from '../ui/avatar';
 import { resolveImageUrl, getCharacterPrimaryImage } from '../../lib/images';
 import { getReadingProgress, getReadingProgressAt } from '../../lib/reading';
 import { Button } from '../ui/button';
-import { MessageSquare, Plus, Home, Star, User, History, UserCog, LogOut, Settings, Gem, BookOpen, LogIn, UserPlus, HelpCircle } from 'lucide-react';
+import { MessageSquare, Plus, Home, Star, User, History, UserCog, LogOut, Settings, Gem, BookOpen, LogIn, HelpCircle } from 'lucide-react';
 import { Skeleton } from '../ui/skeleton';
 import { Badge } from '../ui/badge';
 import {
@@ -313,107 +313,113 @@ const Sidebar = () => {
       </div>
 
       {/* 메인 네비게이션 */}
-      <nav className="flex-1 space-y-1">
-        <NavItem to="/dashboard" icon={Home}>탐색</NavItem>
-        <NavItem to="/my-characters" icon={Star} requireAuth authReason="내 캐릭터">내 캐릭터</NavItem>
-        <button
-          onClick={() => {
-            if (!requireAuth('유저 페르소나')) { return; }
-            setShowPersonaModal(true);
-          }}
-          className="flex items-center w-full px-4 py-2 text-sm font-medium rounded-lg transition-colors text-gray-300 hover:bg-gray-700 hover:text-white"
-        >
-          <UserCog className="w-5 h-5 mr-3" />
-          <span>유저 페르소나</span>
-        </button>
-        <NavItem to="/history" icon={History} requireAuth authReason="대화내역">대화내역</NavItem>
+      <nav className="flex-1 space-y-1 overflow-y-auto">
+        <NavItem to="/dashboard" icon={Home}>홈</NavItem>
         
-        <div className="px-3 pt-4">
-          <p className="px-1 text-xs text-gray-500 mb-2">A While Ago</p>
-          <div className="space-y-1">
-            {loading ? (
-              Array.from({ length: 3 }).map((_, i) => (
-                <div key={i} className="flex items-center space-x-3 px-4 py-2">
-                  <Skeleton className="h-8 w-8 rounded-md" />
-                  <Skeleton className="h-4 w-32" />
-                </div>
-              ))
-            ) : (
-              (() => {
-                // 캐릭터별로 가장 최근 채팅방만 선택
-                const roomsByCharacter = new Map();
-                (chatRooms || []).forEach((room) => {
-                  const charId = room?.character?.id;
-                  if (!charId) return;
-                  
-                  const existing = roomsByCharacter.get(charId);
-                  const roomTime = new Date(room.last_message_time || room.updated_at || room.created_at || 0).getTime();
-                  const existingTime = existing ? new Date(existing.last_message_time || existing.updated_at || existing.created_at || 0).getTime() : 0;
-                  
-                  if (!existing || roomTime > existingTime) {
-                    roomsByCharacter.set(charId, room);
-                  }
-                });
-
-                const chatItems = Array.from(roomsByCharacter.values()).map((room) => {
-                  const meta = roomMetaById[String(room.id)] || {};
-                  const isOrig = !!(room?.character?.origin_story_id);
-                  const rawMode = String(meta.mode || '').toLowerCase();
-                  const mode = rawMode || (isOrig ? 'plain' : '');
-                  const suffix = mode === 'parallel' ? ' (평행세계)'
-                    : mode === 'canon' ? ' (원작대로)'
-                    : mode === 'plain' ? ' (일대일)'
-                    : '';
-                  return ({
-                    kind: 'chat',
-                    id: room.id,
-                    title: `${room.character?.name || '캐릭터'}${suffix}`,
-                    thumb: characterImageById[room.character?.id] || getCharacterPrimaryImage(room.character || {}),
-                    at: new Date(room.last_message_time || room.updated_at || room.created_at || 0).getTime() || 0,
-                    href: `/ws/chat/${room.character?.id}?room=${room.id}`,
-                    is_origchat: isOrig,
-                  });
-                });
-                const storyItems = (recentStories || []).map((s) => ({
-                  kind: 'story',
-                  id: s.id,
-                  title: s.title,
-                  thumb: resolveImageUrl(s.cover_url),
-                  at: s.at || 0,
-                  href: `/stories/${s.id}/chapters/${Math.max(1, Number(s.last_no) || 1)}`,
-                  badge: `${Math.max(1, Number(s.last_no) || 1)}화`,
-                }));
-                const mixed = [...chatItems, ...storyItems].sort((a,b) => (b.at||0) - (a.at||0));
-                if (mixed.length === 0) {
-                  return <p className="px-4 text-sm text-gray-500">최근 항목이 없습니다</p>;
-                }
-                // 최대 5개만 노출하여 사이드바 오버플로우로 인한 레이아웃 깨짐 방지
-                return mixed.slice(0, 5).map((item) => (
-                  <NavLink
-                    key={`${item.kind}-${item.id}`}
-                    to={item.href}
-                    className={({ isActive }) =>
-                      `flex items-center px-4 py-2 text-sm transition-colors rounded-lg ${
-                        isActive ? 'bg-purple-600 text-white' : 'text-gray-300 hover:bg-gray-700 hover:text-white'
-                      }`
+        {/* 로그인 시에만 표시되는 메뉴들 */}
+        {isAuthenticated && (
+          <>
+            <NavItem to="/my-characters" icon={Star}>내 캐릭터</NavItem>
+            <button
+              onClick={() => setShowPersonaModal(true)}
+              className="flex items-center w-full px-4 py-2 text-sm font-medium rounded-lg transition-colors text-gray-300 hover:bg-gray-700 hover:text-white"
+            >
+              <UserCog className="w-5 h-5 mr-3" />
+              <span>유저 페르소나</span>
+            </button>
+            <NavItem to="/history" icon={History}>대화내역</NavItem>
+          </>
+        )}
+        
+        {/* A While Ago - 로그인 시에만 표시 */}
+        {isAuthenticated && (
+          <div className="px-3 pt-4">
+            <p className="px-1 text-xs text-gray-500 mb-2">A While Ago</p>
+            <div className="space-y-1">
+              {loading ? (
+                Array.from({ length: 3 }).map((_, i) => (
+                  <div key={i} className="flex items-center space-x-3 px-4 py-2">
+                    <Skeleton className="h-8 w-8 rounded-md" />
+                    <Skeleton className="h-4 w-32" />
+                  </div>
+                ))
+              ) : (
+                (() => {
+                  // 캐릭터별로 가장 최근 채팅방만 선택
+                  const roomsByCharacter = new Map();
+                  (chatRooms || []).forEach((room) => {
+                    const charId = room?.character?.id;
+                    if (!charId) return;
+                    
+                    const existing = roomsByCharacter.get(charId);
+                    const roomTime = new Date(room.last_message_time || room.updated_at || room.created_at || 0).getTime();
+                    const existingTime = existing ? new Date(existing.last_message_time || existing.updated_at || existing.created_at || 0).getTime() : 0;
+                    
+                    if (!existing || roomTime > existingTime) {
+                      roomsByCharacter.set(charId, room);
                     }
-                  >
-                    <Avatar className="w-8 h-8 mr-3 rounded-md">
-                      <AvatarImage className="object-cover object-top" src={item.thumb} />
-                      <AvatarFallback className={`${item.kind==='story' ? 'bg-blue-600' : (item.is_origchat ? 'bg-orange-500' : 'bg-purple-600')} text-white text-xs rounded-md`}>
-                        {item.kind==='story' ? '웹' : (item.is_origchat ? '원' : (item.title?.charAt(0) || 'C'))}
-                      </AvatarFallback>
-                    </Avatar>
-                    <div className="flex-1 min-w-0 flex items-center justify-between gap-2">
-                      <span className="truncate">{item.title}</span>
-                      <span className="text-xs text-gray-400 flex-shrink-0">{item.kind==='story' ? item.badge : formatRelativeTime(item.at)}</span>
-                    </div>
-                  </NavLink>
-                ));
-              })()
-            )}
+                  });
+
+                  const chatItems = Array.from(roomsByCharacter.values()).map((room) => {
+                    const meta = roomMetaById[String(room.id)] || {};
+                    const isOrig = !!(room?.character?.origin_story_id);
+                    const rawMode = String(meta.mode || '').toLowerCase();
+                    const mode = rawMode || (isOrig ? 'plain' : '');
+                    const suffix = mode === 'parallel' ? ' (평행세계)'
+                      : mode === 'canon' ? ' (원작대로)'
+                      : mode === 'plain' ? ' (일대일)'
+                      : '';
+                    return ({
+                      kind: 'chat',
+                      id: room.id,
+                      title: `${room.character?.name || '캐릭터'}${suffix}`,
+                      thumb: characterImageById[room.character?.id] || getCharacterPrimaryImage(room.character || {}),
+                      at: new Date(room.last_message_time || room.updated_at || room.created_at || 0).getTime() || 0,
+                      href: `/ws/chat/${room.character?.id}?room=${room.id}`,
+                      is_origchat: isOrig,
+                    });
+                  });
+                  const storyItems = (recentStories || []).map((s) => ({
+                    kind: 'story',
+                    id: s.id,
+                    title: s.title,
+                    thumb: resolveImageUrl(s.cover_url),
+                    at: s.at || 0,
+                    href: `/stories/${s.id}/chapters/${Math.max(1, Number(s.last_no) || 1)}`,
+                    badge: `${Math.max(1, Number(s.last_no) || 1)}화`,
+                  }));
+                  const mixed = [...chatItems, ...storyItems].sort((a,b) => (b.at||0) - (a.at||0));
+                  if (mixed.length === 0) {
+                    return <p className="px-4 text-sm text-gray-500">최근 항목이 없습니다</p>;
+                  }
+                  // 최대 5개만 노출하여 사이드바 오버플로우로 인한 레이아웃 깨짐 방지
+                  return mixed.slice(0, 5).map((item) => (
+                    <NavLink
+                      key={`${item.kind}-${item.id}`}
+                      to={item.href}
+                      className={({ isActive }) =>
+                        `flex items-center px-4 py-2 text-sm transition-colors rounded-lg ${
+                          isActive ? 'bg-purple-600 text-white' : 'text-gray-300 hover:bg-gray-700 hover:text-white'
+                        }`
+                      }
+                    >
+                      <Avatar className="w-8 h-8 mr-3 rounded-md">
+                        <AvatarImage className="object-cover object-top" src={item.thumb} />
+                        <AvatarFallback className={`${item.kind==='story' ? 'bg-blue-600' : (item.is_origchat ? 'bg-orange-500' : 'bg-purple-600')} text-white text-xs rounded-md`}>
+                          {item.kind==='story' ? '웹' : (item.is_origchat ? '원' : (item.title?.charAt(0) || 'C'))}
+                        </AvatarFallback>
+                      </Avatar>
+                      <div className="flex-1 min-w-0 flex items-center justify-between gap-2">
+                        <span className="truncate">{item.title}</span>
+                        <span className="text-xs text-gray-400 flex-shrink-0">{item.kind==='story' ? item.badge : formatRelativeTime(item.at)}</span>
+                      </div>
+                    </NavLink>
+                  ));
+                })()
+              )}
+            </div>
           </div>
-        </div>
+        )}
       </nav>
 
       {/* 유저 프로필 / 게스트 CTA */}
@@ -482,21 +488,16 @@ const Sidebar = () => {
           <div className="px-1 py-2">
             <div className="flex items-center space-x-3 mb-3">
               <Avatar className="w-8 h-8">
-                <AvatarFallback className="bg-purple-600 text-white text-sm">G</AvatarFallback>
+                <AvatarFallback className="bg-gray-600 text-white text-sm">G</AvatarFallback>
               </Avatar>
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium text-white truncate">Guest</p>
                 <p className="text-xs text-gray-400">로그인이 필요합니다</p>
               </div>
             </div>
-            <div className="flex items-center gap-2">
-              <Button className="bg-purple-600 hover:bg-purple-700 text-white" onClick={() => openLoginModal({ initialTab: 'login' })}>
-                <LogIn className="w-4 h-4 mr-2" /> 로그인
-              </Button>
-              <Button variant="outline" onClick={() => openLoginModal({ initialTab: 'register' })}>
-                <UserPlus className="w-4 h-4 mr-2" /> 회원가입
-              </Button>
-            </div>
+            <Button className="w-full bg-purple-600 hover:bg-purple-700 text-white" onClick={() => openLoginModal({ initialTab: 'login' })}>
+              <LogIn className="w-4 h-4 mr-2" /> 로그인
+            </Button>
           </div>
         )}
       </div>

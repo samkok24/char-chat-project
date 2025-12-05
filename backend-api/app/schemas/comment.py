@@ -32,9 +32,9 @@ class CommentCreate(CommentBase):
     pass
 
 
-class CommentUpdate(BaseModel):
+class CommentUpdate(CommentBase):
     """댓글 수정 스키마"""
-    content: str = Field(..., min_length=1, max_length=1000)
+    pass
 
 
 class CommentResponse(CommentBase):

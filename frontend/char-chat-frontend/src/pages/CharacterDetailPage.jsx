@@ -5,6 +5,7 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate,useLocation} from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
+import { useLoginModal } from '../contexts/LoginModalContext';
 import { charactersAPI,API_BASE_URL, api, mediaAPI } from '../lib/api';
 import { resolveImageUrl } from '../lib/images';
 import { DEFAULT_SQUARE_URI } from '../lib/placeholder';
@@ -43,6 +44,7 @@ const dispatchToast = (type, message) => {
 const CharacterDetailPage = () => {
   const { characterId } = useParams();
   const { user, isAuthenticated, loading: authLoading } = useAuth();
+  const { openLoginModal } = useLoginModal();
   const navigate = useNavigate();
   // 2. useLocation hook을 호출하여 location 객체를 가져옵니다.
   const location = useLocation();
@@ -197,7 +199,7 @@ const CharacterDetailPage = () => {
 
   const startChat = () => {
     if (!isAuthenticated) {
-      navigate('/login');
+      openLoginModal();
       return;
     }
     // 실제 채팅 페이지로 이동하도록 경로 수정
@@ -229,7 +231,7 @@ const CharacterDetailPage = () => {
 
   const handleLike = () => {
     if (!isAuthenticated) {
-      navigate('/login');
+      openLoginModal();
       return;
     }
     likeMutation.mutate(isLiked);

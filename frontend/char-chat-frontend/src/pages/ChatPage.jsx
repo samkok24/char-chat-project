@@ -33,13 +33,12 @@ import {
   ThumbsDown,
   RefreshCcw,
   Pencil,
-  FastForward,
   Asterisk,
   ChevronLeft,
   ChevronRight,
   Pin,
   PinOff,
-  ListTree
+  FileText
 } from 'lucide-react';
 import { Textarea } from '../components/ui/textarea'; // Textarea 추가
 import {
@@ -53,6 +52,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from '../components/ui/alert-dialog';
+import { Dialog, DialogContent } from '../components/ui/dialog';
 import { Tooltip, TooltipTrigger, TooltipContent } from '../components/ui/tooltip';
 import {
   DropdownMenu,
@@ -110,13 +110,18 @@ const ChatPage = () => {
   // 이미지 캐러셀 상태
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
   const [characterImages, setCharacterImages] = useState([]);
+  const [imageKeywords, setImageKeywords] = useState([]); // [{url, keywords:[]}] 키워드 트리거용
+  const [aiMessageImages, setAiMessageImages] = useState({}); // messageId -> imageUrl (말풍선 아래 이미지)
   const [mediaAssets, setMediaAssets] = useState([]);
   const [isPinned, setIsPinned] = useState(false);
   const [pinnedUrl, setPinnedUrl] = useState('');
+  // 이미지 확대 모달
+  const [imageModalOpen, setImageModalOpen] = useState(false);
+  const [imageModalSrc, setImageModalSrc] = useState('');
   // 전역 UI 설정(로컬)
   const [uiFontSize, setUiFontSize] = useState('sm'); // sm|base|lg|xl
   const [uiLetterSpacing, setUiLetterSpacing] = useState('normal'); // tighter|tight|normal|wide|wider
-  const [uiOverlay, setUiOverlay] = useState(60); // 0~100
+  const [uiOverlay, setUiOverlay] = useState(0); // 0~100 (기본값 0: 오버레이 없음)
   const [uiFontFamily, setUiFontFamily] = useState('sans'); // sans|serif
   const [uiColors, setUiColors] = useState({
     charSpeech: '#ffffff',
@@ -177,9 +182,42 @@ const ChatPage = () => {
   const prevScrollHeightRef = useRef(0); // For scroll position restoration
   const isPinnedRef = useRef(false);
   const pinnedUrlRef = useRef('');
+  const autoScrollRef = useRef(true); // 사용자가 맨 아래에 있는지 추적
+  const clampRel = useCallback((v) => Math.max(0, Math.min(100, v)), []);
   const genIdemKey = useCallback(() => {
     try { return `${chatRoomId || 'room'}:${Date.now()}:${Math.random().toString(36).slice(2,8)}`; } catch (_) { return `${Date.now()}`; }
   }, [chatRoomId]);
+  
+  // 🎯 키워드 매칭으로 이미지 자동 전환
+  const findMatchingImageByKeywords = useCallback((text) => {
+    if (!text || !imageKeywords.length || isPinned) return -1;
+    const lowerText = text.toLowerCase();
+    for (const img of imageKeywords) {
+      if (!img.keywords?.length) continue;
+      for (const kw of img.keywords) {
+        if (kw && lowerText.includes(kw.toLowerCase())) {
+          return img.index;
+        }
+      }
+    }
+    return -1;
+  }, [imageKeywords, isPinned]);
+
+  // 🎯 AI 메시지 판별(Single Source of Truth)
+  const isAssistantMessage = useCallback((msg) => {
+    const type = String(msg?.sender_type || msg?.senderType || '').toLowerCase();
+    return type === 'assistant' || type === 'ai';
+  }, []);
+
+  // 🎯 관계 미터 델타 적용(SSOT)
+  const applyRelDeltas = useCallback((meta) => {
+    if (!meta) return;
+    const d = meta.deltas || meta.delta || {};
+    if (typeof d.trust === 'number') setRelTrust((prev) => clampRel((prev ?? 50) + d.trust));
+    if (typeof d.affinity === 'number') setRelAffinity((prev) => clampRel((prev ?? 50) + d.affinity));
+    if (typeof d.tension === 'number') setRelTension((prev) => clampRel((prev ?? 50) + d.tension));
+  }, [clampRel]);
+
   // 완결 토스트/내레이터 중복 가드
   const completedNotifiedRef = useRef(false);
   const finalNarrationInsertedRef = useRef(false);
@@ -281,6 +319,15 @@ const ChatPage = () => {
             : [];
           const fallback = !main.length && !gallery.length && data?.thumbnail_url ? [data.thumbnail_url] : [];
           baseImages = [...main, ...gallery, ...fallback];
+          
+          // 🎯 키워드 트리거용 이미지 데이터 저장
+          if (Array.isArray(data?.image_descriptions)) {
+            setImageKeywords(data.image_descriptions.map((d, idx) => ({
+              url: d?.url || '',
+              keywords: Array.isArray(d?.keywords) ? d.keywords : [],
+              index: main.length ? idx + 1 : idx  // avatar_url이 있으면 +1
+            })));
+          }
         } catch (_) {
           showToastOnce({ key: `ctx-warm-fail:${storyIdParam}`, type: 'warning', message: '컨텍스트 준비가 지연되고 있습니다.' });
         }
@@ -321,17 +368,35 @@ const ChatPage = () => {
         const rangeFromParam = params.get('rangeFrom');
         const rangeToParam = params.get('rangeTo');
         const buildLastRoomKey = (uid, cid, sid) => `cc:lastRoom:${uid || 'anon'}:${cid || 'none'}:${sid || 'none'}:origchat`;
+        const buildNewGuardKey = (cid, sid) => `cc:newGuard:${cid || 'none'}:${sid || 'none'}`;
+        // 새 방 생성 with retry 유틸
+        const startChatWithRetry = async (fn, label = 'chat') => {
+          let attempts = 0;
+          let lastErr = null;
+          while (attempts < 2) {
+            try {
+              return await fn();
+            } catch (err) {
+              lastErr = err;
+              attempts += 1;
+            }
+          }
+          console.error(`${label} start failed after retries`, lastErr);
+          throw lastErr || new Error('start_failed');
+        };
+
         let roomId = explicitRoom || null;
-        // room 파라미터 유효성 검사
-        // 수정: 파라미터를 신뢰(네트워크 일시 오류여도 유지)
+        // room 파라미터 유효성 검사 -> 실패 시 무효화하고 새 방 생성으로 폴백
         if (roomId) {
           try {
             const r = await chatAPI.getChatRoom(roomId);
             if (!(r && r.data && r.data.id)) {
-              console.warn('room param looks invalid, will still try to join:', roomId);
+              console.warn('room param looks invalid, will fallback to new room:', roomId);
+              roomId = null;
             }
           } catch (e) {
-            console.warn('room validation failed, keep roomId anyway:', roomId, e);
+            console.warn('room validation failed, will fallback to new room:', roomId, e);
+            roomId = null;
           }
         }
 
@@ -356,28 +421,53 @@ const ChatPage = () => {
               const a = Number(anchorParam) || 1;
               const rf = rangeFromParam ? Number(rangeFromParam) : null;
               const rt = rangeToParam ? Number(rangeToParam) : null;
-              const startRes = await origChatAPI.start({ 
-                story_id: storyIdParam, 
-                character_id: characterId, 
-                mode: (modeParam || 'canon'), 
-                start: { chapter: a }, 
-                range_from: rf, 
-                range_to: rt, 
-                pov: (modeParam === 'parallel' ? 'persona' : 'possess')
-              });
-              roomId = startRes.data?.id || startRes.data?.room_id || startRes.data?.room?.id || null;
+              const startFn = async () => {
+                const startRes = await origChatAPI.start({ 
+                  story_id: storyIdParam, 
+                  character_id: characterId, 
+                  mode: (modeParam || 'canon'), 
+                  start: { chapter: a }, 
+                  range_from: rf, 
+                  range_to: rt, 
+                  pov: (modeParam === 'parallel' ? 'persona' : 'possess')
+                });
+                return startRes.data?.id || startRes.data?.room_id || startRes.data?.room?.id || null;
+              };
+              roomId = await startChatWithRetry(startFn, 'origchat');
               // 새 방을 만든 직후에는 최근 세션 리스트가 중복갱신되지 않도록 이벤트 브로드캐스트 지연/스킵
               try { window.dispatchEvent(new CustomEvent('chat:roomsChanged:suppressOnce')); } catch (_) {}
               if (!roomId) {
                 // 최후 폴백: 일반 시작
-                const roomResponse = await chatAPI.startChat(characterId);
+                const roomResponse = await startChatWithRetry(() => chatAPI.startChat(characterId), 'chat');
                 roomId = roomResponse.data.id;
               }
             }
           } else {
             if (forceNew) {
-              const roomResponse = await chatAPI.startChat(characterId);
-              roomId = roomResponse.data.id;
+              // 중복 방 방지: 같은 세션(new=1)에서 이미 만든 방이 있으면 재사용
+              const guardKey = buildNewGuardKey(characterId, null);
+              let reused = false;
+              try {
+                const saved = sessionStorage.getItem(guardKey);
+                if (saved) {
+                  const parsed = JSON.parse(saved);
+                  if (parsed?.roomId) {
+                    try {
+                      const r = await chatAPI.getChatRoom(parsed.roomId);
+                      if (r?.data?.id) {
+                        roomId = parsed.roomId;
+                        reused = true;
+                      }
+                    } catch (_) { /* ignore */ }
+                  }
+                }
+              } catch (_) {}
+
+              if (!reused) {
+                const roomResponse = await startChatWithRetry(() => chatAPI.startChat(characterId), 'chat');
+                roomId = roomResponse.data.id;
+                try { sessionStorage.setItem(guardKey, JSON.stringify({ roomId, ts: Date.now() })); } catch (_) {}
+              }
             } else {
               // URL에 room 파라미터가 있으면 그대로 사용, 없으면 최신 방 찾기
               if (!explicitRoom) {
@@ -394,7 +484,7 @@ const ChatPage = () => {
                 } catch (_) {}
               }
               if (!roomId) {
-                const roomResponse = await chatAPI.startChat(characterId);
+                const roomResponse = await startChatWithRetry(() => chatAPI.startChat(characterId), 'chat');
                 roomId = roomResponse.data.id;
               }
             }
@@ -581,6 +671,58 @@ const ChatPage = () => {
 
   // 최신 핀 상태를 ref에 반영
   useEffect(() => { isPinnedRef.current = isPinned; pinnedUrlRef.current = pinnedUrl; }, [isPinned, pinnedUrl]);
+
+  // 🎯 AI 메시지 도착 시 키워드 매칭으로 이미지 자동 전환 + 말풍선 아래 이미지 저장
+  useEffect(() => {
+    if (!messages.length || !characterImages.length) return;
+    const lastMsg = messages[messages.length - 1];
+    // AI 메시지인 경우만 매칭
+    if (!isAssistantMessage(lastMsg)) return;
+
+    const msgId = lastMsg.id || lastMsg._id || `temp-${messages.length}`;
+    
+    // 이미 처리된 메시지면 스킵
+    if (aiMessageImages[msgId]) return;
+
+    const content = lastMsg?.content || '';
+    
+    // 1) suggested_image_index 우선 (백엔드에서 내려준 값)
+    let idx = lastMsg?.meta?.suggested_image_index ?? lastMsg?.suggested_image_index ?? -1;
+    
+    // 2) 백엔드 값이 없으면 프론트 키워드 매칭
+    if (idx < 0 && !isPinned) {
+      idx = findMatchingImageByKeywords(content);
+    }
+    
+    // 3) 첫 AI 메시지(인사말)는 무조건 0번 이미지
+    const aiMsgCount = messages.filter((m) => isAssistantMessage(m)).length;
+    if (idx < 0 && aiMsgCount === 1) {
+      idx = 0;
+    }
+
+    // 유효한 인덱스면 처리
+    if (idx >= 0 && idx < characterImages.length) {
+      const imageUrl = characterImages[idx];
+      const resolvedUrl = resolveImageUrl(imageUrl);
+      
+      // 말풍선 아래 이미지 저장
+      setAiMessageImages(prev => ({ ...prev, [msgId]: resolvedUrl }));
+      
+      // 미니갤러리 포커싱 (핀 안 된 경우만)
+      if (!isPinned) {
+        setCurrentImageIndex(idx);
+      }
+    }
+  }, [messages, characterImages, isPinned, findMatchingImageByKeywords, aiMessageImages, isAssistantMessage]);
+
+  // 🎯 AI 메타 델타(호감/신뢰/긴장) 반영
+  useEffect(() => {
+    if (!messages.length) return;
+    const lastMsg = messages[messages.length - 1];
+    if (!isAssistantMessage(lastMsg)) return;
+    const meta = lastMsg.meta;
+    applyRelDeltas(meta);
+  }, [messages, isAssistantMessage, applyRelDeltas]);
 
   // 상세에서 미디어 변경 시 채팅방 이미지 갱신(세션 핀 유지)
   useEffect(() => {
@@ -796,10 +938,8 @@ const ChatPage = () => {
   useEffect(() => {
     // 신규 메시지 수신 시 맨 아래로 스크롤
     if (messages.length > 0) {
-      const lastMessage = messages[messages.length - 1];
-      // 내가 보낸 메시지거나, 스트리밍이 아닌 AI 메시지일 때만 자동 스크롤
-      if (!prevScrollHeightRef.current && (lastMessage.senderType === 'user' || !lastMessage.isStreaming)) {
-         scrollToBottom();
+      if (autoScrollRef.current) {
+        scrollToBottom();
       }
     }
   }, [messages]);
@@ -830,17 +970,14 @@ const ChatPage = () => {
     const el = chatContainerRef.current;
     if (!el) return;
     const atBottom = el.scrollTop >= el.scrollHeight - el.clientHeight - 2;
+    autoScrollRef.current = atBottom;
     // 맨 위 도달 시 과거 로드
     if (el.scrollTop <= 0 && hasMoreMessages && !historyLoading) {
       prevScrollHeightRef.current = el.scrollHeight;
       getMessageHistory(chatRoomId, currentPage + 1);
     }
-    // 사용자가 위로 스크롤 중이면 자동 스크롤 중지(점프 방지)
-    if (!atBottom) {
-      if (prevScrollHeightRef.current === 0) prevScrollHeightRef.current = 1;
-    } else {
-      if (prevScrollHeightRef.current === 1) prevScrollHeightRef.current = 0;
-    }
+
+
   }, [hasMoreMessages, historyLoading, getMessageHistory, chatRoomId, currentPage]);
 
 
@@ -855,20 +992,19 @@ const ChatPage = () => {
     const messageContent = isNarration ? messageContentRaw.replace(/^\*\s*/, '') : messageContentRaw;
     const messageType = isNarration ? 'narration' : 'text';
     
-    // Optimistic UI Update for user message
-    const tempUserMessage = {
-      id: `temp-user-${Date.now()}`,
-      roomId: chatRoomId,
-      senderType: 'user',
-      senderId: user.id,
-      content: messageContent,
-      isNarration: isNarration,
-      created_at: new Date().toISOString()
-    };
-    setMessages(prev => [...prev, tempUserMessage]);
-    
     // 원작챗이면 HTTP 턴 호출, 아니면 소켓 전송
     if (isOrigChat && origStoryId) {
+      // Optimistic UI Update for user message (원작챗)
+      const tempUserMessage = {
+        id: `temp-user-${Date.now()}`,
+        roomId: chatRoomId,
+        senderType: 'user',
+        senderId: user.id,
+        content: messageContent,
+        isNarration: isNarration,
+        created_at: new Date().toISOString()
+      };
+      setMessages(prev => [...prev, tempUserMessage]);
       try {
         setOrigTurnLoading(true);
         const payload = { room_id: chatRoomId, user_text: messageContent, idempotency_key: genIdemKey(), settings_patch: (settingsSyncedRef.current ? null : chatSettings) };
@@ -948,11 +1084,30 @@ const ChatPage = () => {
       if (inputRef.current) { inputRef.current.style.height = 'auto'; }
       return;
     } else {
-      // Send message via socket
-      sendSocketMessage(chatRoomId, messageContent, messageType);
+      // Send message via socket (낙관적 추가 + ack 기반 롤백)
+      const tempId = `temp-user-${Date.now()}`;
+      const tempUserMessage = {
+        id: tempId,
+        roomId: chatRoomId,
+        senderType: 'user',
+        senderId: user.id,
+        content: messageContent,
+        isNarration: isNarration,
+        created_at: new Date().toISOString(),
+        pending: true,
+      };
+      setMessages(prev => [...prev, tempUserMessage]);
       setNewMessage('');
       if (inputRef.current) {
         inputRef.current.style.height = 'auto';
+      }
+      try {
+        await sendSocketMessage(chatRoomId, messageContent, messageType, { settingsPatch: chatSettings });
+        setMessages(prev => prev.map(m => m.id === tempId ? { ...m, pending: false } : m));
+      } catch (err) {
+        console.error('소켓 전송 실패', err);
+        setMessages(prev => prev.filter(m => m.id !== tempId));
+        showToastOnce({ key: `socket-send-fail:${chatRoomId}`, type: 'error', message: '전송에 실패했습니다. 다시 시도해주세요.' });
       }
     }
   };
@@ -1275,8 +1430,18 @@ const ChatPage = () => {
     setRegenOpen(false); setRegenInstruction(''); setRegenTargetId(null);
   };
   
-  const MessageBubble = ({ message, isLast }) => {
+  const MessageBubble = ({ message, isLast, triggerImageUrl }) => {
     const isUser = message.senderType === 'user' || message.sender_type === 'user';
+    const isPending = Boolean(message.pending);
+    const rawContent = typeof message.content === 'string' ? message.content : '';
+    const isNarrationMessage = Boolean(
+      message.isNarration ||
+      message.messageType === 'narration' ||
+      rawContent.trim().startsWith('*')
+    );
+    const displayText = isUser
+      ? (message.isNarration ? (rawContent.startsWith('*') ? rawContent : `* ${rawContent}`) : rawContent)
+      : sanitizeAiText(rawContent);
     const bubbleRef = isLast ? messagesEndRef : null;
 
     return (
@@ -1296,16 +1461,22 @@ const ChatPage = () => {
         </div>
 
         <div
-          className={`max-w-full sm:max-w-[85%] px-3 py-2 rounded-2xl shadow-md overflow-hidden ${isUser ? 'rounded-tr-none' : 'rounded-tl-none'}
+          className={`relative max-w-full sm:max-w-[85%] px-3 py-2 rounded-2xl shadow-md overflow-hidden ${isUser ? 'rounded-tr-none' : 'rounded-tl-none'}
             ${isUser
               ? (resolvedTheme === 'light' ? 'bg-white border border-gray-300' : 'bg-white text-black')
               : (resolvedTheme === 'light' ? 'bg-white border border-gray-300' : 'bg-white/10 lg:bg-white/10')}
+            ${isPending ? 'opacity-70' : ''}
           `}
           style={{ color: isUser
-            ? (resolvedTheme === 'light' ? (message.isNarration ? '#111827' : '#111827') : (message.isNarration ? uiColors.userNarration : uiColors.userSpeech))
+            ? (resolvedTheme === 'light' ? '#111827' : (message.isNarration ? uiColors.userNarration : uiColors.userSpeech))
             : (resolvedTheme === 'light' ? '#0b0b0b' : (message.isNarration ? uiColors.charNarration : uiColors.charSpeech))
           }}
         >
+          {isPending && (
+            <span className="absolute right-3 top-2 text-[10px] px-2 py-0.5 rounded-full bg-amber-200 text-amber-800 border border-amber-300">
+              전송 중…
+            </span>
+          )}
           {(!isUser && editingMessageId === message.id) ? (
             <div className="space-y-2">
               <Textarea value={editText} onChange={(e)=>setEditText(e.target.value)} rows={4} />
@@ -1316,8 +1487,18 @@ const ChatPage = () => {
             </div>
           ) : (
             <>
-              <p className={`whitespace-pre-wrap break-words select-text ${isUser && (message.isNarration || message.messageType==='narration' || message.content?.startsWith('*')) ? 'italic' : ''}`} style={{ wordBreak: 'break-word', overflowWrap: 'break-word', hyphens: 'auto' }}>
-                {isUser ? (message.isNarration ? `* ${message.content}` : message.content) : sanitizeAiText(message.content)}
+              <p
+                className="whitespace-pre-wrap break-words select-text"
+                style={{
+                  wordBreak: 'break-word',
+                  overflowWrap: 'break-word',
+                  hyphens: 'auto',
+                  ...(isNarrationMessage
+                    ? { color: resolvedTheme === 'light' ? '#6b7280' : '#d1d5db', fontStyle: 'italic' }
+                    : {})
+                }}
+              >
+                {displayText}
             {message.isStreaming && <span className="streaming-cursor"></span>}
           </p>
               <p className={`text-xs mt-1 text-right ${isUser ? 'text-gray-500' : 'text-gray-400'}`}>
@@ -1327,6 +1508,22 @@ const ChatPage = () => {
             </>
           )}
         </div>
+
+        {/* 🎯 AI 말풍선 아래 트리거 이미지 */}
+        {!isUser && triggerImageUrl && (
+          <div className="mt-2 max-w-full sm:max-w-[85%] rounded-xl overflow-hidden">
+            <img 
+              src={triggerImageUrl} 
+              alt="" 
+              className="w-full max-h-80 object-cover rounded-xl cursor-zoom-in"
+              onClick={() => {
+                setImageViewerSrc(triggerImageUrl);
+                setImageViewerOpen(true);
+              }}
+            />
+          </div>
+        )}
+
         {/* 말풍선 바깥 하단 툴바 (AI 메시지 전용) */}
         {!isUser && (
           <div className="mt-1 max-w-full sm:max-w-[85%]">
@@ -1388,6 +1585,27 @@ const ChatPage = () => {
 
   return (
     <div className="h-screen bg-[var(--app-bg)] text-[var(--app-fg)] flex flex-col">
+      {/* 준비/워밍 오버레이: 초기 로딩 또는 init_stage가 ready 전이면 입력 차단 */}
+      {(
+        loading ||
+        (isOrigChat && origMeta?.init_stage && origMeta.init_stage !== 'ready') ||
+        (isOrigChat && origMeta?.intro_ready === false)
+      ) && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="bg-gray-900/90 text-white border border-gray-700 rounded-2xl px-6 py-5 shadow-2xl max-w-sm w-[320px] text-center space-y-3">
+            <div className="flex items-center justify-center gap-2">
+              <Loader2 className="w-5 h-5 animate-spin text-purple-300" />
+              <span className="text-sm font-semibold">채팅방을 준비 중입니다</span>
+            </div>
+            <p className="text-xs text-gray-300 leading-relaxed">
+              컨텍스트를 로드하고 있어요. 잠시만 기다려 주세요.
+            </p>
+            <div className="w-full h-1.5 bg-gray-800 rounded-full overflow-hidden">
+              <div className="h-full w-2/3 bg-gradient-to-r from-purple-500 via-blue-400 to-cyan-300 animate-pulse" />
+            </div>
+          </div>
+        </div>
+      )}
       {/* 헤더 */}
       <header className="bg-[var(--header-bg)] text-[var(--app-fg)] shadow-sm border-b border-gray-800 z-10">
         <div className="w-full">
@@ -1531,7 +1749,7 @@ const ChatPage = () => {
       {/* 본문: 데스크톱 좌측 이미지 패널, 모바일은 배경 이미지 */}
       <div className="flex-1 overflow-hidden bg-[var(--app-bg)] text-[var(--app-fg)]">
         <div className="grid grid-cols-1 lg:grid-cols-[480px_560px] lg:justify-center h-[calc(100vh-4rem)]">
-          <aside className="hidden lg:flex flex-col border-r bg-black/10 w-[480px] flex-shrink-0">
+          <aside className="hidden lg:flex flex-col border-r w-[480px] flex-shrink-0">
             {/* 대표 이미지 영역 */}
             <div className="flex-1 relative min-h-0">
               {/* 캐러셀: 상반신 기준 포트레이트 */}
@@ -1541,9 +1759,10 @@ const ChatPage = () => {
                   ? characterImages[currentImageIndex]
                   : primary;
                 const { src, srcSet, sizes, width, height } = buildPortraitSrcSet(currentImage);
+                const fullSrc = resolveImageUrl(currentImage);
                 return (
                   <img
-                    className="w-full h-full object-cover object-top"
+                    className="w-full h-full object-cover object-top cursor-zoom-in"
                     src={src}
                     srcSet={srcSet}
                     sizes={sizes}
@@ -1554,11 +1773,17 @@ const ChatPage = () => {
                     aria-live="polite"
                     style={{ imageRendering: 'high-quality' }}
                     aria-label={`${Math.min(characterImages.length, Math.max(1, currentImageIndex + 1))} / ${characterImages.length}`}
+                    onClick={() => {
+                      setImageModalSrc(fullSrc);
+                      setImageModalOpen(true);
+                    }}
                   />
                 );
               })()}
-              {/* 배경 오버레이 */}
-              <div className="absolute inset-0 pointer-events-none" style={{ backgroundColor: `rgba(0,0,0,${Math.max(0, Math.min(100, uiOverlay))/100})` }} />
+              {/* 배경 오버레이 (uiOverlay > 0일 때만 표시) */}
+              {uiOverlay > 0 && (
+                <div className="absolute inset-0 pointer-events-none" style={{ backgroundColor: `rgba(0,0,0,${uiOverlay/100})` }} />
+              )}
               {/* 이미지 핀 토글 */}
               {characterImages.length > 1 && (
                 <div className="absolute top-2 right-2 z-10">
@@ -1680,11 +1905,13 @@ const ChatPage = () => {
                     </div>
                   );
                 }
+
                 return (
                   <MessageBubble
                     key={m.id || `msg-${index}`}
                     message={m}
                     isLast={index === messages.length - 1 && !aiTyping}
+                    triggerImageUrl={aiMessageImages[m.id || m._id || `temp-${index}`]}
                   />
                 );
               })}
@@ -1839,7 +2066,7 @@ const ChatPage = () => {
                 size="icon"
                 title="상황 입력"
               >
-                <Asterisk className="w-5 h-5" />
+                <FileText className="w-5 h-5" />
               </Button>
             )}
 
@@ -1857,37 +2084,7 @@ const ChatPage = () => {
 
             {/* 전송 버튼 */}
             <div className="flex items-center gap-2">
-              {/* 선택지 온디맨드 */}
-              {isOrigChat && (
-                <Button
-                  type="button"
-                  disabled={origTurnLoading || (pendingChoices && pendingChoices.length > 0)}
-                  onClick={requestChoices}
-                  className={`rounded-full w-10 h-10 p-0 flex-shrink-0 bg-white text-black ${origTurnLoading ? 'opacity-60 cursor-not-allowed' : ''}`}
-                  size="icon"
-                  title="선택지 요청"
-                >
-                  {origTurnLoading ? (
-                    <Loader2 className="w-5 h-5 animate-spin" />
-                  ) : (
-                    <ListTree className="w-5 h-5" />
-                  )}
-                </Button>
-              )}
-
               {/* 자동 진행 >> */}
-              {isOrigChat && (
-                <Button
-                  type="button"
-                  disabled={origTurnLoading || (pendingChoices && pendingChoices.length > 0)}
-                  onClick={requestNextEvent}
-                  className={`rounded-full w-10 h-10 p-0 flex-shrink-0 bg-white text-black ${origTurnLoading ? 'opacity-60 cursor-not-allowed' : ''}`}
-                  size="icon"
-                  title=">> 자동 진행"
-                >
-                  <FastForward className="w-5 h-5" />
-                </Button>
-              )}
 
               {/* 전송 */}
               <Button
@@ -1990,6 +2187,18 @@ const ChatPage = () => {
         </AlertDialogContent>
       </AlertDialog>
       </ErrorBoundary>
+
+      {/* 이미지 확대 모달 */}
+      <Dialog open={imageModalOpen} onOpenChange={setImageModalOpen}>
+        <DialogContent className="max-w-[90vw] max-h-[90vh] p-0 bg-transparent border-none shadow-none">
+          <img
+            src={imageModalSrc}
+            alt={character?.name}
+            className="w-full h-full object-contain max-h-[90vh] rounded-lg"
+            onClick={() => setImageModalOpen(false)}
+          />
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

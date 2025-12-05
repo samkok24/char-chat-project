@@ -15,6 +15,7 @@ export default function DropzoneGallery({
   onRemoveNew, // (index) => void
   onReorder, // ({from, to, isNew}) => void
   onUpload, // async (File[]) => string[] (업로드 후 url 목록 반환)
+  onImageClick, // (url) => void (이미지 확대)
 }) {
   const inputRef = useRef(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -43,8 +44,13 @@ export default function DropzoneGallery({
 
   const handleFiles = useCallback((files) => {
     const arr = Array.from(files || []);
+    // 현재 업로드 중이면 무시
+    if (isUploading) return;
+
     const remain = Math.max(0, MAX_FILES - totalCount);
     const selected = arr.slice(0, remain);
+    if (selected.length === 0) return; // 추가할 파일 없음
+
     const validated = validateFiles(selected);
     const ok = validated.filter(v => !v.error).map(v => v.file);
     const errs = validated.filter(v => v.error);
@@ -54,7 +60,7 @@ export default function DropzoneGallery({
       setErrorMap(newMap);
     }
     if (ok.length) onAddFiles?.(ok);
-  }, [validateFiles, totalCount, onAddFiles, errorMap]);
+  }, [validateFiles, totalCount, onAddFiles, errorMap, isUploading]);
 
   const onDrop = useCallback((e) => {
     e.preventDefault();
@@ -155,11 +161,49 @@ export default function DropzoneGallery({
     }).finally(() => setIsUploading(false));
   }, [onUpload]);
 
-  // 간단한 정렬(드래그핸들 없이 인덱스 버튼으로 이동) — 추후 DnD로 대체 가능
-  const moveItem = useCallback((from, to, isNew) => {
-    if (from === to) return;
-    onReorder?.({ from, to, isNew });
-  }, [onReorder]);
+  // HTML5 Drag & Drop state
+  const [draggingIndex, setDraggingIndex] = useState(null);
+  const [dragOverIndex, setDragOverIndex] = useState(null);
+
+  // 정렬 핸들러
+  const handleDragStart = (e, index) => {
+    setDraggingIndex(index);
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', index);
+    // 잔상 이미지 투명도 조절 등은 기본 브라우저 동작 사용
+  };
+
+  const handleDragEnter = (e, index) => {
+    e.preventDefault();
+    if (draggingIndex === null || draggingIndex === index) return;
+    setDragOverIndex(index);
+  };
+
+  const handleDragEnd = () => {
+    setDraggingIndex(null);
+    setDragOverIndex(null);
+  };
+
+  const handleDropItem = (e, dropIndex) => {
+    e.preventDefault();
+    if (draggingIndex === null) return;
+    const dragIndex = draggingIndex;
+    setDraggingIndex(null);
+    setDragOverIndex(null);
+    if (dragIndex === dropIndex) return;
+
+    // existingImages와 newFiles를 분리해서 처리하지 않고, 
+    // 현재 UI는 existingImages -> newFiles 순서로 나열된다고 가정하고 전체 인덱스 기준으로 처리
+    // 하지만 CreateCharacterPage의 onReorder는 {from, to, isNew}를 받도록 되어 있음
+    // 따라서 여기서는 'existingImages' 내부끼리의 정렬만 우선 지원하거나,
+    // 전체 통합 정렬을 지원하려면 상위 컴포넌트 로직 수정이 필요함.
+    // 현재 요구사항(순서 바꾸기)을 위해 existingImages 내부 정렬만 지원 (업로드 전 파일은 보통 정렬 필요성이 낮음)
+    
+    // newFiles가 있으면 정렬이 복잡해지므로, 업로드된 이미지들끼리만 정렬 지원
+    if (dragIndex < existingImages.length && dropIndex < existingImages.length) {
+        onReorder?.({ from: dragIndex, to: dropIndex, isNew: false });
+    }
+  };
 
   return (
     <div>
@@ -181,25 +225,55 @@ export default function DropzoneGallery({
           }}
         />
         <div className="flex flex-col items-center gap-2">
-          <Upload className="w-5 h-5 text-gray-500" />
-          <div className="text-sm text-gray-800">이미지를 끌어다 놓거나 클릭하여 업로드</div>
+          {isUploading ? (
+             <Loader2 className="w-6 h-6 text-purple-600 animate-spin" />
+          ) : (
+             <Upload className="w-5 h-5 text-gray-500" />
+          )}
+          <div className="text-sm text-gray-800">
+             {isUploading ? '업로드 중...' : '이미지를 끌어다 놓거나 클릭하여 업로드'}
+          </div>
           <div className="text-xs text-gray-600">허용: jpg, png, webp, gif • 최대 {MAX_FILES}장 • {MAX_SIZE_MB}MB/파일</div>
-          <Button variant="outline" size="sm" onClick={() => inputRef.current?.click()}>파일 선택</Button>
+          <Button variant="outline" size="sm" onClick={() => inputRef.current?.click()} disabled={isUploading}>
+            {isUploading ? '처리 중...' : '파일 선택'}
+          </Button>
         </div>
       </div>
 
       {(existingImages.length > 0 || newFiles.length > 0) && (
         <div className="mt-4 grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-3">
           {existingImages.map((img, index) => (
-            <div key={`exist-${img.url}-${index}`} className="relative aspect-square group">
-              <img src={resolveImageUrl(img.url)} alt="" className="w-full h-full object-cover rounded-md" />
+            <div 
+              key={`exist-${img.url}-${index}`} 
+              className={`relative aspect-square group transition-transform ${draggingIndex === index ? 'opacity-50 scale-95' : ''} ${dragOverIndex === index ? 'ring-2 ring-purple-500 ring-offset-2 scale-105' : ''}`}
+              draggable
+              onDragStart={(e) => handleDragStart(e, index)}
+              onDragEnter={(e) => handleDragEnter(e, index)}
+              onDragOver={(e) => e.preventDefault()} // 필수
+              onDragEnd={handleDragEnd}
+              onDrop={(e) => handleDropItem(e, index)}
+            >
+              <img 
+                src={resolveImageUrl(img.url)} 
+                alt="" 
+                className="w-full h-full object-cover rounded-md cursor-grab active:cursor-grabbing" 
+                onClick={(e) => {
+                  // 드래그 중이 아니면 클릭 이벤트 발생
+                  if (!draggingIndex && onImageClick) {
+                    onImageClick(resolveImageUrl(img.url));
+                  }
+                }}
+              />
               <button
                 type="button"
                 onClick={() => onRemoveExisting?.(index)}
-                className="absolute top-1 right-1 bg-black/60 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity"
+                className="absolute top-1 right-1 bg-black/60 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity z-10"
               >
                 <X className="w-3 h-3" />
               </button>
+              <div className="absolute bottom-1 right-1 bg-black/60 text-white text-[10px] px-1.5 rounded pointer-events-none">
+                #{index + 1}
+              </div>
             </div>
           ))}
 
@@ -209,7 +283,7 @@ export default function DropzoneGallery({
             return (
             <div key={`new-${item.key}-${index}`} className="relative aspect-square group">
               {item.src ? (
-                <img src={item.src} alt="" className="w-full h-full object-cover rounded-md" />
+                <img src={item.src} alt="" className="w-full h-full object-cover rounded-md opacity-70" />
               ) : (
                 <div className="w-full h-full bg-gray-200 rounded-md flex items-center justify-center text-gray-500 text-xs">미리보기를 생성할 수 없습니다</div>
               )}

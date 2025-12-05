@@ -2,7 +2,7 @@
  * Socket.IO 컨텍스트
  */
 
-import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
+import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import { io } from 'socket.io-client';
 import { SOCKET_URL } from '../lib/api';
 import { useAuth } from './AuthContext';
@@ -28,6 +28,11 @@ export const SocketProvider = ({ children }) => {
   const [hasMoreMessages, setHasMoreMessages] = useState(true);
   const [currentPage, setCurrentPage] = useState(1);
   const { user, isAuthenticated } = useAuth();
+  const currentRoomRef = useRef(null);
+  const userRef = useRef(user);
+
+  useEffect(() => { currentRoomRef.current = currentRoom; }, [currentRoom]);
+  useEffect(() => { userRef.current = user; }, [user]);
 
   // 스킵(continue) 지시문 메시지를 UI에서 숨기기 위한 필터
   const isSkipDirective = useCallback((m) => {
@@ -62,6 +67,17 @@ export const SocketProvider = ({ children }) => {
         newSocket.on('connect', () => {
           console.log('Socket 연결됨:', newSocket.id);
           setConnected(true);
+          // 재연결 시 현재 방 자동 재-join 및 히스토리 복구
+          const room = currentRoomRef.current;
+          if (room && room.id) {
+            try {
+              setHasMoreMessages(true);
+              setCurrentPage(1);
+              setHistoryLoading(true);
+              newSocket.emit('join_room', { roomId: room.id });
+              newSocket.emit('get_message_history', { roomId: room.id, page: 1, limit: 50 });
+            } catch (_) {}
+          }
         });
 
         newSocket.on('disconnect', (reason) => {
@@ -167,7 +183,7 @@ export const SocketProvider = ({ children }) => {
         newSocket.on('ai_message_end', (data) => {
           setMessages(prev => prev.map(m => 
             m.id === data.id 
-              ? { ...m, content: data.content, isStreaming: false } 
+              ? { ...m, content: data.content, isStreaming: false, meta: data.meta || m.meta }
               : m
           ));
         });
@@ -243,29 +259,55 @@ export const SocketProvider = ({ children }) => {
   }, [socket, connected]);
 
   // 메시지 전송
-  const sendMessage = useCallback((roomId, content, messageType = 'text') => {
-    if (!socket || !connected) return;
-    const needsJoin = !currentRoom || currentRoom?.id !== roomId;
+  const sendMessage = useCallback((roomId, content, messageType = 'text', options = {}) => {
+    return new Promise((resolve, reject) => {
+      if (!socket || !connected) {
+        reject(new Error('not_connected'));
+        return;
+      }
+      const needsJoin = !currentRoom || currentRoom?.id !== roomId;
+      const payload = { roomId, content, messageType };
+      // 설정 패치가 있으면 함께 전송 (백엔드 지원 시)
+      if (options.settingsPatch) {
+        payload.settings_patch = options.settingsPatch;
+      }
+
     const doSend = () => {
+      const ackTimeout = setTimeout(() => {
+        // ACK가 오지 않아도 성공으로 간주
+        resolve({ ok: true, reason: 'no_ack_timeout' });
+      }, 5000);
+
+      const ack = (resp) => {
+        clearTimeout(ackTimeout);
+        if (!resp || resp.ok !== false) {
+          resolve(resp || { ok: true });
+        } else {
+          reject(new Error(resp.error || 'send_failed'));
+        }
+      };
+
       if (messageType === 'continue') {
-        socket.emit('continue', { roomId });
+        socket.emit('continue', { roomId }, ack);
       } else {
-        socket.emit('send_message', { roomId, content, messageType });
+        socket.emit('send_message', payload, ack);
       }
     };
-    if (needsJoin) {
-      try {
-        socket.emit('join_room', { roomId });
-        const once = (data) => {
-          try { if (data?.roomId === roomId) doSend(); } finally { socket.off('room_joined', once); }
-        };
-        socket.on('room_joined', once);
-        // 안전장치: 1.5초 후 리스너 정리
-        setTimeout(() => { try { socket.off('room_joined', once); } catch {} }, 1500);
-      } catch(_) { /* no-op */ }
-      return;
-    }
-    doSend();
+
+      if (needsJoin) {
+        try {
+          socket.emit('join_room', { roomId });
+          const once = (data) => {
+            try { if (data?.roomId === roomId) doSend(); } finally { socket.off('room_joined', once); }
+          };
+          socket.on('room_joined', once);
+          // 안전장치: 1.5초 후 리스너 정리
+          setTimeout(() => { try { socket.off('room_joined', once); } catch {} }, 1500);
+        } catch(_) { reject(new Error('join_failed')); }
+        return;
+      }
+      doSend();
+    });
   }, [socket, connected, currentRoom]);
 
   // 타이핑 상태 전송

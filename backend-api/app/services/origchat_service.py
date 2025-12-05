@@ -1085,11 +1085,29 @@ async def extract_characters_from_story(db: AsyncSession, story_id, max_chapters
     from app.services.ai_service import get_ai_chat_response
     import json
     director_prompt = (
-        "당신은 소설에서 등장인물을 추출하는 전문 분석가입니다. 다음 발췌들을 바탕으로 주요 등장인물 3~5명을 한국어로 추출하세요.\n"
-        "반드시 작품 원문에서 사용하는 고유 이름(예: 김철수, 아린, 레이튼 등)을 사용하고, '주인공', '동료 A', '라이벌' 같은 일반명은 금지합니다.\n"
-        "만약 1인칭 시점으로 이름이 드러나지 않는 주인공이라면 name은 '나'로 표기하고, description에는 화자의 특성/관계/직업 등 구체적 단서를 요약하세요.\n"
-        "규칙:\n- JSON만 출력.\n- 스키마: {\"characters\": [{\"name\": string, \"description\": string}]}\n"
-        "- description은 80자 이내로, 작품 맥락(역할/관계/직업/능력/갈등 축)을 구체적으로. 일반적인 문구 금지."
+        "당신은 소설에서 핵심 등장인물만 추출하는 전문 분석가입니다.\n\n"
+        "【필수 규칙】\n"
+        "1. 오직 **주인공**과 **스토리 전개에 핵심적인 역할을 하는 주요 인물**(2~4명)만 추출하세요.\n"
+        "2. 다음은 절대 추출 금지:\n"
+        "   - 한두 번만 등장하는 배경 인물, 엑스트라, 단역\n"
+        "   - 이름만 언급되고 실제 대화/행동이 없는 인물\n"
+        "   - 주인공과 직접적인 갈등/협력/관계가 없는 인물\n"
+        "   - 상점 주인, 지나가는 행인, 잡몹, 일회성 NPC\n"
+        "3. 반드시 작품 원문에서 사용하는 **고유 이름**(예: 김철수, 아린, 레이튼 등)을 사용하세요.\n"
+        "4. '주인공', '동료 A', '라이벌', '적', '조연' 같은 일반명은 금지합니다.\n\n"
+        "【중복 방지 - 매우 중요】\n"
+        "5. **동일 인물은 반드시 하나의 이름으로만 추출하세요!**\n"
+        "   - 1인칭 시점이라도 작중에 주인공 이름이 언급되면 그 이름으로 추출 ('나' 사용 금지)\n"
+        "   - 별명/호칭/직함(예: '공작님', '대장', '선생님')과 본명이 같은 인물이면 **본명만** 추출\n"
+        "   - 성과 이름이 따로 불리는 경우(예: '김철수'와 '철수') **풀네임으로 통일**\n"
+        "   - 확실히 동일인인 경우에만 병합하고, 불확실하면 가장 자주 사용되는 호칭으로 추출\n"
+        "6. '나'는 오직 **작중에 주인공 이름이 전혀 언급되지 않는 1인칭 시점**에서만 사용하세요.\n\n"
+        "【출력 형식】\n"
+        "- JSON만 출력: {\"characters\": [{\"name\": string, \"description\": string, \"importance\": \"주인공\"|\"핵심조연\", \"aliases\": [string]}]}\n"
+        "- name: 작중에서 가장 자주 사용되는 고유 이름 (본명 우선)\n"
+        "- description: 80자 이내, 작품 맥락(역할/관계/직업/능력/갈등 축)을 구체적으로.\n"
+        "- importance: 반드시 \"주인공\" 또는 \"핵심조연\"만 사용.\n"
+        "- aliases: 해당 인물의 다른 호칭/별명 목록 (없으면 빈 배열)"
     )
     agg: Dict[str, Dict[str, Any]] = {}
     order_counter = 0
@@ -1123,24 +1141,119 @@ async def extract_characters_from_story(db: AsyncSession, story_id, max_chapters
                     continue
                 key = _norm_name(name)
                 desc = str(ch.get('description') or '').strip()
-                # 금지된 일반명 필터링
-                if key in {"주인공","동료","동료 a","라이벌","적","안타고니스트","조연"}:
+                importance = str(ch.get('importance') or '').strip().lower()
+                
+                # importance가 주인공/핵심조연이 아니면 제외
+                if importance and importance not in {"주인공", "핵심조연"}:
                     continue
+                
+                # 금지된 일반명 필터링 (확장)
+                forbidden = {
+                    "주인공", "동료", "동료 a", "동료 b", "라이벌", "적", "안타고니스트", "조연",
+                    "엑스트라", "행인", "상점주인", "점원", "경비", "병사", "잡몹", "몹",
+                    "npc", "배경인물", "단역", "촌장", "마을사람", "상인", "노인", "아이"
+                }
+                if key in forbidden:
+                    continue
+                
+                # 이름이 1글자이거나 너무 일반적인 경우 제외 (나 제외)
+                if key != "나" and len(name) <= 1:
+                    continue
+                
+                # aliases 파싱
+                aliases_raw = ch.get('aliases') or []
+                aliases = [str(a).strip().lower() for a in aliases_raw if a and str(a).strip()]
+                    
                 if key not in agg:
-                    agg[key] = {"name": name, "initial": name[:1], "desc": desc[:100], "count": 1, "order": order_counter}
+                    agg[key] = {"name": name, "initial": name[:1], "desc": desc[:100], "count": 1, "order": order_counter, "importance": importance, "aliases": set(aliases)}
                     order_counter += 1
                 else:
                     agg[key]["count"] += 1
                     # 더 길거나 정보가 많은 설명으로 업데이트
-                    if desc and (len(desc) > len(agg[key]["desc"]) ):
+                    if desc and (len(desc) > len(agg[key]["desc"])):
                         agg[key]["desc"] = desc[:100]
+                    # 중요도가 더 높으면 업데이트 (주인공 > 핵심조연)
+                    if importance == "주인공":
+                        agg[key]["importance"] = importance
+                    # aliases 병합
+                    agg[key]["aliases"] = agg[key].get("aliases", set()) | set(aliases)
             except Exception:
                 continue
 
-    # ---- 내러티브 1인칭('나') 별칭 병합(보수적) ----
+    # ---- 별칭 기반 중복 캐릭터 병합 ----
     def _norm_name_for_cmp(name: str) -> str:
         return (name or "").lower().replace(" ", "").strip()
-
+    
+    def _merge_into(target_key: str, source_key: str):
+        """source를 target에 병합"""
+        if target_key not in agg or source_key not in agg:
+            return
+        agg[target_key]["count"] += agg[source_key].get("count", 1)
+        if len(agg[source_key].get("desc", "")) > len(agg[target_key].get("desc", "")):
+            agg[target_key]["desc"] = agg[source_key].get("desc", "")[:100]
+        if agg[source_key].get("importance") == "주인공":
+            agg[target_key]["importance"] = "주인공"
+        agg[target_key]["aliases"] = agg[target_key].get("aliases", set()) | agg[source_key].get("aliases", set())
+    
+    # 1단계: aliases 필드 기반 병합 (AI가 이미 감지한 별칭 활용)
+    keys_to_delete = set()
+    processed_pairs = set()  # (A,B) 쌍 중복 처리 방지
+    
+    for key, val in list(agg.items()):
+        if key in keys_to_delete:
+            continue
+        key_name_norm = _norm_name_for_cmp(val["name"])
+        key_is_na = (key_name_norm == "나")
+        aliases = val.get("aliases", set())
+        
+        for other_key, other_val in list(agg.items()):
+            if other_key == key or other_key in keys_to_delete:
+                continue
+            
+            pair = tuple(sorted([key, other_key]))
+            if pair in processed_pairs:
+                continue
+            
+            other_name_norm = _norm_name_for_cmp(other_val["name"])
+            other_is_na = (other_name_norm == "나")
+            other_aliases = other_val.get("aliases", set())
+            
+            # 병합 조건: A의 aliases에 B의 이름이 있거나, B의 aliases에 A의 이름이 있는 경우
+            should_merge = False
+            if other_name_norm in [_norm_name_for_cmp(a) for a in aliases]:
+                should_merge = True
+            if key_name_norm in [_norm_name_for_cmp(a) for a in other_aliases]:
+                should_merge = True
+            
+            if should_merge:
+                processed_pairs.add(pair)
+                # 병합 방향 결정: '나'는 항상 본명 쪽으로 병합
+                if key_is_na and not other_is_na:
+                    # key(나)를 other(본명)에 병합
+                    _merge_into(other_key, key)
+                    keys_to_delete.add(key)
+                elif other_is_na and not key_is_na:
+                    # other(나)를 key(본명)에 병합
+                    _merge_into(key, other_key)
+                    keys_to_delete.add(other_key)
+                else:
+                    # 둘 다 '나'가 아니면: count가 높거나 먼저 등장한 쪽으로 병합
+                    if val.get("count", 0) >= other_val.get("count", 0):
+                        _merge_into(key, other_key)
+                        keys_to_delete.add(other_key)
+                    else:
+                        _merge_into(other_key, key)
+                        keys_to_delete.add(key)
+                        break  # key가 삭제되었으므로 이 key의 루프 종료
+    
+    # 삭제
+    for k in keys_to_delete:
+        try:
+            del agg[k]
+        except Exception:
+            pass
+    
+    # 2단계: '나'가 주인공 이름과 동일인인지 LLM으로 확인
     if "나" in {v["name"] for v in agg.values()} or ("나" in agg):
         # 후보 목록에서 '나'를 제외한 고유명들
         candidate_names = [v["name"] for k, v in agg.items() if _norm_name_for_cmp(v["name"]) != _norm_name_for_cmp("나")]
@@ -1188,10 +1301,14 @@ async def extract_characters_from_story(db: AsyncSession, story_id, max_chapters
                             target_key = k
                             break
                     if key_i is not None and target_key is not None and key_i != target_key:
-                        # count 합산, 설명은 더 긴 쪽 유지
-                        agg[target_key]["count"] += agg[key_i]["count"]
+                        # count 합산, 설명은 더 긴 쪽 유지, importance 전달
+                        agg[target_key]["count"] += agg[key_i].get("count", 1)
                         if len(agg.get(key_i, {}).get("desc", "")) > len(agg[target_key].get("desc", "")):
                             agg[target_key]["desc"] = agg.get(key_i, {}).get("desc", "")[:100]
+                        if agg.get(key_i, {}).get("importance") == "주인공":
+                            agg[target_key]["importance"] = "주인공"
+                        # aliases도 병합
+                        agg[target_key]["aliases"] = agg[target_key].get("aliases", set()) | agg.get(key_i, {}).get("aliases", set())
                         try:
                             del agg[key_i]
                         except Exception:
@@ -1203,13 +1320,28 @@ async def extract_characters_from_story(db: AsyncSession, story_id, max_chapters
     if not agg:
         # LLM이 실패하면 0을 반환하여 상위에서 폴백/에러 처리
         return 0
-    top = sorted(agg.values(), key=lambda x: (-x["count"], x["order"]))[:5]
+    
+    # 정렬: 중요도(주인공 우선) → 언급횟수 → 등장순서
+    def importance_score(x):
+        imp = x.get("importance", "").lower()
+        if imp == "주인공":
+            return 0
+        elif imp == "핵심조연":
+            return 1
+        return 2
+    
+    top = sorted(agg.values(), key=lambda x: (importance_score(x), -x["count"], x["order"]))[:5]
+    
     # 최종 검증: 이름이 너무 일반적인 경우 제거(예: '나'는 허용)
     def is_generic(n: str) -> bool:
         k = _norm_name(n)
         if k == '나':
             return False
-        bad = {"주인공","동료","동료 a","라이벌","적","안타고니스트","조연","친구","남자","여자"}
+        bad = {
+            "주인공", "동료", "동료 a", "동료 b", "라이벌", "적", "안타고니스트", "조연",
+            "친구", "남자", "여자", "엑스트라", "행인", "상점주인", "점원", "경비", 
+            "병사", "잡몹", "몹", "npc", "배경인물", "단역"
+        }
         return k in bad
     top = [it for it in top if not is_generic(it['name'])]
     if not top:

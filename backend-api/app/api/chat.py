@@ -1026,7 +1026,7 @@ async def _generate_agent_first_response(
                 select(CharacterSetting).where(CharacterSetting.character_id == character.id)
             )
             settings = settings_result.scalar_one_or_none()
-            
+
             # 예시 대화 가져오기
             example_dialogues_result = await db.execute(
                 select(CharacterExampleDialogue)
@@ -1225,6 +1225,23 @@ async def send_message(
         )
         db.add(settings)
         await db.commit()
+        
+    settings_patch = getattr(request, "settings_patch", None) or {}
+        # settings_patch 반영(검증된 키만 허용)
+    try:
+        allowed_keys = {"postprocess_mode", "next_event_len", "response_length_pref", "prewarm_on_start"}
+        patch_data = {k: v for k, v in (settings_patch or {}).items() if k in allowed_keys}
+        if patch_data:
+            ppm = patch_data.get("postprocess_mode")
+            if ppm and str(ppm).lower() not in {"always", "first2", "off"}:
+                patch_data.pop("postprocess_mode", None)
+            nel = patch_data.get("next_event_len")
+            if nel not in (None, 1, 2):
+                patch_data.pop("next_event_len", None)
+            await _set_room_meta(room.id, patch_data)
+    except Exception:
+        pass
+
 
     # 2. 사용자 메시지 저장 (continue 모드면 저장하지 않음)
     save_user_message = True
@@ -1267,7 +1284,32 @@ async def send_message(
 [세계관]
 {character.world_setting or '설정 없음'}
 """
+    # 🎯 활성 페르소나 로드 및 프롬프트 주입
+    try:
+        persona = await get_active_persona_by_user(db, current_user.id)
+        if persona:
+            pn = (getattr(persona, 'name', '') or '').strip()
+            pd = (getattr(persona, 'description', '') or '').strip()
+            if pn:
+                persona_block = f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+당신은 지금 '{pn}'과(와) 대화하고 있습니다.
+'{pn}'은(는) 당신이 이미 알고 있는 사람입니다.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+                if pd:
+                    persona_block += f"'{pn}'의 정보: {pd}\n"
+                persona_block += f"""
+⚠️ 절대 규칙:
+- 상대를 '{pn}'(이)라고 부르세요
+- 이름을 모르는 척 하지 마세요
+- 자연스럽게 '{pn}'의 이름을 언급하세요
 
+"""
+                character_prompt = persona_block + character_prompt
+                logger.info(f"[send_message] 페르소나 로드 성공: {pn}")
+    except Exception as e:
+        logger.warning(f"[send_message] 페르소나 로드 실패: {e}")
+        
     # ✅ Redis에서 이미지 컨텍스트 가져오기
     try:
         from app.core.database import redis_client
@@ -1357,11 +1399,12 @@ async def send_message(
         if is_continue else request.content
     )
 
+    meta_state = await _get_room_meta(room.id)
     # 응답 길이 설정: override가 있으면 우선 사용
     response_length = (
         request.response_length_override 
         if hasattr(request, 'response_length_override') and request.response_length_override
-        else getattr(current_user, 'response_length_pref', 'medium')
+        else (meta_state.get("response_length_pref") if isinstance(meta_state, dict) and meta_state.get("response_length_pref") else getattr(current_user, 'response_length_pref', 'medium'))
     )
 
     try:
@@ -1417,10 +1460,28 @@ async def send_message(
     except Exception:
         # 요약 실패는 치명적이지 않으므로 무시
         pass
-    
+
+    # 키워드 매칭으로 이미지 인덱스 결정
+    suggested_image_index = -1
+    try:
+        if character and ai_message and hasattr(character, 'image_descriptions'):
+            ai_content = ai_message.content if hasattr(ai_message, 'content') else str(ai_message.get('content', ''))
+            lower_content = ai_content.lower()
+            for idx, img in enumerate(character.image_descriptions or []):
+                keywords = img.get('keywords', []) if isinstance(img, dict) else getattr(img, 'keywords', [])
+                for kw in (keywords or []):
+                    if kw and kw.lower() in lower_content:
+                        suggested_image_index = idx
+                        break
+                if suggested_image_index >= 0:
+                    break
+    except Exception:
+        pass
+
     return SendMessageResponse(
         user_message=user_message,
-        ai_message=ai_message
+        ai_message=ai_message,
+        suggested_image_index=suggested_image_index
     )
 
 @router.get("/history/{session_id}", response_model=List[ChatMessageResponse])
@@ -1764,6 +1825,7 @@ async def origchat_start(
                 persona_desc = ""
                 
                 if pov == "persona":
+                # 🎯 활성 페르소나 로드 (pov와 무관하게)
                     try:
                         persona = await get_active_persona_by_user(db, current_user.id)
                         if persona:
@@ -2342,50 +2404,47 @@ async def origchat_turn(
         # 시점/문체 힌트: persona(내 페르소나) or possess(선택 캐릭터 빙의)
         try:
             pov = (meta_state.get("pov") or "possess").lower()
-            if pov == "persona":
-                logger.info(f"[origchat_turn] 페르소나 모드 활성화 - pov: {pov}")
-                # 사용자 활성 페르소나 로드
-                from app.services.user_persona_service import get_active_persona_by_user
-                persona = await get_active_persona_by_user(db, current_user.id)
-                logger.info(f"[origchat_turn] 페르소나 조회 결과: {persona}")
-                if persona:
-                    pn = (getattr(persona, 'name', '') or '').strip()
-                    pd = (getattr(persona, 'description', '') or '').strip()
-                    logger.info(f"[origchat_turn] 페르소나 로드 성공: {pn}, 설명: {pd[:50] if pd else '없음'}")
-                    
-                    fb = ["[시점·문체]"]
-                    if pn:
-                        fb.append(f"고정 시점: 사용자 페르소나 '{pn}'의 1인칭 또는 근접 3인칭.")
-                    if pd:
-                        fb.append(f"성격/정서 결: {pd}")
-                    fb.append("대사·지문은 페르소나 어휘/톤을 유지.")
-                    parts.append("\n".join(fb))
-                    # ✅ [대화 상대] 섹션 추가 - 가장 앞에 배치하여 강조
-                    partner_block = [
-                        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-                        f"당신은 지금 '{pn}'과(와) 대화하고 있습니다.",
-                        f"'{pn}'은(는) 당신이 이미 알고 있는 사람입니다.",
-                        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                    ]
-                    if pd:
-                        partner_block.append(f"'{pn}'의 정보: {pd}")
-                    partner_block.append("")
-                    partner_block.append(f"⚠️ 절대 규칙:")
-                    partner_block.append(f"- 상대를 '{pn}'(이)라고 부르세요")
-                    partner_block.append(f"- 이름을 모르는 척 하지 마세요")
-                    partner_block.append(f"- '폐하', '군주' 등 다른 호칭 금지")
-                    partner_block.append(f"- 자연스럽게 '{pn}'의 이름을 언급하세요")
-                    # 가장 앞에 배치
-                    parts.insert(0, "\n".join(partner_block))
-                    # 원작 컨텍스트를 2순위로 배치 (페르소나 블록 다음)
-                    if ctx_block:
-                        parts.insert(2, ctx_block)
-                else:
-                    logger.warning(f"[origchat_turn] 페르소나를 찾을 수 없음: user_id={current_user.id}")
-                    # 페르소나가 없어도 원작 컨텍스트는 2순위로 배치
-                    if ctx_block:
-                        parts.insert(1, ctx_block)  # 캐릭터 정보(0) 다음
+            # 🎯 활성 페르소나 로드 (pov와 무관하게)
+            logger.info(f"[origchat_turn] pov: {pov}, 페르소나 로드 시도")
+            from app.services.user_persona_service import get_active_persona_by_user
+            persona = await get_active_persona_by_user(db, current_user.id)
+            logger.info(f"[origchat_turn] 페르소나 조회 결과: {persona}")
+            if persona:
+                pn = (getattr(persona, 'name', '') or '').strip()
+                pd = (getattr(persona, 'description', '') or '').strip()
+                logger.info(f"[origchat_turn] 페르소나 로드 성공: {pn}, 설명: {pd[:50] if pd else '없음'}")
+                
+                fb = ["[시점·문체]"]
+                if pn:
+                    fb.append(f"고정 시점: 사용자 페르소나 '{pn}'의 1인칭 또는 근접 3인칭.")
+                if pd:
+                    fb.append(f"성격/정서 결: {pd}")
+                fb.append("대사·지문은 페르소나 어휘/톤을 유지.")
+                parts.append("\n".join(fb))
+                
+                partner_block = [
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+                    f"당신은 지금 '{pn}'과(와) 대화하고 있습니다.",
+                    f"'{pn}'은(는) 당신이 이미 알고 있는 사람입니다.",
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                ]
+                if pd:
+                    partner_block.append(f"'{pn}'의 정보: {pd}")
+                partner_block.append("")
+                partner_block.append(f"⚠️ 절대 규칙:")
+                partner_block.append(f"- 상대를 '{pn}'(이)라고 부르세요")
+                partner_block.append(f"- 이름을 모르는 척 하지 마세요")
+                partner_block.append(f"- 다른 호칭 금지")
+                partner_block.append(f"- 자연스럽게 '{pn}'의 이름을 언급하세요")
+                parts.insert(0, "\n".join(partner_block))
+                if ctx_block:
+                    parts.insert(2, ctx_block)
             else:
+                logger.warning(f"[origchat_turn] 페르소나를 찾을 수 없음: user_id={current_user.id}")
+                if ctx_block:
+                    parts.insert(1, ctx_block)
+            # focus_character 처리(기존 else 내용) — 페르소나가 없을 때만 실행
+            if not persona:
                 fcid = meta_state.get("focus_character_id")
                 if fcid:
                     row_fc = await db.execute(
@@ -2406,7 +2465,6 @@ async def origchat_turn(
                             fb_lines.append(f"대사 말투: {fc_speech}")
                         fb_lines.append("묘사는 시점 인물의 지각/어휘 결을 따르고, 과잉 해설 금지.")
                         parts.append("\n".join(fb_lines))
-                    # 페르소나 모드가 아닐 때도 원작 컨텍스트는 2순위로 배치
                     if ctx_block:
                         parts.insert(1, ctx_block)  # 캐릭터 정보(0) 다음
         except Exception:

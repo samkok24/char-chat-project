@@ -233,7 +233,7 @@ const ChatHistoryPage = () => {
                   <HistoryChatCard 
                     character={character}
                     displayTitle={(() => {
-                      const isOrig = !!(character?.origin_story_id || character?.is_origchat);
+                      const isOrig = !!(character?.origin_story_id || character?.is_origchat || character?.source === 'origchat');
                       if (!isOrig) return character.name;
                       const mode = character?.last_chat_mode || 'plain';
                       const map = { parallel: '평행세계', canon: '원작대로', plain: '일대일' };

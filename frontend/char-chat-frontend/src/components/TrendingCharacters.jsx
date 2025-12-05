@@ -19,7 +19,7 @@ const TrendingItem = ({ character }) => {
   const imgSrc = getThumbnailUrl(withV, 400) || DEFAULT_SQUARE_URI;
   const username = character?.creator_username;
   const isWebNovel = character?.source_type === 'IMPORTED';
-  const isOrigChat = !!(character?.origin_story_id || character?.is_origchat);
+  const isOrigChat = !!(character?.origin_story_id || character?.is_origchat || character?.source === 'origchat');
 
   return (
     <li>
