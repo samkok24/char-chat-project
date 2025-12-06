@@ -126,6 +126,9 @@ class StoryListItem(BaseModel):
     excerpt: Optional[str] = None
     # 태그 슬러그 목록
     tags: list[str] = Field(default_factory=list)
+    episode_count: int = 0
+    extracted_characters: list = Field(default_factory=list)
+    latest_chapter_created_at: Optional[datetime] = None
 
 
 class StoryListResponse(BaseModel):
@@ -229,3 +232,10 @@ class ChapterResponse(ChapterBase):
     def serialize_image_url(self, value):
         """응답 시 배열 그대로 반환"""
         return value
+
+
+class StoryExtractedCharacterUpdate(BaseModel):
+    """스토리 추출 캐릭터 업데이트 스키마 (이미지, 이름 등)"""
+    avatar_url: Optional[str] = Field(None, max_length=1000)
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
+    description: Optional[str] = None

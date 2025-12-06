@@ -14,11 +14,12 @@ from typing import AsyncGenerator
 
 from app.models.story import Story
 from app.models.story_chapter import StoryChapter
+from app.models.story_extracted_character import StoryExtractedCharacter
 from app.models.user import User
 from app.models.character import Character
 from app.models.like import StoryLike
 from app.models.tag import Tag, StoryTag
-from app.schemas.story import StoryCreate, StoryUpdate, StoryGenerationRequest
+from app.schemas.story import StoryCreate, StoryUpdate, StoryGenerationRequest, StoryExtractedCharacterUpdate
 from app.services.ai_service import get_ai_completion, AIModel, get_ai_completion_stream
 
 
@@ -364,6 +365,44 @@ async def get_story_by_id(db: AsyncSession, story_id: uuid.UUID) -> Optional[Sto
     return result.scalar_one_or_none()
 
 
+async def get_story_with_chapters(db: AsyncSession, story_id: uuid.UUID) -> Optional[Story]:
+    """스토리 + 챕터/태그/추출캐릭터를 함께 조회하며 조회수를 1 증가"""
+    # 조회수 증가
+    await db.execute(
+        update(Story).where(Story.id == story_id).values(view_count=Story.view_count + 1)
+    )
+    await db.commit()
+
+    result = await db.execute(
+        select(Story)
+        .options(
+            selectinload(Story.creator),
+            selectinload(Story.character),
+            selectinload(Story.tags),
+            selectinload(Story.chapters),
+            selectinload(Story.extracted_characters),
+        )
+        .where(Story.id == story_id)
+    )
+    return result.scalar_one_or_none()
+
+
+async def get_story_for_check(db: AsyncSession, story_id: uuid.UUID) -> Optional[Story]:
+    """단순 조회 (조회수 증가 없음) - 컨텍스트/추출캐릭터 보장용"""
+    result = await db.execute(
+        select(Story)
+        .options(
+            selectinload(Story.creator),
+            selectinload(Story.character),
+            selectinload(Story.tags),
+            selectinload(Story.chapters),
+            selectinload(Story.extracted_characters),
+        )
+        .where(Story.id == story_id)
+    )
+    return result.scalar_one_or_none()
+
+
 async def get_stories_by_creator(
     db: AsyncSession,
     creator_id: uuid.UUID,
@@ -428,7 +467,9 @@ async def get_public_stories(
         .options(
             selectinload(Story.creator),
             selectinload(Story.character),
+            selectinload(Story.chapters),
             selectinload(Story.tags),
+            selectinload(Story.extracted_characters),
         )
         .where(Story.is_public == True)
     )
@@ -585,3 +626,45 @@ async def get_story_total_views(db: AsyncSession, story_id: uuid.UUID) -> int:
 # 스토리 생성 서비스 인스턴스
 story_generation_service = StoryGenerationService()
 
+
+async def update_extracted_character(
+    db: AsyncSession,
+    story_id: uuid.UUID,
+    char_id: uuid.UUID,
+    update_data: StoryExtractedCharacterUpdate,
+    user_id: uuid.UUID
+) -> StoryExtractedCharacter:
+    """
+    추출된 캐릭터 정보(아바타 등) 업데이트
+    - 스토리 소유자만 가능
+    """
+    stmt = (
+        select(StoryExtractedCharacter)
+        .join(Story)
+        .where(
+            StoryExtractedCharacter.id == char_id,
+            StoryExtractedCharacter.story_id == story_id
+        )
+        .options(selectinload(StoryExtractedCharacter.story))
+    )
+    result = await db.execute(stmt)
+    char = result.scalar_one_or_none()
+
+    if not char:
+        raise ValueError("Extracted character not found")
+
+    # 권한 체크: 스토리 생성자만 수정 가능
+    if char.story.creator_id != user_id:
+        raise PermissionError("Only the story creator can update extracted characters")
+
+    # 필드 업데이트
+    if update_data.avatar_url is not None:
+        char.avatar_url = update_data.avatar_url
+    if update_data.name is not None:
+        char.name = update_data.name
+    if update_data.description is not None:
+        char.description = update_data.description
+
+    await db.commit()
+    await db.refresh(char)
+    return char

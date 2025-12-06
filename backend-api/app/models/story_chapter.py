@@ -30,7 +30,7 @@ class StoryChapter(Base):
     )
 
     # 관계
-    story = relationship("Story", backref="chapters")
+    story = relationship("Story", back_populates="chapters")
 
     def __repr__(self):
         return f"<StoryChapter(story_id={self.story_id}, no={self.no})>"

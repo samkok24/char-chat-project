@@ -228,7 +228,7 @@ export default function DropzoneGallery({
           {isUploading ? (
              <Loader2 className="w-6 h-6 text-purple-600 animate-spin" />
           ) : (
-             <Upload className="w-5 h-5 text-gray-500" />
+          <Upload className="w-5 h-5 text-gray-500" />
           )}
           <div className="text-sm text-gray-800">
              {isUploading ? '업로드 중...' : '이미지를 끌어다 놓거나 클릭하여 업로드'}

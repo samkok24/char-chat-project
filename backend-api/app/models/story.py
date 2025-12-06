@@ -32,7 +32,12 @@ class Story(Base):
     comment_count = Column(Integer, default=0)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-
+    chapters = relationship("StoryChapter", back_populates="story", cascade="all, delete-orphan")
+    extracted_characters = relationship(
+        "StoryExtractedCharacter",
+        back_populates="story",
+        order_by="StoryExtractedCharacter.order_index",
+    )
     # 관계 설정
     creator = relationship("User", back_populates="stories")
     # 모호성 제거: Character.stories와 동일한 FK(Story.character_id)로 연결

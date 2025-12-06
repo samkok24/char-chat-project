@@ -265,7 +265,7 @@ export const SocketProvider = ({ children }) => {
         reject(new Error('not_connected'));
         return;
       }
-      const needsJoin = !currentRoom || currentRoom?.id !== roomId;
+    const needsJoin = !currentRoom || currentRoom?.id !== roomId;
       const payload = { roomId, content, messageType };
       // 설정 패치가 있으면 함께 전송 (백엔드 지원 시)
       if (options.settingsPatch) {
@@ -294,19 +294,19 @@ export const SocketProvider = ({ children }) => {
       }
     };
 
-      if (needsJoin) {
-        try {
-          socket.emit('join_room', { roomId });
-          const once = (data) => {
-            try { if (data?.roomId === roomId) doSend(); } finally { socket.off('room_joined', once); }
-          };
-          socket.on('room_joined', once);
-          // 안전장치: 1.5초 후 리스너 정리
-          setTimeout(() => { try { socket.off('room_joined', once); } catch {} }, 1500);
+    if (needsJoin) {
+      try {
+        socket.emit('join_room', { roomId });
+        const once = (data) => {
+          try { if (data?.roomId === roomId) doSend(); } finally { socket.off('room_joined', once); }
+        };
+        socket.on('room_joined', once);
+        // 안전장치: 1.5초 후 리스너 정리
+        setTimeout(() => { try { socket.off('room_joined', once); } catch {} }, 1500);
         } catch(_) { reject(new Error('join_failed')); }
-        return;
-      }
-      doSend();
+      return;
+    }
+    doSend();
     });
   }, [socket, connected, currentRoom]);
 

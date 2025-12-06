@@ -422,15 +422,15 @@ const ChatPage = () => {
               const rf = rangeFromParam ? Number(rangeFromParam) : null;
               const rt = rangeToParam ? Number(rangeToParam) : null;
               const startFn = async () => {
-                const startRes = await origChatAPI.start({ 
-                  story_id: storyIdParam, 
-                  character_id: characterId, 
-                  mode: (modeParam || 'canon'), 
-                  start: { chapter: a }, 
-                  range_from: rf, 
-                  range_to: rt, 
-                  pov: (modeParam === 'parallel' ? 'persona' : 'possess')
-                });
+              const startRes = await origChatAPI.start({ 
+                story_id: storyIdParam, 
+                character_id: characterId, 
+                mode: (modeParam || 'canon'), 
+                start: { chapter: a }, 
+                range_from: rf, 
+                range_to: rt, 
+                pov: (modeParam === 'parallel' ? 'persona' : 'possess')
+              });
                 return startRes.data?.id || startRes.data?.room_id || startRes.data?.room?.id || null;
               };
               roomId = await startChatWithRetry(startFn, 'origchat');
@@ -465,7 +465,7 @@ const ChatPage = () => {
 
               if (!reused) {
                 const roomResponse = await startChatWithRetry(() => chatAPI.startChat(characterId), 'chat');
-                roomId = roomResponse.data.id;
+              roomId = roomResponse.data.id;
                 try { sessionStorage.setItem(guardKey, JSON.stringify({ roomId, ts: Date.now() })); } catch (_) {}
               }
             } else {
@@ -939,7 +939,7 @@ const ChatPage = () => {
     // 신규 메시지 수신 시 맨 아래로 스크롤
     if (messages.length > 0) {
       if (autoScrollRef.current) {
-        scrollToBottom();
+         scrollToBottom();
       }
     }
   }, [messages]);
@@ -995,16 +995,16 @@ const ChatPage = () => {
     // 원작챗이면 HTTP 턴 호출, 아니면 소켓 전송
     if (isOrigChat && origStoryId) {
       // Optimistic UI Update for user message (원작챗)
-      const tempUserMessage = {
-        id: `temp-user-${Date.now()}`,
-        roomId: chatRoomId,
-        senderType: 'user',
-        senderId: user.id,
-        content: messageContent,
-        isNarration: isNarration,
-        created_at: new Date().toISOString()
-      };
-      setMessages(prev => [...prev, tempUserMessage]);
+    const tempUserMessage = {
+      id: `temp-user-${Date.now()}`,
+      roomId: chatRoomId,
+      senderType: 'user',
+      senderId: user.id,
+      content: messageContent,
+      isNarration: isNarration,
+      created_at: new Date().toISOString()
+    };
+    setMessages(prev => [...prev, tempUserMessage]);
       try {
         setOrigTurnLoading(true);
         const payload = { room_id: chatRoomId, user_text: messageContent, idempotency_key: genIdemKey(), settings_patch: (settingsSyncedRef.current ? null : chatSettings) };

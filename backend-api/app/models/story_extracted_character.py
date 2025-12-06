@@ -23,7 +23,7 @@ class StoryExtractedCharacter(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
-    story = relationship("Story")
+    story = relationship("Story", back_populates="extracted_characters")
 
     def __repr__(self):
         return f"<StoryExtractedCharacter(id={self.id}, story_id={self.story_id}, name={self.name})>"

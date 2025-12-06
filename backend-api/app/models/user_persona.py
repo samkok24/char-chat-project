@@ -24,6 +24,9 @@ class UserPersona(Base):
     is_active = Column(Boolean, default=False)  # 현재 활성 페르소나인지
     is_default = Column(Boolean, default=False)  # 기본 페르소나인지
     
+    # 적용 범위: 'all' (모두), 'character' (일반 캐릭터챗만), 'origchat' (원작챗만)
+    apply_scope = Column(String(20), default='all', nullable=False)
+    
     # 타임스탬프
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

@@ -311,8 +311,8 @@ const AgentSidebar = ({ onCreateSession, activeSessionId, onSessionSelect, onDel
               </div>
             </div>
             <Button className="w-full bg-purple-600 hover:bg-purple-700 text-white" onClick={() => openLoginModal({ initialTab: 'login' })}>
-              <LogIn className="w-4 h-4 mr-2" /> 로그인
-            </Button>
+                <LogIn className="w-4 h-4 mr-2" /> 로그인
+              </Button>
           </div>
         )}
       </div>

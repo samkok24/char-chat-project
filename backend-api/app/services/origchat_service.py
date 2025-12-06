@@ -1183,7 +1183,7 @@ async def extract_characters_from_story(db: AsyncSession, story_id, max_chapters
     # ---- 별칭 기반 중복 캐릭터 병합 ----
     def _norm_name_for_cmp(name: str) -> str:
         return (name or "").lower().replace(" ", "").strip()
-    
+
     def _merge_into(target_key: str, source_key: str):
         """source를 target에 병합"""
         if target_key not in agg or source_key not in agg:

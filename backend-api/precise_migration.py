@@ -121,7 +121,10 @@ COLUMNS_TO_ADD = {
         ("is_published", "INTEGER DEFAULT 0 NOT NULL"),
         ("published_at", "DATETIME")
     ],
-    "chat_room_read_status": []  # Phase 2: 읽음 상태 추적
+    "chat_room_read_status": [],  # Phase 2: 읽음 상태 추적
+    "user_personas": [
+        ("apply_scope", "VARCHAR(20) DEFAULT 'all' NOT NULL"),  # 적용 범위: all, character, origchat
+    ],
 }
 
 def _resolve_db_path():

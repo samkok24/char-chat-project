@@ -48,6 +48,7 @@ import { RecentCharactersList } from '../components/RecentCharactersList';
 import { RecentChatCard } from '../components/RecentChatCard';
 import { CharacterCard, CharacterCardSkeleton } from '../components/CharacterCard';
 import StoryExploreCard from '../components/StoryExploreCard';
+import StorySerialCard from '../components/StorySerialCard';
 import AppLayout from '../components/layout/AppLayout';
 import ErrorBoundary from '../components/ErrorBoundary';
 import TrendingCharacters from '../components/TrendingCharacters';
@@ -65,9 +66,29 @@ const HomePage = () => {
   const requireAuth = useRequireAuth();
   const navigate = useNavigate();
   const location = useLocation();
-  const [sourceFilter, setSourceFilter] = useState(null); // null | 'IMPORTED' | 'ORIGINAL'
+  // URL 쿼리로부터 초기 탭 결정
+  const params = new URLSearchParams(location.search);
+  const tabParam = params.get('tab');
+  const initialFilter =
+    tabParam === 'origserial' ? 'ORIGSERIAL' :
+    tabParam === 'character' ? 'ORIGINAL' :
+    null;
+  const [sourceFilter, setSourceFilter] = useState(initialFilter);
+  const [origSerialTab, setOrigSerialTab] = useState('novel'); // 'novel' | 'origchat'
   const isCharacterTab = sourceFilter === 'ORIGINAL';
-
+  const isOrigSerialTab = sourceFilter === 'ORIGSERIAL';
+  const requestSourceType = isCharacterTab
+    ? 'ORIGINAL'
+    : sourceFilter === 'IMPORTED'
+      ? 'IMPORTED'
+      : undefined;
+  const updateTab = (tabValue, tabQuery) => {
+    setSourceFilter(tabValue);
+    const p = new URLSearchParams(location.search);
+    if (tabQuery) p.set('tab', tabQuery);
+    else p.delete('tab');
+    navigate({ pathname: location.pathname, search: p.toString() }, { replace: true });
+  };
   // 스토리 다이브용 소설 목록 조회
   const { data: novels = [] } = useQuery({
     queryKey: ['storydive-novels'],
@@ -181,7 +202,7 @@ const HomePage = () => {
           skip: pageParam,
           limit: LIMIT,
           tags: effectiveTags.length ? effectiveTags.join(',') : undefined,
-          source_type: sourceFilter || undefined,
+          source_type: requestSourceType,
         });
         const items = response.data || [];
         return { items, nextSkip: items.length === LIMIT ? pageParam + LIMIT : null };
@@ -207,6 +228,86 @@ const HomePage = () => {
       }),
     [characters]
   );
+
+  const origSerialCharacters = React.useMemo(
+    () =>
+      characters.filter((ch) => !!(ch?.origin_story_id || ch?.is_origchat || ch?.source === 'origchat')),
+    [characters]
+  );
+
+  // 원작연재 탭용 스토리 무한스크롤
+  const STORY_LIMIT = 20;
+  const {
+    data: serialStoryPages,
+    isLoading: serialStoriesLoading,
+    isFetchingNextPage: isFetchingNextSerialPage,
+    hasNextPage: hasNextSerialPage,
+    fetchNextPage: fetchNextSerialPage,
+    refetch: refetchSerialStories
+  } = useInfiniteQuery({
+    queryKey: ['serial-stories', 'infinite', searchQuery],
+    queryFn: async ({ pageParam = 0 }) => {
+      try {
+        const params = {
+          skip: pageParam,
+          limit: STORY_LIMIT,
+          sort: 'recent', // 최근 업데이트순
+        };
+        const trimmed = searchQuery?.trim();
+        if (trimmed) params.search = trimmed;
+        console.log('[원작연재] API 요청 params:', params);
+        const res = await storiesAPI.getStories(params);
+        console.log('[원작연재] API 응답:', res.data);
+        const list = Array.isArray(res.data?.stories) ? res.data.stories : [];
+        // 웹툰 제외, 공개된 것만 (프론트 필터링)
+        const filtered = list.filter(s => !s?.is_webtoon && s?.is_public !== false);
+        return { 
+          items: filtered, 
+          nextSkip: list.length === STORY_LIMIT ? pageParam + STORY_LIMIT : null 
+        };
+      } catch (error) {
+        console.error('원작연재 스토리 목록 로드 실패:', error);
+        return { items: [], nextSkip: null };
+      }
+    },
+    getNextPageParam: (lastPage) => lastPage.nextSkip,
+    staleTime: 30 * 1000,
+    cacheTime: 10 * 60 * 1000,
+    enabled: isOrigSerialTab, // 원작연재 탭일 때만 쿼리 실행
+  });
+
+  // const serialStories = (serialStoryPages?.pages || []).flatMap(p => p.items);
+  // const novelStories = React.useMemo(
+  //   () => serialStories.filter((s) => !s?.is_origchat),
+  //   [serialStories]
+  // );
+  // const origchatStories = React.useMemo(
+  //   () => serialStories.filter((s) => !!s?.is_origchat),
+  //   [serialStories]
+  // );
+  const serialStories = (serialStoryPages?.pages || []).flatMap(p => p.items);
+  // // 백엔드에서 only 파라미터로 필터링하므로 프론트 필터링 불필요
+  // const novelStories = origSerialTab === 'novel' ? serialStories : [];
+  // const origchatStories = origSerialTab === 'origchat' ? serialStories : [];
+    // 원작소설 탭: 모든 Story (웹툰 제외)
+  // 원작챗 탭: Character API에서 가져온 origSerialCharacters 사용 (Story API 불필요)
+  const novelStories = serialStories.filter(s => !s?.is_webtoon);
+  const serialSentinelRef = useRef(null);
+
+  // 원작연재 탭 무한스크롤 IntersectionObserver
+  useEffect(() => {
+    if (!isOrigSerialTab || !serialSentinelRef.current) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting && hasNextSerialPage && !isFetchingNextSerialPage) {
+          fetchNextSerialPage();
+        }
+      },
+      { threshold: 0.1 }
+    );
+    observer.observe(serialSentinelRef.current);
+    return () => observer.disconnect();
+  }, [isOrigSerialTab, hasNextSerialPage, isFetchingNextSerialPage, fetchNextSerialPage]);
 
   // 웹소설(스토리) 탐색: 공개 스토리 일부 노출
   const { data: exploreStories = [], isLoading: storiesLoading } = useQuery({
@@ -367,7 +468,7 @@ const HomePage = () => {
 
   // 태그 추가 기능 제거 요청에 따라 관련 로직/버튼 제거됨
 
-  const gridColumnClasses = isCharacterTab
+  const gridColumnClasses = (isCharacterTab || isOrigSerialTab)
     ? 'grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6 gap-3'
     : 'grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3';
 
@@ -377,10 +478,13 @@ const HomePage = () => {
       const slice = generalCharacters.slice(start, start + CHARACTER_PAGE_SIZE);
       return slice.map((c) => ({ kind: 'character', data: c }));
     }
+    if (isOrigSerialTab) {
+      return origSerialCharacters.map((c) => ({ kind: 'character', data: c }));
+    }
     return mixedItems.length
       ? mixedItems
       : characters.map((c) => ({ kind: 'character', data: c }));
-  }, [isCharacterTab, generalCharacters, mixedItems, characters, characterPage]);
+  }, [isCharacterTab, isOrigSerialTab, generalCharacters, origSerialCharacters, mixedItems, characters, characterPage]);
 
   const hasGridItems = displayGridItems.length > 0;
   const shouldShowPagination = isCharacterTab && generalCharacters.length > 0;
@@ -431,21 +535,18 @@ const HomePage = () => {
           {/* 상단 필터 바 + 검색 */}
           <div className="mb-6">
             <div className="flex items-center gap-3">
-              <button
-                onClick={() => setSourceFilter(null)}
+            <button
+                onClick={() => updateTab(null, null)}
                 className={`px-3 py-1 rounded-full border ${sourceFilter === null ? 'bg-yellow-500 text-black border-yellow-400' : 'bg-gray-800 text-gray-200 border-gray-700'}`}
               >전체</button>
               <button
-                onClick={() => setSourceFilter('ORIGINAL')}
+                onClick={() => updateTab('ORIGINAL', 'character')}
                 className={`px-3 py-1 rounded-full border ${sourceFilter === 'ORIGINAL' ? 'bg-yellow-500 text-black border-yellow-400' : 'bg-gray-800 text-gray-200 border-gray-700'}`}
               >캐릭터</button>
               <button
-                onClick={() => setShowAllTags(v => !v)}
-                className={`px-3 py-1 rounded-full border bg-gray-800 text-gray-200 border-gray-700 inline-flex items-center gap-2`}
-              >
-                <span>장르</span>
-                <ChevronDown className={`h-4 w-4 ${showAllTags ? 'rotate-180' : ''}`} />
-              </button>
+                onClick={() => updateTab('ORIGSERIAL', 'origserial')}
+                className={`px-3 py-1 rounded-full border ${isOrigSerialTab ? 'bg-yellow-500 text-black border-yellow-400' : 'bg-gray-800 text-gray-200 border-gray-700'}`}
+              >원작연재</button>
               
               {/* 검색 박스 */}
               <form onSubmit={handleSearch} className="flex-1 max-w-md">
@@ -468,183 +569,284 @@ const HomePage = () => {
             </p>
           )}
 
-          {!isCharacterTab && (
-            <>
-              {/* 특화 캐릭터 바로가기 */}
-              <section className="mb-10">
-                <h2 className="text-lg font-medium text-gray-100 mb-4">특화 캐릭터들과 일상을 같이 나눠보세요</h2>
-                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-                  {[
-                    { name: '마동석', title: '슬기로운 사회생활 배우기', image: '/image/마동석2.jpg', tag: '직장' },
-                    { name: '아이유', title: '연애 고민 상담소', image: '/image/아이유.png', tag: '일상' },
-                    { name: '김영철', title: '유쾌한 영어 회화', image: '/image/김영철.jpg', tag: '일상' },
-                    { name: '침착맨', title: '깨진 멘탈 다 잡기', image: '/image/침착맨.jpg', tag: '일상' },
-                    { name: '펭수', title: '정신이 번쩍 드는 독설 듣기', image: '/image/펭수.jpg', tag: '일상' },
-                    { name: '빠니보틀', title: '여행계획하기', image: '/image/빠니보틀.png', tag: '일상' }
-                  ].map((item, idx) => (
-                    <div
-                      key={idx}
-                      className="bg-gray-800/40 rounded-lg p-3 cursor-pointer hover:bg-gray-800/60 transition-all border border-gray-700/50 hover:border-gray-600"
-                      onClick={() => {
-                        // TODO: 캐릭터 채팅방으로 이동
-                        console.log(`Navigate to ${item.name} chat`);
-                      }}
-                    >
-                      <div className="flex items-center gap-3 mb-2">
-                        <div className="w-10 h-10 rounded-full bg-gray-700 flex items-center justify-center flex-shrink-0 overflow-hidden">
-                          <img 
-                            src={item.image} 
-                            alt={item.name}
-                            className="w-full h-full object-cover object-top"
-                            onError={(e) => {
-                              e.target.style.display = 'none';
-                              e.target.nextSibling.style.display = 'flex';
-                            }}
-                          />
-                          <span className="text-lg hidden">{item.name.charAt(0)}</span>
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <div className="text-xs text-gray-400 truncate">{item.name}</div>
-                        </div>
-                      </div>
-                      <div className="text-sm text-gray-200 leading-snug">
-                        {item.title}
-                      </div>
-                    </div>
-                  ))}
+          {/* 원작연재 탭: 스토리 리스트 또는 캐릭터 격자 */}
+          {isOrigSerialTab && (
+            <section className="mb-10">
+              <div className="flex items-center justify-center mb-4">
+                <div className="flex items-center gap-2">
+                <button
+                    onClick={() => setOrigSerialTab('novel')}
+                    className={`px-3 py-1 rounded-full border text-sm ${
+                      origSerialTab === 'novel'
+                        ? 'bg-white text-black border-white'
+                        : 'bg-gray-800 text-gray-200 border-gray-700'
+                    }`}
+                  >
+                    원작소설
+                  </button>
+                  <button
+                    onClick={() => setOrigSerialTab('origchat')}
+                    className={`px-3 py-1 rounded-full border text-sm ${
+                      origSerialTab === 'origchat'
+                        ? 'bg-white text-black border-white'
+                        : 'bg-gray-800 text-gray-200 border-gray-700'
+                    }`}
+                  >
+                    원작챗
+                  </button>
                 </div>
-              </section>
-
-              {/* 스토리 시뮬레이터 */}
-              <section className="mb-10">
-                <h2 className="text-lg font-medium text-gray-100 mb-4">
-                  {user?.username || '신비한천사60'}님. 이런 상상, 해본 적 있으세요? 직접 주인공이 되어보세요.
-                </h2>
-                <div className="flex gap-4 overflow-x-auto pb-2 scrollbar-hide">
-                  {[
-                    { 
-                      title: '로또1등이라 엄청 즐겁게 회사생활하기', 
-                      badge: '로또1등도 출근합니다',
-                      image: '로또1등도.jpg',
-                      novelTitle: '로또1등이라 엄청 즐겁게 회사생활하기'
-                    },
-                    { 
-                      title: '전셋집에서 쫓겨나서 부동산 재벌되기', 
-                      badge: '회귀해서 부동산 재벌',
-                      image: '부동산.jpg',
-                      novelTitle: '전셋집에서 시작하는 나의 히어로 아카데미아'
-                    },
-                    { 
-                      title: '1998년부터 시작해서 K-컬쳐의 제왕되기', 
-                      badge: 'K-문화의 제왕',
-                      image: 'K문화.jpg',
-                      novelTitle: null
-                    },
-                    { 
-                      title: '망한 아이돌멤버에서 빌보드 프로듀서까지', 
-                      badge: '두번 사는 프로듀서',
-                      image: '프로듀서.jpg',
-                      novelTitle: null
-                    },
-                    { 
-                      title: '회사사람들과 다 같이 생존게임 참여하기', 
-                      badge: '구조조정에서 살아남는법',
-                      image: '구조조정.jpg',
-                      novelTitle: null
-                    }
-                  ].map((item, idx) => {
-                    // novelTitle이 있으면 실제 소설과 매칭
-                    const matchedNovel = item.novelTitle 
-                      ? novels.find(n => n.title === item.novelTitle)
-                      : null;
-
-                    return (
-                      <div
-                        key={idx}
-                        className="flex-shrink-0 w-[200px] cursor-pointer group"
-                        onClick={() => {
-                          if (!requireAuth('스토리 에이전트')) {
-                            return;
-                          }
-                          if (matchedNovel) {
-                            // 바로 원문 페이지로 이동
-                            navigate(`/storydive/novels/${matchedNovel.id}`);
-                          } else {
-                            // 매칭되는 소설이 없으면 준비중 알림
-                            window.dispatchEvent(new CustomEvent('toast', {
-                              detail: {
-                                type: 'info',
-                                message: '준비 중인 콘텐츠입니다'
-                              }
-                            }));
-                          }
-                        }}
-                      >
-                    
-                      <div className="relative aspect-[3/4] rounded-lg overflow-hidden mb-2 bg-gray-900 border border-gray-700/50 group-hover:border-gray-600 transition-colors">
-                        <img 
-                          src={`/image/${item.image}`}
-                          alt={item.title}
-                          className="w-full h-full object-cover"
-                          onError={(e) => {
-                            e.target.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="200" height="267"%3E%3Crect fill="%23374151" width="200" height="267"/%3E%3Ctext x="50%25" y="50%25" fill="%239ca3af" text-anchor="middle" dominant-baseline="middle" font-size="12"%3E이미지 준비중%3C/text%3E%3C/svg%3E';
-                          }}
-                        />
-                        <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent" />
-                        <div className="absolute bottom-0 left-0 right-0 p-3">
-                          <h3 className="text-white font-semibold text-base leading-tight" style={{
-                            textShadow: '0 2px 8px rgba(0,0,0,0.8), 0 0 2px rgba(0,0,0,1)',
-                            WebkitTextStroke: '0.5px black'
-                          }}>
-                            {item.title}
-                          </h3>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-xs text-gray-500">by</span>
-                        <Badge className="bg-blue-600/80 hover:bg-blue-600 text-white text-[10px] px-2 py-0.5">
-                          {item.badge}
-                        </Badge>
-                      </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </section>
-
-              {/* 인기 캐릭터 TOP (4x2) */}
-              <ErrorBoundary>
-                <TrendingCharacters />
-              </ErrorBoundary>
-
-              {/* 웹툰 TOP10 */}
-              <ErrorBoundary>
-                <TopWebtoons />
-              </ErrorBoundary>
-
-              {/* 웹소설 TOP10 (블루) */}
-              <ErrorBoundary>
-                <TopStories />
-              </ErrorBoundary>
-
-              {/* 웹소설 원작 섹션 (상시 노출) */}
-              <ErrorBoundary>
-                <TopOrigChat />
-              </ErrorBoundary>
-
-              {/* 최근 대화 섹션 - 관심 캐릭터 영역 임시 비노출 */}
-              {isAuthenticated && (
+              </div>
+              
+              {/* 원작소설 탭: 스토리 리스트 */}
+              {origSerialTab === 'novel' && (
                 <>
-                  {/* 관심 캐릭터 섹션 숨김 */}
-                  {/* <section className="mt-10 hidden" aria-hidden="true"></section> */}
-
-                  <section className="mt-10 mb-10">
-                    <div className="flex items-center justify-between mb-5">
-                      <h2 className="text-xl font-normal text-white">최근 대화</h2>
-                      <Link to="/history" className="text-sm text-gray-400 hover:text-white">더보기</Link>
+                  {serialStoriesLoading ? (
+                    <div className="bg-gray-800/50 rounded-xl overflow-hidden border border-gray-700/50">
+                      {Array.from({ length: 5 }).map((_, i) => (
+                        <div key={i} className="flex gap-4 py-5 px-4 border-b border-gray-700/50 animate-pulse">
+                          <div className="w-[100px] h-[140px] bg-gray-700 rounded-lg" />
+                          <div className="flex-1 space-y-3">
+                            <div className="h-5 w-16 bg-gray-700 rounded" />
+                            <div className="h-5 w-48 bg-gray-700 rounded" />
+                            <div className="h-4 w-24 bg-gray-700 rounded" />
+                            <div className="h-4 w-full bg-gray-700 rounded" />
+                            <div className="h-4 w-3/4 bg-gray-700 rounded" />
+                          </div>
+                        </div>
+                      ))}
                     </div>
-                    <RecentCharactersList limit={5} />
-                  </section>
+                  ) : novelStories.length > 0 ? (
+                    <div className="bg-gray-800/50 rounded-xl overflow-hidden border border-purple-500/30 shadow-lg">
+                      {novelStories.map((story) => (
+                        <StorySerialCard key={story.id} story={story} />
+                      ))}
+                      <div ref={serialSentinelRef} className="h-10" />
+                      {isFetchingNextSerialPage && (
+                        <div className="flex justify-center py-4 bg-gray-800/30">
+                          <Loader2 className="w-6 h-6 animate-spin text-purple-500" />
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="bg-gray-800/50 rounded-xl p-8 text-center text-gray-400 border border-gray-700/50">
+                      등록된 원작소설이 없습니다.
+                    </div>
+                  )}
+                </>
+              )}
+
+              {/* 원작챗 탭: 캐릭터 격자 */}
+              {origSerialTab === 'origchat' && (
+                <>
+                  {loading ? (
+                    <div className={gridColumnClasses}>
+                      {Array.from({ length: 12 }).map((_, i) => (
+                        <CharacterCardSkeleton key={i} />
+                      ))}
+                    </div>
+                  ) : origSerialCharacters.length > 0 ? (
+                    <>
+                      <div className={gridColumnClasses}>
+                        {origSerialCharacters.map((c) => (
+                          <CharacterCard key={c.id} character={c} showOriginBadge />
+                        ))}
+                      </div>
+                      <div ref={sentinelRef} className="h-10" />
+                      {isFetchingNextPage && (
+                        <div className={`${gridColumnClasses} mt-3`}>
+                          {Array.from({ length: 6 }).map((_, i) => (
+                            <CharacterCardSkeleton key={`sk-${i}`} />
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div className="bg-gray-800/50 rounded-xl p-8 text-center text-gray-400 border border-gray-700/50">
+                      등록된 원작챗 캐릭터가 없습니다.
+                    </div>
+                  )}
+                </>
+              )}
+            </section>
+          )}
+
+          {!isCharacterTab && !isOrigSerialTab && (
+            <>
+          {/* 특화 캐릭터 바로가기 */}
+          <section className="mb-10">
+            <h2 className="text-lg font-medium text-gray-100 mb-4">특화 캐릭터들과 일상을 같이 나눠보세요</h2>
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+              {[
+                { name: '마동석', title: '슬기로운 사회생활 배우기', image: '/image/마동석2.jpg', tag: '직장' },
+                { name: '아이유', title: '연애 고민 상담소', image: '/image/아이유.png', tag: '일상' },
+                { name: '김영철', title: '유쾌한 영어 회화', image: '/image/김영철.jpg', tag: '일상' },
+                { name: '침착맨', title: '깨진 멘탈 다 잡기', image: '/image/침착맨.jpg', tag: '일상' },
+                { name: '펭수', title: '정신이 번쩍 드는 독설 듣기', image: '/image/펭수.jpg', tag: '일상' },
+                { name: '빠니보틀', title: '여행계획하기', image: '/image/빠니보틀.png', tag: '일상' }
+              ].map((item, idx) => (
+                <div
+                  key={idx}
+                  className="bg-gray-800/40 rounded-lg p-3 cursor-pointer hover:bg-gray-800/60 transition-all border border-gray-700/50 hover:border-gray-600"
+                  onClick={() => {
+                    // TODO: 캐릭터 채팅방으로 이동
+                    console.log(`Navigate to ${item.name} chat`);
+                  }}
+                >
+                  <div className="flex items-center gap-3 mb-2">
+                    <div className="w-10 h-10 rounded-full bg-gray-700 flex items-center justify-center flex-shrink-0 overflow-hidden">
+                      <img 
+                        src={item.image} 
+                        alt={item.name}
+                        className="w-full h-full object-cover object-top"
+                        onError={(e) => {
+                          e.target.style.display = 'none';
+                          e.target.nextSibling.style.display = 'flex';
+                        }}
+                      />
+                      <span className="text-lg hidden">{item.name.charAt(0)}</span>
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs text-gray-400 truncate">{item.name}</div>
+                    </div>
+                  </div>
+                  <div className="text-sm text-gray-200 leading-snug">
+                    {item.title}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          {/* 스토리 시뮬레이터 */}
+          <section className="mb-10">
+            <h2 className="text-lg font-medium text-gray-100 mb-4">
+              {user?.username || '신비한천사60'}님. 이런 상상, 해본 적 있으세요? 직접 주인공이 되어보세요.
+            </h2>
+            <div className="flex gap-4 overflow-x-auto pb-2 scrollbar-hide">
+              {[
+                { 
+                  title: '로또1등이라 엄청 즐겁게 회사생활하기', 
+                  badge: '로또1등도 출근합니다',
+                  image: '로또1등도.jpg',
+                  novelTitle: '로또1등이라 엄청 즐겁게 회사생활하기'
+                },
+                { 
+                  title: '전셋집에서 쫓겨나서 부동산 재벌되기', 
+                  badge: '회귀해서 부동산 재벌',
+                  image: '부동산.jpg',
+                  novelTitle: '전셋집에서 시작하는 나의 히어로 아카데미아'
+                },
+                { 
+                  title: '1998년부터 시작해서 K-컬쳐의 제왕되기', 
+                  badge: 'K-문화의 제왕',
+                  image: 'K문화.jpg',
+                  novelTitle: null
+                },
+                { 
+                  title: '망한 아이돌멤버에서 빌보드 프로듀서까지', 
+                  badge: '두번 사는 프로듀서',
+                  image: '프로듀서.jpg',
+                  novelTitle: null
+                },
+                { 
+                  title: '회사사람들과 다 같이 생존게임 참여하기', 
+                  badge: '구조조정에서 살아남는법',
+                  image: '구조조정.jpg',
+                  novelTitle: null
+                }
+              ].map((item, idx) => {
+                // novelTitle이 있으면 실제 소설과 매칭
+                const matchedNovel = item.novelTitle 
+                  ? novels.find(n => n.title === item.novelTitle)
+                  : null;
+
+                return (
+                  <div
+                    key={idx}
+                    className="flex-shrink-0 w-[200px] cursor-pointer group"
+                    onClick={() => {
+                      if (!requireAuth('스토리 에이전트')) {
+                        return;
+                      }
+                      if (matchedNovel) {
+                        // 바로 원문 페이지로 이동
+                        navigate(`/storydive/novels/${matchedNovel.id}`);
+                      } else {
+                        // 매칭되는 소설이 없으면 준비중 알림
+                        window.dispatchEvent(new CustomEvent('toast', {
+                          detail: {
+                            type: 'info',
+                            message: '준비 중인 콘텐츠입니다'
+                          }
+                        }));
+                      }
+                    }}
+                  >
+                
+                  <div className="relative aspect-[3/4] rounded-lg overflow-hidden mb-2 bg-gray-900 border border-gray-700/50 group-hover:border-gray-600 transition-colors">
+                    <img 
+                      src={`/image/${item.image}`}
+                      alt={item.title}
+                      className="w-full h-full object-cover"
+                      onError={(e) => {
+                        e.target.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="200" height="267"%3E%3Crect fill="%23374151" width="200" height="267"/%3E%3Ctext x="50%25" y="50%25" fill="%239ca3af" text-anchor="middle" dominant-baseline="middle" font-size="12"%3E이미지 준비중%3C/text%3E%3C/svg%3E';
+                      }}
+                    />
+                    <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent" />
+                    <div className="absolute bottom-0 left-0 right-0 p-3">
+                      <h3 className="text-white font-semibold text-base leading-tight" style={{
+                        textShadow: '0 2px 8px rgba(0,0,0,0.8), 0 0 2px rgba(0,0,0,1)',
+                        WebkitTextStroke: '0.5px black'
+                      }}>
+                        {item.title}
+                      </h3>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-xs text-gray-500">by</span>
+                    <Badge className="bg-blue-600/80 hover:bg-blue-600 text-white text-[10px] px-2 py-0.5">
+                      {item.badge}
+                    </Badge>
+                  </div>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+
+          {/* 인기 캐릭터 TOP (4x2) */}
+          <ErrorBoundary>
+            <TrendingCharacters />
+          </ErrorBoundary>
+
+          {/* 웹툰 TOP10 */}
+          <ErrorBoundary>
+            <TopWebtoons />
+          </ErrorBoundary>
+
+          {/* 웹소설 TOP10 (블루) */}
+          <ErrorBoundary>
+            <TopStories />
+          </ErrorBoundary>
+
+          {/* 웹소설 원작 섹션 (상시 노출) */}
+          <ErrorBoundary>
+            <TopOrigChat />
+          </ErrorBoundary>
+
+          {/* 최근 대화 섹션 - 관심 캐릭터 영역 임시 비노출 */}
+          {isAuthenticated && (
+            <>
+              {/* 관심 캐릭터 섹션 숨김 */}
+              {/* <section className="mt-10 hidden" aria-hidden="true"></section> */}
+
+              <section className="mt-10 mb-10">
+                <div className="flex items-center justify-between mb-5">
+                  <h2 className="text-xl font-normal text-white">최근 대화</h2>
+                  <Link to="/history" className="text-sm text-gray-400 hover:text-white">더보기</Link>
+                </div>
+                <RecentCharactersList limit={5} />
+              </section>
                 </>
               )}
             </>
@@ -660,41 +862,42 @@ const HomePage = () => {
             </div>
           </section> */}
 
-          {/* 탐색 섹션 */}
+          {/* 탐색 섹션 (원작연재 탭에서는 숨김) */}
+          {!isOrigSerialTab && (
           <section className="mb-10">
             <h2 className="text-xl font-normal text-white mb-3">탐색</h2>
 
             {/* 태그 필터 바 (캐릭터 탭에서는 숨김) */}
             {!isCharacterTab && (
-              <div className="mb-5">
-                <div className="flex flex-wrap gap-2">
-                  {visibleTags.map((t) => {
-                    const active = selectedTags.includes(t.slug);
-                    return (
-                      <button
-                        key={t.id}
-                        onClick={() => setSelectedTags(prev => active ? prev.filter(s => s !== t.slug) : [...prev, t.slug])}
-                        className={`px-3 py-1 rounded-full border ${active ? 'bg-yellow-500 text-black border-yellow-400' : 'bg-gray-800 text-gray-200 border-gray-700'} inline-flex items-center gap-2`}
-                      >
-                        <span>{t.name}</span>
-                      </button>
-                    );
-                  })}
-                  {allTags.length > visibleTagLimit && (
+            <div className="mb-5">
+              <div className="flex flex-wrap gap-2">
+                {visibleTags.map((t) => {
+                  const active = selectedTags.includes(t.slug);
+                  return (
                     <button
-                      onClick={() => setShowAllTags(v => !v)}
-                      className="px-3 py-1 rounded-full bg-gray-800 text-gray-200 border border-gray-700 inline-flex items-center gap-2"
+                      key={t.id}
+                      onClick={() => setSelectedTags(prev => active ? prev.filter(s => s !== t.slug) : [...prev, t.slug])}
+                      className={`px-3 py-1 rounded-full border ${active ? 'bg-yellow-500 text-black border-yellow-400' : 'bg-gray-800 text-gray-200 border-gray-700'} inline-flex items-center gap-2`}
                     >
-                      <ChevronDown className={`h-4 w-4 ${showAllTags ? 'rotate-180' : ''}`} />
-                      {showAllTags ? '접기' : '더보기'}
+                      <span>{t.name}</span>
                     </button>
-                  )}
+                  );
+                })}
+                {allTags.length > visibleTagLimit && (
                   <button
-                    onClick={() => setSelectedTags([])}
-                    className="px-3 py-1 rounded-full bg-gray-700 text-white border border-gray-600"
-                  >초기화</button>
-                </div>
+                    onClick={() => setShowAllTags(v => !v)}
+                    className="px-3 py-1 rounded-full bg-gray-800 text-gray-200 border border-gray-700 inline-flex items-center gap-2"
+                  >
+                    <ChevronDown className={`h-4 w-4 ${showAllTags ? 'rotate-180' : ''}`} />
+                    {showAllTags ? '접기' : '더보기'}
+                  </button>
+                )}
+                <button
+                  onClick={() => setSelectedTags([])}
+                  className="px-3 py-1 rounded-full bg-gray-700 text-white border border-gray-600"
+                >초기화</button>
               </div>
+            </div>
             )}
 
             {loading ? (
@@ -778,6 +981,7 @@ const HomePage = () => {
               </div>
             )}
           </section>
+          )}
 
       </main>
       </div>

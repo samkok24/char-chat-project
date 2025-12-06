@@ -268,29 +268,29 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
         </DialogHeader>
         
         <div className="mt-2">
-          {error && (
-            <Alert variant="destructive" className="mb-4">
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
-          )}
+                {error && (
+                  <Alert variant="destructive" className="mb-4">
+                    <AlertDescription>{error}</AlertDescription>
+                  </Alert>
+                )}
 
           {/* 로그인 뷰 */}
           {view === 'login' && (
             <Card className="shadow-none border-0">
               <CardContent className="pt-4">
-                <div className="text-center mb-4">
-                  <CardDescription className="text-gray-600 dark:text-gray-300">
-                    계정에 로그인하여 AI 캐릭터들과 대화를 시작하세요
-                  </CardDescription>
-                </div>
-                <form onSubmit={handleLoginSubmit} className="space-y-4">
-                  <div className="space-y-2">
+                  <div className="text-center mb-4">
+                    <CardDescription className="text-gray-600 dark:text-gray-300">
+                      계정에 로그인하여 AI 캐릭터들과 대화를 시작하세요
+                    </CardDescription>
+                  </div>
+                  <form onSubmit={handleLoginSubmit} className="space-y-4">
+                    <div className="space-y-2">
                     <Label htmlFor="login-email" className={STYLES.label}>이메일</Label>
-                    <div className="relative">
+                      <div className="relative">
                       <Mail className={STYLES.inputIcon} />
                       <Input id="login-email" name="email" type="email" placeholder="이메일을 입력하세요" value={loginData.email} onChange={handleLoginChange} className={STYLES.input} required />
                     </div>
-                  </div>
+                      </div>
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
                       <Label htmlFor="login-password" className={STYLES.label}>비밀번호</Label>
@@ -306,27 +306,27 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
                         비밀번호 재설정
                       </button>
                     </div>
-                    <div className="relative">
+                      <div className="relative">
                       <Lock className={STYLES.inputIcon} />
-                      <Input 
-                        id="login-password" 
-                        name="password" 
-                        type={showLoginPassword ? "text" : "password"} 
-                        placeholder="비밀번호를 입력하세요" 
-                        value={loginData.password} 
-                        onChange={handleLoginChange} 
+                        <Input 
+                          id="login-password" 
+                          name="password" 
+                          type={showLoginPassword ? "text" : "password"} 
+                          placeholder="비밀번호를 입력하세요" 
+                          value={loginData.password} 
+                          onChange={handleLoginChange} 
                         className={STYLES.inputWithToggle} 
-                        required 
-                      />
+                          required 
+                        />
                       <button type="button" onClick={() => setShowLoginPassword(!showLoginPassword)} className={STYLES.toggleBtn}>
-                        {showLoginPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                      </button>
+                          {showLoginPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                        </button>
+                      </div>
                     </div>
-                  </div>
                   <Button type="submit" className={STYLES.primaryBtn} disabled={loading}>
-                    {loading ? (<><Loader2 className="mr-2 h-4 w-4 animate-spin" />로그인 중...</>) : '로그인'}
-                  </Button>
-                </form>
+                      {loading ? (<><Loader2 className="mr-2 h-4 w-4 animate-spin" />로그인 중...</>) : '로그인'}
+                    </Button>
+                  </form>
                 
                 {/* 회원가입 링크 */}
                 <div className="mt-6 text-center border-t border-gray-200 dark:border-gray-700 pt-4">
@@ -349,14 +349,14 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
           {view === 'register' && (
             <Card className="shadow-none border-0">
               <CardContent className="pt-4">
-                <div className="text-center mb-4">
-                  <CardDescription className="text-gray-600 dark:text-gray-300">
-                    새 계정을 만들어 AI 캐릭터들과 대화를 시작하세요
-                  </CardDescription>
-                </div>
-                <form onSubmit={handleRegisterSubmit} className="space-y-4">
+                  <div className="text-center mb-4">
+                    <CardDescription className="text-gray-600 dark:text-gray-300">
+                      새 계정을 만들어 AI 캐릭터들과 대화를 시작하세요
+                    </CardDescription>
+                  </div>
+                  <form onSubmit={handleRegisterSubmit} className="space-y-4">
                   {/* 이메일 + 인증 버튼 (같은 줄) */}
-                  <div className="space-y-2">
+                    <div className="space-y-2">
                     <Label htmlFor="register-email" className={STYLES.label}>이메일</Label>
                     <div className="flex items-center gap-2">
                       <div className="relative flex-1">
@@ -384,7 +384,7 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
                   </div>
 
                   {/* 사용자명 + 자동생성 (같은 줄) */}
-                  <div className="space-y-2">
+                    <div className="space-y-2">
                     <Label htmlFor="register-username" className={STYLES.label}>사용자명</Label>
                     <div className="flex items-center gap-2">
                       <div className="relative flex-1">
@@ -393,67 +393,67 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
                       </div>
                       <Button type="button" onClick={handleGenerateUsername} disabled={loading} className={STYLES.inlineBtn}>
                         <Wand2 className="h-4 w-4 mr-1" /> 자동
-                      </Button>
+                        </Button>
                     </div>
                     <StatusMessage type={usernameCheck.available ? 'success' : 'error'} message={usernameCheck.checked ? usernameCheck.message : ''} />
-                  </div>
-                  <div className="space-y-2">
+                    </div>
+                    <div className="space-y-2">
                     <Label htmlFor="register-password" className={STYLES.label}>비밀번호</Label>
-                    <div className="relative">
+                      <div className="relative">
                       <Lock className={STYLES.inputIcon} />
-                      <Input 
-                        id="register-password" 
-                        name="password" 
-                        type={showRegisterPassword ? "text" : "password"} 
-                        placeholder="영문/숫자 조합 8자 이상" 
-                        value={registerData.password} 
-                        onChange={handleRegisterChange} 
+                        <Input 
+                          id="register-password" 
+                          name="password" 
+                          type={showRegisterPassword ? "text" : "password"} 
+                          placeholder="영문/숫자 조합 8자 이상" 
+                          value={registerData.password} 
+                          onChange={handleRegisterChange} 
                         className={STYLES.inputWithToggle} 
-                        required 
-                        minLength={8} 
-                      />
+                          required 
+                          minLength={8} 
+                        />
                       <button type="button" onClick={() => setShowRegisterPassword(!showRegisterPassword)} className={STYLES.toggleBtn}>
-                        {showRegisterPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                      </button>
+                          {showRegisterPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                        </button>
+                      </div>
+                      <p className="text-xs text-gray-600 dark:text-gray-400 font-medium">영문과 숫자를 포함해 8자 이상 입력하세요.</p>
                     </div>
-                    <p className="text-xs text-gray-600 dark:text-gray-400 font-medium">영문과 숫자를 포함해 8자 이상 입력하세요.</p>
-                  </div>
-                  <div className="space-y-2">
+                    <div className="space-y-2">
                     <Label htmlFor="register-confirmPassword" className={STYLES.label}>비밀번호 확인</Label>
-                    <div className="relative">
+                      <div className="relative">
                       <Lock className={STYLES.inputIcon} />
-                      <Input 
-                        id="register-confirmPassword" 
-                        name="confirmPassword" 
-                        type={showConfirmPassword ? "text" : "password"} 
-                        placeholder="비밀번호를 다시 입력하세요" 
-                        value={registerData.confirmPassword} 
-                        onChange={handleRegisterChange} 
+                        <Input 
+                          id="register-confirmPassword" 
+                          name="confirmPassword" 
+                          type={showConfirmPassword ? "text" : "password"} 
+                          placeholder="비밀번호를 다시 입력하세요" 
+                          value={registerData.confirmPassword} 
+                          onChange={handleRegisterChange} 
                         className={STYLES.inputWithToggle} 
-                        required 
-                      />
+                          required 
+                        />
                       <button type="button" onClick={() => setShowConfirmPassword(!showConfirmPassword)} className={STYLES.toggleBtn}>
-                        {showConfirmPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                      </button>
+                          {showConfirmPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                  <div className="space-y-2">
+                    <div className="space-y-2">
                     <Label className={STYLES.label}>성별</Label>
-                    <div className="flex items-center gap-4">
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input type="radio" name="gender" value="male" checked={registerData.gender === 'male'} onChange={handleRegisterChange} required />
-                        <span className="text-gray-900 dark:text-gray-100">남성</span>
-                      </label>
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input type="radio" name="gender" value="female" checked={registerData.gender === 'female'} onChange={handleRegisterChange} required />
-                        <span className="text-gray-900 dark:text-gray-100">여성</span>
-                      </label>
+                      <div className="flex items-center gap-4">
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input type="radio" name="gender" value="male" checked={registerData.gender === 'male'} onChange={handleRegisterChange} required />
+                          <span className="text-gray-900 dark:text-gray-100">남성</span>
+                        </label>
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input type="radio" name="gender" value="female" checked={registerData.gender === 'female'} onChange={handleRegisterChange} required />
+                          <span className="text-gray-900 dark:text-gray-100">여성</span>
+                        </label>
+                      </div>
                     </div>
-                  </div>
                   <Button type="submit" className={STYLES.primaryBtn} disabled={loading}>
-                    {loading ? (<><Loader2 className="mr-2 h-4 w-4 animate-spin" />가입 중...</>) : '회원가입'}
-                  </Button>
-                </form>
+                      {loading ? (<><Loader2 className="mr-2 h-4 w-4 animate-spin" />가입 중...</>) : '회원가입'}
+                    </Button>
+                  </form>
 
                 {/* 로그인으로 돌아가기 */}
                 <div className="mt-4 text-center">
@@ -502,7 +502,7 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
                   </button>
                 </div>
               </CardContent>
-            </Card>
+          </Card>
           )}
 
           {/* 가입 완료 뷰 */}

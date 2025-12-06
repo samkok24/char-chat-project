@@ -13,10 +13,17 @@ import { Textarea } from './ui/textarea';
 import { Switch } from './ui/switch';
 import { X, Edit2, Trash2, Star, Check } from 'lucide-react';
 
+const APPLY_SCOPE_OPTIONS = [
+  { value: 'all', label: '모두 적용' },
+  { value: 'character', label: '일반 캐릭터챗만' },
+  { value: 'origchat', label: '원작챗만' },
+];
+
 const UserPersonaModal = ({ isOpen, onClose }) => {
   const [personas, setPersonas] = useState([]);
   const [newPersonaName, setNewPersonaName] = useState('');
   const [newPersonaDescription, setNewPersonaDescription] = useState('');
+  const [newPersonaScope, setNewPersonaScope] = useState('all');
   const [editingPersona, setEditingPersona] = useState(null);
   const [activePersona, setActivePersona] = useState(null);
 
@@ -35,7 +42,8 @@ const UserPersonaModal = ({ isOpen, onClose }) => {
         name: persona.name,
         description: persona.description,
         isDefault: persona.is_default,
-        isActive: persona.is_active
+        isActive: persona.is_active,
+        applyScope: persona.apply_scope || 'all'
       })));
       setActivePersona(response.data.active_persona);
     } catch (error) {
@@ -50,7 +58,8 @@ const UserPersonaModal = ({ isOpen, onClose }) => {
         const response = await userPersonasAPI.createUserPersona({
           name: persona.name,
           description: persona.description,
-          is_default: persona.isDefault
+          is_default: persona.isDefault,
+          apply_scope: persona.applyScope || 'all'
         });
         // ID를 실제 서버 ID로 업데이트
         setPersonas(prev => prev.map(p => 
@@ -64,7 +73,8 @@ const UserPersonaModal = ({ isOpen, onClose }) => {
         await userPersonasAPI.updateUserPersona(persona.id, {
           name: persona.name,
           description: persona.description,
-          is_default: persona.isDefault
+          is_default: persona.isDefault,
+          apply_scope: persona.applyScope || 'all'
         });
       }
       // 페르소나 목록 새로고침
@@ -137,6 +147,25 @@ const UserPersonaModal = ({ isOpen, onClose }) => {
               onChange={(e) => setNewPersonaDescription(e.target.value)}
               className="min-h-[80px]"
             />
+            {/* 적용 범위 선택 */}
+            <div className="flex items-center gap-3 py-2">
+              <span className="text-sm text-gray-600 whitespace-nowrap">적용 범위:</span>
+              <div className="flex gap-2 flex-wrap">
+                {APPLY_SCOPE_OPTIONS.map(opt => (
+                  <label key={opt.value} className="flex items-center gap-1 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="newPersonaScope"
+                      value={opt.value}
+                      checked={newPersonaScope === opt.value}
+                      onChange={(e) => setNewPersonaScope(e.target.value)}
+                      className="accent-purple-600"
+                    />
+                    <span className="text-sm">{opt.label}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
             <Button 
               onClick={async () => {
                 if (newPersonaName.trim() && newPersonaDescription.trim()) {
@@ -144,10 +173,12 @@ const UserPersonaModal = ({ isOpen, onClose }) => {
                     const response = await userPersonasAPI.createUserPersona({
                       name: newPersonaName,
                       description: newPersonaDescription,
-                      is_default: personas.length === 0
+                      is_default: personas.length === 0,
+                      apply_scope: newPersonaScope
                     });
                     setNewPersonaName('');
                     setNewPersonaDescription('');
+                    setNewPersonaScope('all');
                     // 목록 새로고침
                     await loadUserPersonas();
                   } catch (error) {
@@ -208,6 +239,30 @@ const UserPersonaModal = ({ isOpen, onClose }) => {
                       className="min-h-[80px]"
                     />
                     
+                    {/* 적용 범위 선택 (편집 모드) */}
+                    <div className="flex items-center gap-3 py-2">
+                      <span className="text-sm text-gray-600 whitespace-nowrap">적용 범위:</span>
+                      <div className="flex gap-2 flex-wrap">
+                        {APPLY_SCOPE_OPTIONS.map(opt => (
+                          <label key={opt.value} className="flex items-center gap-1 cursor-pointer">
+                            <input
+                              type="radio"
+                              name={`editScope-${persona.id}`}
+                              value={opt.value}
+                              checked={(persona.applyScope || 'all') === opt.value}
+                              onChange={(e) => {
+                                setPersonas(personas.map(p => 
+                                  p.id === persona.id ? { ...p, applyScope: e.target.value } : p
+                                ));
+                              }}
+                              className="accent-purple-600"
+                            />
+                            <span className="text-sm">{opt.label}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                    
                     <div className="flex justify-end gap-2">
                       <Button
                         onClick={() => setEditingPersona(null)}
@@ -247,6 +302,9 @@ const UserPersonaModal = ({ isOpen, onClose }) => {
                           )}
                         </div>
                         <p className="text-sm text-gray-600">{persona.description}</p>
+                        <p className="text-xs text-gray-400 mt-1">
+                          적용: {APPLY_SCOPE_OPTIONS.find(o => o.value === (persona.applyScope || 'all'))?.label || '모두 적용'}
+                        </p>
                       </div>
                       
                       <div className="flex items-center gap-1 ml-4">

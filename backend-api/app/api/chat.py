@@ -1287,26 +1287,29 @@ async def send_message(
     # 🎯 활성 페르소나 로드 및 프롬프트 주입
     try:
         persona = await get_active_persona_by_user(db, current_user.id)
+        # ✅ 적용 범위 확인: 'all' 또는 'character'일 때만 적용
         if persona:
-            pn = (getattr(persona, 'name', '') or '').strip()
-            pd = (getattr(persona, 'description', '') or '').strip()
-            if pn:
-                persona_block = f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-당신은 지금 '{pn}'과(와) 대화하고 있습니다.
-'{pn}'은(는) 당신이 이미 알고 있는 사람입니다.
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-"""
-                if pd:
-                    persona_block += f"'{pn}'의 정보: {pd}\n"
-                persona_block += f"""
-⚠️ 절대 규칙:
-- 상대를 '{pn}'(이)라고 부르세요
-- 이름을 모르는 척 하지 마세요
-- 자연스럽게 '{pn}'의 이름을 언급하세요
+            scope = getattr(persona, 'apply_scope', 'all') or 'all'
+            if scope in ('all', 'character'):
+                pn = (getattr(persona, 'name', '') or '').strip()
+                pd = (getattr(persona, 'description', '') or '').strip()
+                if pn:
+                    persona_block = f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    당신은 지금 '{pn}'과(와) 대화하고 있습니다.
+    '{pn}'은(는) 당신이 이미 알고 있는 사람입니다.
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    """
+                    if pd:
+                        persona_block += f"'{pn}'의 정보: {pd}\n"
+                    persona_block += f"""
+    ⚠️ 절대 규칙:
+    - 상대를 '{pn}'(이)라고 부르세요
+    - 이름을 모르는 척 하지 마세요
+    - 자연스럽게 '{pn}'의 이름을 언급하세요
 
-"""
-                character_prompt = persona_block + character_prompt
-                logger.info(f"[send_message] 페르소나 로드 성공: {pn}")
+    """
+                    character_prompt = persona_block + character_prompt
+                    logger.info(f"[send_message] 페르소나 로드 성공: {pn}")
     except Exception as e:
         logger.warning(f"[send_message] 페르소나 로드 실패: {e}")
         
@@ -1828,11 +1831,14 @@ async def origchat_start(
                 # 🎯 활성 페르소나 로드 (pov와 무관하게)
                     try:
                         persona = await get_active_persona_by_user(db, current_user.id)
-                        if persona:
+                        scope = getattr(persona, 'apply_scope', 'all') or 'all' if persona else 'all'
+                        if persona and scope in ('all', 'origchat'):
                             persona_name = (getattr(persona, 'name', '') or '').strip()
                             persona_desc = (getattr(persona, 'description', '') or '').strip()
                             logger.info(f"[인사말 생성] 페르소나 로드 성공: {persona_name}, 설명: {persona_desc[:50] if persona_desc else '없음'}")
                         else:
+                            persona_name = ""
+                            persona_desc = ""
                             logger.warning(f"[인사말 생성] 페르소나를 찾을 수 없음: user_id={current_user.id}")
                     except Exception as e:
                         logger.error(f"[인사말 생성] 페르소나 정보 조회 실패: {e}", exc_info=True)
@@ -2409,7 +2415,10 @@ async def origchat_turn(
             from app.services.user_persona_service import get_active_persona_by_user
             persona = await get_active_persona_by_user(db, current_user.id)
             logger.info(f"[origchat_turn] 페르소나 조회 결과: {persona}")
-            if persona:
+            # ✅ 적용 범위 확인: 'all' 또는 'origchat'일 때만 적용
+            scope = getattr(persona, 'apply_scope', 'all') or 'all' if persona else 'all'
+
+            if persona and scope in ('all', 'origchat'):
                 pn = (getattr(persona, 'name', '') or '').strip()
                 pd = (getattr(persona, 'description', '') or '').strip()
                 logger.info(f"[origchat_turn] 페르소나 로드 성공: {pn}, 설명: {pd[:50] if pd else '없음'}")

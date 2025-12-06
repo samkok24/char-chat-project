@@ -594,9 +594,62 @@ async def get_stories(
         creator_id=creator_id,
         tags=tag_list or None,
     )
-
     # 목록용 항목으로 변환하면서 excerpt 채움
     items: list[StoryListItem] = []
+    
+    # 모든 스토리 ID 수집
+    story_ids = [s.id for s in stories]
+    
+    # episode_count 일괄 조회 (DB COUNT 쿼리로 효율화)
+    episode_counts = {}
+    if story_ids:
+        try:
+            from app.models.story_chapter import StoryChapter
+            rows = await db.execute(
+                select(StoryChapter.story_id, func.count(StoryChapter.id))
+                .where(StoryChapter.story_id.in_(story_ids))
+                .group_by(StoryChapter.story_id)
+            )
+            episode_counts = {str(row[0]): row[1] for row in rows.all()}
+        except Exception:
+            episode_counts = {}
+    
+    # 모든 스토리의 extracted_characters에서 character_id 수집
+    all_char_ids = []
+    for s in stories:
+        for ec in (getattr(s, "extracted_characters", []) or []):
+            char_id = getattr(ec, "character_id", None)
+            if char_id:
+                all_char_ids.append(char_id)
+    
+    # Character 모델 일괄 조회
+    char_map = {}
+    if all_char_ids:
+        try:
+            char_rows = await db.execute(
+                select(Character).where(Character.id.in_(all_char_ids))
+            )
+            char_map = {str(c.id): c for c in char_rows.scalars().all()}
+        except Exception:
+            char_map = {}
+    
+    # for s in stories:
+    #     for ec in (getattr(s, "extracted_characters", []) or []):
+    #         char_id = getattr(ec, "character_id", None)
+    #         if char_id:
+    #             all_char_ids.append(char_id)
+    
+    # # Character 모델 일괄 조회
+    # char_map = {}
+    # if all_char_ids:
+    #     try:
+    #         char_rows = await db.execute(
+    #             select(Character).where(Character.id.in_(all_char_ids))
+    #         )
+    #         char_map = {str(c.id): c for c in char_rows.scalars().all()}
+    #     except Exception:
+    #         char_map = {}
+    
     for s in stories:
         try:
             text = (s.content or "").strip()
@@ -605,14 +658,24 @@ async def get_stories(
         # 간단 발췌: 줄바꿈/공백 정리 후 앞부분 140자
         excerpt = " ".join(text.split())[:140] if text else None
     # 태그 슬러그 추출(cover: 메타 제외)
-    tag_slugs = []
-    try:
-        for t in (getattr(s, "tags", []) or []):
-            slug = getattr(t, "slug", None)
-            if slug and not str(slug).startswith("cover:"):
-                tag_slugs.append(slug)
-    except Exception:
-        pass
+        tag_slugs = []
+        try:
+            for t in (getattr(s, "tags", []) or []):
+                slug = getattr(t, "slug", None)
+                if slug and not str(slug).startswith("cover:"):
+                    tag_slugs.append(slug)
+        except Exception:
+            pass
+            # 최신 회차 업로드 시각
+        latest_chapter_created_at = None
+        try:
+            if getattr(s, "chapters", None):
+                latest_chapter_created_at = max(
+                    (c.created_at for c in s.chapters if getattr(c, "created_at", None)),
+                    default=None
+                )
+        except Exception:
+            latest_chapter_created_at = None
         items.append(StoryListItem(
             id=s.id,
             title=s.title,
@@ -630,6 +693,23 @@ async def get_stories(
             cover_url=getattr(s, "cover_url", None),
             excerpt=excerpt,
             tags=tag_slugs,
+            latest_chapter_created_at=latest_chapter_created_at,
+            episode_count=episode_counts.get(str(s.id), 0),
+            extracted_characters=[
+                {
+                    "id": str(ec.id),
+                    "name": ec.name,
+                    "initial": ec.initial,
+                    "avatar_url": (
+                        char_map[str(ec.character_id)].avatar_url
+                        if (not ec.avatar_url)
+                        and getattr(ec, "character_id", None)
+                        and str(ec.character_id) in char_map
+                        else ec.avatar_url
+                    )
+                }
+                for ec in (getattr(s, "extracted_characters", []) or [])
+            ]
         ))
 
     return StoryListResponse(
@@ -669,6 +749,23 @@ async def get_my_stories(
                     tag_slugs.append(slug)
         except Exception:
             pass
+
+        # extracted_characters 생성 시 avatar_url 보강
+        extracted_chars = []
+        for ec in (getattr(s, "extracted_characters", []) or []):
+            avatar_url = ec.avatar_url
+            # avatar_url이 없고 character_id가 있으면 연결된 Character의 avatar_url 사용
+            if not avatar_url and getattr(ec, "character_id", None):
+                char = char_map.get(str(ec.character_id))
+                if char and getattr(char, "avatar_url", None):
+                    avatar_url = char.avatar_url
+            extracted_chars.append({
+                "id": str(ec.id),
+                "name": ec.name,
+                "initial": ec.initial,
+                "avatar_url": avatar_url
+            })
+
         items.append(StoryListItem(
             id=s.id,
             title=s.title,

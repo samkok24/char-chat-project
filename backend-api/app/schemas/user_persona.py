@@ -13,6 +13,7 @@ class UserPersonaCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     description: str = Field(..., min_length=1, max_length=1000)
     is_default: bool = False
+    apply_scope: str = Field(default='all', pattern='^(all|character|origchat)$')  # 적용 범위
 
 
 class UserPersonaUpdate(BaseModel):
@@ -20,6 +21,7 @@ class UserPersonaUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=100)
     description: Optional[str] = Field(None, min_length=1, max_length=1000)
     is_default: Optional[bool] = None
+    apply_scope: Optional[str] = Field(None, pattern='^(all|character|origchat)$')  # 적용 범위
 
 
 class UserPersonaResponse(BaseModel):
@@ -30,6 +32,7 @@ class UserPersonaResponse(BaseModel):
     description: str
     is_active: bool
     is_default: bool
+    apply_scope: str = 'all'  # 적용 범위
     created_at: datetime
     updated_at: datetime
 
