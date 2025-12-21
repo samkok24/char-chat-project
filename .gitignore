@@ -66,3 +66,8 @@ frontend/char-chat-frontend/node_modules/
 frontend/char-chat-frontend/.pnpm-store/
 frontend/char-chat-frontend/dist/ 
 .env.prod
+n# prod secrets (DO NOT COMMIT)n.env.prodn
+
+# prod secrets (DO NOT COMMIT)
+.env.prod
+
