@@ -102,7 +102,8 @@ const PublicRoute = ({ children }) => {
     return <PageLoader />;
   }
 
-  return isAuthenticated ? <Navigate to="/agent" replace /> : children;
+  // 이미 로그인된 유저가 로그인 페이지에 접근하면 메인 탭(홈)으로 보낸다.
+  return isAuthenticated ? <Navigate to="/dashboard" replace /> : children;
 };
 
 // 메인 앱 라우터
@@ -112,8 +113,8 @@ const AppRouter = () => {
       <Suspense fallback={<PageLoader />}>
         <Routes>
           {/* 🔥 CAVEDUCK 핵심 페이지 (우선 로딩) */}
-          {/* 초기 진입은 에이전트 탭으로 */}
-          <Route path="/" element={<Navigate to="/agent" replace />} />
+          {/* 초기 진입은 메인 탭(홈)으로 */}
+          <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="/agent" element={<AgentPage />} />
           <Route path="/agent/drawer" element={<AgentDrawerPage />} />
           <Route path="/agent/feed" element={<AgentFeedPage />} />
@@ -258,8 +259,8 @@ const AppRouter = () => {
             }
           />
 
-          {/* 기본 리다이렉트: 에이전트 탭 */}
-          <Route path="*" element={<Navigate to="/agent" replace />} />
+          {/* 기본 리다이렉트: 메인 탭(홈) */}
+          <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>
       </Suspense>
     </Router>
