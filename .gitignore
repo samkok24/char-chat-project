@@ -64,9 +64,7 @@ backend-flask/venv/
 # Frontend specific
 frontend/char-chat-frontend/node_modules/
 frontend/char-chat-frontend/.pnpm-store/
-frontend/char-chat-frontend/dist/ 
-.env.prod
-n# prod secrets (DO NOT COMMIT)n.env.prodn
+frontend/char-chat-frontend/dist/
 
 # prod secrets (DO NOT COMMIT)
 .env.prod
