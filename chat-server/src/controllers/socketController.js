@@ -79,9 +79,9 @@ class SocketController {
     socket.on('leave_room', (data) => this.handleLeaveRoom(socket, io, data));
 
     // 메시지 전송
-    socket.on('send_message', (data) => this.handleSendMessage(socket, io, data));
+    socket.on('send_message', (data, ack) => this.handleSendMessage(socket, io, data, ack));
     // 계속 진행하기
-    socket.on('continue', (data) => this.handleContinue(socket, io, data));
+    socket.on('continue', (data, ack) => this.handleContinue(socket, io, data, ack));
 
     // 타이핑 상태
     socket.on('typing_start', (data) => this.handleTypingStart(socket, io, data));
@@ -194,14 +194,17 @@ class SocketController {
   /**
    * 메시지 전송 처리
    */
-  async handleSendMessage(socket, io, data) {
+  async handleSendMessage(socket, io, data, ack) {
+    const safeAck = (payload) => { try { if (typeof ack === 'function') ack(payload); } catch (_) {} };
+
     try {
       const { roomId, content, messageType = 'text' } = data;
       const userId = socket.userId;
       const userInfo = socket.userInfo;
 
-      // 입력 검증
+      // 입력/권한 검증에서 "return" 하기 전에 반드시 ACK 실패로 종료
       if (!roomId || !content) {
+        safeAck({ ok: false, error: 'missing_fields' });
         socket.emit('error', { message: '채팅방 ID와 메시지 내용이 필요합니다.' });
         return;
       }
@@ -244,15 +247,22 @@ class SocketController {
       io.to(roomId).emit('ai_typing_start', { roomId });
 
       try {
+        const timeoutMs = 60000;
         // 백엔드 API에서 AI 응답 생성 (이미 메시지 저장까지 처리함)
-        const aiResponse = await axios.post(`${config.BACKEND_API_URL}/chat/messages`, {
-          character_id: room.characterId,
-          content
-        }, {
-          headers: {
-            'Authorization': `Bearer ${socket.token}`
+        const aiResponse = await axios.post(
+          `${config.BACKEND_API_URL}/chat/messages`,
+          {
+            room_id: roomId,               // ✅ “현재 방” 정합성
+            character_id: room.characterId,
+            content,
+          },
+          {
+            headers: { Authorization: `Bearer ${socket.token}` },
+            timeout: timeoutMs,            // ✅ 옵션2 필수: 서버 타임아웃 기준
           }
-        });
+        );
+
+        safeAck({ ok: true });
 
         // AI 응답 생성 완료 (AI 타이핑 중지)
         io.to(roomId).emit('ai_typing_stop', { roomId });
@@ -274,9 +284,16 @@ class SocketController {
           io.to(roomId).emit('new_message', aiMessageData);
         }
       } catch (apiError) {
+        const status = apiError?.response?.status;
+        safeAck({ ok: false, error: 'backend_failed', status });
+
         logger.error('AI 응답 생성 오류:', apiError.response?.data || apiError.message);
         io.to(roomId).emit('ai_typing_stop', { roomId });
-        socket.emit('error', { message: 'AI 응답 생성 중 오류가 발생했습니다.' });
+
+        socket.emit('error', {
+          message: 'AI 응답 생성 중 오류가 발생했습니다.',
+          details: apiError?.response?.data?.detail || apiError.message
+        });
       }
 
     } catch (error) {
@@ -289,32 +306,42 @@ class SocketController {
   /**
    * 계속 진행하기 처리 (messageType='continue')
    */
-  async handleContinue(socket, io, data) {
+  async handleContinue(socket, io, data, ack) {
+    const safeAck = (payload) => { try { if (typeof ack === 'function') ack(payload); } catch (_) {} };
+
     try {
       const { roomId } = data || {};
       const userId = socket.userId;
 
       if (!roomId) {
-        return socket.emit('error', { message: '채팅방 ID가 필요합니다.' });
+        safeAck({ ok: false, error: 'missing_roomId' });
+        socket.emit('error', { message: '채팅방 ID가 필요합니다.' });
+        return;
       }
 
       const room = this.activeRooms.get(roomId);
       if (!room || room.userId !== userId) {
-        return socket.emit('error', { message: '유효하지 않은 채팅방이거나 접근 권한이 없습니다.' });
+        safeAck({ ok: false, error: 'forbidden_room' });
+        socket.emit('error', { message: '유효하지 않은 채팅방이거나 접근 권한이 없습니다.' });
+        return;
       }
 
       io.to(roomId).emit('ai_typing_start', { roomId });
+      const timeoutMs = 60000;
 
       // 백엔드 REST API의 send_message(레거시)로 “계속” 지시를 보냄
       try {
         // 빈 문자열을 보내면 백엔드에서 is_continue 로직으로 처리되어
         // 사용자 메시지를 저장하지 않고 방금 응답을 이어서 작성함
         const resp = await axios.post(`${config.BACKEND_API_URL}/chat/messages`, {
+          room_id: roomId, 
           character_id: room.characterId,
           content: ''
-        }, {
-          headers: { 'Authorization': `Bearer ${socket.token}` }
-        });
+        }, 
+          { headers: { Authorization: `Bearer ${socket.token}` }, timeout: timeoutMs },
+        );
+
+        safeAck({ ok: true });
 
         io.to(roomId).emit('ai_typing_stop', { roomId });
         const aiMessage = resp.data?.ai_message;
@@ -330,7 +357,8 @@ class SocketController {
           });
         }
       } catch (e) {
-        io.to(roomId).emit('ai_typing_stop', { roomId });
+        safeAck({ ok: false, error: 'continue_failed' });
+        try { io.to(data?.roomId).emit('ai_typing_stop', { roomId: data?.roomId }); } catch (_) {}
         socket.emit('error', { message: '계속 진행 처리 중 오류가 발생했습니다.' });
       }
     } catch (error) {

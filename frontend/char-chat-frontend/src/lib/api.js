@@ -596,6 +596,10 @@ export const storiesAPI = {
     
   incrementEpisodeView: (chapterId) =>
     api.post(`/chapters/${chapterId}/view`),
+
+  // 🏊 메인 '스토리다이브' 구좌용 추천 작품 목록
+  getStoryDiveSlots: (limit = 10, minEpisodes = 10) =>
+    api.get('/stories/storydive/slots', { params: { limit, min_episodes: minEpisodes } }),
 };
 
 // 🏆 랭킹 API
@@ -809,6 +813,14 @@ export const storydiveAPI = {
   // 소설 상세 조회
   getNovel: (novelId) =>
     api.get(`/storydive/novels/${novelId}`),
+
+  // 최근 스토리다이브 세션(유저별)
+  getRecentSessions: (limit = 10) =>
+    api.get('/storydive/sessions/recent', { params: { limit } }),
+
+  // 스토리(연재 회차) 기반으로 StoryDive용 Novel(합본 텍스트 스냅샷) 준비
+  prepareNovelFromStory: (storyId, toNo, maxEpisodes = 10) =>
+    api.post('/storydive/novels/from-story', { story_id: storyId, to_no: toNo, max_episodes: maxEpisodes }),
 
   // 세션 생성
   createSession: (novelId, entryPoint) =>

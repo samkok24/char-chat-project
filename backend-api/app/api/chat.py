@@ -1627,6 +1627,7 @@ async def origchat_start(
         # ✅ plain 모드인 경우 기존 room 재사용 시도
         room = None
         is_reusing_existing_room = False
+        created_new_room = False
         if mode == "plain":
             try:
                 # user_id + character_id로 최근 ChatRoom 조회 (최신순)
@@ -1654,6 +1655,7 @@ async def origchat_start(
         if not room:
             # 원작챗은 모드별로 별도의 방을 생성하여 기존 일대일 기록과 분리
             room = await chat_service.create_chat_room(db, current_user.id, character_id)
+            created_new_room = True
 
         # 원작 스토리 플래그 지정(베스트 에포트)
         try:
@@ -1662,6 +1664,15 @@ async def origchat_start(
                 row = await db.execute(select(Character.origin_story_id).where(Character.id == character_id))
                 story_id = (row.first() or [None])[0]
             if story_id:
+                # 원작챗 "시작 수" 카운트(요구사항 C: start count만 사용)
+                # - 신규 방 생성 시에만 증가(같은 방 재진입/재사용은 카운트하지 않음)
+                try:
+                    if created_new_room:
+                        from app.core.database import redis_client
+                        sid_str = str(story_id)
+                        await redis_client.incr(f"origchat:story:{sid_str}:starts")
+                except Exception as e:
+                    logger.warning(f"[origchat_start] origchat starts incr 실패: {e}")
                 await db.execute(update(Story).where(Story.id == story_id).values(is_origchat=True))
                 await db.commit()
         except Exception:

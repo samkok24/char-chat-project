@@ -7,6 +7,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from urllib.parse import urlparse
 from contextlib import asynccontextmanager
 import logging
 import os
@@ -195,11 +196,24 @@ app.add_middleware(
 )
 
 # 신뢰할 수 있는 호스트 설정 (선택사항)
+# - Render 전용 하드코딩(*.onrender.com)만 허용하면 VPS/Lightsail 배포에서 도메인 Host 헤더가 400으로 막힐 수 있음
+# - 기본적으로 FRONTEND_BASE_URL의 hostname을 허용하고, 필요 시 TRUSTED_HOSTS env로 추가 가능
 if settings.ENVIRONMENT == "production":
-    app.add_middleware(
-        TrustedHostMiddleware,
-        allowed_hosts=["localhost", "127.0.0.1", "*.onrender.com"]
-    )
+    allowed_hosts = ["localhost", "127.0.0.1"]
+    try:
+        _u = urlparse(FRONTEND_BASE_URL)
+        if _u.hostname:
+            allowed_hosts.append(_u.hostname)
+            # www 도메인도 자동 허용
+            if not _u.hostname.startswith("www."):
+                allowed_hosts.append(f"www.{_u.hostname}")
+    except Exception:
+        pass
+    _extra_hosts = os.getenv("TRUSTED_HOSTS")  # comma-separated
+    if _extra_hosts:
+        allowed_hosts.extend([h.strip() for h in _extra_hosts.split(",") if h.strip()])
+
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
 
 
 # 라우터 등록 (CAVEDUCK 스타일 우선순위)

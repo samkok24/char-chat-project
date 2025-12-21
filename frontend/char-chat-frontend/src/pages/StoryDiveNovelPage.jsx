@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { storydiveAPI } from '../lib/api';
 import AppLayout from '../components/layout/AppLayout';
@@ -7,14 +7,14 @@ import { Button } from '../components/ui/button';
 import { Textarea } from '../components/ui/textarea';
 import { RadioGroup, RadioGroupItem } from '../components/ui/radio-group';
 import { Label } from '../components/ui/label';
-import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '../components/ui/sheet';
-import { Loader2, Settings, ChevronLeft, Send, RotateCcw, Trash2, FastForward, RefreshCw, ChevronRight } from 'lucide-react';
+import { Loader2, ChevronLeft, RefreshCw } from 'lucide-react';
 import { toast } from 'sonner';
 
 const StoryDiveNovelPage = () => {
   const { novelId } = useParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const [sp] = useSearchParams();
 
   const [paragraphs, setParagraphs] = useState([]);
   const [hoveredParagraph, setHoveredParagraph] = useState(null);
@@ -33,14 +33,19 @@ const StoryDiveNovelPage = () => {
   
   // 세션 복원 알림 중복 방지용 ref
   const restoreToastShownRef = useRef(false);
+  // 뷰어 진입(auto=1) 자동 세션 생성이 실패/재렌더로 무한 재시도되는 것을 방지
+  const autoDiveTriedRef = useRef(false);
+
+  // novelId가 바뀌면 자동 다이브 시도 플래그 초기화
+  useEffect(() => {
+    autoDiveTriedRef.current = false;
+  }, [novelId]);
   
   // 플레이 상태
   const [mode, setMode] = useState('do');
   const [input, setInput] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
   const [showInputArea, setShowInputArea] = useState(false); // TAKE A TURN 클릭 시 입력창 표시
-  const [currentCardIndex, setCurrentCardIndex] = useState(0); // Story Cards 페이지 인덱스
   const contentEndRef = useRef(null);
   const textareaRef = useRef(null);
 
@@ -112,6 +117,19 @@ const StoryDiveNovelPage = () => {
   // 페이지 로드 시 세션 복원 (SSOT: localStorage에서 sessionId 복원)
   useEffect(() => {
     if (!novelId || !novel) return;
+    if (sessionId) return;
+
+    // URL로 세션을 지정한 경우(최근 콘텐츠 진입) → localStorage 없이도 복원 가능하게 처리
+    const urlSessionId = sp.get('sessionId');
+    if (urlSessionId) {
+      setSessionId(urlSessionId);
+      setIsDived(true);
+      restoreToastShownRef.current = false;
+      try {
+        localStorage.setItem(getStorageKey(novelId), urlSessionId);
+      } catch (_) {}
+      return;
+    }
     
     const savedSessionId = localStorage.getItem(getStorageKey(novelId));
     if (savedSessionId) {
@@ -120,7 +138,7 @@ const StoryDiveNovelPage = () => {
       setIsDived(true);
       restoreToastShownRef.current = false; // 복원 알림 리셋
     }
-  }, [novelId, novel, getStorageKey]);
+  }, [novelId, novel, sessionId, sp, getStorageKey]);
 
   // 다이브 세션 생성
   const createSessionMutation = useMutation({
@@ -236,6 +254,33 @@ const StoryDiveNovelPage = () => {
     setEntryPoint(point);
     createSessionMutation.mutate({ novelId, entryPoint: point });
   };
+
+  /**
+   * 뷰어에서 '스토리 다이브 시작'으로 진입한 경우(auto=1),
+   * 추가 클릭 없이 곧바로 마지막 문단(=현재 회차 끝) 기준으로 다이브 세션을 자동 생성한다.
+   *
+   * - 이미 저장된 세션(localStorage)이 있으면 그 세션을 우선 복원한다(SSOT).
+   * - 문단 파싱 완료(paragraphs) 이후에만 동작한다.
+   */
+  useEffect(() => {
+    if (!novelId) return;
+    if (sp.get('auto') !== '1') return;
+    if (!novel) return;
+    if (!Array.isArray(paragraphs) || paragraphs.length === 0) return;
+    if (isDived || sessionId || createSessionMutation.isLoading) return;
+
+    // 이미 저장된 세션이 있으면 자동 생성하지 않음 (복원 useEffect가 처리)
+    try {
+      const savedSessionId = localStorage.getItem(getStorageKey(novelId));
+      if (savedSessionId) return;
+    } catch (_) {}
+
+    const point = Math.max(0, paragraphs.length - 1);
+    setEntryPoint(point);
+    if (autoDiveTriedRef.current) return;
+    autoDiveTriedRef.current = true;
+    createSessionMutation.mutate({ novelId, entryPoint: point });
+  }, [novelId, sp, novel, paragraphs, isDived, sessionId, createSessionMutation, getStorageKey]);
 
   const handleSend = () => {
     if (!input.trim() || isGenerating) return;
@@ -400,7 +445,14 @@ const StoryDiveNovelPage = () => {
         <div className="min-h-screen bg-gradient-to-b from-gray-900 to-black text-white flex items-center justify-center">
           <div className="text-center">
             <p className="text-xl text-gray-400 mb-4">소설을 찾을 수 없습니다</p>
-            <Button onClick={() => navigate('/dashboard')}>
+            <Button onClick={() => {
+              const returnTo = sp.get('returnTo');
+              if (returnTo) {
+                navigate(returnTo);
+                return;
+              }
+              navigate('/dashboard');
+            }}>
               돌아가기
             </Button>
           </div>
@@ -417,7 +469,14 @@ const StoryDiveNovelPage = () => {
           <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
             <Button
               variant="ghost"
-              onClick={() => navigate(-1)}
+              onClick={() => {
+                const returnTo = sp.get('returnTo');
+                if (returnTo) {
+                  navigate(returnTo);
+                  return;
+                }
+                navigate(-1);
+              }}
               className="text-gray-300 hover:text-white hover:bg-gray-800/50"
             >
               <ChevronLeft className="w-4 h-4 mr-2" />
@@ -440,121 +499,6 @@ const StoryDiveNovelPage = () => {
                 >
                   <RefreshCw className="w-5 h-5" />
                 </Button>
-                
-                {/* 설정 버튼 */}
-                <Sheet open={showSettings} onOpenChange={setShowSettings}>
-                  <SheetTrigger asChild>
-                    <Button variant="ghost" size="icon" className="text-gray-300 hover:text-white hover:bg-gray-800/50">
-                      <Settings className="w-5 h-5" />
-                    </Button>
-                  </SheetTrigger>
-                <SheetContent className="bg-gray-900 border-gray-800 text-white overflow-y-auto w-[400px]">
-                  <div className="space-y-4">
-                    {/* 헤더: 타이틀과 페이지네이션을 한 줄로 */}
-                    <div className="flex items-center space-x-3 pt-6">
-                      <SheetTitle className="text-xl font-bold text-white">Story Cards</SheetTitle>
-                      {novel.story_cards && Array.isArray(novel.story_cards) && novel.story_cards.length > 1 && (
-                        <div className="flex items-center space-x-2 bg-gray-800 rounded-full px-3 py-1.5">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => setCurrentCardIndex(Math.max(0, currentCardIndex - 1))}
-                            disabled={currentCardIndex === 0}
-                            className="h-6 w-6 p-0 hover:bg-gray-700 rounded-full disabled:opacity-30"
-                          >
-                            <ChevronLeft className="w-3 h-3" />
-                          </Button>
-                          <span className="text-xs font-semibold text-purple-400 min-w-[35px] text-center">
-                            {currentCardIndex + 1} / {novel.story_cards.length}
-                          </span>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => setCurrentCardIndex(Math.min(novel.story_cards.length - 1, currentCardIndex + 1))}
-                            disabled={currentCardIndex === novel.story_cards.length - 1}
-                            className="h-6 w-6 p-0 hover:bg-gray-700 rounded-full disabled:opacity-30"
-                          >
-                            <ChevronRight className="w-3 h-3" />
-                          </Button>
-                        </div>
-                      )}
-                    </div>
-                  
-                  {novel.story_cards && (() => {
-                    const currentCard = Array.isArray(novel.story_cards) 
-                      ? novel.story_cards[currentCardIndex] 
-                      : novel.story_cards;
-                    
-                    return (
-                      <div className="space-y-6 pb-6">
-                        {/* Plot Essentials */}
-                        <div className="bg-gradient-to-br from-purple-900/30 to-pink-900/30 rounded-xl p-4 border border-purple-500/20">
-                          <div className="flex items-center space-x-2 mb-3">
-                            <div className="w-1 h-4 bg-purple-500 rounded-full"></div>
-                            <h3 className="text-sm font-bold text-purple-400 uppercase tracking-wide">Plot Essentials</h3>
-                          </div>
-                          <p className="text-sm text-gray-200 leading-relaxed">
-                            {currentCard.plot}
-                          </p>
-                        </div>
-
-                        {/* Characters */}
-                        {currentCard.characters?.length > 0 && (
-                          <div>
-                            <div className="flex items-center space-x-2 mb-3">
-                              <div className="w-1 h-4 bg-purple-500 rounded-full"></div>
-                              <h3 className="text-sm font-bold text-purple-400 uppercase tracking-wide">Characters</h3>
-                            </div>
-                            <div className="space-y-2">
-                              {currentCard.characters.map((char, idx) => (
-                                <div key={idx} className="bg-gray-800/50 rounded-lg p-3 border border-gray-700/50 hover:border-purple-500/30 transition-colors">
-                                  <p className="font-semibold text-white text-sm mb-1">{char.name}</p>
-                                  <p className="text-xs text-gray-400 leading-relaxed">{char.description}</p>
-                                  {char.personality && (
-                                    <p className="text-xs text-purple-400/70 mt-1 italic">"{char.personality}"</p>
-                                  )}
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Locations */}
-                        {currentCard.locations?.length > 0 && (
-                          <div>
-                            <div className="flex items-center space-x-2 mb-3">
-                              <div className="w-1 h-4 bg-purple-500 rounded-full"></div>
-                              <h3 className="text-sm font-bold text-purple-400 uppercase tracking-wide">Locations</h3>
-                            </div>
-                            <div className="space-y-2">
-                              {currentCard.locations.map((loc, idx) => (
-                                <div key={idx} className="bg-gray-800/50 rounded-lg p-3 border border-gray-700/50 hover:border-purple-500/30 transition-colors">
-                                  <p className="font-semibold text-white text-sm mb-1">{loc.name}</p>
-                                  <p className="text-xs text-gray-400 leading-relaxed">{loc.description}</p>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-
-                        {/* World Setting */}
-                        {currentCard.world && (
-                          <div className="bg-gradient-to-br from-blue-900/30 to-purple-900/30 rounded-xl p-4 border border-blue-500/20">
-                            <div className="flex items-center space-x-2 mb-3">
-                              <div className="w-1 h-4 bg-blue-500 rounded-full"></div>
-                              <h3 className="text-sm font-bold text-blue-400 uppercase tracking-wide">World Setting</h3>
-                            </div>
-                            <p className="text-sm text-gray-200 leading-relaxed">
-                              {currentCard.world}
-                            </p>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })()}
-                  </div>
-                </SheetContent>
-              </Sheet>
               </div>
             ) : (
               <div className="w-10"></div>
@@ -717,7 +661,7 @@ const StoryDiveNovelPage = () => {
                       disabled={isGenerating}
                       className="bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-white px-6 py-3"
                     >
-                      ✏️ TAKE A TURN
+                      ✏️ 내 행동/대사 입력
                     </Button>
                     
                     <Button
@@ -726,7 +670,7 @@ const StoryDiveNovelPage = () => {
                       variant="outline"
                       className="bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-700 hover:to-cyan-700 border-none text-white px-6 py-3"
                     >
-                      ⚡ CONTINUE
+                      ⚡ 단락 생성
                     </Button>
                     
                     <Button
@@ -735,7 +679,7 @@ const StoryDiveNovelPage = () => {
                       variant="outline"
                       className="bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-700 px-6 py-3"
                     >
-                      🔄 RETRY
+                      🔄 다시 생성
                     </Button>
                     
                     <Button
@@ -744,7 +688,7 @@ const StoryDiveNovelPage = () => {
                       variant="outline"
                       className="bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-700 px-6 py-3"
                     >
-                      ➡️ NEXT
+                      ➡️ 원문 엿보기
                     </Button>
                     
                     <Button
@@ -753,7 +697,7 @@ const StoryDiveNovelPage = () => {
                       variant="outline"
                       className="bg-gray-800 border-gray-700 text-red-400 hover:bg-gray-700 px-6 py-3"
                     >
-                      🗑️ ERASE
+                      🗑️ 단락 삭제
                     </Button>
                   </div>
                 ) : (
@@ -782,7 +726,7 @@ const StoryDiveNovelPage = () => {
                               : 'bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-700'
                             }
                           >
-                            Do
+                            행동
                           </Button>
                           <Button
                             onClick={() => setMode('say')}
@@ -793,7 +737,7 @@ const StoryDiveNovelPage = () => {
                               : 'bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-700'
                             }
                           >
-                            Say
+                            대사
                           </Button>
                           <Button
                             onClick={() => setMode('story')}
@@ -804,7 +748,7 @@ const StoryDiveNovelPage = () => {
                               : 'bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-700'
                             }
                           >
-                            Story
+                            전개
                           </Button>
                           <Button
                             onClick={() => setMode('see')}
@@ -815,7 +759,7 @@ const StoryDiveNovelPage = () => {
                               : 'bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-700'
                             }
                           >
-                            See
+                            묘사
                           </Button>
                         </div>
                       </div>
@@ -825,7 +769,7 @@ const StoryDiveNovelPage = () => {
                         disabled={!input.trim() || isGenerating}
                         className="bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-white px-6"
                       >
-                        Send
+                        전송
                       </Button>
                     </div>
 
@@ -836,10 +780,10 @@ const StoryDiveNovelPage = () => {
                       onChange={(e) => setInput(e.target.value)}
                       onKeyDown={handleKeyDown}
                       placeholder={
-                        mode === 'do' ? 'What do you do?' :
-                        mode === 'say' ? 'What do you say?' :
-                        mode === 'story' ? 'What happens next?' :
-                        'What do you see?'
+                        mode === 'do' ? '무슨 행동이 좋을까요?' :
+                        mode === 'say' ? '어떤 말이 좋을까요?' :
+                        mode === 'story' ? '어떤 일이 일어날까요?' :
+                        '무엇이 보일까요?'
                       }
                       disabled={isGenerating}
                       className="w-full bg-gray-800/90 border-gray-700 text-white placeholder:text-gray-500 resize-none min-h-[100px] max-h-[200px] text-base"

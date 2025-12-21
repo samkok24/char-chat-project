@@ -1,34 +1,17 @@
 version: '3.8'
 
 services:
-  # PostgreSQL 데이터베이스
-  postgres:
-    image: postgres:15-alpine
-    container_name: char_chat_postgres
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-char_chat_db}
-      POSTGRES_USER: ${POSTGRES_USER:-char_chat_user}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-char_chat_password}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
-    ports:
-      - "5432:5432"
-    networks:
-      - char_chat_network
-    restart: unless-stopped
-
   # Redis (세션 및 캐시)
   redis:
     image: redis:7-alpine
-    container_name: char_chat_redis
+    container_name: chapter8_redis
     command: redis-server --appendonly yes
     volumes:
       - redis_data:/data
     ports:
       - "6379:6379"
     networks:
-      - char_chat_network
+      - chapter8_network
     restart: unless-stopped
 
   # FastAPI 백엔드
@@ -36,33 +19,69 @@ services:
     build:
       context: ../backend-api
       dockerfile: Dockerfile
-    container_name: char_chat_backend
+    container_name: chapter8_backend
     environment:
       # 데이터베이스 설정
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-char_chat_user}:${POSTGRES_PASSWORD:-char_chat_password}@postgres:5432/${POSTGRES_DB:-char_chat_db}
+      # Supabase Postgres 등 외부 DB 사용 (예: ...?sslmode=require)
+      DATABASE_URL: ${DATABASE_URL}
       
       # Redis 설정
       REDIS_URL: redis://redis:6379/0
       
       # JWT 설정
-      SECRET_KEY: ${SECRET_KEY:-your-super-secret-key-change-this-in-production}
-      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-your-super-secret-jwt-key-change-this-in-production}
+      JWT_ACCESS_TOKEN_EXPIRE_MINUTES: ${JWT_ACCESS_TOKEN_EXPIRE_MINUTES:-30}
+      JWT_REFRESH_TOKEN_EXPIRE_DAYS: ${JWT_REFRESH_TOKEN_EXPIRE_DAYS:-7}
       
       # AI API 키
       GEMINI_API_KEY: ${GEMINI_API_KEY}
       CLAUDE_API_KEY: ${CLAUDE_API_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
       IMAGEN_API_KEY: ${IMAGEN_API_KEY}
+      FAL_KEY: ${FAL_KEY:-}
+
+      # Email verification (optional but recommended in prod)
+      FRONTEND_BASE_URL: ${FRONTEND_BASE_URL}
+      EMAIL_VERIFICATION_REQUIRED: ${EMAIL_VERIFICATION_REQUIRED:-true}
+      SMTP_HOST: ${SMTP_HOST}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME}
+      SMTP_PASSWORD: ${SMTP_PASSWORD}
+      SMTP_USE_TLS: ${SMTP_USE_TLS:-true}
+      SMTP_USE_SSL: ${SMTP_USE_SSL:-false}
+      EMAIL_FROM_ADDRESS: ${EMAIL_FROM_ADDRESS}
+      EMAIL_FROM_NAME: ${EMAIL_FROM_NAME}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+
+      # CORS (옵션: 필요 시 정규식 오버라이드)
+      ALLOW_ORIGIN_REGEX: ${ALLOW_ORIGIN_REGEX:-}
+
+      # Feature flags / schedulers
+      ORIGCHAT_V2: ${ORIGCHAT_V2:-true}
+      RANKING_SCHEDULER_ENABLED: ${RANKING_SCHEDULER_ENABLED:-0}
+
+      # Storage (R2/S3 compatible) - optional
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
+      R2_ENDPOINT_URL: ${R2_ENDPOINT_URL:-}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
+      R2_ADDRESSING_STYLE: ${R2_ADDRESSING_STYLE:-path}
+      R2_BUCKET: ${R2_BUCKET:-}
+      R2_PUBLIC_BASE_URL: ${R2_PUBLIC_BASE_URL:-}
+      UPLOAD_DIRECTORY: ${UPLOAD_DIRECTORY:-}
+
+      # Optional: font override for image captions
+      KOREAN_FONT_PATH: ${KOREAN_FONT_PATH:-}
       
       # 환경 설정
-      ENVIRONMENT: ${ENVIRONMENT:-development}
-      DEBUG: ${DEBUG:-true}
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      DEBUG: ${DEBUG:-false}
     ports:
       - "8000:8000"
     depends_on:
-      - postgres
       - redis
     networks:
-      - char_chat_network
+      - chapter8_network
     restart: unless-stopped
 
   # Node.js 채팅 서버
@@ -70,31 +89,35 @@ services:
     build:
       context: ../chat-server
       dockerfile: Dockerfile
-    container_name: char_chat_socket
+    container_name: chapter8_socket
     environment:
       # 서버 설정
       PORT: 3001
-      NODE_ENV: ${NODE_ENV:-development}
+      NODE_ENV: ${NODE_ENV:-production}
       
       # Redis 설정
       REDIS_URL: redis://redis:6379/1
       
       # JWT 설정 (백엔드와 동일)
-      JWT_SECRET: ${SECRET_KEY:-your-super-secret-key-change-this-in-production}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-your-super-secret-jwt-key-change-this-in-production}
       
       # 백엔드 API URL
-      API_BASE_URL: http://backend:8000
+      BACKEND_API_URL: http://backend:8000
       
       # AI API 키
       GEMINI_API_KEY: ${GEMINI_API_KEY}
       CLAUDE_API_KEY: ${CLAUDE_API_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+
+      # CORS (comma-separated origins)
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
     ports:
       - "3001:3001"
     depends_on:
       - redis
       - backend
     networks:
-      - char_chat_network
+      - chapter8_network
     restart: unless-stopped
 
   # React 프론트엔드
@@ -102,45 +125,41 @@ services:
     build:
       context: ../frontend/char-chat-frontend
       dockerfile: Dockerfile
-    container_name: char_chat_frontend
-    environment:
-      VITE_API_URL: http://localhost:8000
-      VITE_SOCKET_URL: http://localhost:3001
+      target: prod
+      args:
+        VITE_API_URL: ${VITE_API_URL}
+        VITE_SOCKET_URL: ${VITE_SOCKET_URL}
+        VITE_EXTRACT_ASYNC: ${VITE_EXTRACT_ASYNC:-0}
+    container_name: chapter8_frontend
     ports:
       - "3000:3000"
     depends_on:
       - backend
       - chat-server
     networks:
-      - char_chat_network
+      - chapter8_network
     restart: unless-stopped
 
   # Nginx 리버스 프록시
   nginx:
     image: nginx:alpine
-    container_name: char_chat_nginx
+    container_name: chapter8_nginx
     ports:
       - "80:80"
-      - "443:443"
     volumes:
       - ./nginx.production.conf:/etc/nginx/nginx.conf:ro
-      # SSL 인증서 마운트 (Let's Encrypt)
-      - /etc/letsencrypt:/etc/letsencrypt:ro
-      # Certbot 인증 경로
-      - /var/www/certbot:/var/www/certbot:ro
     depends_on:
       - frontend
       - backend
       - chat-server
     networks:
-      - char_chat_network
+      - chapter8_network
     restart: unless-stopped
 
 volumes:
-  postgres_data:
   redis_data:
 
 networks:
-  char_chat_network:
+  chapter8_network:
     driver: bridge
 

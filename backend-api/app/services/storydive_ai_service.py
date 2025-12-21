@@ -167,7 +167,7 @@ def build_system_prompt(story_cards: Dict[str, Any] | list, context_text: str, m
 **주요 장소**
 {locations_text}
 
-**원작 참고 텍스트 (다이브 지점 이후) - 이 문체를 정확히 따라야 합니다**
+**원작 참고 텍스트 (요약 + 다이브 지점 직전까지) - 이 문체를 정확히 따라야 합니다**
 {context_text}
 
 ---

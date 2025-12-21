@@ -3,13 +3,14 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import AppLayout from '../components/layout/AppLayout';
 import { Button } from '../components/ui/button';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { chaptersAPI, storiesAPI, mediaAPI } from '../lib/api';
+import { chaptersAPI, storiesAPI, mediaAPI, storydiveAPI } from '../lib/api';
 import { setReadingProgress, getReadingProgress } from '../lib/reading';
-import { ArrowLeft, ArrowRight, Home, MessageCircle } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Home, MessageCircle, Loader2 } from 'lucide-react';
 import { resolveImageUrl } from '../lib/images';
 import ChapterViewer from '../components/ChapterViewer';
 import OrigChatStartModal from '../components/OrigChatStartModal';
 import MiniChatWindow from '../components/MiniChatWindow';
+import { toast } from 'sonner';
 
 const ChapterReaderPage = () => {
   const { storyId: storyIdFromPath, chapterNumber } = useParams();
@@ -20,6 +21,7 @@ const ChapterReaderPage = () => {
   const storyId = storyIdFromPath || sp.get('storyId');
   const [origChatModalOpen, setOrigChatModalOpen] = useState(false);
   const [miniChatOpen, setMiniChatOpen] = useState(false);
+  const [storyDivePreparing, setStoryDivePreparing] = useState(false);
   // 스토리 상세 (헤더/좌측 표지용)
   const { data: story } = useQuery({
     queryKey: ['story', storyId],
@@ -85,6 +87,7 @@ const ChapterReaderPage = () => {
     return imageUrl; // 단일 문자열인 경우 (하위 호환)
   };
   const isWebtoon = !!getImageUrl(chapter?.image_url);
+  const isStoryWebtoon = !!story?.is_webtoon || isWebtoon;
   
   // 디버깅용 로그
   React.useEffect(() => {
@@ -102,6 +105,47 @@ const ChapterReaderPage = () => {
   React.useEffect(() => {
     if (chapter?.no) setReadingProgress(storyId, chapter.no);
   }, [storyId, chapter?.no]);
+
+  /**
+   * 뷰어 하단 '스토리 다이브 시작' 버튼 클릭 시 동작
+   *
+   * 의도/동작:
+   * - 현재 회차(toNo) 기준 최근 10화 합본 텍스트를 서버에서 준비(Novel 스냅샷 생성/재사용)
+   * - 성공 시 StoryDive 화면으로 이동하며, returnTo를 함께 넘겨 뒤로가기가 항상 뷰어로 복귀하도록 보장
+   * - 웹툰(이미지 회차/웹툰 플래그)인 경우 버튼 비활성 + 서버에서도 422로 방어
+   */
+  const handleStoryDiveStart = async () => {
+    if (!storyId) return;
+    const toNo = Number(chapter?.no || chapterNumber || 0);
+    if (!toNo) return;
+    if (storyDivePreparing) return;
+    if (isStoryWebtoon) return;
+
+    setStoryDivePreparing(true);
+    try {
+      const res = await storydiveAPI.prepareNovelFromStory(storyId, toNo, 10);
+      const novelId = res?.data?.novel_id;
+      if (!novelId) {
+        toast.error('스토리 다이브 준비에 실패했습니다. (novel_id 없음)');
+        return;
+      }
+      const returnTo = `/stories/${storyId}/chapters/${toNo}`;
+      navigate(`/storydive/novels/${novelId}?returnTo=${encodeURIComponent(returnTo)}&auto=1`);
+    } catch (e) {
+      const status = e?.response?.status;
+      const detail = e?.response?.data?.detail;
+      if (status === 401) {
+        toast.error('스토리 다이브는 로그인 후 이용할 수 있어요.');
+      } else if (status === 422) {
+        toast.error(detail || '웹툰 작품은 스토리 다이브를 지원하지 않습니다.');
+      } else {
+        toast.error(detail || '스토리 다이브 준비에 실패했습니다.');
+      }
+      console.error('prepareNovelFromStory error:', e);
+    } finally {
+      setStoryDivePreparing(false);
+    }
+  };
 
   // 회차 진입 시 뷰 카운트 증가 트리거 및 목록 무효화
   React.useEffect(() => {
@@ -301,44 +345,63 @@ const ChapterReaderPage = () => {
         {/* 하단 내비게이션 (콘텐츠 폭 내부) */}
         <div className="max-w-5xl mx-auto mt-10">
           <div className="bg-gray-900/95 backdrop-blur border border-gray-800/80 rounded-2xl px-5 py-3 shadow-xl shadow-black/40">
-            <div className="grid grid-cols-3 items-center gap-3">
-              <div className="justify-self-start">
-                <Button
-                  variant="ghost"
-                  className="text-gray-300 hover:text-white hover:bg-gray-800"
-                  disabled={currentIdx <= 0}
-                  onClick={() => {
-                    if (currentIdx > 0) {
-                      const prev = chapterList[currentIdx - 1];
-                      if (prev) navigate(`/stories/${storyId}/chapters/${prev.no}`);
-                    }
-                  }}
-                >
-                  <ArrowLeft className="w-5 h-5 mr-2" /> 이전화
-                </Button>
-              </div>
-              <div className="justify-self-center">
-                <Button
-                  variant="ghost"
-                  className="text-gray-300 hover:text-white hover:bg-gray-800"
-                  onClick={() => navigate(`/stories/${storyId}`)}
-                >
-                  <Home className="w-5 h-5 mr-2" /> 작품홈
-                </Button>
-              </div>
-              <div className="justify-self-end">
-                <Button
-                  className="bg-red-600 hover:bg-red-700 text-white"
-                  disabled={currentIdx < 0 || currentIdx >= chapterList.length - 1}
-                  onClick={() => {
-                    if (currentIdx >= 0 && currentIdx < chapterList.length - 1) {
-                      const next = chapterList[currentIdx + 1];
-                      if (next) navigate(`/stories/${storyId}/chapters/${next.no}`);
-                    }
-                  }}
-                >
-                  다음화 <ArrowRight className="w-5 h-5 ml-2" />
-                </Button>
+            <div className="flex flex-col gap-3">
+              {/* 스토리 다이브 시작 버튼 (회차 맨 아래) */}
+              <Button
+                className="w-full bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-50 disabled:cursor-not-allowed"
+                disabled={!hasChapter || !storyId || storyDivePreparing || isStoryWebtoon}
+                onClick={handleStoryDiveStart}
+                title={isStoryWebtoon ? '웹툰 작품은 스토리 다이브를 지원하지 않습니다' : '최근 10화 합본으로 스토리 다이브를 시작합니다'}
+              >
+                {storyDivePreparing ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    스토리 다이브 준비 중...
+                  </>
+                ) : (
+                  '스토리 다이브 시작'
+                )}
+              </Button>
+
+              <div className="grid grid-cols-3 items-center gap-3">
+                <div className="justify-self-start">
+                  <Button
+                    variant="ghost"
+                    className="text-gray-300 hover:text-white hover:bg-gray-800"
+                    disabled={currentIdx <= 0}
+                    onClick={() => {
+                      if (currentIdx > 0) {
+                        const prev = chapterList[currentIdx - 1];
+                        if (prev) navigate(`/stories/${storyId}/chapters/${prev.no}`);
+                      }
+                    }}
+                  >
+                    <ArrowLeft className="w-5 h-5 mr-2" /> 이전화
+                  </Button>
+                </div>
+                <div className="justify-self-center">
+                  <Button
+                    variant="ghost"
+                    className="text-gray-300 hover:text-white hover:bg-gray-800"
+                    onClick={() => navigate(`/stories/${storyId}`)}
+                  >
+                    <Home className="w-5 h-5 mr-2" /> 작품홈
+                  </Button>
+                </div>
+                <div className="justify-self-end">
+                  <Button
+                    className="bg-red-600 hover:bg-red-700 text-white"
+                    disabled={currentIdx < 0 || currentIdx >= chapterList.length - 1}
+                    onClick={() => {
+                      if (currentIdx >= 0 && currentIdx < chapterList.length - 1) {
+                        const next = chapterList[currentIdx + 1];
+                        if (next) navigate(`/stories/${storyId}/chapters/${next.no}`);
+                      }
+                    }}
+                  >
+                    다음화 <ArrowRight className="w-5 h-5 ml-2" />
+                  </Button>
+                </div>
               </div>
             </div>
           </div>

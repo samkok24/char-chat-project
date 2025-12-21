@@ -2470,7 +2470,7 @@ return (
             <div className="px-6 md:px-8">
               <div className="flex flex-col items-center justify-center select-none gap-6">
                 <h1 className="text-4xl md:text-6xl font-semibold tracking-tight bg-gradient-to-r from-purple-400 via-fuchsia-400 to-pink-400 text-transparent bg-clip-text drop-shadow-[0_0_10px_rgba(168,85,247,0.35)] mb-2 md:mb-3">
-                  {user ? `${user.username}님의 일상에, 판타지를 보여줄게요` : '신비한천사60님의 일상에, 판타지를 보여줄게요'}
+                  {user ? `${user.username}님의 일상에, 판타지를 보여줄게요` : '당신의 일상에, 판타지를 보여줄게요'}
                 </h1>
                 <div className="mb-4 md:mb-6 flex flex-col md:flex-row items-start md:items-center gap-3">
                   <span className="text-lg md:text-xl text-purple-300/90 drop-shadow-[0_0_6px_rgba(168,85,247,0.25)]">

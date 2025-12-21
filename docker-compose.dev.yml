@@ -65,6 +65,7 @@ services:
     build:
       context: ./frontend/char-chat-frontend
       dockerfile: Dockerfile
+      target: dev
     image: char-chat-frontend-dev
     container_name: char_chat_frontend
     environment:

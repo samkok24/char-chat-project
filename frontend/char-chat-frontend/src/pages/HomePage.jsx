@@ -89,16 +89,31 @@ const HomePage = () => {
     else p.delete('tab');
     navigate({ pathname: location.pathname, search: p.toString() }, { replace: true });
   };
-  // 스토리 다이브용 소설 목록 조회
-  const { data: novels = [] } = useQuery({
-    queryKey: ['storydive-novels'],
+  // 스토리 다이브 추천 작품(원작) - 10화 이상 + 표지 있음 + 원작챗 시작 수 낮은 순 + 평균조회수 반영(서버 계산)
+  const { data: storyDiveStories = [], isLoading: storyDiveStoriesLoading } = useQuery({
+    queryKey: ['storydive-stories-featured'],
+    queryFn: async () => {
+      try {
+        const res = await storiesAPI.getStoryDiveSlots(10, 10);
+        return Array.isArray(res.data) ? res.data : [];
+      } catch (err) {
+        console.error('Failed to load storydive stories:', err);
+        return [];
+      }
+    },
+    staleTime: 5 * 60 * 1000,
+  });
+
+  // 최근 스토리다이브 (스토리다이브 사용 경험 유저에게는 추천보다 최근이 우선)
+  const { data: recentStoryDive = [], isLoading: recentStoryDiveLoading } = useQuery({
+    queryKey: ['storydive-recent-sessions'],
     queryFn: async () => {
       try {
         const { storydiveAPI } = await import('../lib/api');
-        const response = await storydiveAPI.getNovels();
-        return response.data || [];
+        const res = await storydiveAPI.getRecentSessions(10);
+        return Array.isArray(res.data) ? res.data : [];
       } catch (err) {
-        console.error('Failed to load novels:', err);
+        console.error('Failed to load recent storydive sessions:', err);
         return [];
       }
     },
@@ -718,101 +733,109 @@ const HomePage = () => {
           </section>
 
           {/* 스토리 시뮬레이터 */}
-          <section className="mb-10">
-            <h2 className="text-lg font-medium text-gray-100 mb-4">
-              {user?.username || '신비한천사60'}님. 이런 상상, 해본 적 있으세요? 직접 주인공이 되어보세요.
-            </h2>
-            <div className="flex gap-4 overflow-x-auto pb-2 scrollbar-hide">
-              {[
-                { 
-                  title: '로또1등이라 엄청 즐겁게 회사생활하기', 
-                  badge: '로또1등도 출근합니다',
-                  image: '로또1등도.jpg',
-                  novelTitle: '로또1등이라 엄청 즐겁게 회사생활하기'
-                },
-                { 
-                  title: '전셋집에서 쫓겨나서 부동산 재벌되기', 
-                  badge: '회귀해서 부동산 재벌',
-                  image: '부동산.jpg',
-                  novelTitle: '전셋집에서 시작하는 나의 히어로 아카데미아'
-                },
-                { 
-                  title: '1998년부터 시작해서 K-컬쳐의 제왕되기', 
-                  badge: 'K-문화의 제왕',
-                  image: 'K문화.jpg',
-                  novelTitle: null
-                },
-                { 
-                  title: '망한 아이돌멤버에서 빌보드 프로듀서까지', 
-                  badge: '두번 사는 프로듀서',
-                  image: '프로듀서.jpg',
-                  novelTitle: null
-                },
-                { 
-                  title: '회사사람들과 다 같이 생존게임 참여하기', 
-                  badge: '구조조정에서 살아남는법',
-                  image: '구조조정.jpg',
-                  novelTitle: null
-                }
-              ].map((item, idx) => {
-                // novelTitle이 있으면 실제 소설과 매칭
-                const matchedNovel = item.novelTitle 
-                  ? novels.find(n => n.title === item.novelTitle)
-                  : null;
+          {(() => {
+            // ✅ 구좌 구성:
+            // - 스토리다이브 사용 이력이 있으면: 최근 스토리다이브(최근 콘텐츠)
+            // - 사용 이력이 없으면: 추천(기준 기반)
+            //
+            // ✅ 노출 규칙:
+            // - 0개면 구좌 비노출
+            // - 5개 미만이면 있는 만큼만 노출
+            const recentBase = Array.isArray(recentStoryDive) ? recentStoryDive : [];
+            const useRecent = isAuthenticated && !recentStoryDiveLoading && recentBase.length > 0;
+            const base = useRecent ? recentBase : (Array.isArray(storyDiveStories) ? storyDiveStories : []);
+            const loading =
+              // 로그인 유저는 "최근 여부 판단"이 끝날 때까지 먼저 기다린다(깜빡임 방지)
+              (isAuthenticated && recentStoryDiveLoading)
+                ? true
+                : (useRecent ? false : storyDiveStoriesLoading);
 
-                return (
-                  <div
-                    key={idx}
-                    className="flex-shrink-0 w-[200px] cursor-pointer group"
-                    onClick={() => {
-                      if (!requireAuth('스토리 에이전트')) {
-                        return;
-                      }
-                      if (matchedNovel) {
-                        // 바로 원문 페이지로 이동
-                        navigate(`/storydive/novels/${matchedNovel.id}`);
-                      } else {
-                        // 매칭되는 소설이 없으면 준비중 알림
-                        window.dispatchEvent(new CustomEvent('toast', {
-                          detail: {
-                            type: 'info',
-                            message: '준비 중인 콘텐츠입니다'
-                          }
-                        }));
-                      }
-                    }}
-                  >
-                
-                  <div className="relative aspect-[3/4] rounded-lg overflow-hidden mb-2 bg-gray-900 border border-gray-700/50 group-hover:border-gray-600 transition-colors">
-                    <img 
-                      src={`/image/${item.image}`}
-                      alt={item.title}
-                      className="w-full h-full object-cover"
-                      onError={(e) => {
-                        e.target.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="200" height="267"%3E%3Crect fill="%23374151" width="200" height="267"/%3E%3Ctext x="50%25" y="50%25" fill="%239ca3af" text-anchor="middle" dominant-baseline="middle" font-size="12"%3E이미지 준비중%3C/text%3E%3C/svg%3E';
-                      }}
-                    />
-                    <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent" />
-                    <div className="absolute bottom-0 left-0 right-0 p-3">
-                      <h3 className="text-white font-semibold text-base leading-tight" style={{
-                        textShadow: '0 2px 8px rgba(0,0,0,0.8), 0 0 2px rgba(0,0,0,1)',
-                        WebkitTextStroke: '0.5px black'
-                      }}>
-                        {item.title}
-                      </h3>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-xs text-gray-500">by</span>
-                    <Badge className="bg-blue-600/80 hover:bg-blue-600 text-white text-[10px] px-2 py-0.5">
-                      {item.badge}
-                    </Badge>
-                  </div>
-                  </div>
-                );
-              })}
-            </div>
-          </section>
+            // 0개면 구좌 비노출 (로딩 중이면 스켈레톤만 노출)
+            if (!loading && base.length === 0) return null;
+
+            const placeholderCover = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="200" height="267"%3E%3Crect fill="%23374151" width="200" height="267"/%3E%3Ctext x="50%25" y="50%25" fill="%239ca3af" text-anchor="middle" dominant-baseline="middle" font-size="12"%3E표지 준비중%3C/text%3E%3C/svg%3E';
+
+            return (
+              <section className="mb-10">
+                <h2 className="text-lg font-medium text-gray-100 mb-4">
+                  {useRecent
+                    ? '최근 스토리 다이브'
+                    : `${user?.username || '독자'}님. 이런 상상, 해본 적 있으세요? 직접 주인공이 되어보세요.`}
+                </h2>
+                <div className="flex gap-4 overflow-x-auto pb-2 scrollbar-hide">
+                  {loading ? (
+                    Array.from({ length: 5 }).map((_, idx) => (
+                      <div key={`sd-sk-${idx}`} className="flex-shrink-0 w-[200px]">
+                        <div className="relative aspect-[3/4] rounded-lg overflow-hidden mb-2 bg-gray-900 border border-gray-700/50">
+                          <Skeleton className="w-full h-full bg-gray-800" />
+                        </div>
+                        <Skeleton className="h-5 w-40 bg-gray-800" />
+                      </div>
+                    ))
+                  ) : (
+                    base.slice(0, 10).map((s, idx) => {
+                      const key = s?.session_id || s?.id || `slot-${idx}`;
+                      const coverSrc = getThumbnailUrl(s?.cover_url, 600) || placeholderCover;
+                      const intro = String(s?.excerpt || '').trim();
+                      const overlayText = intro || '이 작품에서 직접 주인공이 되어보세요.';
+                      return (
+                        <div
+                          key={key}
+                          className="flex-shrink-0 w-[200px] cursor-pointer group"
+                          onClick={() => {
+                            if (useRecent) {
+                              if (!requireAuth('스토리 다이브')) return;
+                              if (!s?.novel_id || !s?.session_id) return;
+                              navigate(`/storydive/novels/${s.novel_id}?sessionId=${encodeURIComponent(String(s.session_id))}`);
+                              return;
+                            }
+                            if (!s?.id) return;
+                            // 추천 구좌는 1화 뷰어로 바로 진입
+                            navigate(`/stories/${s.id}/chapters/1`);
+                          }}
+                        >
+                          <div className="relative aspect-[3/4] rounded-lg overflow-hidden mb-2 bg-gray-900 border border-gray-700/50 group-hover:border-gray-600 transition-colors">
+                            <img
+                              src={coverSrc}
+                              alt={s?.title || '작품 표지'}
+                              className="w-full h-full object-cover"
+                              onError={(e) => {
+                                e.target.src = placeholderCover;
+                              }}
+                            />
+                            <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent" />
+                            <div className="absolute bottom-0 left-0 right-0 p-3">
+                              <p
+                                className="text-white text-sm leading-snug"
+                                style={{
+                                  textShadow: '0 2px 10px rgba(0,0,0,0.85)',
+                                  display: '-webkit-box',
+                                  WebkitLineClamp: 3,
+                                  WebkitBoxOrient: 'vertical',
+                                  overflow: 'hidden',
+                                }}
+                                title={overlayText}
+                              >
+                                {overlayText}
+                              </p>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <Badge
+                              className="bg-blue-600/80 hover:bg-blue-600 text-white text-[10px] px-2 py-0.5 max-w-full truncate"
+                              title={s?.title || ''}
+                            >
+                              {s?.title || '작품명'}
+                            </Badge>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </section>
+            );
+          })()}
 
           {/* 인기 캐릭터 TOP (4x2) */}
           <ErrorBoundary>

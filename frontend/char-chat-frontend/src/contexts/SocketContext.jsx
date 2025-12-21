@@ -273,10 +273,11 @@ export const SocketProvider = ({ children }) => {
       }
 
     const doSend = () => {
+      const ACK_TIMEOUT_MS = 65000;
       const ackTimeout = setTimeout(() => {
-        // ACK가 오지 않아도 성공으로 간주
-        resolve({ ok: true, reason: 'no_ack_timeout' });
-      }, 5000);
+        // ACK 없으면 실패 처리(성공 처리 금지)
+        reject(new Error('ack_timeout'));
+      }, ACK_TIMEOUT_MS);
 
       const ack = (resp) => {
         clearTimeout(ackTimeout);

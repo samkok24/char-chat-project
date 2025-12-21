@@ -41,8 +41,147 @@ from app.services.origchat_service import _enrich_character_fields
 from app.models.story_chapter import StoryChapter
 from app.models.character import Character
 from sqlalchemy import select, delete
+from app.core.database import redis_client
+from pydantic import BaseModel, Field
 
 router = APIRouter()
+
+
+class StoryDiveSlotItem(BaseModel):
+    """메인 '스토리다이브' 구좌용 추천 작품 아이템
+
+    선정 기준(서버에서 계산):
+    - 10화 이상
+    - cover_url 있음
+    - 웹툰 제외
+    - 원작챗 시작 수(낮은 순) + 평균조회수(총조회수/회차수) 반영
+    """
+    id: uuid.UUID
+    title: str
+    cover_url: Optional[str] = None
+    excerpt: Optional[str] = None
+    episode_count: int = 0
+    total_views: int = 0
+    avg_views: float = 0.0
+    origchat_starts: int = 0
+
+
+@router.get("/storydive/slots", response_model=List[StoryDiveSlotItem])
+async def get_storydive_slots(
+    limit: int = Query(10, ge=1, le=30),
+    min_episodes: int = Query(10, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    """메인 '스토리다이브' 구좌에 노출할 작품 목록을 반환한다.
+
+    방어적 설계:
+    - Redis 장애/카운트 누락 시에도 기본값(0)으로 안전하게 동작
+    - 평균조회수는 (스토리 상세 진입수 + 모든 회차 조회수 합) / 회차수 로 계산
+    """
+    # 1) 후보군: 공개 + 웹툰 제외 + 표지 있음 + 회차 수 조건
+    #    - 너무 많이 가져오면 Redis mget/정렬이 무거워질 수 있어 상한을 둔다.
+    candidate_limit = max(int(limit) * 30, 200)
+    cover_non_empty = func.length(func.trim(Story.cover_url)) > 0
+
+    rows = await db.execute(
+        select(
+            Story,
+            func.count(StoryChapter.id).label("episode_count"),
+            func.coalesce(func.sum(StoryChapter.view_count), 0).label("chapter_views"),
+        )
+        .outerjoin(StoryChapter, StoryChapter.story_id == Story.id)
+        .where(Story.is_public == True)
+        .where(func.coalesce(Story.is_webtoon, False) == False)
+        .where(Story.cover_url.isnot(None))
+        .where(cover_non_empty)
+        .group_by(Story.id)
+        .having(func.count(StoryChapter.id) >= int(min_episodes))
+        .order_by(Story.view_count.desc(), Story.like_count.desc(), Story.created_at.desc())
+        .limit(candidate_limit)
+    )
+    candidates = rows.all() or []
+
+    # 2) Redis에서 원작챗 시작 수 일괄 조회
+    story_ids = [str(s.id) for (s, _, _) in candidates if getattr(s, "id", None)]
+    keys = [f"origchat:story:{sid}:starts" for sid in story_ids]
+    starts_map: dict[str, int] = {}
+    try:
+        vals = await redis_client.mget(keys) if keys else []
+        for sid, v in zip(story_ids, vals or []):
+            try:
+                starts_map[sid] = int(v or 0)
+            except Exception:
+                starts_map[sid] = 0
+    except Exception:
+        starts_map = {sid: 0 for sid in story_ids}
+
+    # 3) 평균조회수(총조회수/회차수) 계산 + 정렬
+    def _make_item(s: Story, *, episode_count: int, chapter_views: int, origchat_starts: int) -> Optional[StoryDiveSlotItem]:
+        """StoryDiveSlotItem 생성(방어적)."""
+        if not s or not getattr(s, "id", None):
+            return None
+        try:
+            epc = int(episode_count or 0)
+        except Exception:
+            epc = 0
+        if epc <= 0:
+            return None
+        try:
+            base_views = int(getattr(s, "view_count", 0) or 0)
+        except Exception:
+            base_views = 0
+        try:
+            chv = int(chapter_views or 0)
+        except Exception:
+            chv = 0
+        total_views = base_views + chv
+        avg_views = float(total_views) / float(epc or 1)
+        try:
+            text = (getattr(s, "content", "") or "").strip()
+        except Exception:
+            text = ""
+        excerpt = " ".join(text.split())[:140] if text else None
+        try:
+            starts = int(origchat_starts or 0)
+        except Exception:
+            starts = 0
+        return StoryDiveSlotItem(
+            id=s.id,
+            title=s.title,
+            cover_url=getattr(s, "cover_url", None),
+            excerpt=excerpt,
+            episode_count=epc,
+            total_views=int(total_views),
+            avg_views=float(avg_views),
+            origchat_starts=starts,
+        )
+
+    items: list[StoryDiveSlotItem] = []
+    for s, ep_cnt, ch_views in candidates:
+        try:
+            episode_count = int(ep_cnt or 0)
+        except Exception:
+            episode_count = 0
+        if episode_count < int(min_episodes):
+            continue
+        sid_str = str(getattr(s, "id"))
+        origchat_starts = int(starts_map.get(sid_str, 0) or 0)
+        it = _make_item(s, episode_count=episode_count, chapter_views=int(ch_views or 0), origchat_starts=origchat_starts)
+        if it:
+            items.append(it)
+
+    # 원작챗 시작 수 낮은 순 + 평균조회수 높은 순(품질)로 정렬
+    items.sort(
+        key=lambda it: (
+            int(it.origchat_starts or 0),
+            -float(it.avg_views or 0.0),
+            -int(it.total_views or 0),
+        )
+    )
+    # 최종 반환: 기준을 충족하는 만큼만 반환한다.
+    # - 5개 미만이면 그만큼만 반환
+    # - 0개면 빈 배열(프론트에서 구좌 비노출)
+    return items[: int(limit)]
 
 @router.get("/{story_id}/context-pack")
 async def get_context_pack(
@@ -734,6 +873,19 @@ async def get_my_stories(
     )
 
     items: list[StoryListItem] = []
+    # extracted_characters에 연결된 Character 아바타 미리 로드
+    char_ids = []
+    for s in stories:
+        for ec in (getattr(s, "extracted_characters", []) or []):
+            cid = getattr(ec, "character_id", None)
+            if cid:
+                char_ids.append(cid)
+
+    char_map = {}
+    if char_ids:
+        rows = await db.execute(select(Character).where(Character.id.in_(char_ids)))
+        char_map = {str(c.id): c for c in rows.scalars().all()}
+
     for s in stories:
         try:
             text = (s.content or "").strip()
@@ -826,6 +978,7 @@ async def get_story(
     
     # 추가 정보 포함
     story_dict["creator_username"] = story.creator.username if story.creator else None
+    story_dict["creator_avatar_url"] = story.creator.avatar_url if story.creator else None
     story_dict["character_name"] = story.character.name if story.character else None
     
     # 좋아요 상태 추가 (로그인한 사용자인 경우만)

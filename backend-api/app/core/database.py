@@ -9,6 +9,8 @@ from sqlalchemy.dialects.postgresql import UUID as PostgresUUID
 import redis.asyncio as redis
 from typing import AsyncGenerator
 import uuid
+import ssl
+from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 
 from app.core.config import settings
 
@@ -75,12 +77,58 @@ if settings.DATABASE_URL.startswith("sqlite"):
     )
 else:
     # PostgreSQL의 경우 asyncpg 드라이버 사용
-    engine = create_async_engine(  # ← 이 부분을 else 블록 안으로 들여쓰기
-        settings.DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://"),
+    _raw_url = settings.DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://")
+    # Supabase 등에서 흔히 쓰는 sslmode 파라미터는 asyncpg에서 직접 지원하지 않음.
+    # (URL query로 sslmode가 전달되면 asyncpg.connect(...)가 "unexpected keyword argument"로 실패)
+    # → sslmode/ssl을 URL에서 제거하고 connect_args로 SSLContext를 전달한다.
+    _parts = urlsplit(_raw_url)
+    _query_items = parse_qsl(_parts.query, keep_blank_values=True)
+    _sslmode = next((v for (k, v) in _query_items if k.lower() == "sslmode"), None)
+    _ssl_param = next((v for (k, v) in _query_items if k.lower() == "ssl"), None)
+    _query_filtered = [(k, v) for (k, v) in _query_items if k.lower() not in ("sslmode", "ssl")]
+    _engine_url = urlunsplit((_parts.scheme, _parts.netloc, _parts.path, urlencode(_query_filtered), _parts.fragment))
+
+    _ssl_required = False
+    _ssl_verify = False
+    if _ssl_param is not None:
+        v = str(_ssl_param).strip().lower()
+        if v in ("1", "true", "yes", "on", "require"):
+            _ssl_required = True
+            _ssl_verify = False
+        elif v in ("0", "false", "no", "off", "disable"):
+            _ssl_required = False
+    if _sslmode is not None:
+        v = str(_sslmode).strip().lower()
+        # libpq sslmode semantics:
+        # - require/prefer: encrypt but DO NOT verify server cert by default
+        # - verify-ca/verify-full: verify
+        if v in ("require", "prefer"):
+            _ssl_required = True
+            _ssl_verify = False
+        elif v in ("verify-ca", "verify-full"):
+            _ssl_required = True
+            _ssl_verify = True
+        elif v in ("disable", "allow"):
+            _ssl_required = False
+
+    _connect_args = {}
+    if _ssl_required:
+        # asyncpg 'ssl' expects bool or SSLContext.
+        # For Supabase, sslmode=require is common but their cert chain may not be in OS trust store.
+        # Using a non-verifying context matches libpq's "require" semantics (encrypt only).
+        ctx = ssl.create_default_context()
+        if not _ssl_verify:
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+        _connect_args["ssl"] = ctx
+
+    engine = create_async_engine(
+        _engine_url,
         echo=settings.DEBUG,
         future=True,
         pool_pre_ping=True,
         pool_recycle=300,
+        connect_args=_connect_args if _connect_args else None,
     )
 
 # 세션 팩토리 생성
