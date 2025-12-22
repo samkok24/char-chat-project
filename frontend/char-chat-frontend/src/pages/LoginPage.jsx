@@ -34,6 +34,10 @@ const LoginPage = () => {
   const [showLoginPassword, setShowLoginPassword] = useState(false);
   const [showRegisterPassword, setShowRegisterPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [emailVerified, setEmailVerified] = useState(false);
+  const [sendingVerification, setSendingVerification] = useState(false);
+  const [resendCooldown, setResendCooldown] = useState(0);
+  const [verificationInfo, setVerificationInfo] = useState({ type: 'info', message: '' }); // info|success|error
 
   const navigate = useNavigate();
   const location = useLocation();
@@ -42,10 +46,56 @@ const LoginPage = () => {
   useEffect(() => {
     const params = new URLSearchParams(location.search || '');
     const tab = params.get('tab');
+    const passedEmail = params.get('email');
+    const verified = params.get('verified');
     if (tab === 'register' || tab === 'login') {
       setActiveTab(tab);
     }
+    if (passedEmail) {
+      setRegisterData(prev => ({ ...prev, email: passedEmail }));
+    }
+    if (verified === '1') {
+      setEmailVerified(true);
+    }
   }, [location.search]);
+
+  // 재발송 쿨다운 카운트다운
+  useEffect(() => {
+    if (resendCooldown <= 0) return;
+    const timer = setInterval(() => {
+      setResendCooldown(prev => (prev > 0 ? prev - 1 : 0));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [resendCooldown]);
+
+  // ✅ 이메일 인증 완료 상태(localStorage) 감지 (다른 탭에서 /verify 인증 완료 → 이 탭에 반영)
+  useEffect(() => {
+    const currentEmail = String(registerData.email || '').trim().toLowerCase();
+    if (!currentEmail) {
+      setEmailVerified(false);
+      return;
+    }
+
+    const key = `auth:emailVerified:${currentEmail}`;
+    const sync = () => {
+      try {
+        const v = localStorage.getItem(key);
+        setEmailVerified(!!v);
+      } catch (_) {
+        // storage 접근 실패 시는 보수적으로 false
+        setEmailVerified(false);
+      }
+    };
+
+    sync();
+    const onStorage = (e) => {
+      if (e?.key === key) sync();
+    };
+    try { window.addEventListener('storage', onStorage); } catch (_) {}
+    return () => {
+      try { window.removeEventListener('storage', onStorage); } catch (_) {}
+    };
+  }, [registerData.email]);
 
   const handleLoginChange = (e) => {
     setLoginData({
@@ -61,6 +111,12 @@ const LoginPage = () => {
     });
     if (e.target.name === 'username') {
       setUsernameCheck({ checked: false, available: null, message: '' });
+    }
+    if (e.target.name === 'email') {
+      // 이메일이 바뀌면 인증 상태/메시지 리셋 (방어적 UX)
+      setEmailVerified(false);
+      setVerificationInfo({ type: 'info', message: '' });
+      setResendCooldown(0);
     }
   };
 
@@ -86,6 +142,10 @@ const LoginPage = () => {
     setError('');
 
     try {
+      if (!emailVerified) {
+        setError('이메일 인증을 먼저 완료해주세요. 인증 메일을 보내고 메일함의 링크를 클릭한 뒤 계속 진행하세요.');
+        return;
+      }
       // 비밀번호 확인
       if (registerData.password !== registerData.confirmPassword) {
         setError('비밀번호가 일치하지 않습니다.');
@@ -114,12 +174,45 @@ const LoginPage = () => {
       const result = await register(registerData.email, registerData.username, registerData.password, registerData.gender);
 
       if (result.success) {
-        navigate('/verify', { state: { email: registerData.email } });
+        // ✅ 이메일 인증을 선행한 플로우: 가입 완료 후 바로 홈으로
+        navigate('/dashboard', { replace: true });
       } else {
         setError(result.error);
       }
     } finally {
       setLoading(false);
+    }
+  };
+
+  /**
+   * 회원가입 단계: 인증 메일 발송
+   * - 서버가 토큰을 발급하고 메일에 /verify 링크를 넣는다.
+   * - 사용자는 메일에서 인증 완료 후 이 페이지로 돌아와 회원가입을 이어간다.
+   */
+  const handleSendVerificationEmail = async () => {
+    const email = String(registerData.email || '').trim();
+    if (!email) {
+      setError('이메일을 입력해주세요.');
+      return;
+    }
+    if (resendCooldown > 0) return;
+    setSendingVerification(true);
+    setVerificationInfo({ type: 'info', message: '' });
+    setError('');
+    try {
+      const { authAPI } = await import('../lib/api');
+      await authAPI.sendVerificationEmail(email);
+      setVerificationInfo({ type: 'success', message: '인증 메일을 발송했습니다. 메일함에서 인증 후 돌아와 계속 진행해주세요.' });
+      setResendCooldown(60);
+    } catch (err) {
+      const detail = err?.response?.data?.detail;
+      let msg = detail || '인증 메일 발송에 실패했습니다. 잠시 후 다시 시도해주세요.';
+      if (detail && detail.includes('이미 인증된')) {
+        msg = '이미 인증이 완료된 이메일입니다. 아래 정보를 입력해 회원가입을 계속하세요.';
+      }
+      setVerificationInfo({ type: 'error', message: msg });
+    } finally {
+      setSendingVerification(false);
     }
   };
 
@@ -165,14 +258,21 @@ const LoginPage = () => {
       <div className="w-full max-w-md">
         {/* 로고 및 제목 */}
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-r from-purple-600 to-blue-600 rounded-full mb-4">
-            <MessageCircle className="w-8 h-8 text-white" />
+          {/* 시각적 타이틀은 로고로 대체 (접근성용 텍스트는 sr-only로 유지) */}
+          <h1 className="sr-only">Chapter8</h1>
+          <div className="flex items-center justify-center mb-4">
+            <img
+              src="/brand-logo.png"
+              alt="Chapter8"
+              className="h-24 w-auto max-w-[280px] object-contain object-center"
+              onError={(e) => {
+                // 방어적 처리: 로고 로드 실패 시 최소한의 대체 표시
+                e.currentTarget.style.display = 'none';
+              }}
+            />
           </div>
-          <h1 className="text-3xl font-bold text-gray-900 mb-2">
-            AI 캐릭터 챗
-          </h1>
-          <p className="text-gray-600">
-            나만의 AI 캐릭터와 대화해보세요
+          <p className="text-gray-600 font-medium">
+            끝나지 않는 스토리와 캐릭터에 잠겨보시길.
           </p>
         </div>
 
@@ -205,7 +305,7 @@ const LoginPage = () => {
               <TabsContent value="login" className="space-y-4 mt-0">
                 <div className="text-center mb-4">
                   <CardDescription className="text-gray-600 dark:text-gray-300">
-                    계정에 로그인하여 AI 캐릭터들과 대화를 시작하세요
+                    끝나지 않는 스토리와 캐릭터에 잠겨보시길.
                   </CardDescription>
                 </div>
                 
@@ -289,19 +389,43 @@ const LoginPage = () => {
                 <form onSubmit={handleRegisterSubmit} className="space-y-4">
                   <div className="space-y-2">
                     <Label htmlFor="register-email" className="text-gray-900 dark:text-gray-200 font-semibold">이메일</Label>
-                    <div className="relative">
-                      <Mail className="absolute left-3 top-3 h-4 w-4 text-gray-500 dark:text-gray-400" />
-                      <Input
-                        id="register-email"
-                        name="email"
-                        type="email"
-                        placeholder="이메일을 입력하세요"
-                        value={registerData.email}
-                        onChange={handleRegisterChange}
-                        className="pl-10 text-gray-900 dark:text-gray-100"
-                        required
-                      />
+                    <div className="flex items-center gap-2">
+                      <div className="relative flex-1">
+                        <Mail className="absolute left-3 top-3 h-4 w-4 text-gray-500 dark:text-gray-400" />
+                        <Input
+                          id="register-email"
+                          name="email"
+                          type="email"
+                          placeholder="이메일을 입력하세요"
+                          value={registerData.email}
+                          onChange={handleRegisterChange}
+                          className="pl-10 text-gray-900 dark:text-gray-100"
+                          required
+                        />
+                      </div>
+                      <Button
+                        type="button"
+                        onClick={handleSendVerificationEmail}
+                        disabled={sendingVerification || resendCooldown > 0 || !registerData.email}
+                        className="h-10 px-3 text-sm bg-purple-600 hover:bg-purple-700 text-white font-medium disabled:opacity-50"
+                      >
+                        {sendingVerification ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : resendCooldown > 0 ? (
+                          `${resendCooldown}s`
+                        ) : (
+                          '인증발송'
+                        )}
+                      </Button>
                     </div>
+                    {verificationInfo.message && (
+                      <p className={`text-xs font-semibold ${verificationInfo.type === 'success' ? 'text-green-500' : verificationInfo.type === 'error' ? 'text-red-500' : 'text-gray-500'}`}>
+                        {verificationInfo.message}
+                      </p>
+                    )}
+                    {emailVerified && (
+                      <p className="text-xs font-semibold text-green-500">이메일 인증 완료</p>
+                    )}
                   </div>
 
                   <div className="space-y-2">
@@ -319,10 +443,11 @@ const LoginPage = () => {
                         required
                         minLength={2}
                         maxLength={100}
+                        disabled={!emailVerified}
                       />
                     </div>
                     <div className="flex items-center gap-2">
-                      <Button type="button" variant="secondary" className="h-9 bg-blue-600 hover:bg-blue-700 text-white font-medium" onClick={handleGenerateUsername} disabled={loading}>
+                      <Button type="button" variant="secondary" className="h-9 bg-blue-600 hover:bg-blue-700 text-white font-medium" onClick={handleGenerateUsername} disabled={loading || !emailVerified}>
                         <Wand2 className="h-4 w-4 mr-1" /> 자동생성
                       </Button>
                       {usernameCheck.checked && usernameCheck.message && (
@@ -346,11 +471,13 @@ const LoginPage = () => {
                         required
                         minLength={8}
                         pattern="(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d]{8,}"
+                        disabled={!emailVerified}
                       />
                       <button
                         type="button"
                         onClick={() => setShowRegisterPassword(!showRegisterPassword)}
                         className="absolute right-3 top-3 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+                        disabled={!emailVerified}
                       >
                         {showRegisterPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                       </button>
@@ -371,11 +498,13 @@ const LoginPage = () => {
                         onChange={handleRegisterChange}
                         className="pl-10 pr-10 text-gray-900 dark:text-gray-100"
                         required
+                        disabled={!emailVerified}
                       />
                       <button
                         type="button"
                         onClick={() => setShowConfirmPassword(!showConfirmPassword)}
                         className="absolute right-3 top-3 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+                        disabled={!emailVerified}
                       >
                         {showConfirmPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                       </button>
@@ -386,11 +515,11 @@ const LoginPage = () => {
                     <Label className="text-gray-900 dark:text-gray-200 font-semibold">성별</Label>
                     <div className="flex items-center gap-4">
                       <label className="flex items-center gap-2 cursor-pointer">
-                        <input type="radio" name="gender" value="male" checked={registerData.gender === 'male'} onChange={handleRegisterChange} required />
+                        <input type="radio" name="gender" value="male" checked={registerData.gender === 'male'} onChange={handleRegisterChange} required disabled={!emailVerified} />
                         <span className="text-gray-900 dark:text-gray-100">남성</span>
                       </label>
                       <label className="flex items-center gap-2 cursor-pointer">
-                        <input type="radio" name="gender" value="female" checked={registerData.gender === 'female'} onChange={handleRegisterChange} required />
+                        <input type="radio" name="gender" value="female" checked={registerData.gender === 'female'} onChange={handleRegisterChange} required disabled={!emailVerified} />
                         <span className="text-gray-900 dark:text-gray-100">여성</span>
                       </label>
                     </div>
@@ -399,7 +528,7 @@ const LoginPage = () => {
                   <Button
                     type="submit"
                     className="w-full bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white font-medium"
-                    disabled={loading}
+                    disabled={loading || !emailVerified}
                   >
                     {loading ? (
                       <>

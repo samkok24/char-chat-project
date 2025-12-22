@@ -34,6 +34,20 @@ from app.services.mail_service import send_verification_email as send_verificati
 
 router = APIRouter()
 security = HTTPBearer()
+
+# =========================
+# Email verification (pre-signup) support
+# =========================
+# 회원가입 "도중" 이메일을 먼저 인증하는 플로우를 지원한다.
+# - verify-email 링크를 클릭했는데 아직 유저가 DB에 없으면, Redis에 "이메일 인증 완료" 상태를 저장해둔다.
+# - 이후 회원가입(register) 요청이 오면, 해당 이메일이 Redis에서 인증 완료로 확인될 때만 is_verified=True로 생성한다.
+EMAIL_PREVERIFY_KEY_PREFIX = "auth:preverified_email:"
+EMAIL_PREVERIFY_TTL_SECONDS = 60 * 60 * 24  # 24h
+
+
+def _normalize_email(raw: str) -> str:
+    """이메일 키/비교를 위한 정규화(lower/trim)."""
+    return (raw or "").strip().lower()
 @router.get("/check-email")
 async def check_email(email: str, db: AsyncSession = Depends(get_db)):
     """이메일 중복 여부 확인"""
@@ -67,7 +81,8 @@ async def generate_username(db: AsyncSession = Depends(get_db)):
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 async def register(
     user_data: UserCreate,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
 ):
     """사용자 회원가입"""
     # 이메일 중복 확인
@@ -91,6 +106,16 @@ async def register(
     # 패스워드 해싱
     hashed_password = get_password_hash(user_data.password)
     
+    # ✅ 사전 이메일 인증(회원가입 도중 인증) 여부 확인
+    preverified = False
+    email_norm = _normalize_email(user_data.email)
+    try:
+        if email_norm:
+            pre_key = f"{EMAIL_PREVERIFY_KEY_PREFIX}{email_norm}"
+            preverified = bool(await redis.get(pre_key))
+    except Exception:
+        preverified = False
+
     # 사용자 생성
     user = await create_user(
         db=db,
@@ -99,16 +124,29 @@ async def register(
         password_hash=hashed_password,
         gender=user_data.gender
     )
-    
+
     if settings.EMAIL_VERIFICATION_REQUIRED:
-        # 인증 메일 발송
-        try:
-            token = generate_verification_token(user_data.email)
-            await send_verification_email_async(user_data.email, token)
-        except Exception as e:
-            # 메일 발송 실패해도 회원가입은 성공 처리
-            import logging
-            logging.warning(f"이메일 발송 실패: {e}")
+        if preverified:
+            # 사전 인증 완료 → 즉시 인증 처리 + Redis 키 정리(재사용 방지)
+            try:
+                await update_user_verification_status(db, user.id, True)
+                try:
+                    if email_norm:
+                        await redis.delete(f"{EMAIL_PREVERIFY_KEY_PREFIX}{email_norm}")
+                except Exception:
+                    pass
+            except Exception:
+                # 방어: 인증 업데이트 실패해도 회원가입 자체는 유지
+                pass
+        else:
+            # 기존 플로우(후 인증): 인증 메일 발송
+            try:
+                token = generate_verification_token(user_data.email)
+                await send_verification_email_async(user_data.email, token)
+            except Exception as e:
+                # 메일 발송 실패해도 회원가입은 성공 처리
+                import logging
+                logging.warning(f"이메일 발송 실패: {e}")
     else:
         # 개발 환경 등에서는 즉시 인증 처리
         await update_user_verification_status(db, user.id, True)
@@ -208,7 +246,8 @@ async def get_current_user_info(
 @router.post("/verify-email")
 async def verify_email(
     verification_data: EmailVerificationRequest,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
 ):
     """이메일 인증"""
     # 토큰 검증
@@ -219,23 +258,27 @@ async def verify_email(
             detail="유효하지 않은 인증 토큰입니다."
         )
     
-    # 사용자 찾기 및 인증 상태 업데이트
+    email_norm = _normalize_email(email)
+
+    # ✅ 회원가입 "도중" 인증을 위해 Redis에도 인증 상태를 저장(베스트 에포트)
+    # - 유저가 아직 DB에 없더라도, 이후 회원가입 시 is_verified=True로 만들 수 있다.
+    try:
+        if email_norm:
+            await redis.setex(f"{EMAIL_PREVERIFY_KEY_PREFIX}{email_norm}", EMAIL_PREVERIFY_TTL_SECONDS, "1")
+    except Exception:
+        pass
+
+    # 사용자 있으면 인증 상태 업데이트(후 인증 플로우 호환)
     user = await get_user_by_email(db, email)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="사용자를 찾을 수 없습니다."
-        )
-    
-    if user.is_verified:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="이미 인증된 계정입니다."
-        )
-    
-    await update_user_verification_status(db, user.id, True)
-    
-    return {"message": "이메일 인증이 완료되었습니다."}
+    if user:
+        if user.is_verified:
+            # ✅ idempotent: 이미 인증된 경우도 성공으로 처리(UX)
+            return {"message": "이미 인증된 계정입니다.", "email": email_norm, "verified": True}
+        await update_user_verification_status(db, user.id, True)
+        return {"message": "이메일 인증이 완료되었습니다.", "email": email_norm, "verified": True}
+
+    # 유저가 아직 없으면: 사전 인증 완료 상태만 저장해두고 안내
+    return {"message": "이메일 인증이 완료되었습니다. 회원가입을 계속 진행해주세요.", "email": email_norm, "verified": True, "pending_signup": True}
 
 
 @router.post("/send-verification-email")
@@ -290,14 +333,23 @@ async def forgot_password(
     if not user:
         # 보안상 이메일이 없어도 성공 응답 (계정 존재 여부 노출 방지)
         return {"message": "비밀번호 재설정 메일을 발송했습니다. 메일함을 확인해주세요."}
+
+    # ✅ 인증된 계정에만 비밀번호 재설정 메일 발송 (요구사항)
+    if settings.EMAIL_VERIFICATION_REQUIRED and not getattr(user, "is_verified", False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="이메일 인증이 필요합니다. 먼저 이메일 인증을 완료한 뒤 비밀번호 재설정을 진행해주세요.",
+        )
     
     # 토큰 생성 및 메일 발송
     try:
-        token = generate_password_reset_token(payload.email)
+        # 저장된 이메일(정규화된 값)을 기준으로 토큰/수신자를 통일(대소문자 혼선 방지)
+        target_email = getattr(user, "email", None) or payload.email
+        token = generate_password_reset_token(target_email)
         reset_url = f"{settings.FRONTEND_BASE_URL}/reset-password?token={token}"
         
         # 비밀번호 재설정 메일 내용
-        subject = "[AI 캐릭터 챗] 비밀번호 재설정"
+        subject = "[Chapter8] 비밀번호 재설정"
         text = f"비밀번호를 재설정하려면 다음 링크를 클릭하세요:\n{reset_url}\n\n이 링크는 1시간 동안만 유효합니다."
         html = f"""
         <div style="font-family: Pretendard, system-ui, -apple-system, Segoe UI, Roboto, Noto Sans, sans-serif; color:#111;">
@@ -318,7 +370,7 @@ async def forgot_password(
         
         from app.services.mail_service import _send_email_sync
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, _send_email_sync, payload.email, subject, text, html)
+        await loop.run_in_executor(None, _send_email_sync, target_email, subject, text, html)
     except Exception as e:
         import logging
         logging.warning(f"비밀번호 재설정 메일 발송 실패: {e}")
@@ -338,13 +390,24 @@ async def reset_password(
     
     if not token or not new_password:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="토큰과 새 비밀번호가 필요합니다.")
+
+    # ✅ 서버 단에서도 최소한의 비밀번호 정책을 강제(방어적)
+    try:
+        pw = str(new_password)
+    except Exception:
+        pw = ""
+    if len(pw) < 8:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="비밀번호는 8자 이상이어야 합니다.")
+    import re
+    if not re.search(r"[A-Za-z]", pw) or not re.search(r"\d", pw):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="비밀번호는 영문과 숫자를 포함해야 합니다.")
     
     # 토큰 검증
     email = verify_password_reset_token(token)
     if not email:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="유효하지 않거나 만료된 토큰입니다."
+            detail="유효하지 않거나 만료된 토큰입니다. 가장 최근에 받은 재설정 메일의 링크를 사용해주세요."
         )
     
     # 사용자 조회
@@ -353,6 +416,13 @@ async def reset_password(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="사용자를 찾을 수 없습니다."
+        )
+
+    # 인증된 계정만 비밀번호 변경 허용(요구사항 보강)
+    if settings.EMAIL_VERIFICATION_REQUIRED and not getattr(user, "is_verified", False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="이메일 인증이 필요합니다. 먼저 이메일 인증을 완료한 뒤 비밀번호 재설정을 진행해주세요.",
         )
     
     # 비밀번호 업데이트

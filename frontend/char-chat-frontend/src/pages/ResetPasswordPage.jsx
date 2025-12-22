@@ -7,10 +7,12 @@ import { Label } from '../components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Loader2, Lock, Eye, EyeOff, CheckCircle } from 'lucide-react';
+import { useLoginModal } from '../contexts/LoginModalContext';
 
 const ResetPasswordPage = () => {
   const location = useLocation();
   const navigate = useNavigate();
+  const { openLoginModal } = useLoginModal();
   const [token, setToken] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -53,9 +55,20 @@ const ResetPasswordPage = () => {
     try {
       await authAPI.resetPassword(token, password);
       setSuccess(true);
-      setTimeout(() => navigate('/login'), 2000);
+      // ✅ 보안/UX: 기존 토큰은 무효화할 수 없으므로, 클라이언트 저장 토큰은 제거하고 새 비밀번호로 재로그인 유도
+      try {
+        localStorage.removeItem('access_token');
+        localStorage.removeItem('refresh_token');
+      } catch (_) {}
+
+      // ✅ 요구사항: 변경 완료 후 "메인 탭 + 로그인 모달"로 랜딩
+      try {
+        openLoginModal({ initialTab: 'login', reason: 'password_reset' });
+      } catch (_) {}
+      navigate('/dashboard', { replace: true });
     } catch (err) {
-      setError(err?.response?.data?.detail || '비밀번호 재설정에 실패했습니다.');
+      const detail = err?.response?.data?.detail;
+      setError(detail || '비밀번호 재설정에 실패했습니다.');
     } finally {
       setLoading(false);
     }
@@ -83,10 +96,16 @@ const ResetPasswordPage = () => {
                 <CheckCircle className="w-12 h-12 text-green-500 mx-auto" />
                 <div>
                   <p className="text-lg font-semibold text-gray-900 mb-2">비밀번호가 재설정되었습니다!</p>
-                  <p className="text-sm text-gray-600">새 비밀번호로 로그인해주세요.</p>
+                  <p className="text-sm text-gray-600">메인 화면으로 이동 후 새 비밀번호로 로그인해주세요.</p>
                 </div>
-                <Button onClick={() => navigate('/login')} className="bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700">
-                  로그인하러 가기
+                <Button
+                  onClick={() => {
+                    try { openLoginModal({ initialTab: 'login', reason: 'password_reset' }); } catch (_) {}
+                    navigate('/dashboard', { replace: true });
+                  }}
+                  className="bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700"
+                >
+                  메인으로 이동하고 로그인
                 </Button>
               </div>
             ) : (
@@ -95,6 +114,18 @@ const ResetPasswordPage = () => {
                   <Alert variant="destructive">
                     <AlertDescription>{error}</AlertDescription>
                   </Alert>
+                )}
+
+                {error && String(error).includes('토큰') && (
+                  <div className="flex items-center gap-2">
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      onClick={() => navigate('/forgot-password')}
+                    >
+                      재설정 메일 다시 받기
+                    </Button>
+                  </div>
                 )}
 
                 <div className="space-y-2">

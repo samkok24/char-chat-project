@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 def _build_verification_email(to_email: str, verify_url: str) -> tuple[str, str, str]:
     """인증 메일 제목/텍스트/HTML 생성"""
-    subject = "[AI 캐릭터 챗] 이메일 인증을 완료해주세요"
+    subject = "[Chapter8] 이메일 인증을 완료해주세요"
     text = (
         "안녕하세요, AI 캐릭터 챗입니다.\n\n"
         "아래 링크를 클릭하여 이메일 인증을 완료해주세요:\n"

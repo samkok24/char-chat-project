@@ -2,6 +2,7 @@
 사용자 관련 서비스
 """
 
+import logging
 from sqlalchemy import select, update, delete, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, and_, or_, func, Integer
@@ -20,6 +21,13 @@ from app.models.user import User
 from app.models.chat import ChatRoom, ChatMessage
 from app.schemas import StatsOverview, TimeSeriesResponse, TimeSeriesPoint, TopCharacterItem
 
+logger = logging.getLogger(__name__)
+
+
+def _normalize_email(raw: str) -> str:
+    """이메일을 일관되게 비교/저장하기 위해 lower/trim 정규화한다."""
+    return (raw or "").strip().lower()
+
 
 async def get_user_by_id(db: AsyncSession, user_id: Union[str, uuid.UUID]) -> Optional[User]:
     """ID로 사용자 조회"""
@@ -28,9 +36,28 @@ async def get_user_by_id(db: AsyncSession, user_id: Union[str, uuid.UUID]) -> Op
 
 
 async def get_user_by_email(db: AsyncSession, email: str) -> Optional[User]:
-    """이메일로 사용자 조회"""
-    result = await db.execute(select(User).where(User.email == email))
-    return result.scalar_one_or_none()
+    """이메일로 사용자 조회 (방어적: 대소문자 무시).
+
+    의도/동작:
+    - Postgres의 일반 text/varchar unique는 대소문자를 구분하므로,
+      email을 그대로 저장/조회하면 같은 이메일이 대소문자만 다르게 중복될 수 있다.
+    - 서비스 안정성을 위해 항상 lower(email) 기준으로 조회한다.
+    """
+    email_norm = _normalize_email(email)
+    if not email_norm:
+        return None
+    # 최대 2개까지만 읽어서 중복 데이터가 생긴 경우에도 서버가 죽지 않게 방어한다.
+    result = await db.execute(
+        select(User).where(func.lower(User.email) == email_norm).limit(2)
+    )
+    users = result.scalars().all() or []
+    if len(users) > 1:
+        # 중복 데이터는 원칙적으로 없어야 하지만(유니크 제약/정규화), 발생해도 서비스가 멈추지 않게 한다.
+        try:
+            logger.warning("Duplicate users detected for email=%s (count=%d). Using first.", email_norm, len(users))
+        except Exception:
+            pass
+    return users[0] if users else None
 
 
 async def create_user(
@@ -42,7 +69,8 @@ async def create_user(
 ) -> User:
     """사용자 생성"""
     user = User(
-        email=email,
+        # 이메일은 lower/trim 정규화하여 저장 (중복/로그인 혼선을 방지)
+        email=_normalize_email(email),
         username=username,
         hashed_password=password_hash,
         gender=gender

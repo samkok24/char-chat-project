@@ -26,6 +26,9 @@ from app.core.database import redis_client
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+# StoryDive: story 기반 합본 Novel 메타를 저장하는 키(기존 story_cards와 충돌 방지용 프리픽스)
+STORYDIVE_META_KEY = "_storydive_meta"
+
 
 # ============= Response Schemas =============
 
@@ -142,6 +145,28 @@ async def _get_storydive_novel_meta(novel_id: uuid.UUID) -> Optional[dict]:
         return None
 
 
+def _extract_storydive_meta_from_story_cards(story_cards) -> Optional[dict]:
+    """Novel.story_cards에 저장된 StoryDive 메타를 꺼낸다(베스트 에포트).
+
+    의도/동작:
+    - 운영에서 Redis가 재시작되면 storydive:novel_meta가 날아갈 수 있으므로,
+      DB의 story_cards(JSON)에 메타를 같이 저장해 '최근 스토리다이브' 표지/제목 보강이 깨지지 않게 한다.
+    - story_cards가 문자열(JSON)로 들어오는 경우도 방어적으로 처리한다.
+    """
+    if not story_cards:
+        return None
+    raw = story_cards
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            return None
+    if not isinstance(raw, dict):
+        return None
+    meta = raw.get(STORYDIVE_META_KEY) or raw.get("storydive_meta") or raw.get("storydiveMeta")
+    return meta if isinstance(meta, dict) else None
+
+
 @router.get("/sessions/recent", response_model=List[RecentSessionItem])
 async def get_recent_storydive_sessions(
     limit: int = Query(10, ge=1, le=30),
@@ -191,6 +216,13 @@ async def get_recent_storydive_sessions(
             if not nid:
                 continue
             meta = await _get_storydive_novel_meta(nid)
+            # Redis 메타가 없으면 DB(story_cards)에서 보강(운영 안정성)
+            if not meta:
+                try:
+                    novel = novel_map.get(str(nid))
+                    meta = _extract_storydive_meta_from_story_cards(getattr(novel, "story_cards", None)) if novel else None
+                except Exception:
+                    meta = None
             if meta:
                 meta_map[str(nid)] = meta
                 sid = meta.get("story_id")
@@ -504,12 +536,21 @@ async def create_storydive_novel_from_story(
     # 동일 조합은 항상 같은 UUID 사용(중복 생성 방지)
     novel_uuid = uuid.uuid5(uuid.NAMESPACE_DNS, f"storydive:story:{story_uuid}:{from_no}:{to_no}:{max_episodes}")
 
+    # story 기반 합본 novel 메타(운영 안정성: Redis + DB 모두 저장)
+    meta = {
+        "story_id": str(story_uuid),
+        "from_no": int(from_no),
+        "to_no": int(to_no),
+        "max_episodes": int(max_episodes),
+    }
+
     novel = await db.get(Novel, novel_uuid)
     if novel:
         novel.title = getattr(story, "title", "Story")
         novel.author = None
         novel.full_text = full_text
-        novel.story_cards = {}
+        # DB에 메타도 함께 저장(=Redis 유실 대비)
+        novel.story_cards = {STORYDIVE_META_KEY: meta}
         novel.is_active = True
     else:
         novel = Novel(
@@ -517,7 +558,8 @@ async def create_storydive_novel_from_story(
             title=getattr(story, "title", "Story"),
             author=None,
             full_text=full_text,
-            story_cards={},
+            # DB에 메타도 함께 저장(=Redis 유실 대비)
+            story_cards={STORYDIVE_META_KEY: meta},
             is_active=True,
         )
         db.add(novel)
@@ -531,12 +573,6 @@ async def create_storydive_novel_from_story(
     # story 기반 합본 novel 메타를 Redis에 저장(턴 생성 시 요약/컨텍스트 구성에 사용)
     try:
         meta_key = f"storydive:novel_meta:{str(novel_uuid)}"
-        meta = {
-            "story_id": str(story_uuid),
-            "from_no": int(from_no),
-            "to_no": int(to_no),
-            "max_episodes": int(max_episodes),
-        }
         await redis_client.setex(meta_key, 60 * 60 * 24 * 30, json.dumps(meta, ensure_ascii=False))
     except Exception:
         pass

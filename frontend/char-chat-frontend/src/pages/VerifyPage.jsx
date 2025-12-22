@@ -12,6 +12,7 @@ const VerifyPage = () => {
   const [status, setStatus] = useState('idle'); // idle|verifying|success|error
   const [message, setMessage] = useState('');
   const [email, setEmail] = useState('');
+  const [pendingSignup, setPendingSignup] = useState(false); // 회원 생성 전 인증(회원가입 계속 진행)
   const { isAuthenticated } = useAuth();
 
   useEffect(() => {
@@ -24,9 +25,22 @@ const VerifyPage = () => {
       setStatus('verifying');
       authAPI
         .verifyEmail(token)
-        .then(() => {
+        .then((res) => {
+          const verifiedEmail = res?.data?.email;
+          const pending = !!res?.data?.pending_signup;
+          setPendingSignup(pending);
+          if (verifiedEmail) setEmail(verifiedEmail);
+          // ✅ 회원가입 도중 이메일 인증 완료를 다른 탭/화면에 공유 (storage event)
+          try {
+            if (verifiedEmail) localStorage.setItem(`auth:emailVerified:${String(verifiedEmail).toLowerCase()}`, String(Date.now()));
+          } catch (_) {}
           setStatus('success');
-          setMessage('이메일 인증이 완료되었습니다. 이제 로그인할 수 있어요.');
+          setMessage(
+            String(res?.data?.message || '').trim() ||
+              (pending
+                ? '이메일 인증이 완료되었습니다. 회원가입을 계속 진행해주세요.'
+                : '이메일 인증이 완료되었습니다. 이제 로그인할 수 있어요.')
+          );
         })
         .catch((err) => {
           setStatus('error');
@@ -69,10 +83,19 @@ const VerifyPage = () => {
 
             {!location.search.includes('token=') && (
               <>
-                <p className="text-sm text-gray-600">{email ? `${email} 주소로 ` : ''}인증 메일을 보냈습니다. 메일함에서 링크를 눌러 인증을 완료해주세요.</p>
+                <p className="text-sm text-gray-600">{email ? `${email} 주소로 ` : ''}인증 메일을 보냈습니다. 메일함에서 링크를 눌러 인증을 완료한 뒤 회원가입을 계속 진행해주세요.</p>
                 <p className="text-xs text-gray-500 mt-2">메일이 보이지 않는다면 스팸함을 확인해주세요.</p>
                 <div className="flex items-center gap-2">
-                  <Button onClick={() => navigate('/login')}>로그인으로</Button>
+                  <Button
+                    onClick={() => {
+                      const q = new URLSearchParams();
+                      q.set('tab', 'register');
+                      if (email) q.set('email', email);
+                      navigate(`/login?${q.toString()}`, { replace: true });
+                    }}
+                  >
+                    회원가입 계속하기
+                  </Button>
                   <Button variant="secondary" onClick={handleResend} disabled={status === 'verifying'}>
                     {status === 'verifying' ? '발송 중...' : '재발송'}
                   </Button>
@@ -82,7 +105,23 @@ const VerifyPage = () => {
 
             {status === 'success' && (
               <div className="flex items-center gap-2">
-                <Button onClick={() => navigate('/login')}>로그인하러 가기</Button>
+                {pendingSignup ? (
+                  <Button
+                    onClick={() => {
+                      const q = new URLSearchParams();
+                      q.set('tab', 'register');
+                      if (email) q.set('email', email);
+                      q.set('verified', '1');
+                      navigate(`/login?${q.toString()}`, { replace: true });
+                    }}
+                  >
+                    회원가입 계속하기
+                  </Button>
+                ) : (
+                  !isAuthenticated && (
+                    <Button variant="secondary" onClick={() => navigate('/login?tab=login', { replace: true })}>로그인</Button>
+                  )
+                )}
               </div>
             )}
           </CardContent>
