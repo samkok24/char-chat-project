@@ -14,17 +14,24 @@ const ForgotPasswordPage = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState(false);
+  const [needVerify, setNeedVerify] = useState(false);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
+    setNeedVerify(false);
     setLoading(true);
 
     try {
       await authAPI.forgotPassword(email);
       setSuccess(true);
     } catch (err) {
-      setError(err?.response?.data?.detail || '메일 발송에 실패했습니다.');
+      const detail = err?.response?.data?.detail;
+      const status = err?.response?.status;
+      if (status === 403 && String(detail || '').includes('이메일 인증')) {
+        setNeedVerify(true);
+      }
+      setError(detail || '메일 발송에 실패했습니다.');
     } finally {
       setLoading(false);
     }
@@ -62,6 +69,17 @@ const ForgotPasswordPage = () => {
                   <Alert variant="destructive">
                     <AlertDescription>{error}</AlertDescription>
                   </Alert>
+                )}
+                {needVerify && (
+                  <div className="flex items-center gap-2">
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      onClick={() => navigate('/verify', { state: { email } })}
+                    >
+                      이메일 인증하러 가기
+                    </Button>
+                  </div>
                 )}
 
                 <div className="space-y-2">

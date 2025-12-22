@@ -52,6 +52,7 @@ import StorySerialCard from '../components/StorySerialCard';
 import AppLayout from '../components/layout/AppLayout';
 import ErrorBoundary from '../components/ErrorBoundary';
 import TrendingCharacters from '../components/TrendingCharacters';
+import RecommendedCharacters from '../components/RecommendedCharacters';
 import TopWebtoons from '../components/TopWebtoons';
 import TopStories from '../components/TopStories';
 import TopOrigChat from '../components/TopOrigChat';
@@ -106,7 +107,8 @@ const HomePage = () => {
 
   // 최근 스토리다이브 (스토리다이브 사용 경험 유저에게는 추천보다 최근이 우선)
   const { data: recentStoryDive = [], isLoading: recentStoryDiveLoading } = useQuery({
-    queryKey: ['storydive-recent-sessions'],
+    // ✅ 유저별로 캐시 분리(React Query persist 사용 중이라, queryKey에 user.id가 없으면 타계정/과거 캐시가 섞여 보일 수 있음)
+    queryKey: ['storydive-recent-sessions', user?.id || 'guest'],
     queryFn: async () => {
       try {
         const { storydiveAPI } = await import('../lib/api');
@@ -117,7 +119,35 @@ const HomePage = () => {
         return [];
       }
     },
-    enabled: isAuthenticated,
+    enabled: isAuthenticated && !!user?.id,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  /**
+   * 홈(메인 탭) 전용: '일상' 태그 캐릭터 추천 섹션 데이터
+   * - 기존 "특화 캐릭터 바로가기" 하드코딩을 제거하고, DB 태그 기반으로 노출한다.
+   * - 방어적으로 실패/빈 배열을 처리해서 홈 화면이 깨지지 않도록 한다.
+   */
+  const DAILY_TAG_SLUG = '일상';
+  const DAILY_CHARACTER_LIMIT = 6;
+  const { data: dailyTagCharacters = [], isLoading: dailyTagCharactersLoading } = useQuery({
+    queryKey: ['characters', 'home', 'daily-tag', DAILY_TAG_SLUG],
+    queryFn: async () => {
+      try {
+        const res = await charactersAPI.getCharacters({
+          tags: DAILY_TAG_SLUG,
+          sort: 'views',
+          limit: DAILY_CHARACTER_LIMIT,
+          // "일반 캐릭터챗" 우선 노출 (원작/웹소설/원작연재 제외)
+          source_type: 'ORIGINAL',
+        });
+        return Array.isArray(res.data) ? res.data : [];
+      } catch (err) {
+        console.error("Failed to load '일상' tag characters:", err);
+        return [];
+      }
+    },
+    enabled: !isCharacterTab && !isOrigSerialTab,
     staleTime: 5 * 60 * 1000,
   });
 
@@ -687,52 +717,127 @@ const HomePage = () => {
 
           {!isCharacterTab && !isOrigSerialTab && (
             <>
-          {/* 특화 캐릭터 바로가기 */}
+          {/* 일상 태그 캐릭터 바로가기 (하드코딩 섹션 대체) */}
           <section className="mb-10">
-            <h2 className="text-lg font-medium text-gray-100 mb-4">특화 캐릭터들과 일상을 같이 나눠보세요</h2>
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-              {[
-                { name: '마동석', title: '슬기로운 사회생활 배우기', image: '/image/마동석2.jpg', tag: '직장' },
-                { name: '아이유', title: '연애 고민 상담소', image: '/image/아이유.png', tag: '일상' },
-                { name: '김영철', title: '유쾌한 영어 회화', image: '/image/김영철.jpg', tag: '일상' },
-                { name: '침착맨', title: '깨진 멘탈 다 잡기', image: '/image/침착맨.jpg', tag: '일상' },
-                { name: '펭수', title: '정신이 번쩍 드는 독설 듣기', image: '/image/펭수.jpg', tag: '일상' },
-                { name: '빠니보틀', title: '여행계획하기', image: '/image/빠니보틀.png', tag: '일상' }
-              ].map((item, idx) => (
-                <div
-                  key={idx}
-                  className="bg-gray-800/40 rounded-lg p-3 cursor-pointer hover:bg-gray-800/60 transition-all border border-gray-700/50 hover:border-gray-600"
-                  onClick={() => {
-                    // TODO: 캐릭터 채팅방으로 이동
-                    console.log(`Navigate to ${item.name} chat`);
-                  }}
-                >
-                  <div className="flex items-center gap-3 mb-2">
-                    <div className="w-10 h-10 rounded-full bg-gray-700 flex items-center justify-center flex-shrink-0 overflow-hidden">
-                      <img 
-                        src={item.image} 
-                        alt={item.name}
-                        className="w-full h-full object-cover object-top"
-                        onError={(e) => {
-                          e.target.style.display = 'none';
-                          e.target.nextSibling.style.display = 'flex';
-                        }}
-                      />
-                      <span className="text-lg hidden">{item.name.charAt(0)}</span>
+            <h2 className="text-lg font-medium text-gray-100 mb-4">일상 태그 캐릭터들과 일상을 같이 나눠보세요</h2>
+
+            {dailyTagCharactersLoading ? (
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+                {Array.from({ length: DAILY_CHARACTER_LIMIT }).map((_, idx) => (
+                  <div
+                    key={`daily-sk-${idx}`}
+                    className="bg-gray-800/40 rounded-lg p-3 border border-gray-700/50 animate-pulse"
+                  >
+                    <div className="flex items-center gap-3 mb-2">
+                      <div className="w-10 h-10 rounded-full bg-gray-700 flex-shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <div className="h-3 w-20 bg-gray-700 rounded mb-2" />
+                        <div className="h-3 w-32 bg-gray-700 rounded" />
+                      </div>
                     </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="text-xs text-gray-400 truncate">{item.name}</div>
+                    <div className="h-4 w-full bg-gray-700 rounded" />
+                  </div>
+                ))}
+              </div>
+            ) : dailyTagCharacters.length > 0 ? (
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+                {dailyTagCharacters.slice(0, DAILY_CHARACTER_LIMIT).map((char, idx) => {
+                  const id = char?.id;
+                  const key = id || `daily-${idx}`;
+                  const name = String(char?.name || '').trim() || '이름 없음';
+                  const title = String(char?.description || '').trim();
+                  const baseImg = char?.avatar_url || char?.thumbnail_url || '';
+                  const imgSrc =
+                    getThumbnailUrl(baseImg, 240) ||
+                    resolveImageUrl(baseImg) ||
+                    '';
+                  const clickable = !!id;
+
+                  return (
+                    <div
+                      key={key}
+                      className={[
+                        'bg-gray-800/40 rounded-lg p-3 transition-all border border-gray-700/50 hover:border-gray-600',
+                        clickable ? 'cursor-pointer hover:bg-gray-800/60' : 'cursor-default opacity-80'
+                      ].join(' ')}
+                      role={clickable ? 'button' : undefined}
+                      tabIndex={clickable ? 0 : undefined}
+                      onClick={() => {
+                        if (!id) return;
+                        navigate(`/ws/chat/${id}`);
+                      }}
+                      onKeyDown={(e) => {
+                        if (!clickable) return;
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          navigate(`/ws/chat/${id}`);
+                        }
+                      }}
+                      aria-label={clickable ? `${name} 캐릭터와 대화하기` : undefined}
+                    >
+                      <div className="flex items-center gap-3 mb-2">
+                        <div className="w-10 h-10 rounded-full bg-gray-700 flex items-center justify-center flex-shrink-0 overflow-hidden">
+                          {imgSrc ? (
+                            <img
+                              src={imgSrc}
+                              alt={name}
+                              className="w-full h-full object-cover object-top"
+                              onError={(e) => {
+                                e.target.style.display = 'none';
+                                const next = e.target.nextSibling;
+                                if (next) next.style.display = 'flex';
+                              }}
+                            />
+                          ) : null}
+                          <span className={`text-lg ${imgSrc ? 'hidden' : ''}`}>{name.charAt(0)}</span>
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="text-xs text-gray-400 truncate">{name}</div>
+                        </div>
+                        <Badge className="bg-yellow-500/90 text-black hover:bg-yellow-500 text-[10px] px-2 py-0.5">
+                          일상
+                        </Badge>
+                      </div>
+                      <div className="text-sm text-gray-200 leading-snug line-clamp-2">
+                        {title || '지금 대화를 시작해보세요.'}
+                      </div>
                     </div>
-                  </div>
-                  <div className="text-sm text-gray-200 leading-snug">
-                    {item.title}
-                  </div>
-                </div>
-              ))}
-            </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="bg-gray-800/50 rounded-xl p-6 text-center text-gray-400 border border-gray-700/50">
+                '일상' 태그 캐릭터가 없습니다.
+              </div>
+            )}
           </section>
 
-          {/* 스토리 시뮬레이터 */}
+          {/* 추천 캐릭터 (구좌/격자 형태는 인기 캐릭터 TOP과 동일) */}
+          <ErrorBoundary>
+            <RecommendedCharacters />
+          </ErrorBoundary>
+
+          {/* 인기 캐릭터 TOP (4x2) */}
+          <ErrorBoundary>
+            <TrendingCharacters />
+          </ErrorBoundary>
+
+          {/* 웹툰 TOP10 */}
+          <ErrorBoundary>
+            <TopWebtoons />
+          </ErrorBoundary>
+
+          {/* 웹소설 TOP10 (블루) */}
+          <ErrorBoundary>
+            <TopStories />
+          </ErrorBoundary>
+
+          {/* 웹소설 원작 섹션 (상시 노출) */}
+          <ErrorBoundary>
+            <TopOrigChat />
+          </ErrorBoundary>
+
+          {/* 스토리 시뮬레이터 (원작챗 TOP10 밑으로 이동) */}
           {(() => {
             // ✅ 구좌 구성:
             // - 스토리다이브 사용 이력이 있으면: 최근 스토리다이브(최근 콘텐츠)
@@ -741,9 +846,23 @@ const HomePage = () => {
             // ✅ 노출 규칙:
             // - 0개면 구좌 비노출
             // - 5개 미만이면 있는 만큼만 노출
-            const recentBase = Array.isArray(recentStoryDive) ? recentStoryDive : [];
-            const useRecent = isAuthenticated && !recentStoryDiveLoading && recentBase.length > 0;
-            const base = useRecent ? recentBase : (Array.isArray(storyDiveStories) ? storyDiveStories : []);
+            const hasCover = (url) => {
+              const s = String(url || '').trim();
+              return !!s && s.toLowerCase() !== 'null' && s.toLowerCase() !== 'undefined';
+            };
+
+            // 로그인 상태에서는 "실제로 다이브한 것만" 노출:
+            // - cover_url 없는 항목(=표지 준비중 placeholder로 보이는 카드)은 아예 제외한다.
+            const recentBaseRaw = Array.isArray(recentStoryDive) ? recentStoryDive : [];
+            const recentBase = recentBaseRaw.filter((it) => hasCover(it?.cover_url));
+
+            // 비로그인 상태(또는 최근이 없을 때 추천을 쓰는 흐름)도 cover 없는 카드는 제외해 품질을 유지한다.
+            const featuredRaw = Array.isArray(storyDiveStories) ? storyDiveStories : [];
+            const featuredBase = featuredRaw.filter((it) => hasCover(it?.cover_url));
+
+            // ✅ 요구사항: 로그인 상태는 "최근(실제 다이브)"만. 추천으로 채우지 않는다.
+            const useRecent = !!isAuthenticated;
+            const base = useRecent ? recentBase : featuredBase;
             const loading =
               // 로그인 유저는 "최근 여부 판단"이 끝날 때까지 먼저 기다린다(깜빡임 방지)
               (isAuthenticated && recentStoryDiveLoading)
@@ -836,26 +955,6 @@ const HomePage = () => {
               </section>
             );
           })()}
-
-          {/* 인기 캐릭터 TOP (4x2) */}
-          <ErrorBoundary>
-            <TrendingCharacters />
-          </ErrorBoundary>
-
-          {/* 웹툰 TOP10 */}
-          <ErrorBoundary>
-            <TopWebtoons />
-          </ErrorBoundary>
-
-          {/* 웹소설 TOP10 (블루) */}
-          <ErrorBoundary>
-            <TopStories />
-          </ErrorBoundary>
-
-          {/* 웹소설 원작 섹션 (상시 노출) */}
-          <ErrorBoundary>
-            <TopOrigChat />
-          </ErrorBoundary>
 
           {/* 최근 대화 섹션 - 관심 캐릭터 영역 임시 비노출 */}
           {isAuthenticated && (

@@ -275,10 +275,24 @@ const Sidebar = () => {
   return (
     <aside className="w-64 bg-gray-800 border-r border-gray-700 flex flex-col">
       {/* 로고 영역 */}
-      <div className="p-4 border-b border-gray-700">
-        <Link to="/" className="flex items-center space-x-2">
-          <MessageSquare className="w-8 h-8 text-purple-500" />
-          <h1 className="text-xl font-bold text-white">AI Chat</h1>
+      <div className="p-4 flex items-center justify-center">
+        <Link to="/" className="flex items-center justify-center w-full">
+          {/* public/brand-logo.png */}
+          <img
+            src="/brand-logo.png"
+            alt="브랜드 로고"
+            // ✅ 크롭 없이(=전체 로고 노출) 가운데 정렬 + 사이드바에서 충분히 크게 보이도록 높이를 키운다.
+            // 현재 로고 파일이 정사각형이라 width를 크게 줘도 비율상 height 기준으로 스케일된다.
+            className="h-34 w-auto max-w-[180px] object-contain object-center"
+            onError={(e) => {
+              // 방어적 처리: 로고가 없거나 경로가 틀려도 UI가 깨지지 않게 한다.
+              e.currentTarget.style.display = 'none';
+              const fallback = e.currentTarget.nextElementSibling;
+              if (fallback) fallback.style.display = 'block';
+            }}
+          />
+          {/* 로고 로드 실패 시에만 표시되는 fallback 아이콘(기본 hidden) */}
+          <MessageSquare className="w-10 h-10 text-purple-500 hidden" aria-hidden="true" />
         </Link>
       </div>
 

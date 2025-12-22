@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { NotebookText, Image as ImageIcon, Brain, MessageSquarePlus, User, Gem, Settings, LogOut, LogIn, Trash2 } from 'lucide-react';
+import { NotebookText, Image as ImageIcon, Brain, MessageSquare, MessageSquarePlus, User, Gem, Settings, LogOut, LogIn, Trash2 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useLoginModal } from '../../contexts/LoginModalContext';
 import { Avatar, AvatarFallback, AvatarImage } from '../ui/avatar';
@@ -137,11 +137,22 @@ const AgentSidebar = ({ onCreateSession, activeSessionId, onSessionSelect, onDel
 
   return (
     <aside className="w-64 bg-gray-800 border-r border-gray-700 flex flex-col">
-      <div className="p-4 border-b border-gray-700">
-        <button onClick={onCreateSession} className="flex items-center space-x-2">
-          <Brain className="w-8 h-8 text-yellow-400" />
-          <h1 className="text-xl font-bold text-white">Agent</h1>
-        </button>
+      {/* 로고 영역 (메인 탭 Sidebar 로고와 동일한 느낌/사이즈) */}
+      <div className="p-4 flex items-center justify-center">
+        <Link to="/" className="flex items-center justify-center w-full">
+          <img
+            src="/brand-logo.png"
+            alt="브랜드 로고"
+            className="h-34 w-auto max-w-[180px] object-contain object-center"
+            onError={(e) => {
+              // 방어적 처리: 로고 로드 실패 시 UI가 깨지지 않도록 fallback 아이콘만 노출
+              e.currentTarget.style.display = 'none';
+              const fallback = e.currentTarget.nextElementSibling;
+              if (fallback) fallback.style.display = 'block';
+            }}
+          />
+          <MessageSquare className="w-10 h-10 text-purple-500 hidden" aria-hidden="true" />
+        </Link>
       </div>
 
       <nav className="flex-1 p-3 space-y-1">

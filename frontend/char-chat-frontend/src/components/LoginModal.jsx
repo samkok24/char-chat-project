@@ -55,6 +55,7 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
   const [sendingVerification, setSendingVerification] = useState(false);
   const [verificationInfo, setVerificationInfo] = useState({ type: 'info', message: '' });
   const [resendCooldown, setResendCooldown] = useState(0);
+  const [emailVerified, setEmailVerified] = useState(false);
   const [resetEmail, setResetEmail] = useState('');
   const [resetStatus, setResetStatus] = useState({ type: 'info', message: '' });
   const [resetLoading, setResetLoading] = useState(false);
@@ -66,6 +67,29 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
       setError('');
     }
   }, [isOpen, initialTab]);
+
+  /**
+   * 회원가입 도중 이메일 인증 상태 동기화
+   *
+   * 의도/동작:
+   * - 인증 링크를 다른 탭에서 눌러도(verify 페이지), storage 이벤트로 현재 탭에서 즉시 감지한다.
+   * - 인증은 "auth:emailVerified:<email>" localStorage 키로 전달된다.
+   */
+  useEffect(() => {
+    const email = String(registerData.email || '').trim().toLowerCase();
+    if (!email) { setEmailVerified(false); return; }
+    const key = `auth:emailVerified:${email}`;
+    const read = () => {
+      try { setEmailVerified(!!localStorage.getItem(key)); } catch (_) { setEmailVerified(false); }
+    };
+    read();
+    const onStorage = (e) => {
+      if (!e) return;
+      if (e.key === key) read();
+    };
+    try { window.addEventListener('storage', onStorage); } catch (_) {}
+    return () => { try { window.removeEventListener('storage', onStorage); } catch (_) {} };
+  }, [registerData.email]);
 
   // 뷰 변경 시 에러 메시지 초기화
   useEffect(() => {
@@ -99,6 +123,8 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
     }
     if (e.target.name === 'email') {
       setEmailCheck({ checked: false, available: null, message: '' });
+      // 이메일이 바뀌면 인증 상태 리셋(방어적 UX)
+      setEmailVerified(false);
     }
   };
 
@@ -123,6 +149,7 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
     setLoading(true);
     setError('');
     try {
+      if (!emailVerified) { setError('이메일 인증을 먼저 완료해주세요. (인증발송 → 메일함 인증)'); return; }
       if (registerData.password !== registerData.confirmPassword) { setError('비밀번호가 일치하지 않습니다.'); return; }
       if (registerData.password.length < 8) { setError('비밀번호는 8자 이상이어야 합니다.'); return; }
       // 자동검사 결과가 준비되지 않았거나 사용 불가하면 중단
@@ -381,6 +408,9 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
                     {/* 상태 메시지: 이메일 중복 확인 + 인증 메일 발송 결과 */}
                     <StatusMessage type={emailCheck.available ? 'success' : 'error'} message={emailCheck.checked ? emailCheck.message : ''} />
                     <StatusMessage type={verificationInfo.type} message={verificationInfo.message} />
+                    {emailVerified && (
+                      <StatusMessage type="success" message="이메일 인증이 완료되었습니다. 이제 회원가입을 진행할 수 있어요." />
+                    )}
                   </div>
 
                   {/* 사용자명 + 자동생성 (같은 줄) */}
@@ -389,9 +419,9 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
                     <div className="flex items-center gap-2">
                       <div className="relative flex-1">
                         <User className={STYLES.inputIcon} />
-                        <Input id="register-username" name="username" type="text" placeholder="사용자명을 입력하세요" value={registerData.username} onChange={handleRegisterChange} className={STYLES.input} required minLength={2} maxLength={100} />
+                        <Input id="register-username" name="username" type="text" placeholder="사용자명을 입력하세요" value={registerData.username} onChange={handleRegisterChange} className={STYLES.input} required minLength={2} maxLength={100} disabled={!emailVerified} />
                       </div>
-                      <Button type="button" onClick={handleGenerateUsername} disabled={loading} className={STYLES.inlineBtn}>
+                      <Button type="button" onClick={handleGenerateUsername} disabled={loading || !emailVerified} className={STYLES.inlineBtn}>
                         <Wand2 className="h-4 w-4 mr-1" /> 자동
                         </Button>
                     </div>
@@ -411,8 +441,9 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
                         className={STYLES.inputWithToggle} 
                           required 
                           minLength={8} 
+                          disabled={!emailVerified}
                         />
-                      <button type="button" onClick={() => setShowRegisterPassword(!showRegisterPassword)} className={STYLES.toggleBtn}>
+                      <button type="button" onClick={() => setShowRegisterPassword(!showRegisterPassword)} className={STYLES.toggleBtn} disabled={!emailVerified}>
                           {showRegisterPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                         </button>
                       </div>
@@ -431,8 +462,9 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
                           onChange={handleRegisterChange} 
                         className={STYLES.inputWithToggle} 
                           required 
+                          disabled={!emailVerified}
                         />
-                      <button type="button" onClick={() => setShowConfirmPassword(!showConfirmPassword)} className={STYLES.toggleBtn}>
+                      <button type="button" onClick={() => setShowConfirmPassword(!showConfirmPassword)} className={STYLES.toggleBtn} disabled={!emailVerified}>
                           {showConfirmPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                         </button>
                       </div>
@@ -441,16 +473,16 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
                     <Label className={STYLES.label}>성별</Label>
                       <div className="flex items-center gap-4">
                         <label className="flex items-center gap-2 cursor-pointer">
-                          <input type="radio" name="gender" value="male" checked={registerData.gender === 'male'} onChange={handleRegisterChange} required />
+                          <input type="radio" name="gender" value="male" checked={registerData.gender === 'male'} onChange={handleRegisterChange} required disabled={!emailVerified} />
                           <span className="text-gray-900 dark:text-gray-100">남성</span>
                         </label>
                         <label className="flex items-center gap-2 cursor-pointer">
-                          <input type="radio" name="gender" value="female" checked={registerData.gender === 'female'} onChange={handleRegisterChange} required />
+                          <input type="radio" name="gender" value="female" checked={registerData.gender === 'female'} onChange={handleRegisterChange} required disabled={!emailVerified} />
                           <span className="text-gray-900 dark:text-gray-100">여성</span>
                         </label>
                       </div>
                     </div>
-                  <Button type="submit" className={STYLES.primaryBtn} disabled={loading}>
+                  <Button type="submit" className={STYLES.primaryBtn} disabled={loading || !emailVerified}>
                       {loading ? (<><Loader2 className="mr-2 h-4 w-4 animate-spin" />가입 중...</>) : '회원가입'}
                     </Button>
                   </form>
@@ -516,8 +548,8 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
               <div className="space-y-2">
                 <h3 className="text-lg font-bold text-gray-900 dark:text-white">회원가입이 완료되었습니다!</h3>
                 <p className="text-sm text-gray-600 dark:text-gray-300">
-                  입력하신 이메일로 인증 메일을 발송했습니다.<br />
-                  메일함에서 인증 버튼을 클릭한 후 로그인해주세요.
+                  이메일 인증이 완료된 상태로 가입되었습니다.<br />
+                  이제 로그인해서 서비스를 이용할 수 있어요.
                 </p>
               </div>
               {registerData.email && (
@@ -525,20 +557,9 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
                   <p className="text-xs text-gray-500 dark:text-gray-400">
                     현재 이메일: <span className="font-semibold text-gray-800 dark:text-gray-200">{registerData.email}</span>
                   </p>
-                  <StatusMessage type={verificationInfo.type} message={verificationInfo.message} />
-                  {resendCooldown > 0 && (
-                    <p className="text-xs text-gray-500">재발송은 {resendCooldown}초 후에 다시 시도할 수 있습니다.</p>
-                  )}
-                  <Button
-                    type="button"
-                    onClick={handleSendVerificationEmail}
-                    disabled={sendingVerification || resendCooldown > 0 || !registerData.email}
-                    className={STYLES.secondaryBtn}
-                  >
-                    {sendingVerification ? (
-                      <><Loader2 className="mr-2 h-4 w-4 animate-spin" />발송 중...</>
-                    ) : resendCooldown > 0 ? `재발송 (${resendCooldown}s)` : '인증 메일 다시 보내기'}
-                  </Button>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    이메일 인증이 이미 완료되어 추가 인증 메일 발송이 필요하지 않습니다.
+                  </p>
                 </div>
               )}
               <Button onClick={handleGoToLogin} className={STYLES.primaryBtn}>
