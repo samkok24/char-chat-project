@@ -210,6 +210,7 @@ const RecommendedCharacters = () => {
   const pageSize = 14; // 2행 x 7열 = 14개
   const [page, setPage] = useState(0);
   const items = data || [];
+  const empty = !isLoading && (!items || items.length === 0);
   const pageCount = Math.max(1, Math.ceil(items.length / pageSize));
   const hasCarousel = items.length > pageSize;
 
@@ -233,7 +234,7 @@ const RecommendedCharacters = () => {
   return (
     <section className="mt-8">
       <div className="flex items-center justify-between mb-4">
-        <h2 className="text-xl font-bold text-white">추천 캐릭터</h2>
+        <h2 className="text-xl font-bold text-white">챕터8이 추천하는 캐릭터</h2>
         {hasCarousel && (
           <div className="flex items-center gap-2">
             <button
@@ -263,6 +264,11 @@ const RecommendedCharacters = () => {
           {!isLoading && !isError && visibleItems.map((c) => (
             <RecommendedItem key={c.id} character={c} />
           ))}
+          {empty && (
+            <li className="col-span-7 text-center text-gray-400 py-8">
+              추천 캐릭터가 아직 없습니다.
+            </li>
+          )}
         </ul>
       </div>
     </section>

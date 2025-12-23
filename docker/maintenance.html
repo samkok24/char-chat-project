@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>점검 중 | Chapter8</title>
+    <style>
+      :root { color-scheme: light; }
+      body { margin: 0; font-family: Pretendard, system-ui, -apple-system, Segoe UI, Roboto, Noto Sans, sans-serif; background: #f9fafb; color: #111827; }
+      .wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; }
+      .card { width: 100%; max-width: 520px; text-align: center; }
+      .logo { display: flex; align-items: center; justify-content: center; margin-bottom: 20px; }
+      .logo img { height: 72px; width: auto; max-width: 280px; object-fit: contain; }
+      h1 { margin: 0 0 8px; font-size: 22px; font-weight: 800; }
+      p { margin: 0; line-height: 1.6; color: #4b5563; }
+      .until { margin-top: 14px; font-size: 14px; font-weight: 700; color: #374151; }
+      .btns { margin-top: 22px; display: flex; gap: 10px; justify-content: center; }
+      a.btn { display: inline-block; padding: 10px 14px; border-radius: 10px; text-decoration: none; font-weight: 700; font-size: 14px; }
+      a.primary { background: #7c3aed; color: #fff; }
+      a.outline { background: transparent; border: 1px solid #d1d5db; color: #111827; }
+      .foot { margin-top: 20px; font-size: 12px; color: #6b7280; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="card">
+        <div class="logo">
+          <img src="/brand-logo.png" alt="Chapter8" onerror="this.style.display='none'" />
+        </div>
+        <h1>현재 점검 중입니다</h1>
+        <p id="msg">더 안정적인 서비스를 위해 시스템 점검을 진행하고 있어요.<br />잠시 후 다시 이용해주세요.</p>
+        <div class="until" id="until" style="display:none;"></div>
+        <div class="btns">
+          <a class="btn primary" href="javascript:location.reload();">새로고침</a>
+          <a class="btn outline" href="/">홈으로</a>
+        </div>
+        <div class="foot">문의: support@chapter8.net</div>
+      </div>
+    </div>
+    <script>
+      (async function () {
+        try {
+          const res = await fetch('/maintenance-info.json', { cache: 'no-store' });
+          if (!res.ok) return;
+          const data = await res.json();
+          const msg = String((data && data.message) || '').trim();
+          const until = String((data && data.until) || '').trim();
+          if (msg) document.getElementById('msg').innerHTML = msg.replace(/\n/g, '<br />');
+          if (until) {
+            const el = document.getElementById('until');
+            el.style.display = 'block';
+            el.textContent = '예상 완료: ' + until;
+          }
+        } catch (e) {}
+      })();
+    </script>
+  </body>
+</html>
+
+

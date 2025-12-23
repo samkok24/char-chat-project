@@ -19,6 +19,8 @@ const OrigChatItem = ({ character }) => {
   const withV = raw ? `${raw}${raw.includes('?') ? '&' : '?'}v=${Date.now()}` : raw;
   const imgSrc = getThumbnailUrl(withV, 400) || DEFAULT_SQUARE_URI;
   const username = character?.creator_username;
+  const originStoryId = character?.origin_story_id;
+  const originStoryTitle = character?.origin_story_title;
 
   return (
     <li>
@@ -45,6 +47,28 @@ const OrigChatItem = ({ character }) => {
           
           {/* 텍스트 영역 */}
           <div className="p-3 space-y-2">
+            {/* 원작 웹소설(파란 배지): 원작챗 캐릭터의 원작 제목 표시 */}
+            {originStoryId && originStoryTitle && (
+              <div className="w-full">
+                <span
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    navigate(`/stories/${originStoryId}`);
+                  }}
+                  className="inline-flex max-w-full"
+                  role="link"
+                  aria-label="원작 웹소설로 이동"
+                >
+                  <Badge
+                    title={originStoryTitle}
+                    className="bg-blue-600 text-white hover:bg-blue-500 inline-flex max-w-full truncate text-[10px] px-1.5 py-0.5 rounded-md justify-start text-left leading-[1.05] tracking-tight"
+                  >
+                    {originStoryTitle}
+                  </Badge>
+                </span>
+              </div>
+            )}
             {/* 제목 */}
             <h4 className="text-white font-bold text-sm leading-tight line-clamp-1">{character?.name}</h4>
             
@@ -139,7 +163,16 @@ const TopOrigChat = () => {
   return (
     <section className="mt-8">
       <div className="flex items-center justify-between mb-4">
-        <h2 className="text-xl font-bold text-white">원작챗 TOP10</h2>
+        <div className="space-y-1">
+          <h2 className="text-xl font-bold text-white">지금 대화가 활발한 원작 캐릭터</h2>
+          <p className="text-xs text-gray-400">원작 세계관 속 캐릭터와 대화를 시작해보세요.</p>
+        </div>
+        <Link
+          to="/dashboard?tab=origserial&sub=origchat"
+          className="text-sm text-gray-400 hover:text-white"
+        >
+          더보기
+        </Link>
       </div>
       <ErrorBoundary>
         <ul className="grid grid-cols-7 gap-4">
