@@ -22,11 +22,28 @@ DEFAULT_TAG_NAMES = [
 ]
 
 async def _ensure_seed_tags(db: AsyncSession) -> None:
-    # 태그가 하나도 없으면 기본 태그를 시드한다
-    count = (await db.execute(select(func.count(Tag.id)))).scalar() or 0
-    if count == 0:
-        for name in DEFAULT_TAG_NAMES:
-            db.add(Tag(name=name, slug=name))
+    """기본 태그 시드(멱등).
+
+    요구사항:
+    - 운영 중에도 "기본 태그(하드코딩 리스트)"는 항상 선택 가능해야 한다.
+    - 기존에는 tags 테이블이 완전히 비어있을 때만 시드했는데,
+      유저가 태그를 일부 생성한 상태에서는 기본 태그가 추가되지 않아 UI에 안 보이는 문제가 생긴다.
+    """
+    try:
+        rows = (await db.execute(select(Tag.slug))).scalars().all()
+        existing = set([str(s) for s in rows if s is not None])
+    except Exception:
+        existing = set()
+
+    to_add = []
+    for name in DEFAULT_TAG_NAMES:
+        slug = name
+        if slug in existing:
+            continue
+        to_add.append(Tag(name=name, slug=slug))
+
+    if to_add:
+        db.add_all(to_add)
         await db.commit()
 
 

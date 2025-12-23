@@ -123,7 +123,13 @@ const TopStories = () => {
   return (
     <section className="mt-8">
       <div className="flex items-center justify-between mb-4">
-        <h2 className="text-xl font-bold text-white">웹소설 TOP10</h2>
+        <div className="space-y-1">
+          <h2 className="text-xl font-bold text-white">지금 인기 있는 원작 웹소설</h2>
+          <p className="text-xs text-gray-400">원작연재에서 더 많은 작품을 확인해보세요.</p>
+        </div>
+        <Link to="/dashboard?tab=origserial&sub=novel" className="text-sm text-gray-400 hover:text-white">
+          더보기
+        </Link>
       </div>
       <ErrorBoundary>
         <ul className="grid grid-cols-7 gap-4">

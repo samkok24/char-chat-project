@@ -60,7 +60,10 @@ async def get_daily_rankings(
             return []
         rows = (await db.execute(
             select(Character)
-            .options(joinedload(Character.creator))
+            .options(
+                joinedload(Character.creator),
+                joinedload(Character.origin_story),
+            )
             .where(Character.id.in_(ids))
         )).scalars().all()
         by_id = {str(r.id): r for r in rows}
@@ -76,6 +79,9 @@ async def get_daily_rankings(
                 "greeting": c.greeting,
                 "avatar_url": c.avatar_url,
                 "origin_story_id": c.origin_story_id,
+                # ✅ 원작챗 카드에서 "원작 웹소설(파란 배지)"를 보여주기 위한 표시 필드
+                "origin_story_title": getattr(getattr(c, "origin_story", None), "title", None),
+                "origin_story_is_webtoon": getattr(getattr(c, "origin_story", None), "is_webtoon", None),
                 "chat_count": c.chat_count,
                 "like_count": c.like_count,
                 "creator_id": c.creator_id,

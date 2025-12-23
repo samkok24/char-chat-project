@@ -148,6 +148,7 @@ services:
       - "80:80"
     volumes:
       - ./nginx.production.conf:/etc/nginx/nginx.conf:ro
+      - ./maintenance.html:/etc/nginx/maintenance.html:ro
     depends_on:
       - frontend
       - backend
