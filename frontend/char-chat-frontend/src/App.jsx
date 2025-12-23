@@ -52,6 +52,7 @@ const ChatRedirectPage = React.lazy(() => import('./pages/ChatRedirectPage')); /
 const VerifyPage = React.lazy(() => import('./pages/VerifyPage'));
 const ResetPasswordPage = React.lazy(() => import('./pages/ResetPasswordPage'));
 const ForgotPasswordPage = React.lazy(() => import('./pages/ForgotPasswordPage'));
+const MaintenancePage = React.lazy(() => import('./pages/MaintenancePage'));
 const ContactPage = React.lazy(() => import('./pages/ContactPage'));
 const FAQPage = React.lazy(() => import('./pages/FAQPage'));
 
@@ -133,6 +134,7 @@ const AppRouter = () => {
           <Route path="/verify" element={<VerifyPage />} />
           <Route path="/forgot-password" element={<ForgotPasswordPage />} />
           <Route path="/reset-password" element={<ResetPasswordPage />} />
+          <Route path="/maintenance" element={<MaintenancePage />} />
           <Route path="/contact" element={<ContactPage />} />
           <Route path="/faq" element={<FAQPage />} />
 
