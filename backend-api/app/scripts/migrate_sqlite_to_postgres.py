@@ -386,7 +386,14 @@ def main():
     p.add_argument("--recreate-schema", action="store_true", help="대상 DB의 모든 테이블을 삭제하고 스키마를 다시 생성합니다.")
     args = p.parse_args()
 
-    migrate(sqlite_path=args.sqlite, pg_url=args.pg, truncate=bool(args.truncate), dry_run=bool(args.dry_run), best_effort=bool(args.best_effort))
+    migrate(
+        sqlite_path=args.sqlite,
+        pg_url=args.pg,
+        truncate=bool(args.truncate),
+        dry_run=bool(args.dry_run),
+        best_effort=bool(args.best_effort),
+        recreate_schema=bool(args.recreate_schema),
+    )
 
 
 if __name__ == "__main__":
