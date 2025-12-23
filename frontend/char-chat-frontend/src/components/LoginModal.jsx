@@ -240,8 +240,29 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
       try {
         const { data } = await import('../lib/api').then(m => m.authAPI.checkEmail(v));
         setEmailCheck({ checked: true, available: data.available, message: data.available ? '사용 가능한 이메일입니다.' : '이미 등록된 이메일입니다.' });
-      } catch (_) {
-        setEmailCheck({ checked: true, available: null, message: '확인에 실패했습니다.' });
+      } catch (err) {
+        /**
+         * 이메일 중복확인 실패 시 원인 노출(방어적 UX)
+         * - 운영에서 "왜 실패했는지"가 안 보이면 디버깅이 불가능해진다.
+         * - SW/캐시로 인한 청크 로드 실패(ChunkLoadError)도 자주 발생할 수 있어 안내 문구를 분기한다.
+         */
+        try { console.error('[auth] checkEmail failed:', err); } catch (_) {}
+        const detail = err?.response?.data?.detail;
+        const status = err?.response?.status;
+        const msgRaw = String(detail || err?.message || '').trim();
+        const isChunkLoad =
+          msgRaw.includes('ChunkLoadError') ||
+          msgRaw.includes('Loading chunk') ||
+          msgRaw.includes('dynamically imported module') ||
+          msgRaw.includes('Failed to fetch dynamically imported module');
+        const msg = isChunkLoad
+          ? '앱이 업데이트되어 새로고침이 필요합니다. (Ctrl+F5) 후 다시 시도해주세요.'
+          : (detail
+              ? `확인에 실패했습니다: ${String(detail)}`
+              : status
+                ? `확인에 실패했습니다. (HTTP ${status})`
+                : '확인에 실패했습니다.');
+        setEmailCheck({ checked: true, available: null, message: msg });
       } finally {
         setEmailChecking(false);
       }
@@ -262,8 +283,17 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
       try {
         const { data } = await import('../lib/api').then(m => m.authAPI.checkUsername(v));
         setUsernameCheck({ checked: true, available: data.available, message: data.available ? '사용 가능한 이름입니다.' : '이미 사용 중입니다.' });
-      } catch (_) {
-        setUsernameCheck({ checked: true, available: null, message: '확인에 실패했습니다.' });
+      } catch (err) {
+        // 실패 원인 노출(방어적 UX)
+        try { console.error('[auth] checkUsername failed:', err); } catch (_) {}
+        const detail = err?.response?.data?.detail;
+        const status = err?.response?.status;
+        const msg = detail
+          ? `확인에 실패했습니다: ${String(detail)}`
+          : status
+            ? `확인에 실패했습니다. (HTTP ${status})`
+            : '확인에 실패했습니다.';
+        setUsernameCheck({ checked: true, available: null, message: msg });
       } finally {
         setUsernameChecking(false);
       }
@@ -393,7 +423,10 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
                       <Button
                         type="button"
                         onClick={handleSendVerificationEmail}
-                        disabled={sendingVerification || resendCooldown > 0 || !emailCheck.available || !registerData.email}
+                        // ✅ 방어적 UX: 이메일 중복확인이 실패(available=null)해도 인증발송은 시도할 수 있게 한다.
+                        // - 서버에서 최종 검증(중복/인증)을 수행한다.
+                        // - 단, 이미 등록된 이메일(available===false)인 경우만 막는다.
+                        disabled={sendingVerification || resendCooldown > 0 || !registerData.email || emailCheck.available === false}
                         className={STYLES.inlineBtn}
                       >
                         {sendingVerification ? (

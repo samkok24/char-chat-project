@@ -42,12 +42,51 @@ const runTokenRefresh = async (API_BASE_URL) => {
   return refreshInFlight;
 };
 
-// API 기본 URL 설정
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-// SOCKET URL: 우선 VITE_SOCKET_URL, 없으면 API 도메인에 포트만 3001로 교체
+/**
+ * API 기본 URL 설정(방어적)
+ *
+ * 의도/동작:
+ * - 로컬 개발: env가 없으면 기존대로 `http://localhost:8000`을 기본값으로 사용한다.
+ * - 운영(프로덕션): env 누락 시 `현재 접속 도메인 + /api`를 기본값으로 사용한다.
+ *   (Nginx에서 `/api/*`를 백엔드로 프록시하는 배포 구조에 맞춤)
+ *
+ * 왜 필요한가:
+ * - 운영 빌드에서 VITE_API_URL이 비어 있으면 프론트가 `localhost:8000`으로 호출해서
+ *   회원가입/로그인/중복확인 등이 전부 "확인 실패"로 보이게 된다.
+ */
+const getDefaultProdApiBaseUrl = () => {
+  try {
+    if (typeof window !== 'undefined' && window.location && window.location.origin) {
+      return `${window.location.origin}/api`;
+    }
+  } catch (_) {}
+  // 마지막 안전장치(브라우저 환경에서만 의미 있음)
+  return 'http://localhost:8000';
+};
+
+const API_BASE_URL = import.meta.env.VITE_API_URL
+  || (import.meta.env.MODE === 'production' ? getDefaultProdApiBaseUrl() : 'http://localhost:8000');
+
+/**
+ * SOCKET URL(방어적)
+ *
+ * 의도/동작:
+ * - 운영: 동일 도메인(`/socket.io`)을 통해 Nginx 프록시로 연결(포트 노출/방화벽 이슈 회피)
+ * - 로컬: 기존처럼 API host 기반으로 :3001을 기본값으로 사용
+ */
 const SOCKET_URL = (() => {
   const explicit = import.meta.env.VITE_SOCKET_URL;
   if (explicit) return explicit;
+
+  if (import.meta.env.MODE === 'production') {
+    try {
+      if (typeof window !== 'undefined' && window.location && window.location.origin) {
+        return window.location.origin;
+      }
+    } catch (_) {}
+  }
+
+  // dev fallback: API 도메인에 포트만 3001로 교체
   try {
     const u = new URL(API_BASE_URL);
     return `${u.protocol}//${u.hostname}:3001`;
