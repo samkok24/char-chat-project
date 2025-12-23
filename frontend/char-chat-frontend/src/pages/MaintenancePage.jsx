@@ -85,7 +85,7 @@ const MaintenancePage = () => {
           </Button>
         </div>
 
-        <p className="mt-6 text-xs text-gray-500">문의: support@chapter8.net</p>
+        <p className="mt-6 text-xs text-gray-500">cha8.team@gmail.net</p>
       </div>
     </div>
   );

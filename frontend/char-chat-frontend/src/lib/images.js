@@ -1,10 +1,61 @@
 import { API_BASE_URL } from './api';
 
+/**
+ * 정적 파일(/static)용 베이스 URL을 반환한다.
+ *
+ * 의도/동작(환경별):
+ * - 운영: API_BASE_URL이 보통 `{origin}/api` 이므로, `/api`를 제거한 `{origin}`을 사용한다.
+ * - 개발: API_BASE_URL이 보통 `http://localhost:8000` 이므로 그대로 사용한다.
+ *
+ * 이렇게 하면:
+ * - prod: `/static/*` → `https://chapter8.net/static/*` (Nginx가 backend로 프록시)
+ * - dev:  `/static/*` → `http://localhost:8000/static/*` (백엔드가 StaticFiles로 서빙)
+ */
+const getStaticBaseUrl = () => {
+  try {
+    const base = String(API_BASE_URL || '').replace(/\/$/, '');
+    // API가 /api로 끝나면 정적은 같은 origin의 /static으로 내려야 한다.
+    if (/\/api$/i.test(base)) return base.replace(/\/api$/i, '');
+    // 그 외에는 API_BASE_URL 자체를 정적 베이스로 사용 (dev: localhost:8000)
+    return base;
+  } catch (_) {
+    return '';
+  }
+};
+
 export const resolveImageUrl = (url) => {
   if (!url) return '';
   try {
+    // localhost:8000 또는 127.0.0.1:8000을 상대 경로로 변환 (DB 마이그레이션 이슈 대응)
+    if (url.includes('localhost:8000') || url.includes('127.0.0.1:8000')) {
+      // /static/... 부분만 추출
+      const staticIdx = url.indexOf('/static/');
+      if (staticIdx !== -1) {
+        const relativePath = url.substring(staticIdx);
+        const base = getStaticBaseUrl();
+        return base ? `${base}${relativePath}` : relativePath;
+      }
+      // http://localhost:8000/... 형태면 경로 부분만 추출
+      try {
+        const urlObj = new URL(url);
+        const relativePath = urlObj.pathname + (urlObj.search || '');
+        const base = API_BASE_URL.replace(/\/$/, '');
+        return `${base}${relativePath}`;
+      } catch {
+        // URL 파싱 실패 시 원본 반환
+      }
+    }
+    
+    // 외부 URL(https://...)은 그대로 반환
     if (/^https?:\/\//i.test(url)) return url;
+    
+    // 상대 경로(/static/...)는 API_BASE_URL과 결합
     if (url.startsWith('/')) {
+      // ✅ /static 은 API(/api) 경로가 아니라 origin 경로로 내려야 한다.
+      if (url.startsWith('/static/')) {
+        const base = getStaticBaseUrl();
+        return base ? `${base}${url}` : url;
+      }
       // 보장: 중복 슬래시 제거
       const base = API_BASE_URL.replace(/\/$/, '');
       return `${base}${url}`;

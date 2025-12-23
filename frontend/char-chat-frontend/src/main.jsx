@@ -11,23 +11,23 @@ createRoot(document.getElementById('root')).render(
   </StrictMode>,
 )
 
-// Service Worker 정책
-// 개발 중에는 SW가 오래된 청크를 캐싱해 404를 유발할 수 있으므로 완전히 비활성화/정리
+/**
+ * Service Worker 정책(안정성 우선)
+ *
+ * 현재 운영에서 SW가 외부 리소스/확장(chrome-extension) 요청까지 캐시하려다 예외가 나면서
+ * "Failed to convert value to Response" 같은 런타임 에러로 일부 네트워크 흐름이 불안정해질 수 있다.
+ * 안정적인 회원가입/로그인 UX를 위해 당분간 SW는 등록하지 않고, 방문 시 기존 SW/캐시를 정리한다.
+ */
 if ('serviceWorker' in navigator) {
-  if (import.meta.env.MODE !== 'production') {
-    // dev: 기존 SW/캐시 정리
+  try {
     navigator.serviceWorker.getRegistrations().then((regs) => {
       regs.forEach((r) => r.unregister().catch(()=>{}));
     }).catch(()=>{});
-    try {
-      if ('caches' in window) {
-        caches.keys().then((keys) => keys.forEach((k) => caches.delete(k))).catch(()=>{});
-      }
-    } catch (_) {}
-  } else {
-    // prod만 등록
-    window.addEventListener('load', () => {
-      try { navigator.serviceWorker.register('/sw.js'); } catch {}
-    });
-  }
+  } catch (_) {}
+
+  try {
+    if ('caches' in window) {
+      caches.keys().then((keys) => keys.forEach((k) => caches.delete(k))).catch(()=>{});
+    }
+  } catch (_) {}
 }
