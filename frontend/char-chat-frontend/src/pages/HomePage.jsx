@@ -8,7 +8,7 @@ import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../contexts/AuthContext';
 import useRequireAuth from '../hooks/useRequireAuth';
-import { charactersAPI, usersAPI, tagsAPI, storiesAPI } from '../lib/api';
+import { charactersAPI, usersAPI, tagsAPI, storiesAPI, storydiveAPI } from '../lib/api';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
@@ -129,7 +129,6 @@ const HomePage = () => {
     queryKey: ['storydive-recent-sessions', user?.id || 'guest'],
     queryFn: async () => {
       try {
-        const { storydiveAPI } = await import('../lib/api');
         const res = await storydiveAPI.getRecentSessions(10);
         return Array.isArray(res.data) ? res.data : [];
       } catch (err) {

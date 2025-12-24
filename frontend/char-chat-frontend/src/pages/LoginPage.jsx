@@ -6,6 +6,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
+import { authAPI } from '../lib/api';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
@@ -161,7 +162,7 @@ const LoginPage = () => {
       // 닉네임 중복 체크 권장
       if (!usernameCheck.checked) {
         try {
-          const { data } = await import('../lib/api').then(m => m.authAPI.checkUsername(registerData.username));
+          const { data } = await authAPI.checkUsername(registerData.username);
           if (!data.available) {
             setError('이미 사용 중인 사용자명입니다.');
             return;
@@ -200,7 +201,6 @@ const LoginPage = () => {
     setVerificationInfo({ type: 'info', message: '' });
     setError('');
     try {
-      const { authAPI } = await import('../lib/api');
       await authAPI.sendVerificationEmail(email);
       setVerificationInfo({ type: 'success', message: '인증 메일을 발송했습니다. 메일함에서 인증 후 돌아와 계속 진행해주세요.' });
       setResendCooldown(60);
@@ -220,7 +220,7 @@ const LoginPage = () => {
     setLoading(true);
     setError('');
     try {
-      const { data } = await import('../lib/api').then(m => m.authAPI.checkUsername(registerData.username));
+      const { data } = await authAPI.checkUsername(registerData.username);
       setUsernameCheck({ checked: true, available: data.available, message: data.available ? '사용 가능한 이름입니다.' : '이미 사용 중입니다.' });
     } catch (err) {
       setUsernameCheck({ checked: true, available: null, message: '확인에 실패했습니다.' });
@@ -233,7 +233,7 @@ const LoginPage = () => {
     setLoading(true);
     setError('');
     try {
-      const { data } = await import('../lib/api').then(m => m.authAPI.generateUsername());
+      const { data } = await authAPI.generateUsername();
       setRegisterData(prev => ({ ...prev, username: data.username }));
       setUsernameCheck({ checked: false, available: null, message: '' });
     } catch (err) {

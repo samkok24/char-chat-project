@@ -1,5 +1,6 @@
 import { useState, useRef } from "react";
 import { Upload, X, Camera, Send, Loader2, Check, Type, Filter } from "lucide-react";
+import { mediaAPI } from "../../lib/api";
 
 export default function Composer({ onSend, disabled = false, hasMessages = false }) {
   const [staged, setStaged] = useState([]);
@@ -587,8 +588,6 @@ function ImageTray({ onInsert, onClose }) {
       const controller = new AbortController();
       abortRef.current = controller;
       
-      // 동적 import로 API 호출
-      const { mediaAPI } = await import('../../lib/api');
       const res = await mediaAPI.generate({
         provider: 'gemini',
         model: 'gemini-2.5-flash-image-preview',
@@ -623,7 +622,6 @@ function ImageTray({ onInsert, onClose }) {
     
     setBusy(true);
     try {
-      const { mediaAPI } = await import('../../lib/api');
       const res = await mediaAPI.upload(files.filter(f => f.size <= 8 * 1024 * 1024));
       const items = res.data?.items || [];
       if (items.length > 0) {

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
+import { authAPI } from '../lib/api';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
 import { Card, CardContent, CardDescription } from './ui/card';
 import { Alert, AlertDescription } from './ui/alert';
@@ -173,7 +174,7 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
   const handleGenerateUsername = async () => {
     setLoading(true); setError('');
     try {
-      const { data } = await import('../lib/api').then(m => m.authAPI.generateUsername());
+      const { data } = await authAPI.generateUsername();
       setRegisterData(prev => ({ ...prev, username: data.username }));
       setUsernameCheck({ checked: false, available: null, message: '' });
     } catch (_) { setError('자동 생성에 실패했습니다.'); }
@@ -189,7 +190,6 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
     setSendingVerification(true);
     setVerificationInfo({ type: 'info', message: '' });
     try {
-      const { authAPI } = await import('../lib/api');
       await authAPI.sendVerificationEmail(email);
       setVerificationInfo({ type: 'success', message: '인증 메일을 발송했습니다. 메일함을 확인해주세요.' });
       setResendCooldown(60);
@@ -214,7 +214,6 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
     setResetLoading(true);
     setResetStatus({ type: 'info', message: '' });
     try {
-      const { authAPI } = await import('../lib/api');
       await authAPI.forgotPassword(resetEmail.trim());
       setResetStatus({ type: 'success', message: '비밀번호 재설정 메일을 발송했습니다. 메일함을 확인해주세요.' });
     } catch (err) {
@@ -238,7 +237,7 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
     setEmailChecking(true);
     const t = setTimeout(async () => {
       try {
-        const { data } = await import('../lib/api').then(m => m.authAPI.checkEmail(v));
+        const { data } = await authAPI.checkEmail(v);
         setEmailCheck({ checked: true, available: data.available, message: data.available ? '사용 가능한 이메일입니다.' : '이미 등록된 이메일입니다.' });
       } catch (err) {
         /**
@@ -281,7 +280,7 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
     setUsernameChecking(true);
     const t = setTimeout(async () => {
       try {
-        const { data } = await import('../lib/api').then(m => m.authAPI.checkUsername(v));
+        const { data } = await authAPI.checkUsername(v);
         setUsernameCheck({ checked: true, available: data.available, message: data.available ? '사용 가능한 이름입니다.' : '이미 사용 중입니다.' });
       } catch (err) {
         // 실패 원인 노출(방어적 UX)
