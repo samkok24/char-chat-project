@@ -1467,9 +1467,21 @@ async def get_ai_chat_response(
     history: list, 
     preferred_model: str = 'gemini',
     preferred_sub_model: str = 'gemini-2.5-pro',
-    response_length_pref: str = 'medium'
+    response_length_pref: str = 'medium',
+    temperature: float = 0.7
 ) -> str:
     """사용자가 선택한 모델로 AI 응답 생성"""
+    # temperature 방어적 정규화: 0~1
+    try:
+        t = float(temperature)
+        if t < 0:
+            t = 0.0
+        if t > 1:
+            t = 1.0
+        # 0.1 단위 반올림(프론트와 정합)
+        t = round(t * 10) / 10.0
+    except Exception:
+        t = 0.7
     # 사용자 자연어 의도 경량 파싱(추가 API 호출 없음)
     try:
         intent_info = _parse_user_intent(user_message)
@@ -1512,7 +1524,7 @@ async def get_ai_chat_response(
             model_name = 'gemini-2.5-flash'
         else:  # gemini-2.5-pro
             model_name = 'gemini-2.5-pro'
-        return await get_gemini_completion(full_prompt, model=model_name, max_tokens=max_tokens)
+        return await get_gemini_completion(full_prompt, temperature=t, model=model_name, max_tokens=max_tokens)
         
     elif preferred_model == 'claude':
         # 프론트의 가상 서브모델명을 실제 Anthropic 모델 ID로 매핑
@@ -1528,7 +1540,7 @@ async def get_ai_chat_response(
         }
 
         model_name = claude_mapping.get(preferred_sub_model, claude_default)
-        return await get_claude_completion(full_prompt, model=model_name, max_tokens=max_tokens)
+        return await get_claude_completion(full_prompt, temperature=t, model=model_name, max_tokens=max_tokens)
         
     elif preferred_model == 'gpt':
         if preferred_sub_model == 'gpt-4.1':
@@ -1537,11 +1549,11 @@ async def get_ai_chat_response(
             model_name = 'gpt-4.1-mini'
         else:  # gpt-4o
             model_name = 'gpt-4o'
-        return await get_openai_completion(full_prompt, model=model_name, max_tokens=max_tokens)
+        return await get_openai_completion(full_prompt, temperature=t, model=model_name, max_tokens=max_tokens)
         
     else:  # argo (기본값)
         # ARGO 모델은 향후 커스텀 API 구현 예정, 현재는 Gemini로 대체
-        return await get_gemini_completion(full_prompt, model='gemini-2.5-pro', max_tokens=max_tokens)
+        return await get_gemini_completion(full_prompt, temperature=t, model='gemini-2.5-pro', max_tokens=max_tokens)
 
 
 async def regenerate_partial_text(

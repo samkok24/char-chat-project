@@ -86,8 +86,11 @@ async def list_chapters(
     if not story:
         raise HTTPException(status_code=404, detail="스토리를 찾을 수 없습니다")
     
-    # 비공개 스토리는 작성자만 조회 가능
-    if not story.is_public and (not current_user or story.creator_id != current_user.id):
+    # 비공개 스토리는 작성자/관리자만 조회 가능
+    if not story.is_public and (
+        (not current_user)
+        or (story.creator_id != current_user.id and not getattr(current_user, "is_admin", False))
+    ):
         raise HTTPException(status_code=403, detail="접근 권한이 없습니다")
     
     stmt = select(StoryChapter).where(StoryChapter.story_id == story_id)
@@ -115,8 +118,11 @@ async def get_chapter(
     if not story:
         raise HTTPException(status_code=404, detail="스토리를 찾을 수 없습니다")
     
-    # 비공개 스토리는 작성자만 조회 가능
-    if not story.is_public and (not current_user or story.creator_id != current_user.id):
+    # 비공개 스토리는 작성자/관리자만 조회 가능
+    if not story.is_public and (
+        (not current_user)
+        or (story.creator_id != current_user.id and not getattr(current_user, "is_admin", False))
+    ):
         raise HTTPException(status_code=403, detail="접근 권한이 없습니다")
     
     # 조회수 증가(비차단)

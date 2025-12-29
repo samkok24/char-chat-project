@@ -314,7 +314,8 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
 
   return (
     <Dialog open={isOpen} onOpenChange={(v) => { if (!v) onClose?.(); }}>
-      <DialogContent className="sm:max-w-[440px]">
+      {/* ✅ 모바일 최적화: 화면 높이 내에서 스크롤 가능하도록 제한(회원가입 폼이 긴 케이스 대응) */}
+      <DialogContent className="sm:max-w-[440px] max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="text-xl font-bold text-center">
             {view === 'login' && '로그인'}
@@ -415,7 +416,7 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
                   {/* 이메일 + 인증 버튼 (같은 줄) */}
                     <div className="space-y-2">
                     <Label htmlFor="register-email" className={STYLES.label}>이메일</Label>
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-col sm:flex-row sm:items-center gap-2">
                       <div className="relative flex-1">
                         <Mail className={STYLES.inputIcon} />
                         <Input id="register-email" name="email" type="email" placeholder="이메일을 입력하세요" value={registerData.email} onChange={handleRegisterChange} className={STYLES.input} required />
@@ -427,7 +428,7 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
                         // - 서버에서 최종 검증(중복/인증)을 수행한다.
                         // - 단, 이미 등록된 이메일(available===false)인 경우만 막는다.
                         disabled={sendingVerification || resendCooldown > 0 || !registerData.email || emailCheck.available === false}
-                        className={STYLES.inlineBtn}
+                        className={`${STYLES.inlineBtn} w-full sm:w-auto`}
                       >
                         {sendingVerification ? (
                           <Loader2 className="h-4 w-4 animate-spin" />
@@ -449,12 +450,12 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
                   {/* 사용자명 + 자동생성 (같은 줄) */}
                     <div className="space-y-2">
                     <Label htmlFor="register-username" className={STYLES.label}>사용자명</Label>
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-col sm:flex-row sm:items-center gap-2">
                       <div className="relative flex-1">
                         <User className={STYLES.inputIcon} />
                         <Input id="register-username" name="username" type="text" placeholder="사용자명을 입력하세요" value={registerData.username} onChange={handleRegisterChange} className={STYLES.input} required minLength={2} maxLength={100} disabled={!emailVerified} />
                       </div>
-                      <Button type="button" onClick={handleGenerateUsername} disabled={loading || !emailVerified} className={STYLES.inlineBtn}>
+                      <Button type="button" onClick={handleGenerateUsername} disabled={loading || !emailVerified} className={`${STYLES.inlineBtn} w-full sm:w-auto`}>
                         <Wand2 className="h-4 w-4 mr-1" /> 자동
                         </Button>
                     </div>

@@ -55,7 +55,7 @@ import {
 
 // PageLoader가 없다면 이 부분을 추가하거나, App.jsx에서 import 해야 합니다.
 const PageLoader = () => (
-  <div className="min-h-screen flex items-center justify-center">
+  <div className="min-h-screen flex items-center justify-center bg-gray-900 text-gray-200">
     <Loader2 className="w-8 h-8 animate-spin text-purple-600" />
   </div>
 );
@@ -90,6 +90,9 @@ const ProfilePage = () => {
   const [showEdit, setShowEdit] = useState(false);
   const [deleteAvatarDialogOpen, setDeleteAvatarDialogOpen] = useState(false);
   const [statsError, setStatsError] = useState(false);
+  const [statsLoading, setStatsLoading] = useState(false);
+  // 모바일에서 고정폭 SVG(스파크라인)가 넘치지 않도록, 현재 뷰포트 폭에 맞춰 가로폭을 조정한다.
+  const [sparklineWidth, setSparklineWidth] = useState(480);
 
   // [추가] API를 호출하여 데이터를 가져오는 useEffect 로직입니다.
   useEffect(() => {
@@ -137,7 +140,9 @@ const ProfilePage = () => {
   // 통계 로드 (profile이 준비된 후 실행)
   useEffect(() => {
     if (!profile) return;
+    let alive = true;
     setStatsError(false);
+    setStatsLoading(true);
     (async () => {
       try {
         const [ov, ts, top] = await Promise.all([
@@ -145,12 +150,14 @@ const ProfilePage = () => {
           usersAPI.getCreatorTimeseries(profile.id, { metric: 'chats', range: seriesRange }),
           usersAPI.getCreatorTopCharacters(profile.id, { metric: 'chats', range: '7d', limit: 5 })
         ]);
+        if (!alive) return;
         setOverview(ov.data || {});
         setSeries(ts.data?.series || ts.data || []);
         setTopChars(top.data || []);
       } catch (e) {
         // 백엔드 통계 API가 없거나 실패한 경우, 사용자 캐릭터 목록으로 대체 집계
         console.warn('통계 API 미구현/실패 - 사용자 캐릭터 목록으로 대체 집계');
+        if (!alive) return;
         setStatsError(true);
         // 사용자에게 알림 (toast)
         try {
@@ -169,11 +176,10 @@ const ProfilePage = () => {
           const character_public = chars.filter(c => c.is_public).length;
           const chats_total = chars.reduce((s, c) => s + (c.chat_count || 0), 0);
           const likes_total = chars.reduce((s, c) => s + (c.like_count || 0), 0);
+          if (!alive) return;
           setOverview({ character_total, character_public, chats_total, unique_users_30d: 0, likes_total });
-          const total = chats_total;
-          const count = seriesRange === '24h' ? 24 : 7;
-          const pseudo = Array.from({ length: count }).map((_, i) => ({ date: String(i), value: Math.round(total / count || 0) }));
-          setSeries(pseudo);
+          // ⚠️ 방어적 UX: 시계열 통계가 없을 땐 임의 그래프를 그리지 않는다(오해 방지)
+          setSeries([]);
           const top5 = [...chars]
             .sort((a, b) => (b.chat_count || 0) - (a.chat_count || 0))
             .slice(0, 5)
@@ -190,20 +196,57 @@ const ProfilePage = () => {
             }));
           } catch (_) {}
         }
+      } finally {
+        if (alive) setStatsLoading(false);
       }
     })();
+    return () => { alive = false; };
   }, [profile?.id, seriesRange]);
+
+  /**
+   * 스파크라인 폭 계산
+   *
+   * 의도:
+   * - 기존은 width=480 고정이라 모바일에서 카드 영역을 넘어가며 레이아웃이 깨질 수 있다.
+   * - PC는 기존과 동일하게 480을 유지하고, 모바일에서는 화면폭에 맞게 축소한다.
+   */
+  useEffect(() => {
+    const calc = () => {
+      try {
+        const w = Number(window?.innerWidth || 0);
+        if (!Number.isFinite(w) || w <= 0) return;
+        // 컨테이너 패딩/카드 패딩/여백을 대략 반영해 안전한 폭으로 제한
+        const safe = Math.max(240, Math.min(480, w - 96));
+        setSparklineWidth(safe);
+      } catch (_) {}
+    };
+    calc();
+    try {
+      window.addEventListener('resize', calc);
+      return () => window.removeEventListener('resize', calc);
+    } catch (_) {
+      return undefined;
+    }
+  }, []);
 
   // [추가] 통계 카드를 위한 재사용 컴포넌트입니다.
   const StatCard = ({ title, value, icon: Icon, onClick, clickable = false }) => (
-    <Card className={`text-center p-4 ${clickable ? 'cursor-pointer hover:bg-gray-750/50 transition-colors' : ''}`} onClick={onClick}>
-      <CardHeader className="p-0 mb-2">
-        <CardTitle className="text-sm font-medium text-gray-500 dark:text-gray-400">{title}</CardTitle>
-      </CardHeader>
-      <CardContent className="p-0">
-        <div className="text-3xl font-bold flex items-center justify-center">
-          <Icon className="w-6 h-6 mr-2 text-purple-500" />
-          {value?.toLocaleString?.() ?? '0'}
+    <Card
+      onClick={clickable ? onClick : undefined}
+      className={`relative overflow-hidden bg-gray-800 border border-gray-700 ${
+        clickable ? 'cursor-pointer hover:bg-gray-800/80 hover:border-gray-600 transition-colors' : ''
+      }`}
+    >
+      <CardContent className="p-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-xs font-medium text-gray-400">{title}</div>
+            <div className="mt-1 text-2xl sm:text-3xl font-bold text-white tracking-tight">
+              {value?.toLocaleString?.() ?? '0'}
+            </div>
+          </div>
+          {/* 아이콘은 텍스트 옆이 아니라 단독 배치(불필요한 '아이콘+문구' 느낌 제거) */}
+          {Icon ? <Icon className="w-5 h-5 text-gray-500" /> : null}
         </div>
       </CardContent>
     </Card>
@@ -216,11 +259,17 @@ const ProfilePage = () => {
 
   if (error || !profile) {
     return (
-      <div className="flex flex-col items-center justify-center h-screen">
+      <div className="min-h-screen bg-gray-900 text-gray-200 flex flex-col items-center justify-center p-6">
         <AlertCircle className="w-12 h-12 text-red-500 mb-4" />
         <h3 className="text-lg font-medium">오류</h3>
-        <p className="text-gray-600 mb-4">{error || '프로필을 찾을 수 없습니다.'}</p>
-        <Button onClick={() => navigate('/')} variant="outline">홈으로 돌아가기</Button>
+        <p className="text-gray-400 mb-4 text-center">{error || '프로필을 찾을 수 없습니다.'}</p>
+        <Button
+          onClick={() => navigate('/')}
+          variant="ghost"
+          className="border border-gray-700 text-gray-200 hover:text-white hover:bg-gray-800"
+        >
+          홈으로 돌아가기
+        </Button>
       </div>
     );
   }
@@ -328,10 +377,15 @@ const ProfilePage = () => {
   // --- 기존의 return 문 전체를 아래 내용으로 교체합니다. ---
   return (
     <AppLayout>
-      <div className="max-w-5xl mx-auto p-4 sm:p-6 lg:p-8 text-gray-200">
+      <div className="min-h-full bg-gray-900 text-gray-200">
+      <div className="max-w-5xl mx-auto p-4 sm:p-6 lg:p-8">
         {/* [수정] 뒤로가기 버튼 추가 */}
         <header className="mb-6">
-          <Button variant="ghost" onClick={() => window.history.back()}>
+          <Button
+            variant="ghost"
+            onClick={() => window.history.back()}
+            className="text-gray-300 hover:text-white hover:bg-gray-800"
+          >
             <ArrowLeft className="w-5 h-5 mr-2" />
             뒤로 가기
           </Button>
@@ -339,9 +393,9 @@ const ProfilePage = () => {
 
         {/* [수정] 프로필 카드: 더미 데이터 대신 'profile' 상태의 실제 데이터를 사용 */}
         <Card className="mb-8 overflow-hidden bg-gray-800 border border-gray-700">
-          <CardContent className="p-6 flex flex-col sm:flex-row items-center space-y-4 sm:space-y-0 sm:space-x-6">
+          <CardContent className="p-4 sm:p-6 flex flex-col sm:flex-row items-center space-y-4 sm:space-y-0 sm:space-x-6">
             <div className="relative">
-              <Avatar className="w-24 h-24 text-4xl">
+              <Avatar className="w-20 h-20 sm:w-24 sm:h-24 text-3xl sm:text-4xl">
                 <AvatarImage src={resolveImageUrl(profile.avatar_url)} alt={profile.username} />
                 <AvatarFallback>{profile.username.charAt(0).toUpperCase()}</AvatarFallback>
               </Avatar>
@@ -439,11 +493,18 @@ const ProfilePage = () => {
               }}
             />
             <div className="flex-grow text-center sm:text-left">
-              <div className="flex items-center justify-center sm:justify-start space-x-4 mb-1">
+              <div className="flex items-center justify-center sm:justify-start gap-2 mb-1 w-full">
                 <h1 className="text-2xl font-bold text-white">{profile.username}</h1>
                 {isOwnProfile && ( // [수정] 내 프로필일 때만 '프로필 수정' 버튼 표시
-                  <Button onClick={() => setShowEdit(true)} variant="outline" size="sm">
-                    프로필 수정
+                  <Button
+                    onClick={() => setShowEdit(true)}
+                    variant="ghost"
+                    size="icon"
+                    title="프로필 수정"
+                    className="border border-gray-700 text-gray-300 hover:text-white hover:bg-gray-800"
+                  >
+                    <Edit className="w-4 h-4" />
+                    <span className="sr-only">프로필 수정</span>
                   </Button>
                 )}
               </div>
@@ -456,6 +517,21 @@ const ProfilePage = () => {
 
         {/* KPI 카드 */}
         <ErrorBoundary>
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-2">
+            <h2 className="text-base font-semibold text-white">통계</h2>
+            {statsLoading && <Loader2 className="w-4 h-4 animate-spin text-gray-400" />}
+          </div>
+          {statsError && (
+            <Badge
+              variant="outline"
+              className="border-yellow-500/30 bg-yellow-500/10 text-yellow-200"
+              title="통계 API가 준비되지 않았거나 호출에 실패해 일부 지표는 대체 집계로 표시됩니다."
+            >
+              일부 통계 대체 집계
+            </Badge>
+          )}
+        </div>
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
           <StatCard
             title="캐릭터 수"
@@ -476,27 +552,48 @@ const ProfilePage = () => {
         </div>
         </ErrorBoundary>
 
-        {/* 시계열 범위 선택 */}
-        <div className="flex items-center justify-end mb-2 gap-3">
-          <span className="text-sm text-gray-400">범위</span>
-          <label className="flex items-center gap-1 text-sm cursor-pointer">
-            <input type="radio" name="ts-range" value="24h" checked={seriesRange==='24h'} onChange={() => setSeriesRange('24h')} />
-            <span>최근 24시간</span>
-          </label>
-          <label className="flex items-center gap-1 text-sm cursor-pointer">
-            <input type="radio" name="ts-range" value="7d" checked={seriesRange==='7d'} onChange={() => setSeriesRange('7d')} />
-            <span>최근 7일</span>
-          </label>
-        </div>
-
         {/* 최근 X 범위 대화 추이 */}
         <ErrorBoundary>
         <Card className="mb-8 overflow-hidden bg-gray-800 border border-gray-700">
           <CardHeader className="pb-2">
-            <CardTitle className="text-white text-base">최근 {seriesRange==='24h'?'24시간':'7일'} 대화 추이</CardTitle>
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+              <CardTitle className="text-white text-base">대화 추이</CardTitle>
+              <div className="inline-flex w-full sm:w-auto items-center rounded-lg border border-gray-700 bg-gray-900/40 p-1">
+                <button
+                  type="button"
+                  onClick={() => setSeriesRange('24h')}
+                  className={`flex-1 sm:flex-none px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                    seriesRange === '24h'
+                      ? 'bg-gray-800 text-white'
+                      : 'text-gray-400 hover:text-white'
+                  }`}
+                >
+                  24시간
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSeriesRange('7d')}
+                  className={`flex-1 sm:flex-none px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                    seriesRange === '7d'
+                      ? 'bg-gray-800 text-white'
+                      : 'text-gray-400 hover:text-white'
+                  }`}
+                >
+                  7일
+                </button>
+              </div>
+            </div>
           </CardHeader>
           <CardContent className="pt-0">
-            <div className="p-3"><Sparkline data={series} width={480} height={64} /></div>
+            <div className="p-3 overflow-hidden">
+              {Array.isArray(series) && series.length > 0 ? (
+                <Sparkline data={series} width={sparklineWidth} height={64} />
+              ) : (
+                <div className="text-sm text-gray-400 p-2">
+                  시계열 통계가 아직 준비되지 않았습니다.
+                </div>
+              )}
+            </div>
           </CardContent>
         </Card>
         </ErrorBoundary>
@@ -512,8 +609,9 @@ const ProfilePage = () => {
               <div className="text-sm text-gray-400 p-3">데이터 없음</div>
             )}
             <ul className="divide-y divide-gray-700">
-              {topChars.map((c) => (
+              {topChars.map((c, idx) => (
                 <li key={c.id} className="flex items-center gap-3 py-2">
+                  <div className="w-6 text-xs font-semibold text-gray-500 tabular-nums">#{idx + 1}</div>
                   <Avatar className="w-8 h-8">
                     <AvatarImage src={resolveImageUrl(c.avatar_url)} alt={c.name} />
                     <AvatarFallback>{c.name?.charAt(0)?.toUpperCase() || 'C'}</AvatarFallback>
@@ -535,6 +633,7 @@ const ProfilePage = () => {
         </ErrorBoundary>
 
         {/* 탭 제거: 대시보드 단일 화면 */}
+      </div>
       </div>
 
       {/* 프로필 수정 모달 */}

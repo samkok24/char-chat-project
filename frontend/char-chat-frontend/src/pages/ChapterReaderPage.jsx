@@ -194,37 +194,37 @@ const ChapterReaderPage = () => {
         {story && (
           <>
             {/* 미니 채팅 버튼 (상단) */}
-            <div className="fixed bottom-40 right-6 z-50">
+            <div className="fixed bottom-36 right-4 sm:bottom-40 sm:right-6 z-50">
               <Button 
-                className="rounded-full w-14 h-14 bg-pink-600 hover:bg-pink-700 text-white shadow-lg" 
+                className="rounded-full w-12 h-12 sm:w-14 sm:h-14 bg-pink-600 hover:bg-pink-700 text-white shadow-lg" 
                 onClick={() => setMiniChatOpen(true)}
                 title="빠른 채팅"
               >
-                <MessageCircle className="w-6 h-6" />
+                <MessageCircle className="w-5 h-5 sm:w-6 sm:h-6" />
               </Button>
             </div>
             
             {/* 원작챗 버튼 (하단) */}
-            <div className="fixed bottom-24 right-6 z-50">
+            <div className="fixed bottom-20 right-4 sm:bottom-24 sm:right-6 z-50">
               <Button 
-                className="rounded-full w-14 h-14 bg-purple-600 hover:bg-purple-700 text-white shadow-lg" 
+                className="rounded-full w-12 h-12 sm:w-14 sm:h-14 bg-purple-600 hover:bg-purple-700 text-white shadow-lg" 
                 onClick={() => setOrigChatModalOpen(true)}
                 title="원작챗 시작"
               >
-                <MessageCircle className="w-6 h-6" />
+                <MessageCircle className="w-5 h-5 sm:w-6 sm:h-6" />
               </Button>
             </div>
           </>
         )}
 
         {/* 하단 내비게이션 */}
-        <div className="bg-gray-900/95 backdrop-blur border-t border-gray-800 mt-10">
-          <div className="max-w-6xl mx-auto px-5 py-4">
+        <div className="bg-gray-900/95 backdrop-blur border-t border-gray-800 mt-6 sm:mt-10">
+          <div className="max-w-6xl mx-auto px-4 sm:px-5 py-4">
             <div className="grid grid-cols-3 items-center">
               <div className="justify-self-start">
                 <Button
                   variant="ghost"
-                  className="text-gray-300 hover:text-white hover:bg-gray-800"
+                  className="text-gray-300 hover:text-white hover:bg-gray-800 text-sm px-2 sm:px-4"
                   disabled={currentIdx <= 0}
                   onClick={() => {
                     if (currentIdx > 0) {
@@ -233,21 +233,25 @@ const ChapterReaderPage = () => {
                     }
                   }}
                 >
-                  <ArrowLeft className="w-5 h-5 mr-2" /> 이전화
+                  <ArrowLeft className="w-5 h-5 mr-2" />
+                  <span className="sm:hidden">이전</span>
+                  <span className="hidden sm:inline">이전화</span>
                 </Button>
               </div>
               <div className="justify-self-center">
                 <Button
                   variant="ghost"
-                  className="text-gray-300 hover:text-white hover:bg-gray-800"
+                  className="text-gray-300 hover:text-white hover:bg-gray-800 text-sm px-2 sm:px-4"
                   onClick={() => navigate(`/stories/${storyId}`)}
                 >
-                  <Home className="w-5 h-5 mr-2" /> 작품홈
+                  <Home className="w-5 h-5 mr-2" />
+                  <span className="sm:hidden">홈</span>
+                  <span className="hidden sm:inline">작품홈</span>
                 </Button>
               </div>
               <div className="justify-self-end">
                 <Button
-                  className="bg-red-600 hover:bg-red-700 text-white"
+                  className="bg-red-600 hover:bg-red-700 text-white text-sm px-3 sm:px-4"
                   disabled={currentIdx < 0 || currentIdx >= chapterList.length - 1}
                   onClick={() => {
                     if (currentIdx >= 0 && currentIdx < chapterList.length - 1) {
@@ -256,7 +260,9 @@ const ChapterReaderPage = () => {
                     }
                   }}
                 >
-                  다음화 <ArrowRight className="w-5 h-5 ml-2" />
+                  <span className="sm:hidden">다음</span>
+                  <span className="hidden sm:inline">다음화</span>
+                  <ArrowRight className="w-5 h-5 ml-2" />
                 </Button>
               </div>
             </div>
@@ -288,7 +294,7 @@ const ChapterReaderPage = () => {
   return (
     <AppLayout>
       <div className={`min-h-screen ${isWebtoon ? 'bg-black' : 'bg-gray-900'} text-white`}>
-        <div className={`${isWebtoon ? 'px-0 py-0' : 'max-w-6xl mx-auto px-5 py-6'} ${chatOpen ? 'pb-40' : 'pb-16'}`}>
+        <div className={`${isWebtoon ? 'px-0 py-0' : 'max-w-6xl mx-auto px-4 sm:px-5 py-4 sm:py-6'} ${chatOpen ? 'pb-40' : 'pb-16'}`}>
           {/* 상단 헤더 - 웹툰 모드에서는 숨김 */}
           {!isWebtoon && (
             <div className="flex items-start justify-start mb-4">
@@ -300,9 +306,9 @@ const ChapterReaderPage = () => {
                 >
                   <ArrowLeft className="w-5 h-5 mr-2" /> 작품 상세로
                 </button>
-                <h1 className="text-2xl sm:text-3xl font-bold mt-2 truncate">{story?.title || ''}</h1>
+                <h1 className="text-2xl sm:text-3xl font-bold mt-2 line-clamp-2 sm:line-clamp-1 break-words">{story?.title || ''}</h1>
                 {chapter && (
-                  <div className="text-sm text-gray-400 truncate">
+                  <div className="text-sm text-gray-400 line-clamp-2 sm:line-clamp-1 break-words">
                     {chapter.no
                       ? `${chapter.no}화${chapter.title ? ` - ${chapter.title}` : ''}`
                       : (chapter.title || '제목 없음')}
@@ -343,8 +349,8 @@ const ChapterReaderPage = () => {
         </div>
 
         {/* 하단 내비게이션 (콘텐츠 폭 내부) */}
-        <div className="max-w-5xl mx-auto mt-10">
-          <div className="bg-gray-900/95 backdrop-blur border border-gray-800/80 rounded-2xl px-5 py-3 shadow-xl shadow-black/40">
+        <div className="max-w-5xl mx-auto mt-6 sm:mt-10 px-4 sm:px-0">
+          <div className="bg-gray-900/95 backdrop-blur border border-gray-800/80 rounded-2xl px-4 sm:px-5 py-3 shadow-xl shadow-black/40">
             <div className="flex flex-col gap-3">
               {/* 스토리 다이브 시작 버튼 (회차 맨 아래) */}
               <Button
@@ -367,7 +373,7 @@ const ChapterReaderPage = () => {
                 <div className="justify-self-start">
                   <Button
                     variant="ghost"
-                    className="text-gray-300 hover:text-white hover:bg-gray-800"
+                    className="text-gray-300 hover:text-white hover:bg-gray-800 text-sm px-2 sm:px-4"
                     disabled={currentIdx <= 0}
                     onClick={() => {
                       if (currentIdx > 0) {
@@ -376,21 +382,25 @@ const ChapterReaderPage = () => {
                       }
                     }}
                   >
-                    <ArrowLeft className="w-5 h-5 mr-2" /> 이전화
+                    <ArrowLeft className="w-5 h-5 mr-2" />
+                    <span className="sm:hidden">이전</span>
+                    <span className="hidden sm:inline">이전화</span>
                   </Button>
                 </div>
                 <div className="justify-self-center">
                   <Button
                     variant="ghost"
-                    className="text-gray-300 hover:text-white hover:bg-gray-800"
+                    className="text-gray-300 hover:text-white hover:bg-gray-800 text-sm px-2 sm:px-4"
                     onClick={() => navigate(`/stories/${storyId}`)}
                   >
-                    <Home className="w-5 h-5 mr-2" /> 작품홈
+                    <Home className="w-5 h-5 mr-2" />
+                    <span className="sm:hidden">홈</span>
+                    <span className="hidden sm:inline">작품홈</span>
                   </Button>
                 </div>
                 <div className="justify-self-end">
                   <Button
-                    className="bg-red-600 hover:bg-red-700 text-white"
+                    className="bg-red-600 hover:bg-red-700 text-white text-sm px-3 sm:px-4"
                     disabled={currentIdx < 0 || currentIdx >= chapterList.length - 1}
                     onClick={() => {
                       if (currentIdx >= 0 && currentIdx < chapterList.length - 1) {
@@ -399,7 +409,9 @@ const ChapterReaderPage = () => {
                       }
                     }}
                   >
-                    다음화 <ArrowRight className="w-5 h-5 ml-2" />
+                    <span className="sm:hidden">다음</span>
+                    <span className="hidden sm:inline">다음화</span>
+                    <ArrowRight className="w-5 h-5 ml-2" />
                   </Button>
                 </div>
               </div>
@@ -411,24 +423,24 @@ const ChapterReaderPage = () => {
         {hasChapter && story && (
           <>
             {/* 미니 채팅 버튼 (상단) */}
-            <div className="fixed bottom-40 right-6 z-40">
+            <div className="fixed bottom-36 right-4 sm:bottom-40 sm:right-6 z-40">
               <Button 
-                className="rounded-full w-14 h-14 bg-pink-600 hover:bg-pink-700 text-white shadow-lg" 
+                className="rounded-full w-12 h-12 sm:w-14 sm:h-14 bg-pink-600 hover:bg-pink-700 text-white shadow-lg" 
                 onClick={() => setMiniChatOpen(true)}
                 title="빠른 채팅"
               >
-                <MessageCircle className="w-6 h-6" />
+                <MessageCircle className="w-5 h-5 sm:w-6 sm:h-6" />
               </Button>
             </div>
             
             {/* 원작챗 버튼 (하단) */}
-            <div className="fixed bottom-24 right-6 z-40">
+            <div className="fixed bottom-20 right-4 sm:bottom-24 sm:right-6 z-40">
               <Button 
-                className="rounded-full w-14 h-14 bg-purple-600 hover:bg-purple-700 text-white shadow-lg" 
+                className="rounded-full w-12 h-12 sm:w-14 sm:h-14 bg-purple-600 hover:bg-purple-700 text-white shadow-lg" 
                 onClick={() => setOrigChatModalOpen(true)}
                 title="원작챗 시작"
               >
-                <MessageCircle className="w-6 h-6" />
+                <MessageCircle className="w-5 h-5 sm:w-6 sm:h-6" />
               </Button>
             </div>
           </>

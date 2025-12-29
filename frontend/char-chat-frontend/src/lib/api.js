@@ -671,6 +671,30 @@ export const storyImporterAPI = {
   },
 };
 
+// 📢 공지사항 API
+export const noticesAPI = {
+  list: (params = {}) => api.get('/notices/', { params }),
+  latest: () => api.get('/notices/latest'),
+  get: (id) => api.get(`/notices/${id}`),
+  create: (data) => api.post('/notices/', data),
+  update: (id, data) => api.put(`/notices/${id}`, data),
+  delete: (id) => api.delete(`/notices/${id}`),
+};
+
+// ❓ FAQ API
+export const faqsAPI = {
+  list: (params = {}) => api.get('/faqs/', { params }),
+  create: (data) => api.post('/faqs/', data),
+  update: (id, data) => api.put(`/faqs/${id}`, data),
+  delete: (id) => api.delete(`/faqs/${id}`),
+};
+
+// ❓ FAQ 카테고리(큰 항목) API
+export const faqCategoriesAPI = {
+  list: (params = {}) => api.get('/faq-categories/', { params }),
+  upsert: (id, data) => api.put(`/faq-categories/${id}`, data),
+};
+
 // 💎 포인트 관련 API
 export const pointAPI = {
   getBalance: () =>

@@ -168,8 +168,11 @@ async def get_advanced_character_detail(
             detail="캐릭터를 찾을 수 없습니다."
         )
     
-    # 비공개 캐릭터는 생성자만 조회 가능
-    if not character.is_public and (not current_user or character.creator_id != current_user.id):
+    # 비공개 캐릭터는 생성자/관리자만 조회 가능
+    if not character.is_public and (
+        (not current_user)
+        or (character.creator_id != current_user.id and not getattr(current_user, "is_admin", False))
+    ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="이 캐릭터에 접근할 권한이 없습니다."
@@ -662,8 +665,11 @@ async def get_character(
             detail="캐릭터를 찾을 수 없습니다."
         )
     
-    # 비공개 캐릭터는 생성자만 조회 가능
-    if not character.is_public and (not current_user or character.creator_id != current_user.id):
+    # 비공개 캐릭터는 생성자/관리자만 조회 가능
+    if not character.is_public and (
+        (not current_user)
+        or (character.creator_id != current_user.id and not getattr(current_user, "is_admin", False))
+    ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="이 캐릭터에 접근할 권한이 없습니다."
@@ -754,8 +760,8 @@ async def toggle_character_public_status(
             detail="캐릭터를 찾을 수 없습니다."
         )
     
-    # 생성자만 상태 변경 가능
-    if character.creator_id != current_user.id:
+    # 생성자/관리자만 상태 변경 가능
+    if character.creator_id != current_user.id and not getattr(current_user, "is_admin", False):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="이 캐릭터의 공개 상태를 변경할 권한이 없습니다."

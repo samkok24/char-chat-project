@@ -16,14 +16,14 @@ import {
 } from "./ui/dropdown-menu";
 import { useAuth } from '../contexts/AuthContext';
 
-const CharacterInfoHeader = ({ character, likeCount, isLiked, handleLike, isOwner, onEdit, onDelete, onSettings, onTogglePublic, isWebNovel = false, workId = null, tags = [] }) => {
+const CharacterInfoHeader = ({ character, likeCount, isLiked, handleLike, isOwner, canTogglePublic = false, onEdit, onDelete, onSettings, onTogglePublic, isWebNovel = false, workId = null, tags = [] }) => {
   const navigate = useNavigate();
   const { profileVersion } = useAuth();
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center space-x-4">
+      <div className="flex items-start sm:items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 min-w-0">
           <div className="flex items-center space-x-2 text-sm text-gray-400">
             <Heart className="w-4 h-4 text-red-500" fill={isLiked ? 'currentColor' : 'none'} />
             <span>{likeCount.toLocaleString()}</span>
@@ -33,7 +33,7 @@ const CharacterInfoHeader = ({ character, likeCount, isLiked, handleLike, isOwne
             <span>{formatCount(character.chat_count || 0)}</span>
           </div>
         </div>
-        {isOwner && (
+        {(isOwner || canTogglePublic) && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" size="icon">
@@ -41,37 +41,51 @@ const CharacterInfoHeader = ({ character, likeCount, isLiked, handleLike, isOwne
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="bg-gray-800 text-white border-gray-700">
-              <DropdownMenuItem onClick={onEdit}>
-                <Edit className="mr-2 h-4 w-4" /> 수정
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={onSettings}>
-                <Settings className="mr-2 h-4 w-4" /> AI 설정
-              </DropdownMenuItem>
-              <DropdownMenuSeparator className="bg-gray-700" />
-              <div className="relative flex cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none transition-colors focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50">
-                {character.is_public ? <Users className="mr-2 h-4 w-4" /> : <EyeOff className="mr-2 h-4 w-4" />}
-                <Label htmlFor="public-toggle" className="flex-1">
-                  {character.is_public ? '공개' : '비공개'}
-                </Label>
-                <Switch
-                  id="public-toggle"
-                  checked={character.is_public}
-                  onCheckedChange={onTogglePublic}
-                  className="ml-auto"
-                />
-              </div>
-              <DropdownMenuSeparator className="bg-gray-700" />
-              <DropdownMenuItem onClick={onDelete} className="text-red-500 focus:text-red-400">
-                <Trash2 className="mr-2 h-4 w-4" /> 삭제
-              </DropdownMenuItem>
+              {isOwner && (
+                <>
+                  <DropdownMenuItem onClick={onEdit}>
+                    <Edit className="mr-2 h-4 w-4" /> 수정
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={onSettings}>
+                    <Settings className="mr-2 h-4 w-4" /> AI 설정
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator className="bg-gray-700" />
+                </>
+              )}
+
+              {canTogglePublic && (
+                <>
+                  <div className="relative flex cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none transition-colors focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50">
+                    {character.is_public ? <Users className="mr-2 h-4 w-4" /> : <EyeOff className="mr-2 h-4 w-4" />}
+                    <Label htmlFor="public-toggle" className="flex-1">
+                      {character.is_public ? '공개' : '비공개'}
+                    </Label>
+                    <Switch
+                      id="public-toggle"
+                      checked={character.is_public}
+                      onCheckedChange={onTogglePublic}
+                      className="ml-auto"
+                    />
+                  </div>
+                  <DropdownMenuSeparator className="bg-gray-700" />
+                </>
+              )}
+
+              {isOwner && (
+                <DropdownMenuItem onClick={onDelete} className="text-red-500 focus:text-red-400">
+                  <Trash2 className="mr-2 h-4 w-4" /> 삭제
+                </DropdownMenuItem>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
         )}
       </div>
 
-      <div className="flex items-start justify-between">
-        <h1 className="text-4xl font-bold">{character.name}</h1>
-        <Button onClick={handleLike} variant="ghost" size="icon">
+      <div className="flex items-start justify-between gap-3">
+        <h1 className="text-2xl sm:text-4xl font-bold break-words min-w-0">
+          {character.name}
+        </h1>
+        <Button onClick={handleLike} variant="ghost" size="icon" className="flex-shrink-0">
           <Heart className="w-6 h-6 text-red-500" fill={isLiked ? 'currentColor' : 'none'} />
         </Button>
       </div>
@@ -91,7 +105,7 @@ const CharacterInfoHeader = ({ character, likeCount, isLiked, handleLike, isOwne
         <div className="mt-1">
           <Link
             to={`/users/${character.creator_id}/creator`}
-            className="inline-flex items-center gap-2 text-lg text-gray-300 hover:text-white"
+            className="inline-flex items-center gap-2 text-base sm:text-lg text-gray-300 hover:text-white max-w-full"
           >
             <Avatar className="w-6 h-6">
               <AvatarImage src={resolveImageUrl(character.creator_avatar_url ? `${character.creator_avatar_url}${character.creator_avatar_url.includes('?') ? '&' : '?'}v=${profileVersion}` : '')} alt={character.creator_username} />

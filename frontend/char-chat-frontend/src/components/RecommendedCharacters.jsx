@@ -133,7 +133,7 @@ const RecommendedSkeleton = () => (
   </li>
 );
 
-const RecommendedCharacters = () => {
+const RecommendedCharacters = ({ title } = {}) => {
   const RECOMMENDED_LIMIT = 60;
   // 추천 구좌는 "캐릭터챗(일반) : 원작챗"을 적당히 섞어서 노출한다.
   // - 패턴: 캐릭터챗 2개 → 원작챗 1개 (2:1)
@@ -207,12 +207,15 @@ const RecommendedCharacters = () => {
     refetchOnMount: 'always',
   });
 
-  const pageSize = 14; // 2행 x 7열 = 14개
+  // 데스크탑 기준(7열 x 2행)으로 14개를 기본 페이지로 사용한다.
+  // 모바일에서는 반응형 그리드(2~4열)로 더 크게 보이도록 한다.
+  const pageSize = 14;
   const [page, setPage] = useState(0);
   const items = data || [];
   const empty = !isLoading && (!items || items.length === 0);
   const pageCount = Math.max(1, Math.ceil(items.length / pageSize));
   const hasCarousel = items.length > pageSize;
+  const slotTitle = String(title || '').trim() || '챕터8이 추천하는 캐릭터';
 
   const visibleItems = useMemo(() => {
     // 첫 페이지는 항상 14개 표시 (7x2)
@@ -232,9 +235,9 @@ const RecommendedCharacters = () => {
   const gotoNext = () => setPage((prev) => (prev + 1) % pageCount);
 
   return (
-    <section className="mt-8">
+    <section className="mt-6 sm:mt-8">
       <div className="flex items-center justify-between mb-4">
-        <h2 className="text-xl font-bold text-white">챕터8이 추천하는 캐릭터</h2>
+        <h2 className="text-lg sm:text-xl font-bold text-white">{slotTitle}</h2>
         {hasCarousel && (
           <div className="flex items-center gap-2">
             <button
@@ -257,7 +260,7 @@ const RecommendedCharacters = () => {
         )}
       </div>
       <div className="relative">
-        <ul className="grid grid-cols-7 gap-4">
+        <ul className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-7 gap-3 sm:gap-4">
           {isLoading && Array.from({ length: 14 }).map((_, idx) => (
             <RecommendedSkeleton key={idx} />
           ))}
@@ -265,7 +268,7 @@ const RecommendedCharacters = () => {
             <RecommendedItem key={c.id} character={c} />
           ))}
           {empty && (
-            <li className="col-span-7 text-center text-gray-400 py-8">
+            <li className="col-span-full text-center text-gray-400 py-8">
               추천 캐릭터가 아직 없습니다.
             </li>
           )}

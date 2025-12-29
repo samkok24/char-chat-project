@@ -1227,9 +1227,9 @@ async def send_message(
         await db.commit()
         
     settings_patch = getattr(request, "settings_patch", None) or {}
-        # settings_patch 반영(검증된 키만 허용)
+    # settings_patch 반영(검증된 키만 허용)
     try:
-        allowed_keys = {"postprocess_mode", "next_event_len", "response_length_pref", "prewarm_on_start"}
+        allowed_keys = {"postprocess_mode", "next_event_len", "response_length_pref", "prewarm_on_start", "temperature"}
         patch_data = {k: v for k, v in (settings_patch or {}).items() if k in allowed_keys}
         if patch_data:
             ppm = patch_data.get("postprocess_mode")
@@ -1238,6 +1238,16 @@ async def send_message(
             nel = patch_data.get("next_event_len")
             if nel not in (None, 1, 2):
                 patch_data.pop("next_event_len", None)
+            # temperature: 0~1
+            if "temperature" in patch_data:
+                try:
+                    t = float(patch_data.get("temperature"))
+                    if t < 0 or t > 1:
+                        patch_data.pop("temperature", None)
+                    else:
+                        patch_data["temperature"] = round(t * 10) / 10.0
+                except Exception:
+                    patch_data.pop("temperature", None)
             await _set_room_meta(room.id, patch_data)
     except Exception:
         pass
@@ -1409,6 +1419,15 @@ async def send_message(
         if hasattr(request, 'response_length_override') and request.response_length_override
         else (meta_state.get("response_length_pref") if isinstance(meta_state, dict) and meta_state.get("response_length_pref") else getattr(current_user, 'response_length_pref', 'medium'))
     )
+    # temperature: room meta 우선, 없으면 기본값(0.7)
+    temperature = 0.7
+    try:
+        if isinstance(meta_state, dict) and meta_state.get("temperature") is not None:
+            t = float(meta_state.get("temperature"))
+            if 0 <= t <= 1:
+                temperature = round(t * 10) / 10.0
+    except Exception:
+        temperature = 0.7
 
     try:
         ai_response_text = await ai_service.get_ai_chat_response(
@@ -1417,7 +1436,8 @@ async def send_message(
             history=history_for_ai,
             preferred_model=current_user.preferred_model,
             preferred_sub_model=current_user.preferred_sub_model,
-            response_length_pref=response_length
+            response_length_pref=response_length,
+            temperature=temperature
         )
 
         # 4. AI 응답 메시지 저장
@@ -2189,7 +2209,7 @@ async def origchat_turn(
 
         # settings_patch 반영(검증된 키만 허용)
         try:
-            allowed_keys = {"postprocess_mode", "next_event_len", "response_length_pref", "prewarm_on_start"}
+            allowed_keys = {"postprocess_mode", "next_event_len", "response_length_pref", "prewarm_on_start", "temperature"}
             patch_data = {k: v for k, v in (settings_patch or {}).items() if k in allowed_keys}
             if patch_data:
                 ppm = patch_data.get("postprocess_mode")
@@ -2198,6 +2218,16 @@ async def origchat_turn(
                 nel = patch_data.get("next_event_len")
                 if nel not in (None, 1, 2):
                     patch_data.pop("next_event_len", None)
+                # temperature: 0~1
+                if "temperature" in patch_data:
+                    try:
+                        t = float(patch_data.get("temperature"))
+                        if t < 0 or t > 1:
+                            patch_data.pop("temperature", None)
+                        else:
+                            patch_data["temperature"] = round(t * 10) / 10.0
+                    except Exception:
+                        patch_data.pop("temperature", None)
                 await _set_room_meta(room.id, patch_data)
                 meta_state.update(patch_data)
         except Exception:
@@ -2556,13 +2586,23 @@ async def origchat_turn(
             # 4. AI 응답 생성
             from app.services import ai_service
             try:
+                # temperature: meta 우선, 없으면 기본값(0.7)
+                temperature = 0.7
+                try:
+                    if isinstance(meta_state, dict) and meta_state.get("temperature") is not None:
+                        t = float(meta_state.get("temperature"))
+                        if 0 <= t <= 1:
+                            temperature = round(t * 10) / 10.0
+                except Exception:
+                    temperature = 0.7
                 ai_response_text = await ai_service.get_ai_chat_response(
                     character_prompt=character_prompt,
                     user_message=actual_user_input,
                     history=history_for_ai,
                     preferred_model="claude",
                     preferred_sub_model=current_user.preferred_sub_model,
-                    response_length_pref=meta_state.get("response_length_pref") or getattr(current_user, 'response_length_pref', 'medium')
+                    response_length_pref=meta_state.get("response_length_pref") or getattr(current_user, 'response_length_pref', 'medium'),
+                    temperature=temperature
                 )
 
                 # 5. AI 응답만 저장

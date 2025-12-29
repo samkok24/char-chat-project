@@ -508,7 +508,7 @@ const StoryDiveNovelPage = () => {
 
         {/* 메인 콘텐츠 - AI Dungeon 스타일 (버튼들이 문장 흐름 안에) */}
         <div className="flex-1 overflow-y-auto">
-          <div className="w-full px-8 py-12 max-w-5xl mx-auto min-h-screen">
+          <div className="w-full px-4 sm:px-8 py-8 sm:py-12 max-w-5xl mx-auto min-h-screen">
             {/* 원문 + AI 생성 텍스트를 하나의 flow로 */}
             <div className="space-y-6">
               {/* 원문 표시 (다이브 후에는 다이브 지점까지만) */}
@@ -531,7 +531,7 @@ const StoryDiveNovelPage = () => {
                     onMouseLeave={() => !isDived && setHoveredParagraph(null)}
                   >
                     <p
-                      className={`text-lg leading-relaxed transition-all duration-300 ${
+                      className={`text-base sm:text-lg leading-7 sm:leading-relaxed break-words transition-all duration-300 ${
                         isContext 
                           ? 'text-white opacity-100' 
                           : isFocused 
@@ -595,7 +595,7 @@ const StoryDiveNovelPage = () => {
                       {/* AI 응답 - 개행 보존을 위해 원본 텍스트 그대로 사용 */}
                       {turn.ai && (
                         <div 
-                          className="text-white text-lg leading-relaxed whitespace-pre-wrap"
+                          className="text-white text-base sm:text-lg leading-7 sm:leading-relaxed whitespace-pre-wrap break-words"
                           style={isLastTurn ? {
                             textDecoration: 'underline',
                             textDecorationColor: '#eab308',
@@ -655,7 +655,7 @@ const StoryDiveNovelPage = () => {
               <div className="mt-12 mb-24 animate-in fade-in slide-in-from-bottom-4 duration-700">
                 {!showInputArea ? (
                   /* 기본 상태: 5개 버튼 */
-                  <div className="flex items-center justify-start space-x-3 animate-in fade-in slide-in-from-bottom-2 duration-500 delay-200">
+                  <div className="flex flex-wrap items-center justify-start gap-2 sm:gap-3 animate-in fade-in slide-in-from-bottom-2 duration-500 delay-200">
                     <Button
                       onClick={handleOpenInputArea}
                       disabled={isGenerating}
@@ -704,8 +704,8 @@ const StoryDiveNovelPage = () => {
                   /* TAKE A TURN 클릭 시: 입력창 + 모드 버튼 */
                   <div className="space-y-3">
                     {/* 상단: X 버튼 + 모드 선택 */}
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center space-x-2">
+                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         <Button
                           onClick={handleCloseInputArea}
                           variant="ghost"
@@ -716,7 +716,7 @@ const StoryDiveNovelPage = () => {
                         </Button>
                         
                         {/* 4개 모드 버튼 */}
-                        <div className="flex space-x-2">
+                        <div className="flex flex-wrap gap-2">
                           <Button
                             onClick={() => setMode('do')}
                             variant={mode === 'do' ? 'default' : 'outline'}
@@ -767,7 +767,7 @@ const StoryDiveNovelPage = () => {
                       <Button
                         onClick={handleSend}
                         disabled={!input.trim() || isGenerating}
-                        className="bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-white px-6"
+                        className="w-full sm:w-auto bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-white px-6"
                       >
                         전송
                       </Button>

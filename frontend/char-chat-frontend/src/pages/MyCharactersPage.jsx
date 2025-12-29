@@ -150,7 +150,7 @@ const FavoritesTab = () => {
 
   if (isLoading) {
     return (
-      <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 mt-4">
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 mt-4">
         {Array.from({ length: 12 }).map((_, i) => (
           <SharedCharacterCardSkeleton key={i} />
         ))}
@@ -167,7 +167,7 @@ const FavoritesTab = () => {
   }
   return (
     <>
-      <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 mt-4">
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 mt-4">
         {items.map((c) => (
           <SharedCharacterCard key={c.id} character={c} />
         ))}
@@ -433,7 +433,7 @@ const MyCharactersPage = () => {
       return (
         <Link
           to="/works/create"
-          className="flex items-center justify-center px-4 py-2.5 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors font-medium text-sm"
+          className="flex w-full sm:w-auto items-center justify-center px-4 py-2.5 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors font-medium text-sm"
         >
           <BookOpen className="w-5 h-5 mr-2" />
           원작 쓰기
@@ -443,7 +443,7 @@ const MyCharactersPage = () => {
     return (
       <Link
         to="/characters/create"
-        className="flex items-center justify-center px-4 py-2.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors font-medium text-sm shadow-lg"
+        className="flex w-full sm:w-auto items-center justify-center px-4 py-2.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors font-medium text-sm shadow-lg"
       >
         <Plus className="w-5 h-5 mr-2" />
         캐릭터 생성
@@ -471,8 +471,8 @@ const MyCharactersPage = () => {
     return (
       <AppLayout>
         <div className="min-h-full bg-gray-900 text-gray-200">
-          <main className="px-8 py-6">
-            <div className="flex items-center justify-between mb-6">
+          <main className="px-4 sm:px-8 py-4 sm:py-6">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6">
               <div className="flex items-center gap-3">
                 <Button
                   variant="ghost"
@@ -485,7 +485,7 @@ const MyCharactersPage = () => {
               </div>
               <Skeleton className="h-10 w-40" />
             </div>
-            <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
               {Array.from({ length: 12 }).map((_, i) => (
                 <SharedCharacterCardSkeleton key={i} />
               ))}
@@ -500,8 +500,8 @@ const MyCharactersPage = () => {
     <AppLayout>
       <div className="min-h-full bg-gray-900 text-gray-200">
       {/* 메인 컨텐츠 */}
-      <main className="px-8 py-6">
-        <div className="flex items-center justify-between mb-6">
+      <main className="px-4 sm:px-8 py-4 sm:py-6">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6">
           <div className="flex items-center gap-3">
             <Button
               variant="ghost"
@@ -516,11 +516,23 @@ const MyCharactersPage = () => {
         </div>
 
         <Tabs value={activeTab} onValueChange={handleTabChange} className="mt-2">
-          <TabsList className="bg-gray-800 border border-gray-700">
-            <TabsTrigger value="favorites" className="text-gray-200 data-[state=active]:bg-yellow-500 data-[state=active]:text-black">내가 좋아하는 캐릭터</TabsTrigger>
-            <TabsTrigger value="mine" className="text-gray-200 data-[state=active]:bg-yellow-500 data-[state=active]:text-black">내가 만든 캐릭터</TabsTrigger>
-            <TabsTrigger value="stories" className="text-gray-200 data-[state=active]:bg-yellow-500 data-[state=active]:text-black">내가 쓴 작품</TabsTrigger>
-            <TabsTrigger value="origchat" className="text-gray-200 data-[state=active]:bg-yellow-500 data-[state=active]:text-black">내가 만든 원작챗</TabsTrigger>
+          <TabsList className="bg-gray-800 border border-gray-700 w-full sm:w-fit">
+            <TabsTrigger value="favorites" className="text-xs sm:text-sm text-gray-200 data-[state=active]:bg-yellow-500 data-[state=active]:text-black">
+              <span className="sm:hidden">좋아요</span>
+              <span className="hidden sm:inline">내가 좋아하는 캐릭터</span>
+            </TabsTrigger>
+            <TabsTrigger value="mine" className="text-xs sm:text-sm text-gray-200 data-[state=active]:bg-yellow-500 data-[state=active]:text-black">
+              <span className="sm:hidden">내 캐릭터</span>
+              <span className="hidden sm:inline">내가 만든 캐릭터</span>
+            </TabsTrigger>
+            <TabsTrigger value="stories" className="text-xs sm:text-sm text-gray-200 data-[state=active]:bg-yellow-500 data-[state=active]:text-black">
+              <span className="sm:hidden">내 작품</span>
+              <span className="hidden sm:inline">내가 쓴 작품</span>
+            </TabsTrigger>
+            <TabsTrigger value="origchat" className="text-xs sm:text-sm text-gray-200 data-[state=active]:bg-yellow-500 data-[state=active]:text-black">
+              <span className="sm:hidden">원작챗</span>
+              <span className="hidden sm:inline">내가 만든 원작챗</span>
+            </TabsTrigger>
           </TabsList>
           {/* 내가 좋아하는 캐릭터 탭 */}
           <TabsContent value="favorites">
@@ -529,17 +541,17 @@ const MyCharactersPage = () => {
           {/* 내가 만든 캐릭터 탭 */}
           <TabsContent value="mine">
             {error && (<div className="text-red-400 mb-4">{error}</div>)}
-            <div className="flex items-center justify-between mt-2">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mt-2">
               <div className="text-sm text-gray-400">총 {characters.length.toLocaleString()}개</div>
-              <div className="flex items-center gap-2">
-                <Button variant="outline" size="sm" disabled={isBulkDeletingChars} onClick={()=> setSelectModeChars(v=>!v)}>{selectModeChars ? '선택 해제' : '선택'}</Button>
-                <Button size="sm" className="bg-red-600 hover:bg-red-700 disabled:opacity-50" disabled={!selectModeChars || selectedCharIds.size===0 || isBulkDeletingChars} onClick={bulkDeleteChars}>
+              <div className="flex items-center gap-2 w-full sm:w-auto">
+                <Button className="flex-1 sm:flex-none" variant="outline" size="sm" disabled={isBulkDeletingChars} onClick={()=> setSelectModeChars(v=>!v)}>{selectModeChars ? '선택 해제' : '선택'}</Button>
+                <Button size="sm" className="flex-1 sm:flex-none bg-red-600 hover:bg-red-700 disabled:opacity-50" disabled={!selectModeChars || selectedCharIds.size===0 || isBulkDeletingChars} onClick={bulkDeleteChars}>
                   선택삭제 ({selectedCharIds.size})
                 </Button>
               </div>
             </div>
             {characters.length > 0 ? (
-              <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 mt-4">
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 mt-4">
                 {characters.map((character) => (
                   <div key={character.id} className="relative group" onClick={() => { if (!selectModeChars) navigate(`/characters/${character.id}`, { state: { fromMyGrid: true } }); }}>
                     {selectModeChars && (
@@ -672,7 +684,7 @@ const MyStoriesTab = () => {
 
   if (isLoading) {
     return (
-      <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 mt-4">
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 mt-4">
         {Array.from({ length: 12 }).map((_, i) => (
           <div key={i} className="bg-gray-800 rounded-xl h-[280px] border border-gray-700" />
         ))}
@@ -688,9 +700,9 @@ const MyStoriesTab = () => {
 
   return (
     <>
-      <div className="flex items-center justify-end mb-2">
-        <Button variant="outline" size="sm" onClick={()=> setSelectMode(v=>!v)}>{selectMode ? '선택 해제' : '선택'}</Button>
-        <Button size="sm" className="ml-2 bg-red-600 hover:bg-red-700 disabled:opacity-50" disabled={!selectMode || selectedIds.size===0 || isBulkDeleting}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-end gap-2 mb-2">
+        <Button className="w-full sm:w-auto" variant="outline" size="sm" onClick={()=> setSelectMode(v=>!v)}>{selectMode ? '선택 해제' : '선택'}</Button>
+        <Button size="sm" className="w-full sm:w-auto bg-red-600 hover:bg-red-700 disabled:opacity-50" disabled={!selectMode || selectedIds.size===0 || isBulkDeleting}
           onClick={async()=>{
             if (!window.confirm(`${selectedIds.size}개의 작품을 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.`)) return;
             setIsBulkDeleting(true);
@@ -707,7 +719,7 @@ const MyStoriesTab = () => {
           선택삭제 ({selectedIds.size})
         </Button>
       </div>
-      <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 mt-4">
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 mt-4">
         {stories.map(story => (
           <div key={story.id} className="relative group" onClick={()=>{ if(!selectMode) navigate(`/stories/${story.id}`, { state: { fromMyGrid: true } }); }}>
             {selectMode && (
@@ -798,7 +810,7 @@ const MyOrigChatTab = () => {
 
   if (isLoading) {
     return (
-      <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 mt-4">
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 mt-4">
         {Array.from({ length: 12 }).map((_, i) => (
           <SharedCharacterCardSkeleton key={i} />
         ))}
@@ -813,11 +825,11 @@ const MyOrigChatTab = () => {
   }
   return (
     <>
-      <div className="flex items-center justify-end mb-2">
-        <Button variant="outline" size="sm" onClick={()=> setSelectMode(v=>!v)}>{selectMode ? '선택 해제' : '선택'}</Button>
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-end gap-2 mb-2">
+        <Button className="w-full sm:w-auto" variant="outline" size="sm" onClick={()=> setSelectMode(v=>!v)}>{selectMode ? '선택 해제' : '선택'}</Button>
         <Button
           size="sm"
-          className="ml-2 bg-red-600 hover:bg-red-700 disabled:opacity-50"
+          className="w-full sm:w-auto bg-red-600 hover:bg-red-700 disabled:opacity-50"
           disabled={!selectMode || selectedIds.size===0 || isBulkDeleting}
           onClick={async()=>{
             if (!window.confirm(`${selectedIds.size}개의 원작챗 캐릭터를 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.`)) return;
@@ -841,7 +853,7 @@ const MyOrigChatTab = () => {
             notify(failed ? `${success}개 삭제, ${failed}개 실패` : `${success}개 삭제 완료`);
           }}>선택삭제 ({selectedIds.size})</Button>
       </div>
-      <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 mt-4">
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 mt-4">
         {items.map((c) => (
           <div key={c.id} className="relative group" onClick={() => { if(!selectMode) navigate(`/characters/${c.id}`, { state: { fromMyGrid: true } }); }}>
             {selectMode && (

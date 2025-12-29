@@ -71,13 +71,19 @@ const CharacterDetails = ({ character, comments, commentText, setCommentText, ha
       {/* 댓글 */}
       <section id="comments">
         <h2 className="text-lg font-semibold mb-2">댓글 ({comments.length})</h2>
-        <form onSubmit={handleCommentSubmit} className="flex space-x-2 mb-4">
-          <Input value={commentText} onChange={(e) => setCommentText(e.target.value)} placeholder="댓글을 남겨보세요..." className="bg-gray-700 border-gray-600" />
-          <Button type="submit" disabled={submittingComment}>
+        <form onSubmit={handleCommentSubmit} className="flex flex-col sm:flex-row gap-2 mb-4">
+          <Input
+            value={commentText}
+            onChange={(e) => setCommentText(e.target.value)}
+            placeholder="댓글을 남겨보세요..."
+            className="bg-gray-700 border-gray-600"
+          />
+          <Button type="submit" disabled={submittingComment} className="w-full sm:w-auto">
             {submittingComment ? <Loader2 className="w-4 h-4 animate-spin" /> : '작성'}
           </Button>
         </form>
-        <div className="space-y-4 max-h-96 overflow-y-auto">
+        {/* ✅ 모바일 UX: 내부 스크롤(중첩 스크롤) 제거 → 페이지 스크롤로 자연스럽게 읽기 */}
+        <div className="space-y-4 max-h-none overflow-visible sm:max-h-96 sm:overflow-y-auto">
           {comments.map(comment => (
             <div key={comment.id} className="flex justify-between items-start">
               <div className="flex-1">

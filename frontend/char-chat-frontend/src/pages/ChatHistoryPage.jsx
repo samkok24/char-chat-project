@@ -128,7 +128,15 @@ const ChatHistoryPage = () => {
   }, [page, fetchChatHistory]);
 
   const handleCharacterClick = (characterId, chatRoomId) => {
-    navigate(`/ws/chat/${characterId}`);
+    /**
+     * 대화 내역에서 "이어하기" 진입 시 안전하게 room을 유지한다.
+     *
+     * 의도/동작:
+     * - chatRoomId가 있으면 `/ws/chat/:characterId?room=:chatRoomId`로 진입해
+     *   동일 캐릭터의 다른 방(일반챗/원작챗)과 섞여도 정확히 해당 방을 복원한다.
+     */
+    const qs = chatRoomId ? `?room=${chatRoomId}` : '';
+    navigate(`/ws/chat/${characterId}${qs}`);
   };
 
   const confirmDelete = (character) => {

@@ -55,6 +55,8 @@ const ForgotPasswordPage = React.lazy(() => import('./pages/ForgotPasswordPage')
 const MaintenancePage = React.lazy(() => import('./pages/MaintenancePage'));
 const ContactPage = React.lazy(() => import('./pages/ContactPage'));
 const FAQPage = React.lazy(() => import('./pages/FAQPage'));
+const NoticePage = React.lazy(() => import('./pages/NoticePage'));
+const CMSPage = React.lazy(() => import('./pages/CMSPage'));
 
 // ⏳ 나중에 필요한 페이지들 (지연 로딩)
 const ProfilePage = React.lazy(() => import('./pages/ProfilePage'));
@@ -137,6 +139,9 @@ const AppRouter = () => {
           <Route path="/maintenance" element={<MaintenancePage />} />
           <Route path="/contact" element={<ContactPage />} />
           <Route path="/faq" element={<FAQPage />} />
+          <Route path="/notices" element={<NoticePage />} />
+          <Route path="/notices/:noticeId" element={<NoticePage />} />
+          <Route path="/cms" element={<ProtectedRoute><CMSPage /></ProtectedRoute>} />
 
           <Route
             path="/characters/:characterId"

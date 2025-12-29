@@ -203,8 +203,11 @@ async def get_context_pack(
     if not story:
         raise HTTPException(status_code=404, detail="스토리를 찾을 수 없습니다")
     
-    # 비공개 스토리는 작성자만 접근 가능
-    if not story.is_public and (not current_user or story.creator_id != current_user.id):
+    # 비공개 스토리는 작성자/관리자만 접근 가능
+    if not story.is_public and (
+        (not current_user)
+        or (story.creator_id != current_user.id and not getattr(current_user, "is_admin", False))
+    ):
         raise HTTPException(status_code=403, detail="접근 권한이 없습니다")
     
     try:
@@ -292,8 +295,11 @@ async def get_start_options_v2(
     if not story:
         raise HTTPException(status_code=404, detail="스토리를 찾을 수 없습니다")
     
-    # 비공개 스토리는 작성자만 접근 가능
-    if not story.is_public and (not current_user or story.creator_id != current_user.id):
+    # 비공개 스토리는 작성자/관리자만 접근 가능
+    if not story.is_public and (
+        (not current_user)
+        or (story.creator_id != current_user.id and not getattr(current_user, "is_admin", False))
+    ):
         raise HTTPException(status_code=403, detail="접근 권한이 없습니다")
     
     # 간단 개요(스토리 content 앞 240자)
@@ -394,8 +400,11 @@ async def get_backward_weighted_recap_endpoint(
     if not story:
         raise HTTPException(status_code=404, detail="스토리를 찾을 수 없습니다")
     
-    # 비공개 스토리는 작성자만 접근 가능
-    if not story.is_public and (not current_user or story.creator_id != current_user.id):
+    # 비공개 스토리는 작성자/관리자만 접근 가능
+    if not story.is_public and (
+        (not current_user)
+        or (story.creator_id != current_user.id and not getattr(current_user, "is_admin", False))
+    ):
         raise HTTPException(status_code=403, detail="접근 권한이 없습니다")
     
     try:
@@ -419,8 +428,11 @@ async def get_scene_excerpt_endpoint(
     if not story:
         raise HTTPException(status_code=404, detail="스토리를 찾을 수 없습니다")
     
-    # 비공개 스토리는 작성자만 접근 가능
-    if not story.is_public and (not current_user or story.creator_id != current_user.id):
+    # 비공개 스토리는 작성자/관리자만 접근 가능
+    if not story.is_public and (
+        (not current_user)
+        or (story.creator_id != current_user.id and not getattr(current_user, "is_admin", False))
+    ):
         raise HTTPException(status_code=403, detail="접근 권한이 없습니다")
     
     try:
@@ -958,8 +970,11 @@ async def get_story(
     if not story:
         raise HTTPException(status_code=404, detail="스토리를 찾을 수 없습니다")
     
-    # 비공개 스토리는 작성자만 조회 가능
-    if not story.is_public and (not current_user or story.creator_id != current_user.id):
+    # 비공개 스토리는 작성자/관리자만 조회 가능
+    if not story.is_public and (
+        (not current_user)
+        or (story.creator_id != current_user.id and not getattr(current_user, "is_admin", False))
+    ):
         raise HTTPException(status_code=403, detail="접근 권한이 없습니다")
     
     # 조회수 증가 (백그라운드 작업)
@@ -1014,8 +1029,19 @@ async def update_story(
         if not story:
             raise HTTPException(status_code=404, detail="스토리를 찾을 수 없습니다")
         
-        if story.creator_id != current_user.id:
+        is_owner = story.creator_id == current_user.id
+        is_admin = bool(getattr(current_user, "is_admin", False))
+
+        if not is_owner and not is_admin:
             raise HTTPException(status_code=403, detail="수정 권한이 없습니다")
+
+        # ✅ 최소 권한: 관리자는 타인의 작품에 대해 공개/비공개만 변경 가능
+        if is_admin and not is_owner:
+            patch = story_data.model_dump(exclude_unset=True)
+            allowed_keys = {"is_public"}
+            extra_keys = set(patch.keys()) - allowed_keys
+            if extra_keys:
+                raise HTTPException(status_code=403, detail="관리자는 공개/비공개만 변경할 수 있습니다")
         
         updated_story = await story_service.update_story(db, story_id, story_data)
         
@@ -1169,8 +1195,11 @@ async def get_extracted_characters_endpoint(
     if not story:
         raise HTTPException(status_code=404, detail="스토리를 찾을 수 없습니다")
     
-    # 비공개 스토리는 작성자만 등장인물 조회 가능
-    if not story.is_public and (not current_user or story.creator_id != current_user.id):
+    # 비공개 스토리는 작성자/관리자만 등장인물 조회 가능
+    if not story.is_public and (
+        (not current_user)
+        or (story.creator_id != current_user.id and not getattr(current_user, "is_admin", False))
+    ):
         raise HTTPException(status_code=403, detail="접근 권한이 없습니다")
 
     # 최초 요청 시 비어있다면 간이 보장 로직 수행(회차가 있으면 최소 3인 구성)
@@ -1527,8 +1556,11 @@ async def get_story_comments_endpoint(
             detail="스토리를 찾을 수 없습니다."
         )
     
-    # 비공개 스토리는 작성자만 댓글 조회 가능
-    if not story.is_public and (not current_user or story.creator_id != current_user.id):
+    # 비공개 스토리는 작성자/관리자만 댓글 조회 가능
+    if not story.is_public and (
+        (not current_user)
+        or (story.creator_id != current_user.id and not getattr(current_user, "is_admin", False))
+    ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="접근 권한이 없습니다."

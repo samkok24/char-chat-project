@@ -198,7 +198,7 @@ class SocketController {
     const safeAck = (payload) => { try { if (typeof ack === 'function') ack(payload); } catch (_) {} };
 
     try {
-      const { roomId, content, messageType = 'text' } = data;
+      const { roomId, content, messageType = 'text', settings_patch } = data || {};
       const userId = socket.userId;
       const userInfo = socket.userInfo;
 
@@ -255,6 +255,8 @@ class SocketController {
             room_id: roomId,               // ✅ “현재 방” 정합성
             character_id: room.characterId,
             content,
+            // ✅ 프론트에서 넘어온 설정(temperature/응답길이 등)을 백엔드로 전달
+            settings_patch: settings_patch || undefined,
           },
           {
             headers: { Authorization: `Bearer ${socket.token}` },
@@ -310,7 +312,7 @@ class SocketController {
     const safeAck = (payload) => { try { if (typeof ack === 'function') ack(payload); } catch (_) {} };
 
     try {
-      const { roomId } = data || {};
+      const { roomId, settings_patch } = data || {};
       const userId = socket.userId;
 
       if (!roomId) {
@@ -336,7 +338,8 @@ class SocketController {
         const resp = await axios.post(`${config.BACKEND_API_URL}/chat/messages`, {
           room_id: roomId, 
           character_id: room.characterId,
-          content: ''
+          content: '',
+          settings_patch: settings_patch || undefined,
         }, 
           { headers: { Authorization: `Bearer ${socket.token}` }, timeout: timeoutMs },
         );

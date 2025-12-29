@@ -43,6 +43,9 @@ def _import_all_models() -> None:
             user, character, story, story_chapter, tag, media_asset,
             chat, memory_note, user_persona, payment, like, comment,
             bookmark, story_extracted_character, story_summary,
+            notice,
+            faq,
+            faq_category,
         )  # noqa: F401
         _log("models imported (Base.metadata populated)")
     except Exception as e:

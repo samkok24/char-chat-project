@@ -289,7 +289,10 @@ export const SocketProvider = ({ children }) => {
       };
 
       if (messageType === 'continue') {
-        socket.emit('continue', { roomId }, ack);
+        // ✅ continue도 설정 패치(예: temperature/응답 길이)를 전달할 수 있게 확장
+        const contPayload = { roomId };
+        if (options.settingsPatch) contPayload.settings_patch = options.settingsPatch;
+        socket.emit('continue', contPayload, ack);
       } else {
         socket.emit('send_message', payload, ack);
       }

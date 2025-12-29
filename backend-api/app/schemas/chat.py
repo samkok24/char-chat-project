@@ -40,6 +40,8 @@ class SendMessageRequest(BaseModel):
     content: str
     room_id: Optional[uuid.UUID] = None  # 추가
     response_length_override: Optional[str] = None  # 'short' | 'medium' | 'long'
+    # ✅ 프론트에서 전달하는 공통 설정 패치(예: temperature/응답길이 등)
+    settings_patch: Dict[str, Any] | None = None
 
 
 class ChatMessageResponse(ChatMessageBase):

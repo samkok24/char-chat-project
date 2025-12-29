@@ -2446,15 +2446,15 @@ return (
         </svg>
         </button>
       </div>
-      <div className="grid grid-cols-3 items-center px-6 md:px-8 py-6">
+      <div className="grid grid-cols-[0px_1fr_auto] md:grid-cols-3 items-center px-6 md:px-8 py-6">
          <div />
          <div className="flex items-center gap-2 justify-center">
            <Link
             to="/dashboard"
-            className={`${onDashboardTab ? 'bg-gradient-to-r from-purple-600 to-fuchsia-600 text-white shadow-md' : 'bg-transparent text-purple-300'} px-3 py-1 rounded-full border ${onDashboardTab ? 'border-transparent' : 'border-purple-500/60'} hover:bg-purple-700/20 transition-colors`}
+            className={`${onDashboardTab ? 'bg-gradient-to-r from-purple-600 to-fuchsia-600 text-white shadow-md' : 'bg-transparent text-purple-300'} px-3 py-1 rounded-full border ${onDashboardTab ? 'border-transparent' : 'border-purple-500/60'} hover:bg-purple-700/20 transition-colors whitespace-nowrap`}
            >메인</Link>
            <span
-            className={`${onAgentTab ? 'bg-gradient-to-r from-purple-600 to-fuchsia-600 text-white shadow-md' : 'bg-transparent text-purple-300'} px-3 py-1 rounded-full border ${onAgentTab ? 'border-transparent' : 'border-purple-500/60'} hover:bg-purple-700/20 transition-colors select-none`}
+            className={`${onAgentTab ? 'bg-gradient-to-r from-purple-600 to-fuchsia-600 text-white shadow-md' : 'bg-transparent text-purple-300'} px-3 py-1 rounded-full border ${onAgentTab ? 'border-transparent' : 'border-purple-500/60'} hover:bg-purple-700/20 transition-colors select-none whitespace-nowrap`}
            >스토리 에이전트</span>
     </div>
          <div className="justify-self-end flex items-center gap-2">

@@ -6,7 +6,7 @@ import { Avatar, AvatarFallback, AvatarImage } from '../ui/avatar';
 import { resolveImageUrl, getCharacterPrimaryImage } from '../../lib/images';
 import { getReadingProgress, getReadingProgressAt } from '../../lib/reading';
 import { Button } from '../ui/button';
-import { MessageSquare, Plus, Home, Star, User, History, UserCog, LogOut, Settings, Gem, BookOpen, LogIn, HelpCircle } from 'lucide-react';
+import { MessageSquare, Plus, Home, Star, User, History, UserCog, LogOut, BookOpen, LogIn, HelpCircle, Bell, Settings } from 'lucide-react';
 import { Skeleton } from '../ui/skeleton';
 import { Badge } from '../ui/badge';
 import {
@@ -468,20 +468,24 @@ const Sidebar = () => {
                 </div>
               </DropdownMenuLabel>
               <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => navigate('/notices')}>
+                <Bell className="mr-2 h-4 w-4" />
+                <span>공지사항</span>
+              </DropdownMenuItem>
+              {user?.is_admin && (
+                <DropdownMenuItem
+                  onClick={() => {
+                    try { window.open('/cms', '_blank', 'noopener,noreferrer'); }
+                    catch (_) { navigate('/cms'); }
+                  }}
+                >
+                  <Settings className="mr-2 h-4 w-4" />
+                  <span>관리자페이지</span>
+                </DropdownMenuItem>
+              )}
               <DropdownMenuItem onClick={() => navigate('/profile')}>
                 <User className="mr-2 h-4 w-4" />
                 <span>마이페이지</span>
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => navigate('/ruby/charge')}>
-                <Gem className="mr-2 h-4 w-4 text-pink-500" />
-                <span>루비 충전</span>
-                <Badge className="ml-auto bg-pink-100 text-pink-800" variant="secondary">
-                  0
-                </Badge>
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => navigate('/settings')}>
-                <Settings className="mr-2 h-4 w-4" />
-                <span>설정</span>
               </DropdownMenuItem>
               <DropdownMenuItem onClick={() => navigate('/faq')}>
                 <HelpCircle className="mr-2 h-4 w-4" />

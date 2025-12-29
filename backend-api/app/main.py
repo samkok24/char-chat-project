@@ -46,6 +46,9 @@ from app.api.files import router as files_router
 from app.api.tags import router as tags_router
 from app.api.metrics import router as metrics_router
 from app.api.agent_contents import router as agent_contents_router  # 내 서랍 API
+from app.api.notices import router as notices_router  # 📢 공지사항
+from app.api.faqs import router as faqs_router  # ❓ FAQ
+from app.api.faq_categories import router as faq_categories_router  # ❓ FAQ 카테고리
 from app.models.tag import Tag
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
@@ -63,6 +66,31 @@ async def lifespan(app: FastAPI):
         if settings.ENVIRONMENT == "development":
             await conn.run_sync(Base.metadata.create_all)
             logger.info("📊 데이터베이스 테이블 생성 완료")
+
+        # ✅ 공지사항 테이블은 운영에서도 필요(신규 기능)하므로, 테이블만 멱등 생성한다.
+        # - 기존 create_all을 운영에서 전부 돌리지는 않되, notices 테이블이 없으면 기능이 즉시 깨지므로 방어적으로 보강.
+        try:
+            from app.models.notice import Notice  # 로컬 import(순환 방지)
+            await conn.run_sync(lambda c: Notice.__table__.create(c, checkfirst=True))
+            logger.info("📢 notices 테이블 확인/생성 완료")
+        except Exception as e:
+            logger.warning(f"[warn] notices 테이블 생성 실패(계속 진행): {e}")
+
+        # ✅ FAQ 테이블도 운영에서 필요(신규 기능)하므로, 테이블만 멱등 생성한다.
+        try:
+            from app.models.faq import FAQItem  # 로컬 import(순환 방지)
+            await conn.run_sync(lambda c: FAQItem.__table__.create(c, checkfirst=True))
+            logger.info("❓ faq_items 테이블 확인/생성 완료")
+        except Exception as e:
+            logger.warning(f"[warn] faq_items 테이블 생성 실패(계속 진행): {e}")
+
+        # ✅ FAQ 카테고리 테이블도 운영에서 필요(신규 기능)하므로, 테이블만 멱등 생성한다.
+        try:
+            from app.models.faq_category import FAQCategory  # 로컬 import(순환 방지)
+            await conn.run_sync(lambda c: FAQCategory.__table__.create(c, checkfirst=True))
+            logger.info("❓ faq_categories 테이블 확인/생성 완료")
+        except Exception as e:
+            logger.warning(f"[warn] faq_categories 테이블 생성 실패(계속 진행): {e}")
 
         # SQLite 사용 시 누락 컬럼 자동 보정 (idempotent)
         try:
@@ -148,6 +176,27 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"SQLite 컬럼 보정 중 경고: {e}")
     
+    # ✅ FAQ 기본 데이터 시드(테이블이 비어 있을 때만 1회)
+    # - FAQ는 운영에서도 노출되는 페이지이므로, 초기 데이터가 없으면 UX가 급격히 나빠진다.
+    # - 실패해도 서비스는 계속 진행(방어적).
+    try:
+        from app.api.faq_categories import seed_default_faq_categories_if_empty
+        async with AsyncSessionLocal() as _db:
+            inserted = await seed_default_faq_categories_if_empty(_db)
+        if inserted:
+            logger.info(f"❓ FAQ 카테고리 기본 데이터 시드 완료: {inserted}건")
+    except Exception as e:
+        logger.warning(f"[warn] FAQ 카테고리 시드 실패(계속 진행): {e}")
+
+    try:
+        from app.api.faqs import seed_default_faqs_if_empty
+        async with AsyncSessionLocal() as _db:
+            inserted = await seed_default_faqs_if_empty(_db)
+        if inserted:
+            logger.info(f"❓ FAQ 기본 데이터 시드 완료: {inserted}건")
+    except Exception as e:
+        logger.warning(f"[warn] FAQ 시드 실패(계속 진행): {e}")
+
     yield
     
     # 종료 시
@@ -233,6 +282,9 @@ app.include_router(files_router, prefix="/files", tags=["🗂️ 파일"])
 app.include_router(tags_router, prefix="/tags", tags=["🏷️ 태그"])
 app.include_router(media_router, prefix="/media", tags=["🖼️ 미디어"])
 app.include_router(metrics_router, prefix="/metrics", tags=["📈 메트릭 (임시)"])
+app.include_router(notices_router, prefix="/notices", tags=["📢 공지사항"])
+app.include_router(faqs_router, prefix="/faqs", tags=["❓ FAQ"])
+app.include_router(faq_categories_router, prefix="/faq-categories", tags=["❓ FAQ 카테고리"])
 
 
 # ⏳ Phase 3: 콘텐츠 확장 API (향후 개발)
