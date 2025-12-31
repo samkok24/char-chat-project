@@ -141,7 +141,10 @@ const ChatPage = () => {
   // temperature 기본값은 백엔드 ai_service의 기본값(0.7)과 정합
   const defaultChatSettings = { postprocess_mode: 'first2', next_event_len: 1, response_length_pref: 'medium', prewarm_on_start: true, temperature: 0.7 };
   const [chatSettings, setChatSettings] = useState(defaultChatSettings);
-  const settingsSyncedRef = useRef(false);
+  // ✅ 설정 동기화 플래그(최소 수정/안전):
+  // - true: 현재 룸 메타(서버)에 이미 반영됐다고 가정 → 이후 메시지에는 settings_patch를 굳이 보내지 않음
+  // - false: 사용자가 응답 길이/temperature 등을 바꿈 → "다음 1턴"에만 settings_patch 전송
+  const settingsSyncedRef = useRef(true);
   // room 기반 복원 진입 시 storyId 백필(중복 호출 방지용)
   const origStoryIdBackfillTriedRef = useRef(false);
   // 원작챗 상태
@@ -1241,7 +1244,15 @@ const ChatPage = () => {
         inputRef.current.style.height = 'auto';
       }
       try {
-        await sendSocketMessage(chatRoomId, messageContent, messageType, { settingsPatch: chatSettings });
+        // ✅ 일반 챗도 settings_patch를 "변경 직후 1회"만 전송 → 이후 메시지는 룸 메타를 사용
+        // (응답 길이/temperature를 한번 바꾸면 계속 적용되도록)
+        await sendSocketMessage(
+          chatRoomId,
+          messageContent,
+          messageType,
+          { settingsPatch: (settingsSyncedRef.current ? null : chatSettings) }
+        );
+        settingsSyncedRef.current = true;
         setMessages(prev => prev.map(m => m.id === tempId ? { ...m, pending: false } : m));
       } catch (err) {
         console.error('소켓 전송 실패', err);
@@ -1391,7 +1402,16 @@ const ChatPage = () => {
     if (pendingChoices && pendingChoices.length > 0) { setRangeWarning('선택지가 표시 중입니다. 선택 처리 후 진행하세요.'); return; }
     try {
       setOrigTurnLoading(true);
-      const resp = await origChatAPI.turn({ room_id: chatRoomId, trigger: 'next_event', idempotency_key: genIdemKey() });
+      // ✅ "계속" 버튼에서도 응답 길이/온도 변경을 즉시 반영:
+      // - 변경 직후 1회만 settings_patch를 보내 룸 메타(Redis)에 저장하고,
+      // - 이후 next_event는 메타 값을 계속 사용한다.
+      const resp = await origChatAPI.turn({
+        room_id: chatRoomId,
+        trigger: 'next_event',
+        idempotency_key: genIdemKey(),
+        settings_patch: (settingsSyncedRef.current ? null : chatSettings),
+      });
+      settingsSyncedRef.current = true;
       const assistantText = resp.data?.ai_message?.content || resp.data?.assistant || '';
       if (assistantText) {
         setMessages(prev => [...prev, {
@@ -1423,7 +1443,7 @@ const ChatPage = () => {
       setOrigTurnLoading(false);
       setTurnStage(null);
     }
-  }, [isOrigChat, chatRoomId, origTurnLoading, pendingChoices, genIdemKey]);
+  }, [isOrigChat, chatRoomId, origTurnLoading, pendingChoices, genIdemKey, chatSettings]);
   
   // 대화 초기화
   const handleClearChat = async () => {
@@ -1778,7 +1798,7 @@ const ChatPage = () => {
                       onClick={() => {
                         // ✅ 원작챗은 소켓 continue가 아니라 HTTP next_event가 맞다.
                         if (isOrigChat) requestNextEvent();
-                        else sendSocketMessage(chatRoomId, '', 'continue');
+                        else sendSocketMessage(chatRoomId, '', 'continue', { settingsPatch: (settingsSyncedRef.current ? null : chatSettings) });
                       }}
                       className="p-1.5 rounded hover:bg-[var(--hover-bg)] text-[var(--app-fg)]"
                     >

@@ -11,6 +11,8 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
   const [busy, setBusy] = React.useState(false);
   // 현재 갤러리(이미 삽입된 자산) 상태
   const [gallery, setGallery] = React.useState([]);
+  // ✅ 베스트-에포트: setTimeout 콜백에서 stale state를 참조하지 않도록 최신 갤러리를 ref로 유지
+  const galleryRef = React.useRef([]);
   const [galleryBusy, setGalleryBusy] = React.useState(false);
   const [statusMessage, setStatusMessage] = React.useState('');
   const [errorMessage, setErrorMessage] = React.useState('');
@@ -18,8 +20,9 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
   const saveTimerRef = React.useRef(null);
   const hasLoadedRef = React.useRef(false);
   // 생성 탭 상태
-  const [genProvider] = React.useState('gemini'); // 고정: gemini
-  const [genModel, setGenModel] = React.useState('gemini-2.5-flash-image-preview');
+  const [genModel, setGenModel] = React.useState('gemini-2.5-flash-image');
+  // ✅ 스토리에이전트(ImageTray)와 동일한 스타일 키를 사용(anime/photo/semi)
+  const [genStyle, setGenStyle] = React.useState('anime');
   // 기본값: 상세 페이지 메인 컨테이너(세로 3:4)에 맞춤
   const [genRatio, setGenRatio] = React.useState('3:4');
   const [genCount, setGenCount] = React.useState(1);
@@ -29,6 +32,14 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
   const [etaMs, setEtaMs] = React.useState(0);
   const etaTimerRef = React.useRef(null);
   const abortRef = React.useRef(null);
+  // ✅ 모바일(터치) 환경 감지: hover/drag/crop UI가 깨지는 것을 방지한다.
+  const isCoarsePointer = React.useMemo(() => {
+    try {
+      return typeof window !== 'undefined' && !!window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
+    } catch (_) {
+      return false;
+    }
+  }, []);
 
   // 크롭 모달 상태
   const [cropOpen, setCropOpen] = React.useState(false);
@@ -52,8 +63,8 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
   };
 
   const startEta = (provider, count) => {
-    // 간단한 기준치: OpenAI 90s, Gemini 60s 기준
-    const base = provider === 'gemini' ? 60000 : 90000;
+    // 간단한 기준치: OpenAI 90s, Gemini/FAL 60s 기준
+    const base = provider === 'openai' ? 90000 : 60000;
     const total = base * Math.max(1, Number(count) || 1);
     setEtaMs(total);
     if (etaTimerRef.current) clearInterval(etaTimerRef.current);
@@ -217,6 +228,11 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
     }
   }, [open, entityType, entityId, initialGallery]);
 
+  // 최신 갤러리 ref 동기화 (saveReorder / setTimeout 콜백에서 사용)
+  React.useEffect(() => {
+    try { galleryRef.current = Array.isArray(gallery) ? gallery : []; } catch (_) { galleryRef.current = []; }
+  }, [gallery]);
+
   // 대표 이미지 비율에 맞춰 생성 비율 기본값을 자동으로 선택
   // 기본값은 3:4 유지. 이전 대표 이미지 비율로 자동 조정하지 않음.
 
@@ -229,6 +245,36 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
       case '9:16': return 9/16;
       default: return 1;
     }
+  };
+
+  /**
+   * 스토리에이전트(ImageTray)의 스타일 프롬프트 보강 로직을 그대로 적용한다.
+   *
+   * 의도/동작:
+   * - 애니메이션/실사/반실사 선택을 프롬프트에 힌트로 덧붙여 결과 톤을 안정화한다.
+   * - 특히 Gemini 이미지 생성은 서버에서 ratio를 직접 적용하지 않으므로(aspect ratio 파라미터 미사용),
+   *   prompt에도 비율/구도 힌트를 함께 넣어 UX를 맞춘다.
+   */
+  const buildGenerationPrompt = (basePrompt, styleKey, ratioKey) => {
+    const p = String(basePrompt || '').trim();
+    // 스타일별 프롬프트 보강(스토리에이전트와 동일)
+    let styleHint = '';
+    if (styleKey === 'anime') styleHint = ', anime style, cel shaded, vibrant colors';
+    else if (styleKey === 'photo') styleHint = ', photorealistic, high quality photography';
+    else if (styleKey === 'semi') styleHint = ', semi-realistic, digital art, detailed';
+
+    // 비율/구도 힌트(스토리에이전트에서 3:4 고정으로 넣던 부분을, 선택 비율로 확장)
+    const r = String(ratioKey || '').trim();
+    let ratioHint = '';
+    if (r) {
+      let composition = '';
+      if (r === '3:4' || r === '9:16') composition = 'vertical composition';
+      else if (r === '4:3' || r === '16:9') composition = 'horizontal composition';
+      else if (r === '1:1') composition = 'square composition';
+      ratioHint = composition ? `, ${r} aspect ratio, ${composition}` : `, ${r} aspect ratio`;
+    }
+
+    return p + styleHint + ratioHint;
   };
 
   const openCropFor = (index) => {
@@ -463,13 +509,39 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
     } finally { dragIndexRef.current = null; }
   };
 
+  /**
+   * 모바일(터치)에서는 Drag & Drop이 브라우저에서 잘 동작하지 않아서,
+   * "앞/뒤" 버튼으로 순서를 이동할 수 있게 보완한다.
+   */
+  const moveGalleryItem = (from, to) => {
+    try {
+      const f = Number(from);
+      const t = Number(to);
+      if (!Number.isFinite(f) || !Number.isFinite(t)) return;
+      if (f === t) return;
+      setGallery((prev) => {
+        if (!Array.isArray(prev)) return prev;
+        if (f < 0 || t < 0 || f >= prev.length || t >= prev.length) return prev;
+        const next = prev.slice();
+        const [moved] = next.splice(f, 1);
+        next.splice(t, 0, moved);
+        return next;
+      });
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = setTimeout(() => {
+        saveReorder();
+      }, 400);
+    } catch (_) {}
+  };
+
   const saveReorder = async () => {
-    if (!gallery || gallery.length === 0) return;
+    const currentGallery = Array.isArray(galleryRef.current) ? galleryRef.current : [];
+    if (!currentGallery || currentGallery.length === 0) return;
     // 엔티티 없는 경우(생성 페이지)에는 서버 저장 없이 로컬 순서만 유지
     if (!entityType || !entityId) return;
     setGalleryBusy(true);
     try {
-      const orderedIds = gallery.map(g => g.id);
+      const orderedIds = currentGallery.map(g => g.id);
       await mediaAPI.reorder({ entityType, entityId, orderedIds });
       const firstId = orderedIds[0];
       if (firstId) {
@@ -520,13 +592,23 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
         {/* 상단 생성/업로드 영역 */}
         <div className="flex-shrink-0 p-4 bg-gray-800 border-b border-gray-700">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {/* 프로바이더는 Gemini 고정 */}
-              <div className="space-y-2">
+            {/* ✅ UX: 모델명은 길고(예: Nano banana Pro), 비율은 짧다 → 모델 영역을 더 넓히고 비율은 슬림하게 */}
+            <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
+              {/* 프로바이더는 선택한 모델(model)에 따라 백엔드에서 분기됨 (gemini vs fal) */}
+              <div className="space-y-2 md:col-span-6">
                 <label className="text-xs text-gray-400">모델</label>
-                <input aria-label="이미지 생성 모델" value={genModel} onChange={(e)=> setGenModel(e.target.value)} className="w-full bg-gray-800 border border-gray-700 rounded p-2 text-sm text-white focus-visible:ring-2 focus-visible:ring-purple-500 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900" />
+                <select
+                  aria-label="이미지 생성 모델"
+                  value={genModel}
+                  onChange={(e) => setGenModel(e.target.value)}
+                  className="w-full bg-gray-800 border border-gray-700 rounded p-2 text-sm text-white focus-visible:ring-2 focus-visible:ring-purple-500 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900"
+                >
+                  <option value="gemini-2.5-flash-image">Nano banana</option>
+                  <option value="gemini-3-pro-image-preview">Nano banana Pro</option>
+                  <option value="fal-ai/z-image/turbo">Z-Image Turbo</option>
+                </select>
               </div>
-              <div className="space-y-2">
+              <div className="space-y-2 md:col-span-3">
                 <label className="text-xs text-gray-400">비율</label>
                 <select aria-label="이미지 비율" value={genRatio} onChange={(e)=> setGenRatio(e.target.value)} className="w-full bg-gray-800 border border-gray-700 rounded p-2 text-sm text-white focus-visible:ring-2 focus-visible:ring-purple-500 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900">
                   <option value="1:1">1:1</option>
@@ -536,12 +618,23 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
                   <option value="9:16">9:16</option>
                 </select>
               </div>
-              <div className="space-y-2">
+              <div className="space-y-2 md:col-span-3">
                 <label className="text-xs text-gray-400">개수 (1~8)</label>
                 <input aria-label="생성 개수" type="number" min={1} max={8} value={genCount} onChange={(e)=> setGenCount(Math.max(1, Math.min(8, Number(e.target.value)||1)))} className="w-full bg-gray-800 border border-gray-700 rounded p-2 text-sm text-white focus-visible:ring-2 focus-visible:ring-purple-500 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900" />
               </div>
             </div>
             <div className="space-y-2 mt-3">
+              <label className="text-xs text-gray-400">스타일</label>
+              <select
+                aria-label="이미지 스타일"
+                value={genStyle}
+                onChange={(e) => setGenStyle(e.target.value)}
+                className="w-full bg-gray-800 border border-gray-700 rounded p-2 text-sm text-white focus-visible:ring-2 focus-visible:ring-purple-500 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900"
+              >
+                <option value="anime">애니메이션</option>
+                <option value="semi">반실사</option>
+                <option value="photo">실사</option>
+              </select>
               <label className="text-xs text-gray-400">프롬프트</label>
               <textarea rows={4} value={genPrompt} onChange={(e)=> setGenPrompt(e.target.value)} className="w-full bg-gray-800 border border-gray-700 rounded p-2 text-sm text-white focus-visible:ring-2 focus-visible:ring-purple-500 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900" placeholder="예) 보랏빛 네온의 사이버펑크 도시에서 미소짓는 요정" />
               <div className="text-xs text-gray-500">- 팁: 스타일/조명/앵글/색감 키워드가 품질을 높입니다.</div>
@@ -554,8 +647,10 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
                 setBusy(true);
                 setStatusMessage('이미지를 생성하는 중입니다...');
                 setErrorMessage('');
-                startEta('gemini', genCount);
-                const params = { provider: 'gemini', model: genModel, ratio: genRatio, count: genCount, prompt: genPrompt };
+                const provider = String(genModel || '').startsWith('fal-ai/') ? 'fal' : 'gemini';
+                startEta(provider, genCount);
+                const finalPrompt = buildGenerationPrompt(genPrompt, genStyle, genRatio);
+                const params = { provider, model: genModel, ratio: genRatio, count: genCount, prompt: finalPrompt };
                 lastParamsRef.current = params;
                 try {
                   try { await mediaAPI.trackEvent({ event: 'generate_start', entityType, entityId, count: genCount }); } catch(_) {}
@@ -606,12 +701,15 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
         <div className="flex-grow overflow-y-auto p-4 space-y-4 custom-scrollbar">
           <div className="flex items-center justify-between mb-2">
             <h3 className="text-sm font-medium text-gray-200">갤러리</h3>
-            <div className="text-xs text-gray-400">드래그로 순서 변경 · 첫 번째가 대표</div>
+            <div className="text-xs text-gray-400">
+              <span className="hidden md:inline">드래그로 순서 변경 · 첫 번째가 대표</span>
+              <span className="md:hidden">버튼으로 순서 변경 · 첫 번째가 대표</span>
+            </div>
           </div>
           {galleryBusy && <div className="text-xs text-gray-400 mb-2">불러오는 중...</div>}
           <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-3" role="list" aria-label="이미지 갤러리">
             {gallery.length===0 && !galleryBusy && (
-              <div className="col-span-3 text-center text-gray-400 py-8">갤러리에 이미지가 없습니다. 업로드하거나 생성해보세요.</div>
+              <div className="col-span-full text-center text-gray-400 py-8">갤러리에 이미지가 없습니다. 업로드하거나 생성해보세요.</div>
             )}
             {gallery.map((g, idx) => (
               <div
@@ -625,10 +723,39 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
                 onDragEnd={()=> { dragIndexRef.current = null; }}
                 className={`group relative border rounded-md overflow-hidden ${idx===0?'border-blue-500 ring-2 ring-blue-500':'border-gray-700'} bg-gray-800 cursor-grab active:cursor-grabbing select-none`}
                 title={idx===0?'대표 이미지':''}
-                onClick={() => openCropFor(idx)}
+                onClick={() => {
+                  // 모바일에서는 크롭 조작(마우스 기반)이 불편/불가할 수 있어 열지 않는다.
+                  if (isCoarsePointer) return;
+                  openCropFor(idx);
+                }}
               >
                 {idx===0 && (
                   <div className="absolute top-1 left-1 z-10 bg-blue-600 text-white text-[10px] px-1.5 py-0.5 rounded">대표</div>
+                )}
+                {/* 모바일용 순서 이동(드래그 대체) */}
+                {isCoarsePointer && gallery.length > 1 && (
+                  <div className="absolute bottom-1 left-1 right-1 z-10 flex items-center justify-between gap-1 md:hidden">
+                    <button
+                      type="button"
+                      aria-label="앞으로 이동"
+                      disabled={idx === 0 || busy || galleryBusy}
+                      onMouseDown={(e)=> { e.stopPropagation(); e.preventDefault(); }}
+                      onClick={(e)=> { e.stopPropagation(); e.preventDefault(); moveGalleryItem(idx, idx - 1); }}
+                      className="px-2 py-1 rounded bg-black/60 hover:bg-black/80 text-white text-[10px] disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      ←
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="뒤로 이동"
+                      disabled={idx === gallery.length - 1 || busy || galleryBusy}
+                      onMouseDown={(e)=> { e.stopPropagation(); e.preventDefault(); }}
+                      onClick={(e)=> { e.stopPropagation(); e.preventDefault(); moveGalleryItem(idx, idx + 1); }}
+                      className="px-2 py-1 rounded bg-black/60 hover:bg-black/80 text-white text-[10px] disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      →
+                    </button>
+                  </div>
                 )}
                 <img src={resolveImageUrl(g.url)} alt={`갤러리 이미지 ${idx+1}`} className="w-full h-28 object-cover" draggable={false} />
                 <button
@@ -636,7 +763,7 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
                   onMouseDown={(e)=> { e.stopPropagation(); e.preventDefault(); }}
                   onDragStart={(e)=> { e.stopPropagation(); e.preventDefault(); }}
                   onClick={(e)=> { e.stopPropagation(); e.preventDefault(); if (!String(g.id).startsWith('url:')) deleteOne(g.id); }}
-                  className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 transition bg-black/60 hover:bg-black/80 text-white rounded p-1"
+                  className="absolute top-1 right-1 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition bg-black/60 hover:bg-black/80 text-white rounded p-1"
                   aria-label="이미지 삭제"
                 >
                   <Trash2 className="w-4 h-4" />
@@ -649,12 +776,12 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
         {/* 로딩 오버레이 제거: 취소 버튼 접근 가능 유지 */}
 
         {/* 하단 확인 바 (좌측 업로드 추가) */}
-        <div className="flex-shrink-0 flex items-center justify-between gap-2 p-4 bg-gray-800 border-t border-gray-700">
-          <div className="flex items-center gap-2">
+        <div className="flex-shrink-0 flex flex-col sm:flex-row sm:items-center justify-between gap-2 p-4 bg-gray-800 border-t border-gray-700">
+          <div className="flex items-center gap-2 w-full sm:w-auto">
             <input ref={inputRef} type="file" accept="image/*" multiple className="hidden" onChange={onFiles} />
-            <Button onClick={onPick} disabled={busy} className="bg-white text-black hover:bg-gray-100">업로드</Button>
+            <Button onClick={onPick} disabled={busy} className="w-full sm:w-auto bg-white text-black hover:bg-gray-100">업로드</Button>
           </div>
-          <Button onClick={confirmAttach} disabled={busy || gallery.length === 0} className="bg-purple-600 hover:bg-purple-700">확인 ({gallery.length}개 삽입)</Button>
+          <Button onClick={confirmAttach} disabled={busy || gallery.length === 0} className="w-full sm:w-auto bg-purple-600 hover:bg-purple-700">확인 ({gallery.length}개 삽입)</Button>
         </div>
         {/* ↑ 상단 생성/업로드 영역의 바깥 그리드 닫기 보완 */}
       </DialogContent>

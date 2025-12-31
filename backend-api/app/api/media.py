@@ -10,12 +10,13 @@ from app.models.media_asset import MediaAsset
 from app.schemas.media_asset import MediaAssetResponse, MediaAssetListResponse
 from app.core.paths import get_upload_dir
 from app.services.storage import get_storage
-import os, shutil, uuid, base64, requests
+import os, shutil, uuid, base64, requests, asyncio, logging
 from app.models.character import Character
 from app.models.story import Story
 
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 @router.get("/assets", response_model=MediaAssetListResponse)
@@ -249,7 +250,15 @@ async def generate_images_endpoint(
             raise HTTPException(status_code=503, detail="GOOGLE_API_KEY or GEMINI_API_KEY not set")
 
         client = google_genai.Client(api_key=api_key)
-        use_model = model or "gemini-2.5-flash-image-preview"
+        # NOTE:
+        # - 기존 기본 모델명이 gemini-2.5-flash-image-preview 였으나, 현재는 gemini-2.5-flash-image 로 변경됨.
+        # - 구형 문자열로 요청이 들어와도 서비스가 깨지지 않도록 방어적으로 매핑한다.
+        use_model = model or "gemini-2.5-flash-image"
+        try:
+            if isinstance(use_model, str) and use_model.strip() == "gemini-2.5-flash-image-preview":
+                use_model = "gemini-2.5-flash-image"
+        except Exception:
+            pass
         try:
             # count장 반복 생성 (각 요청 1개로 가정)
             total = max(1, int(count or 1))
@@ -312,6 +321,116 @@ async def generate_images_endpoint(
             raise
         except Exception as e:
             raise HTTPException(status_code=503, detail=f"gemini generation failed: {e}")
+    elif provider == 'fal':
+        # fal.ai (z-image 등) - 서버 사이드에서만 호출(FAL_KEY 노출 방지)
+        api_key = os.getenv("FAL_KEY")
+        if not api_key:
+            raise HTTPException(status_code=503, detail="FAL_KEY not set")
+
+        try:
+            import fal_client  # type: ignore
+        except Exception:
+            raise HTTPException(status_code=503, detail="fal-client not installed")
+
+        # 기본: Z-Image Turbo (text-to-image)
+        use_model = model or "fal-ai/z-image/turbo"
+
+        # ratio → (width,height)로 변환하여 image_size object로 전달
+        size = _size_from_ratio(ratio)
+        w = 1024
+        h = 1024
+        try:
+            if isinstance(size, str) and "x" in size:
+                ws, hs = size.lower().split("x", 1)
+                w = int(ws)
+                h = int(hs)
+        except Exception:
+            w, h = 1024, 1024
+        image_size = {"width": w, "height": h}
+
+        # NOTE: z-image/turbo는 num_images가 1~4 범위. 기존 count(1~8)는 여러 번 호출로 분할.
+        total = max(1, int(count or 1))
+        remaining = total
+
+        def _call_subscribe(args: dict):
+            # fal_client는 동기 함수이므로 to_thread로 감싼다.
+            return fal_client.subscribe(
+                use_model,
+                arguments=args,
+                with_logs=False,
+            )
+
+        try:
+            while remaining > 0:
+                batch = min(4, remaining)
+                args = {
+                    "prompt": prompt,
+                    "image_size": image_size,
+                    "num_images": batch,
+                    "enable_safety_checker": True,
+                    "output_format": "png",
+                }
+                result = await asyncio.to_thread(_call_subscribe, args)
+                body = None
+                if isinstance(result, dict):
+                    data = result.get("data")
+                    body = data if isinstance(data, dict) else result
+                if not isinstance(body, dict):
+                    raise HTTPException(status_code=503, detail="fal generation failed: invalid response")
+
+                images = body.get("images") or []
+                if not isinstance(images, list) or not images:
+                    raise HTTPException(status_code=503, detail="fal generation failed: no images")
+
+                for it in images:
+                    if not isinstance(it, dict):
+                        continue
+                    url = it.get("url")
+                    content_type = it.get("content_type") or "image/png"
+                    if not url:
+                        continue
+                    asset_url = None
+                    # 가능하면 바이트로 내려받아 우리 스토리지에 저장 (안 되면 URL 그대로 저장)
+                    try:
+                        r = requests.get(url, timeout=60)
+                        if r.status_code >= 400:
+                            raise Exception(f"download failed {r.status_code}")
+                        raw = r.content
+                        # 확장자 힌트(간단)
+                        ext = ".png"
+                        ct = str(content_type or "").lower()
+                        if "jpeg" in ct or "jpg" in ct:
+                            ext = ".jpg"
+                        elif "webp" in ct:
+                            ext = ".webp"
+                        asset_url = storage.save_bytes(raw, content_type=content_type, key_hint=f"gen{ext}")
+                    except Exception as e:
+                        try:
+                            logger.warning(f"fal image download failed, fallback to url: {e}")
+                        except Exception:
+                            pass
+                        asset_url = url
+
+                    asset = MediaAsset(
+                        id=str(uuid.uuid4()),
+                        user_id=str(current_user.id),
+                        entity_type=entity_type,
+                        entity_id=entity_id,
+                        url=asset_url,
+                        provider="fal",
+                        model=use_model,
+                        status="ready",
+                    )
+                    db.add(asset)
+                    created.append(asset)
+
+                remaining -= batch
+
+            await db.commit()
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=503, detail=f"fal generation failed: {e}")
     else:
         raise HTTPException(status_code=400, detail="unsupported provider")
 

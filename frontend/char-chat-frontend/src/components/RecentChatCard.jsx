@@ -10,6 +10,7 @@ import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
 import { formatCount } from '../lib/format';
 import { Badge } from './ui/badge';
 import { useAuth } from '../contexts/AuthContext';
+import { replacePromptTokens } from '../lib/prompt';
 
 export const RecentChatCard = ({ character, onClick, displayTitle }) => {
   const defaultAvatar = DEFAULT_AVATAR_URI;
@@ -88,7 +89,12 @@ export const RecentChatCard = ({ character, onClick, displayTitle }) => {
                     {displayTitle || character.name}
                   </p>
                   <p className="text-gray-300 font-normal line-clamp-3 text-sm text-ellipsis overflow-hidden whitespace-normal break-anywhere">
-                    {character.description || '캐릭터 설명이 없습니다.'}
+                    {(() => {
+                      const nm = character?.name || '캐릭터';
+                      const raw = character?.description || '';
+                      const rendered = replacePromptTokens(raw, { assistantName: nm, userName: '당신' }).trim();
+                      return rendered || '캐릭터 설명이 없습니다.';
+                    })()}
                   </p>
                 </div>
 

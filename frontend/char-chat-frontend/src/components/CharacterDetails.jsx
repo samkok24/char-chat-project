@@ -9,6 +9,7 @@ import { Button } from './ui/button';
 import { Badge } from './ui/badge';  // 이 줄 추가
 import { Input } from './ui/input';
 import { Loader2, Trash2 } from 'lucide-react';
+import { replacePromptTokens } from '../lib/prompt';
 
 const timeAgo = (dateString) => {
   if (!dateString) return '';
@@ -36,7 +37,12 @@ const CharacterDetails = ({ character, comments, commentText, setCommentText, ha
       <section id="overview">
         <h2 className="text-lg font-semibold mb-2">캐릭터 설명</h2>
         <div className="bg-gray-800 rounded-md border border-gray-700 p-4 text-gray-200 whitespace-pre-wrap min-h-[56px]">
-          {character.description || '아직 캐릭터 설명이 없습니다.'}
+          {(() => {
+            const nm = character?.name || '캐릭터';
+            const raw = character?.description || '';
+            const rendered = replacePromptTokens(raw, { assistantName: nm, userName: '당신' }).trim();
+            return rendered || '아직 캐릭터 설명이 없습니다.';
+          })()}
         </div>
       </section>
 
@@ -44,7 +50,12 @@ const CharacterDetails = ({ character, comments, commentText, setCommentText, ha
       <section id="world">
         <h2 className="text-lg font-semibold mb-2">세계관</h2>
         <div className="bg-gray-800 rounded-md border border-gray-700 p-4 text-gray-200 whitespace-pre-wrap min-h-[56px]">
-          {character.world_setting || '아직 세계관 설정이 없습니다.'}
+          {(() => {
+            const nm = character?.name || '캐릭터';
+            const raw = character?.world_setting || '';
+            const rendered = replacePromptTokens(raw, { assistantName: nm, userName: '당신' }).trim();
+            return rendered || '아직 세계관 설정이 없습니다.';
+          })()}
         </div>
       </section>
 

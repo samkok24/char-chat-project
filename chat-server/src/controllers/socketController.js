@@ -210,6 +210,7 @@ class SocketController {
       }
 
       if (content.length > config.MAX_MESSAGE_LENGTH) {
+        safeAck({ ok: false, error: 'too_long', max: config.MAX_MESSAGE_LENGTH });
         socket.emit('error', { message: `메시지는 ${config.MAX_MESSAGE_LENGTH}자를 초과할 수 없습니다.` });
         return;
       }
@@ -217,6 +218,7 @@ class SocketController {
       // 속도 제한 확인
       const isAllowed = await redisService.checkRateLimit(userId);
       if (!isAllowed) {
+        safeAck({ ok: false, error: 'rate_limited' });
         socket.emit('error', { message: '메시지 전송 속도 제한을 초과했습니다.' });
         return;
       }
@@ -224,6 +226,7 @@ class SocketController {
       // 채팅방 정보 확인
       const room = this.activeRooms.get(roomId);
       if (!room || room.userId !== userId) {
+        safeAck({ ok: false, error: 'forbidden_room' });
         socket.emit('error', { message: '유효하지 않은 채팅방이거나 접근 권한이 없습니다.' });
         return;
       }
@@ -300,6 +303,7 @@ class SocketController {
 
     } catch (error) {
       logger.error('메시지 전송 처리 오류:', error);
+      safeAck({ ok: false, error: 'server_error' });
       io.to(data.roomId).emit('ai_typing_stop', { roomId: data.roomId });
       socket.emit('error', { message: '메시지 전송 중 오류가 발생했습니다.' });
     }

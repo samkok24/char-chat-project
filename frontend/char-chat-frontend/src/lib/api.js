@@ -655,6 +655,8 @@ export const rankingAPI = {
 export const metricsAPI = {
   // params: { day?: 'YYYYMMDD', story_id?, room_id?, mode? }
   getSummary: (params = {}) => api.get('/metrics/summary', { params }),
+  // 스토리 에이전트 상단 카피용: (일반캐릭터챗 + 원작챗 캐릭터 + 웹소설) 합산 수
+  getContentCounts: (params = {}) => api.get('/metrics/content-counts', { params }),
 };
 
 // 📖 회차(Chapters) API

@@ -26,7 +26,7 @@ SheetTrigger,
 import { RadioGroup, RadioGroupItem } from '../components/ui/radio-group';
 import { useNavigate, Link, useLocation } from 'react-router-dom';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { storiesAPI, charactersAPI, chatAPI, rankingAPI } from '../lib/api';
+import { storiesAPI, charactersAPI, chatAPI, rankingAPI, metricsAPI } from '../lib/api';
 // import { generationAPI } from '../lib/generationAPI'; // removed: use existing backend flow
 import { Switch } from '../components/ui/switch';
 import { DEFAULT_SQUARE_URI } from '../lib/placeholder';
@@ -265,6 +265,56 @@ const todayLabel = React.useMemo(() => {
     return `${d.getMonth() + 1}월 ${d.getDate()}일`;
   } catch { return ''; }
 }, []);
+// 스토리 에이전트 상단 카피용 카운트(베스트-에포트)
+// - 의도: "오늘, N개의 스토리가 업로드되었습니다"의 N을 (일반캐릭터챗+원작챗 캐릭터+웹소설) 합산으로 표시
+// - 최소 호출: localStorage(브라우저) + Redis(서버) 캐시로 반복 DB 조회를 피한다.
+const todayKey = React.useMemo(() => {
+  try {
+    const d = new Date();
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${y}${m}${dd}`;
+  } catch { return ''; }
+}, []);
+const LS_CONTENT_COUNTS = (dayKey) => `agent:contentCounts:${dayKey || 'unknown'}`;
+const [contentCountsTotal, setContentCountsTotal] = useState(() => {
+  try {
+    const cached = loadJson(LS_CONTENT_COUNTS(todayKey), null);
+    const total = (cached && typeof cached === 'object') ? cached.total : cached;
+    const n = Number(total);
+    if (!Number.isFinite(n)) return null;
+    // 0은 (서버/캐시 오류 등)로 잘못 고정될 수 있으므로, "캐시 있음"으로 간주하지 않는다.
+    // - 화면은 API 응답으로 다시 갱신되며, 실패 시에는 '...'가 유지된다.
+    return n > 0 ? n : null;
+  } catch {
+    return null;
+  }
+});
+useEffect(() => {
+  let cancelled = false;
+  const run = async () => {
+    try {
+      const res = await metricsAPI.getContentCounts({ day: todayKey, use_cache: true });
+      const n = Number(res?.data?.total);
+      if (!Number.isFinite(n)) return;
+      if (cancelled) return;
+      setContentCountsTotal(n);
+      try {
+        if (n > 0) {
+          saveJson(LS_CONTENT_COUNTS(todayKey), { day: todayKey, total: n });
+        } else {
+          localStorage.removeItem(LS_CONTENT_COUNTS(todayKey));
+        }
+      } catch {}
+    } catch (e) {
+      console.error('Failed to load content counts:', e);
+    }
+  };
+  // 캐시가 없을 때만 1회 호출(오늘 기준)
+  if (contentCountsTotal == null && todayKey) run();
+  return () => { cancelled = true; };
+}, [contentCountsTotal, todayKey]);
 const { user } = useAuth();
 const isGuest = !user;
 const { sessions, createSession, updateSession, removeSession } = useAgentSessions(user?.id || 'guest', !isGuest === true, isGuest === true);
@@ -2474,7 +2524,7 @@ return (
                 </h1>
                 <div className="mb-4 md:mb-6 flex flex-col md:flex-row items-start md:items-center gap-3">
                   <span className="text-lg md:text-xl text-purple-300/90 drop-shadow-[0_0_6px_rgba(168,85,247,0.25)]">
-                    {todayLabel} 오늘, 3245개의 스토리가 업로드되었습니다. 빠져보실래요?
+                    {todayLabel} 오늘, {contentCountsTotal == null ? '...' : Number(contentCountsTotal).toLocaleString()}개의 스토리가 업로드되었습니다. 빠져보실래요?
                   </span>
                   <button
                     type="button"

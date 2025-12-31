@@ -19,6 +19,7 @@ import { Badge } from '../components/ui/badge';
 import { Avatar, AvatarFallback, AvatarImage } from '../components/ui/avatar';
 // 15번째 줄 수정: 이미지 썸네일 사이즈 파라미터 추가
 import { resolveImageUrl, getThumbnailUrl } from '../lib/images';
+import { replacePromptTokens } from '../lib/prompt';
 import { LazyLoadImage } from 'react-lazy-load-image-component';
 import 'react-lazy-load-image-component/src/effects/blur.css';
 import { Skeleton } from '../components/ui/skeleton';
@@ -1126,8 +1127,28 @@ const HomePage = () => {
                   검색으로 찾거나, 30초만에 새 캐릭터를 만들어 바로 대화할 수 있어요.
                 </div>
 
+                {/* ✅ 서비스 이해도 보강(2줄): 캐릭터챗 vs 원작챗 */}
+                <div className="mt-3 rounded-xl border border-gray-800/80 bg-gray-950/20 px-4 py-3">
+                  <div className="flex items-start gap-2">
+                    <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-purple-600 text-white text-[11px] font-semibold flex-shrink-0">
+                      캐릭터챗
+                    </span>
+                    <p className="text-xs sm:text-sm text-gray-300 leading-relaxed">
+                      창작 캐릭터와 설정/말투 기반으로 자유롭게 대화해요.
+                    </p>
+                  </div>
+                  <div className="mt-2 flex items-start gap-2">
+                    <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-orange-400 text-black text-[11px] font-semibold flex-shrink-0">
+                      원작챗
+                    </span>
+                    <p className="text-xs sm:text-sm text-gray-300 leading-relaxed">
+                      웹소설 등장인물과 원작 맥락을 바탕으로 대화해요.
+                    </p>
+                  </div>
+                </div>
+
                 <div className="mt-4 grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
-                  {/* ✅ 검색 컨트롤(좌) : 결과를 여기 안에 넣지 않고, 아래 별도 섹션으로 분리해서 CTA가 밀리지 않게 한다 */}
+                  {/* ✅ 검색 컨트롤(좌): 검색 결과 박스는 '성별 + 검색어' 전체 폭으로 펼친다 */}
                   <div className="lg:col-span-8">
                     <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
                       {/* 성별 */}
@@ -1155,6 +1176,73 @@ const HomePage = () => {
                         />
                       </div>
                     </div>
+
+                    {/* ✅ 검색 결과: 검색 인풋 바로 아래에서 위→아래로 나열 (좌측 필터 폭 전체) */}
+                    {onboardingSearchEnabled && (
+                      <div className="mt-2">
+                        {onboardingSearchLoading ? (
+                          <div className="rounded-xl border border-gray-800 bg-gray-950/20 p-3 space-y-2">
+                            {Array.from({ length: 3 }).map((_, i) => (
+                              <div key={`sk-onb-${i}`} className="h-12 rounded-lg bg-gray-800/40 border border-gray-800 animate-pulse" />
+                            ))}
+                          </div>
+                        ) : (Array.isArray(onboardingSearchResults) && onboardingSearchResults.length > 0) ? (
+                          <div className="rounded-xl border border-gray-800 bg-gray-950/20 overflow-hidden">
+                            {/* ✅ 4줄 정도까지만 보여주고, 그 이상은 내부 스크롤 */}
+                            <div className="max-h-56 overflow-y-auto">
+                              {onboardingSearchResults.slice(0, 8).map((c) => {
+                                const id = String(c?.id || '').trim();
+                                const nm = String(c?.name || '').trim();
+                                    const rawDesc = String(c?.description || '').trim();
+                                    const desc = replacePromptTokens(rawDesc, { assistantName: nm || '캐릭터', userName: '당신' }).trim();
+                                const thumb = getThumbnailUrl(c?.thumbnail_url || c?.avatar_url || '');
+                                return (
+                                  <button
+                                    key={`onb-${id}`}
+                                    type="button"
+                                    className="w-full text-left px-3 py-2.5 flex items-center gap-3 border-b border-gray-800/80 last:border-b-0 hover:bg-gray-800/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-500/30"
+                                    onClick={() => startChatFromOnboarding(c)}
+                                  >
+                                    <div className="w-10 h-10 rounded-full bg-gray-800/60 border border-gray-700/80 overflow-hidden flex items-center justify-center flex-shrink-0">
+                                      {thumb ? (
+                                        <img
+                                          src={thumb}
+                                          alt={nm}
+                                          className="w-full h-full object-cover object-top"
+                                          loading="lazy"
+                                          onError={(e) => { try { e.currentTarget.style.display = 'none'; } catch (_) {} }}
+                                        />
+                                      ) : null}
+                                      <span className={`text-sm text-gray-200 ${thumb ? 'hidden' : ''}`}>{(nm || 'C').charAt(0)}</span>
+                                    </div>
+                                    <div className="min-w-0 flex-1">
+                                      <div className="text-sm font-semibold text-white truncate">{nm || '캐릭터'}</div>
+                                      <div className="text-xs text-gray-400 truncate">{desc || '설명이 없습니다.'}</div>
+                                    </div>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="rounded-xl border border-gray-800 bg-gray-950/20 p-4">
+                            <div className="text-sm text-gray-200">검색 결과가 없습니다.</div>
+                            <div className="text-xs text-gray-400 mt-1">
+                              바로 만들고 시작할 수 있어요.
+                            </div>
+                            <div className="mt-3 flex justify-end">
+                              <Button
+                                type="button"
+                                className="h-11 rounded-xl bg-purple-600 hover:bg-purple-700 text-white"
+                                onClick={() => openQuickMeet(onboardingSearchTerm || onboardingQueryRaw)}
+                              >
+                                30초 안에 원하는 캐릭터 만나기
+                              </Button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
 
                   {/* ✅ 30초 생성 CTA(우): 모바일에서도 결과보다 위에 오도록 '컨트롤 다음'에 배치 */}
@@ -1179,77 +1267,6 @@ const HomePage = () => {
                     </div>
                   </div>
 
-                  {/* ✅ 검색 결과(좌): 최대 높이 제한 + 내부 스크롤 */}
-                  <div className="lg:col-span-8">
-                    <div className="mt-3">
-                      {!onboardingSearchEnabled ? (
-                        <div className="rounded-xl border border-gray-800 bg-gray-950/20 px-4 py-3 text-xs text-gray-400">
-                          검색어를 2글자 이상 입력하면 결과가 표시됩니다.
-                        </div>
-                      ) : onboardingSearchLoading ? (
-                        <div className="rounded-xl border border-gray-800 bg-gray-950/20 p-3 space-y-2">
-                          {Array.from({ length: 3 }).map((_, i) => (
-                            <div key={`sk-onb-${i}`} className="h-12 rounded-lg bg-gray-800/40 border border-gray-800 animate-pulse" />
-                          ))}
-                        </div>
-                      ) : (Array.isArray(onboardingSearchResults) && onboardingSearchResults.length > 0) ? (
-                        <div className="rounded-xl border border-gray-800 bg-gray-950/20 overflow-hidden">
-                          <div className="max-h-72 overflow-y-auto">
-                            {onboardingSearchResults.slice(0, 8).map((c) => {
-                              const id = String(c?.id || '').trim();
-                              const nm = String(c?.name || '').trim();
-                              const desc = String(c?.description || '').trim();
-                              const thumb = getThumbnailUrl(c?.thumbnail_url || c?.avatar_url || '');
-                              return (
-                                <button
-                                  key={`onb-${id}`}
-                                  type="button"
-                                  className="w-full text-left px-3 py-2.5 flex items-center gap-3 border-b border-gray-800/80 last:border-b-0 hover:bg-gray-800/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-500/30"
-                                  onClick={() => startChatFromOnboarding(c)}
-                                >
-                                  <div className="w-10 h-10 rounded-full bg-gray-800/60 border border-gray-700/80 overflow-hidden flex items-center justify-center flex-shrink-0">
-                                    {thumb ? (
-                                      <img
-                                        src={thumb}
-                                        alt={nm}
-                                        className="w-full h-full object-cover object-top"
-                                        loading="lazy"
-                                        onError={(e) => { try { e.currentTarget.style.display = 'none'; } catch (_) {} }}
-                                      />
-                                    ) : null}
-                                    <span className={`text-sm text-gray-200 ${thumb ? 'hidden' : ''}`}>{(nm || 'C').charAt(0)}</span>
-                                  </div>
-                                  <div className="min-w-0 flex-1">
-                                    <div className="text-sm font-semibold text-white truncate">{nm || '캐릭터'}</div>
-                                    <div className="text-xs text-gray-400 truncate">{desc || '설명이 없습니다.'}</div>
-                                  </div>
-                                </button>
-                              );
-                            })}
-                          </div>
-                          <div className="px-3 py-2 text-xs text-gray-500 border-t border-gray-800/80 bg-gray-950/10">
-                            원하는 캐릭터를 클릭하면 대화가 시작됩니다.
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="rounded-xl border border-gray-800 bg-gray-950/20 p-4">
-                          <div className="text-sm text-gray-200">검색 결과가 없습니다.</div>
-                          <div className="text-xs text-gray-400 mt-1">
-                            바로 만들고 시작할 수 있어요.
-                          </div>
-                          <div className="mt-3 flex justify-end">
-                            <Button
-                              type="button"
-                              className="h-11 rounded-xl bg-purple-600 hover:bg-purple-700 text-white"
-                              onClick={() => openQuickMeet(onboardingSearchTerm || onboardingQueryRaw)}
-                            >
-                              30초 안에 원하는 캐릭터 만나기
-                            </Button>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </div>
                 </div>
               </div>
             </section>
@@ -1716,9 +1733,11 @@ const HomePage = () => {
                             <CharacterCard character={item.data} showOriginBadge />
                           )}
 
-                          <div className="mt-1 text-xs text-gray-400">
-                            {isStory ? '클릭하면 작품 상세로 이동합니다' : '클릭하면 채팅이 시작됩니다'}
-                          </div>
+                          {isStory && (
+                            <div className="mt-1 text-xs text-gray-400">
+                              클릭하면 작품 상세로 이동합니다
+                            </div>
+                          )}
                         </div>
                       );
                     })}

@@ -20,9 +20,11 @@ logger = logging.getLogger(__name__)
 
 # Claude 모델명 상수 (전역 참조용)
 # CLAUDE_MODEL_PRIMARY = 'claude-sonnet-4-5-20250929'
-CLAUDE_MODEL_PRIMARY = 'claude-sonnet-4-20250514'
-# CLAUDE_MODEL_PRIMARY = 'claude-3-7-sonnet-20250219'
-CLAUDE_MODEL_LEGACY = 'claude-sonnet-4-20250514'  # 폴백/호환용
+# NOTE:
+# - Claude는 4.0+만 사용 (3.x 지원 종료 대응)
+# - 아래 값들은 Anthropic에 전달되는 "model" 문자열이므로, 운영에서 최신 모델명으로 교체 가능
+CLAUDE_MODEL_PRIMARY = 'claude-sonnet-4'
+CLAUDE_MODEL_LEGACY = 'claude-sonnet-4-20250514'  # 폴백/호환용(구버전 저장값 대응)
 
 GPT_MODEL_PRIMARY = 'gpt-5'
 
@@ -1323,7 +1325,8 @@ async def get_gemini_completion(prompt: str, temperature: float = 0.7, max_token
             pass
         try:
             if settings.CLAUDE_API_KEY:
-                return await get_claude_completion(prompt, model='claude-3-5-sonnet-20241022', max_tokens=1024)
+                # Claude 폴백은 Claude 4 이상만 사용(3.x 지원 종료 대응)
+                return await get_claude_completion(prompt, model=CLAUDE_MODEL_PRIMARY, max_tokens=1024)
         except Exception:
             pass
         return "안전 정책에 의해 이 요청의 응답이 제한되었습니다. 표현을 조금 바꿔 다시 시도해 주세요."
@@ -1438,7 +1441,7 @@ async def get_claude_completion(
         print(f"Claude API 호출 중 오류 발생: {e}")
         raise ValueError(f"Claude API 호출에 실패했습니다: {e}")
 
-async def get_claude_completion_stream(prompt: str, temperature: float = 0.7, max_tokens: int = 1024, model: str = "claude-3-5-sonnet-20240620"):
+async def get_claude_completion_stream(prompt: str, temperature: float = 0.7, max_tokens: int = 1024, model: str = CLAUDE_MODEL_PRIMARY):
     """Claude 모델의 스트리밍 응답을 비동기 제너레이터로 반환합니다."""
     try:
         async with claude_client.messages.stream(
@@ -1465,7 +1468,65 @@ async def get_openai_completion(
     try:
         from openai import AsyncOpenAI
         client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
-        
+
+        def _use_responses_api(model_name: str) -> bool:
+            """GPT-5/o-series 등 최신 모델은 Responses API가 권장이라 분기한다.
+
+            배경:
+            - 기존 Chat Completions도 동작할 수 있지만, GPT-5 계열은 Responses에서 기능/성능(Reasoning 등) 정합이 더 좋다.
+            - 기존 GPT-4 계열은 현재 코드의 chat.completions 경로를 그대로 유지해 리스크를 줄인다.
+            """
+            try:
+                m = (model_name or "").strip().lower()
+            except Exception:
+                m = ""
+            return m.startswith("gpt-5") or m.startswith("o")
+
+        # GPT-5 계열: Responses API 사용 (권장)
+        if _use_responses_api(model):
+            resp = await client.responses.create(
+                model=model,
+                input=prompt,
+                temperature=temperature,
+                max_output_tokens=max_tokens,
+            )
+            # SDK convenience: output_text (Python SDK 지원)
+            try:
+                out_txt = getattr(resp, "output_text", None)
+                if isinstance(out_txt, str) and out_txt.strip():
+                    return out_txt
+            except Exception:
+                pass
+            # 방어적 파싱: output 배열의 message/output_text 수집
+            try:
+                outputs = getattr(resp, "output", None)
+                texts: list[str] = []
+                if isinstance(outputs, list):
+                    for item in outputs:
+                        it_type = getattr(item, "type", None) if not isinstance(item, dict) else item.get("type")
+                        if it_type != "message":
+                            continue
+                        content = getattr(item, "content", None) if not isinstance(item, dict) else item.get("content")
+                        if not isinstance(content, list):
+                            continue
+                        for part in content:
+                            p_type = getattr(part, "type", None) if not isinstance(part, dict) else part.get("type")
+                            if p_type == "output_text":
+                                txt = getattr(part, "text", None) if not isinstance(part, dict) else part.get("text")
+                                if isinstance(txt, str) and txt:
+                                    texts.append(txt)
+                            elif p_type == "refusal":
+                                refusal = getattr(part, "refusal", None) if not isinstance(part, dict) else part.get("refusal")
+                                if isinstance(refusal, str) and refusal:
+                                    texts.append(refusal)
+                joined = "".join(texts).strip()
+                if joined:
+                    return joined
+            except Exception:
+                pass
+            return "OpenAI 응답을 생성했지만 텍스트를 추출하지 못했습니다. 잠시 후 다시 시도해 주세요."
+
+        # GPT-4 계열(기존): Chat Completions 유지
         response = await client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": prompt}],
@@ -1474,6 +1535,10 @@ async def get_openai_completion(
         )
         return response.choices[0].message.content
     except Exception as e:
+        try:
+            logger.error(f"OpenAI API 호출 중 오류 발생: {e} (model={model}, prompt_len={len(prompt) if isinstance(prompt, str) else 'n/a'})")
+        except Exception:
+            pass
         print(f"OpenAI API 호출 중 오류 발생: {e}")
         raise ValueError(f"OpenAI API 호출에 실패했습니다: {e}")
 
@@ -1482,7 +1547,41 @@ async def get_openai_completion_stream(prompt: str, temperature: float = 0.7, ma
     try:
         from openai import AsyncOpenAI
         client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
-        
+
+        def _use_responses_api(model_name: str) -> bool:
+            """GPT-5/o-series 등 최신 모델은 Responses API 스트리밍 이벤트를 사용한다."""
+            try:
+                m = (model_name or "").strip().lower()
+            except Exception:
+                m = ""
+            return m.startswith("gpt-5") or m.startswith("o")
+
+        # GPT-5 계열: Responses API 스트리밍
+        if _use_responses_api(model):
+            stream = await client.responses.create(
+                model=model,
+                input=prompt,
+                temperature=temperature,
+                max_output_tokens=max_tokens,
+                stream=True,
+            )
+            async for event in stream:
+                try:
+                    et = getattr(event, "type", None) if not isinstance(event, dict) else event.get("type")
+                    if et in ("response.output_text.delta", "response.refusal.delta"):
+                        delta = getattr(event, "delta", None) if not isinstance(event, dict) else event.get("delta")
+                        if isinstance(delta, str) and delta:
+                            yield delta
+                    elif et == "response.error":
+                        err = getattr(event, "error", None) if not isinstance(event, dict) else event.get("error")
+                        if err:
+                            yield f"오류: OpenAI 모델 호출에 실패했습니다 - {err}"
+                except Exception:
+                    # 이벤트 파싱 실패는 조용히 무시(스트림 유지)
+                    continue
+            return
+
+        # GPT-4 계열(기존): Chat Completions 스트리밍 유지
         stream = await client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": prompt}],
@@ -1494,6 +1593,10 @@ async def get_openai_completion_stream(prompt: str, temperature: float = 0.7, ma
             if chunk.choices[0].delta.content:
                 yield chunk.choices[0].delta.content
     except Exception as e:
+        try:
+            logger.error(f"OpenAI Stream API 호출 중 오류 발생: {e} (model={model}, prompt_len={len(prompt) if isinstance(prompt, str) else 'n/a'})")
+        except Exception:
+            pass
         print(f"OpenAI Stream API 호출 중 오류 발생: {e}")
         yield f"오류: OpenAI 모델 호출에 실패했습니다 - {str(e)}"
 
@@ -1613,10 +1716,25 @@ async def get_ai_chat_response(
     
     # 모델별 처리
     if preferred_model == 'gemini':
-        if preferred_sub_model == 'gemini-2.5-flash':
-            model_name = 'gemini-2.5-flash'
-        else:  # gemini-2.5-pro
-            model_name = 'gemini-2.5-pro'
+        # NOTE:
+        # - 프론트(ModelSelectionModal)에서는 "gemini-3-flash", "gemini-3-pro" 같은 UI용 id를 저장한다.
+        # - 실제 Gemini 호출은 genai.GenerativeModel(<실제 모델명>)에 들어갈 문자열이 필요하므로 여기서 매핑한다.
+        # - 기존 기본값(gemini-2.5-pro)은 그대로 유지한다. (요청: 2.5-pro는 가만히)
+        try:
+            sub = (preferred_sub_model or "").strip()
+        except Exception:
+            sub = ""
+
+        # Gemini 3 Preview 매핑 (대표님 제공 예시 기반)
+        if sub in ("gemini-3-pro", "gemini-3-pro-preview"):
+            model_name = "gemini-3-pro-preview"
+        elif sub in ("gemini-3-flash", "gemini-3-flash-preview"):
+            model_name = "gemini-3-flash-preview"
+        elif sub == "gemini-2.5-flash":
+            model_name = "gemini-2.5-flash"
+        else:
+            # gemini-2.5-pro(기본) 포함: 알 수 없는 값은 기존 안정 기본값으로 폴백
+            model_name = "gemini-2.5-pro"
         return await get_gemini_completion(full_prompt, temperature=t, model=model_name, max_tokens=max_tokens)
         
     elif preferred_model == 'claude':
@@ -1624,23 +1742,45 @@ async def get_ai_chat_response(
         # 유효하지 않은 값이 들어오면 최신 안정 버전으로 폴백
         claude_default = CLAUDE_MODEL_PRIMARY
         claude_mapping = {
-            # UI 표기 → 실제 모델 ID (모두 최신 Sonnet 4로 통일)
-            'claude-4-sonnet': claude_default,
-            'claude-3.7-sonnet': claude_default,
-            'claude-3.5-sonnet-v2': claude_default,
-            'claude-3-5-sonnet-20241022': claude_default,
-            'claude-sonnet-4-20250514': CLAUDE_MODEL_PRIMARY,
+            # UI 표기 → 실제 모델 ID
+            # - 프론트(ModelSelectionModal)의 최신 Claude 모델명(4.0+)을 그대로 허용한다.
+            # - 과거에 저장된 값(점 표기/버전 스냅샷 등)은 안전하게 4.0+로 폴백한다.
+            # 최신 (권장)
+            'claude-sonnet-4': 'claude-sonnet-4',
+            'claude-opus-4-1': 'claude-opus-4-1',
+            'claude-sonnet-4-5': 'claude-sonnet-4-5',
+            'claude-opus-4-5': 'claude-opus-4-5',
+
+            # 레거시(UI/저장값) 호환
+            'claude-4-sonnet': 'claude-sonnet-4',
+            'claude-sonnet-4-20250514': 'claude-sonnet-4',
+            'claude-sonnet-4.5': 'claude-sonnet-4-5',
+            'claude-opus-4.5': 'claude-opus-4-5',
+            'claude-sonnet-4.5-think': 'claude-sonnet-4-5',
         }
 
-        model_name = claude_mapping.get(preferred_sub_model, claude_default)
+        try:
+            sub = (preferred_sub_model or "").strip()
+        except Exception:
+            sub = ""
+        model_name = claude_mapping.get(sub, claude_default)
         return await get_claude_completion(full_prompt, temperature=t, model=model_name, max_tokens=max_tokens)
         
     elif preferred_model == 'gpt':
-        if preferred_sub_model == 'gpt-4.1':
-            model_name = 'gpt-4.1'
-        elif preferred_sub_model == 'gpt-4.1-mini':
-            model_name = 'gpt-4.1-mini'
-        else:  # gpt-4o
+        # NOTE:
+        # - 프론트(ModelSelectionModal)에서 gpt-5.1/gpt-5.2 등 최신 모델명을 선택할 수 있다.
+        # - GPT-5 계열은 get_openai_completion 내부에서 Responses API로 분기된다.
+        try:
+            sub = (preferred_sub_model or "").strip()
+        except Exception:
+            sub = ""
+
+        if sub.startswith("gpt-5"):
+            model_name = sub
+        elif sub in ("gpt-4.1", "gpt-4.1-mini", "gpt-4o"):
+            model_name = sub
+        else:
+            # 알 수 없는 값은 기존 안정 기본값으로 폴백
             model_name = 'gpt-4o'
         return await get_openai_completion(full_prompt, temperature=t, model=model_name, max_tokens=max_tokens)
         

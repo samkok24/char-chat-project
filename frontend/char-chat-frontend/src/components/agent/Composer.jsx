@@ -591,7 +591,7 @@ function ImageTray({ onInsert, onClose }) {
       const { mediaAPI } = await import('../../lib/api');
       const res = await mediaAPI.generate({
         provider: 'gemini',
-        model: 'gemini-2.5-flash-image-preview',
+        model: 'gemini-2.5-flash-image',
         ratio: '3:4',
         count: genCount,
         prompt: genPrompt + styleHint + ", 3:4 aspect ratio, vertical composition"

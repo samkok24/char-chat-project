@@ -32,6 +32,7 @@ import {
   BookOpen,
 } from 'lucide-react';
 import { formatCount } from '../lib/format';
+import { replacePromptTokens } from '../lib/prompt';
 import AppLayout from '../components/layout/AppLayout';
 import { CharacterCard as SharedCharacterCard, CharacterCardSkeleton as SharedCharacterCardSkeleton } from '../components/CharacterCard';
 import StoryExploreCard from '../components/StoryExploreCard';
@@ -344,7 +345,12 @@ const MyCharactersPage = () => {
       <CardContent className="flex-1 flex flex-col justify-between">
         <div>
           <p className="text-sm text-gray-600 mb-4 line-clamp-2 min-h-[40px]">
-            {character.description || '설명이 없습니다.'}
+            {(() => {
+              const nm = character?.name || '캐릭터';
+              const raw = character?.description || '';
+              const rendered = replacePromptTokens(raw, { assistantName: nm, userName: '당신' }).trim();
+              return rendered || '설명이 없습니다.';
+            })()}
           </p>
           
           <div className="flex items-center space-x-4 text-sm text-gray-500 mb-4">

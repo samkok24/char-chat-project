@@ -17,7 +17,6 @@ import {
   ChevronDown, 
   Check, 
   X, 
-  Coins 
 } from 'lucide-react';
 import {
   Collapsible,
@@ -75,22 +74,19 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
       subModels: [
         { id: 'gemini-3-flash', name: 'Gemini 3 Flash', description: '빠르면서 밀도 있는 AI', cost: 4, badge: '이벤트', badgeClass: 'bg-amber-500 text-black hover:bg-amber-500' },
         { id: 'gemini-3-pro', name: 'Gemini 3 Pro', description: '상황 묘사와 플롯테이킹이 강한 최고 성능의 AI', cost: 8, badge: '이벤트', badgeClass: 'bg-amber-500 text-black hover:bg-amber-500' },
-        { id: 'gemini-2.5-pro-positive', name: 'Gemini 2.5 Pro Positive', description: '긍정적 사고, 희망적인 시선과 따뜻한 어조의 응답', cost: 8 },
         // ✅ 기존 기본값(gemini-2.5-pro) 유지: 백엔드 호환 + 기본 선택값 유지
         { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro Standard', description: '비판적 사고, 냉철한 판단과 직설적 어조의 응답', cost: 8, badge: '인기', badgeClass: 'bg-pink-600 text-white hover:bg-pink-600' },
-        { id: 'gemini-2.5-pro-image', name: 'Gemini 2.5 Pro Image', description: '대화 중에도 이미지를 자연스럽게, 파란색 Gemini 2.5 Pro 기반', cost: 8, badge: '추천', badgeClass: 'bg-emerald-500 text-black hover:bg-emerald-500' },
       ]
     },
     claude: {
       name: 'Claude 모델',
       cost: 10,
       subModels: [
-        { id: 'claude-opus-4.5', name: 'Claude Opus 4.5', description: '더 향상된 Claude의 플래그십 모델', cost: 20, badge: '신규', badgeClass: 'bg-pink-600 text-white hover:bg-pink-600' },
-        { id: 'claude-sonnet-4.5', name: 'Claude Sonnet 4.5', description: '빠르고 안정적인 성능의 올라운더 AI', cost: 10, badge: '인기', badgeClass: 'bg-pink-600 text-white hover:bg-pink-600' },
-        { id: 'claude-sonnet-4.5-think', name: 'Claude Sonnet 4.5 Think', description: '추론을 더해 깊이 있는 대화', cost: 12 },
-        // ✅ 백엔드 매핑 존재(claude-4-sonnet, claude-3.7-sonnet)
-        { id: 'claude-4-sonnet', name: 'Claude Sonnet 4', description: '정확한 정보 처리와 자연스러운 대화의 조화, 다양한 분야에 적합', cost: 10 },
-        { id: 'claude-3.7-sonnet', name: 'Claude 3.7 Sonnet', description: '안정적인 하이브리드 모델, Claude 시리즈의 균형 잡힌 선택지', cost: 10 },
+        // ✅ 최신 Claude(4.0+) 모델명 기준으로 정리 (백엔드에서도 동일 문자열로 호출)
+        { id: 'claude-sonnet-4', name: 'Claude Sonnet 4', description: '빠르고 안정적인 올라운더', cost: 10, badge: '기본', badgeClass: 'bg-pink-600 text-white hover:bg-pink-600' },
+        { id: 'claude-opus-4-1', name: 'Claude Opus 4.1', description: '더 깊은 추론/품질을 지향하는 플래그십', cost: 20, badge: '신규', badgeClass: 'bg-pink-600 text-white hover:bg-pink-600' },
+        { id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5', description: '더 향상된 성능의 Sonnet 라인', cost: 12, badge: '인기', badgeClass: 'bg-pink-600 text-white hover:bg-pink-600' },
+        { id: 'claude-opus-4-5', name: 'Claude Opus 4.5', description: '최상위 품질의 Opus 라인', cost: 25, badge: '최고', badgeClass: 'bg-pink-600 text-white hover:bg-pink-600' },
       ]
     },
     gpt: {
@@ -533,9 +529,6 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
                           <p className="text-sm text-gray-600 mt-1">{subModel.description}</p>
                         </div>
                       </div>
-                      <Badge className="bg-yellow-100 text-yellow-800">
-                        {subModel.cost}P
-                      </Badge>
                     </div>
                   </div>
                 ))}
