@@ -37,6 +37,93 @@ def _as_text(val) -> str:
     except Exception:
         return ""
 
+
+def _format_history_block(history: object, *, max_items: int = 20, max_chars: int = 4000) -> str:
+    """
+    모델 입력 프롬프트에 포함할 "최근 대화" 블록을 생성한다.
+
+    배경/의도:
+    - 일부 호출(특히 원작챗)에서 history를 구성해 넘기지만, 과거 구현에서는 이를 프롬프트에 반영하지 않아
+      모델이 직전 대화 내용을 망각하고 설정/고유명사를 즉흥적으로 재작성하는 문제가 있었다.
+    - history 구조가 호출처마다 조금씩 다를 수 있으므로(dict/list/object) 방어적으로 파싱한다.
+
+    형식(가독성 우선, KISS):
+    - "사용자/캐릭터/시스템" 라벨을 붙여 텍스트 형태로 직렬화한다.
+    - 과도한 토큰 사용을 막기 위해 max_items/max_chars로 제한한다.
+    """
+    try:
+        if not history or not isinstance(history, list):
+            return ""
+
+        # 최신 N개만 고려 (호출자가 이미 잘라서 주더라도 이중 방어)
+        items = history[-max_items:] if len(history) > max_items else history
+
+        def _extract_role_and_text(item: object) -> tuple[str, str]:
+            # dict 형태: {"role": "...", "parts": [text] } / {"role": "...", "content": "..."}
+            if isinstance(item, dict):
+                role = str(item.get("role") or "").strip().lower()
+                parts = item.get("parts")
+                if isinstance(parts, list) and parts:
+                    txt = _as_text(parts[0]).strip()
+                else:
+                    txt = _as_text(item.get("content")).strip()
+                return role, txt
+
+            # 객체 형태: .role / .content
+            role = ""
+            txt = ""
+            try:
+                role = str(getattr(item, "role", "") or "").strip().lower()
+            except Exception:
+                role = ""
+            try:
+                txt = _as_text(getattr(item, "content", "")).strip()
+            except Exception:
+                txt = ""
+            # 마지막 폴백: 문자열
+            if not txt and isinstance(item, str):
+                txt = item.strip()
+            return role, txt
+
+        lines: list[str] = []
+        for it in items:
+            role, txt = _extract_role_and_text(it)
+            if not txt:
+                continue
+            # 지나치게 긴 개별 메시지는 잘라서 포함(토큰 폭주 방지)
+            if len(txt) > 800:
+                txt = txt[:800]
+
+            if role in ("user", "human"):
+                label = "사용자"
+            elif role in ("system",):
+                label = "시스템"
+            else:
+                # model/assistant/character 등은 모두 '캐릭터'로 통일(원작챗/일반챗 공통)
+                label = "캐릭터"
+
+            lines.append(f"{label}: {txt}")
+
+        if not lines:
+            return ""
+
+        # max_chars 방어: 뒤(최신)부터 채워서 잘라낸다.
+        picked: list[str] = []
+        total = 0
+        for ln in reversed(lines):
+            add = len(ln) + (1 if picked else 0)
+            if total + add > max_chars:
+                break
+            picked.append(ln)
+            total += add
+        picked.reverse()
+
+        if not picked:
+            return ""
+        return "\n\n[최근 대화]\n" + "\n".join(picked) + "\n"
+    except Exception:
+        return ""
+
 # --- Gemini AI 설정 ---
 genai.configure(api_key=settings.GEMINI_API_KEY)
 claude_client = anthropic.AsyncAnthropic(api_key=settings.CLAUDE_API_KEY)
@@ -1506,8 +1593,14 @@ async def get_ai_chat_response(
         intent_lines.append("태그: " + ", ".join(intent_info.get("transform_tags", [])[:6]))
     intent_block = ("\n[의도 반영]\n" + "\n".join(intent_lines)) if intent_lines else ""
 
-    # 프롬프트와 사용자 메시지 결합(+의도 블록)
-    full_prompt = f"{character_prompt}{intent_block}\n\n사용자 메시지: {user_message}\n\n위 설정에 맞게 자연스럽게 응답하세요 (대화만 출력, 라벨 없이):"
+    # ✅ 최근 대화 히스토리 반영(방어적)
+    # - 원작챗/일반챗 등에서 history를 넘겨도 무시되면 '망각/설정 붕괴'가 발생한다.
+    # ✅ history 최대 개수는 50까지 허용하되, max_chars(4000)로 토큰 폭주를 1차 방어한다.
+    # - 일반챗은 최근 50개 윈도우 슬라이싱을 의도하고 있어 max_items도 50으로 정합을 맞춘다.
+    history_block = _format_history_block(history, max_items=50, max_chars=4000)
+
+    # 프롬프트와 사용자 메시지 결합(+히스토리 + 의도 블록)
+    full_prompt = f"{character_prompt}{history_block}{intent_block}\n\n사용자 메시지: {user_message}\n\n위 설정에 맞게 자연스럽게 응답하세요 (대화만 출력, 라벨 없이):"
 
     # 응답 길이 선호도 → 최대 토큰 비율 조정 (중간 기준 1.0)
     base_max_tokens = 1800

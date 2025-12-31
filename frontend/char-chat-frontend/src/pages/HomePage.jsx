@@ -13,6 +13,7 @@ import { charactersAPI, usersAPI, tagsAPI, storiesAPI, noticesAPI } from '../lib
 
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
 import { Avatar, AvatarFallback, AvatarImage } from '../components/ui/avatar';
@@ -24,12 +25,9 @@ import { Skeleton } from '../components/ui/skeleton';
 // import { resolveImageUrl } from '../lib/images';
 import { 
   Search, 
-  MessageCircle, 
   Heart, 
   Users, 
   Sparkles,
-  BookOpen,
-  Plus,
   Loader2,
   LogIn,
   UserPlus,
@@ -60,9 +58,11 @@ import RecommendedCharacters from '../components/RecommendedCharacters';
 import TopStories from '../components/TopStories';
 import TopOrigChat from '../components/TopOrigChat';
 import WebNovelSection from '../components/WebNovelSection';
+import QuickMeetCharacterModal from '../components/QuickMeetCharacterModal';
 import {
   HOME_SLOTS_STORAGE_KEY,
   HOME_SLOTS_CHANGED_EVENT,
+  HOME_SLOTS_CURATED_CHARACTERS_SLOT_ID,
   getHomeSlots,
   isHomeSlotActive,
 } from '../lib/cmsSlots';
@@ -107,6 +107,115 @@ const HomePage = () => {
       try { window.removeEventListener('storage', onStorage); } catch (_) {}
     };
   }, [refreshHomeSlots]);
+
+  // ===== 온보딩(메인 탭): 검색(성별+키워드) + 30초 생성 =====
+  // 요구사항:
+  // - 검색 기본값은 "전체"
+  // - 필터:
+  //   1) 성별: 전체/남성/여성/그외
+  // - 태그 드롭다운은 제거하고, 태그도 키워드로 검색되도록 한다(서버 검색에 태그 포함)
+  // - 결과 선택 시 해당 캐릭터와 대화 시작(항상 새 대화)
+  const [onboardingGender, setOnboardingGender] = useState('all'); // all|male|female|other
+  const [onboardingQueryRaw, setOnboardingQueryRaw] = useState('');
+  const [onboardingQuery, setOnboardingQuery] = useState('');
+  const [onboardingGenderDebounced, setOnboardingGenderDebounced] = useState('all');
+  const [quickMeetOpen, setQuickMeetOpen] = useState(false);
+  const [quickMeetInitialName, setQuickMeetInitialName] = useState('');
+  const [quickMeetInitialSeedText, setQuickMeetInitialSeedText] = useState('');
+
+  useEffect(() => {
+    // 디바운스: 과도한 API 호출 방지(배포 안정)
+    const t = setTimeout(() => {
+      try { setOnboardingQuery(onboardingQueryRaw); } catch (_) {}
+    }, 250);
+    return () => clearTimeout(t);
+  }, [onboardingQueryRaw]);
+
+  useEffect(() => {
+    // ✅ 성별도 디바운스해서, 연속 선택 시 API가 과도하게 호출되지 않도록 방어한다.
+    const t = setTimeout(() => {
+      try { setOnboardingGenderDebounced(onboardingGender); } catch (_) {}
+    }, 250);
+    return () => clearTimeout(t);
+  }, [onboardingGender]);
+
+  const openQuickMeet = (prefill = '') => {
+    if (!requireAuth('캐릭터 생성')) return;
+    const raw = String(prefill || '').trim();
+    // ✅ UX: 검색어가 "이름"인지 "느낌"인지 애매하므로, 간단한 휴리스틱으로 안전하게 매핑한다.
+    // - 공백이 있거나 길면(>8) 보통 '느낌'일 확률이 높다.
+    // - 짧고 공백이 없으면 이름일 확률이 높다.
+    const looksLikeName = !!raw && raw.length <= 8 && !/\s/.test(raw);
+    setQuickMeetInitialName(looksLikeName ? raw : '');
+    setQuickMeetInitialSeedText(looksLikeName ? '' : raw);
+    setQuickMeetOpen(true);
+  };
+
+  const startChatFromOnboarding = (characterOrId) => {
+    if (!requireAuth('캐릭터 채팅')) return;
+    const c = (characterOrId && typeof characterOrId === 'object') ? characterOrId : null;
+    const id = String((c?.id ?? characterOrId) || '').trim();
+    if (!id) return;
+    // ✅ 온보딩/검색은 항상 새 대화로 시작 (예측 가능 UX)
+    const originStoryId = String(c?.origin_story_id || '').trim();
+    const isOrig = !!originStoryId || !!(c?.is_origchat || c?.source === 'origchat');
+    if (isOrig && originStoryId) {
+      // ✅ 원작챗 캐릭터는 일반챗이 아니라 origchat plain 모드로 진입해야 한다.
+      navigate(`/ws/chat/${id}?source=origchat&storyId=${originStoryId}&mode=plain&new=1`);
+      return;
+    }
+    navigate(`/ws/chat/${id}?new=1`);
+  };
+
+  const onboardingSearchTerm = React.useMemo(() => {
+    try { return String(onboardingQuery || '').trim(); } catch (_) { return ''; }
+  }, [onboardingQuery]);
+  // ✅ 요구사항: 성별 선택만으로는 조회하지 않는다. 키워드(2글자 이상) 입력 시에만 검색한다.
+  const onboardingSearchEnabled = onboardingSearchTerm.length >= 2;
+
+  const { data: onboardingSearchResults = [], isLoading: onboardingSearchLoading } = useQuery({
+    queryKey: [
+      'onboarding',
+      'search',
+      onboardingGenderDebounced,
+      onboardingSearchTerm,
+    ],
+    /**
+     * ✅ 방어적: 탭 상태(isCharacterTab/isOrigSerialTab)는 아래에서 선언된다.
+     * - 여기서 선참조하면 런타임 ReferenceError로 홈 전체가 렌더링 실패(=빈 화면)할 수 있다.
+     * - 온보딩 검색은 "메인 탭"에서만 동작하면 되므로, URL 쿼리(tab)로 안전하게 판별한다.
+     */
+    enabled: onboardingSearchEnabled && (() => {
+      try {
+        const p = new URLSearchParams(location.search);
+        const tab = p.get('tab');
+        return tab !== 'character' && tab !== 'origserial';
+      } catch (_) {
+        return true; // 파싱 실패 시에도 홈이 죽지 않도록 기본 허용
+      }
+    })(),
+    queryFn: async () => {
+      try {
+        const params2 = {
+          skip: 0,
+          limit: 10,
+          // 키워드 검색(태그도 검색됨: 서버에서 tag slug/name을 함께 탐색)
+          search: onboardingSearchTerm,
+          // 온보딩은 "좋은 결과" 우선 노출(기본 인기순)
+          sort: 'likes',
+          // ✅ 성별 필터(서버에서 태그 기반으로 해석)
+          gender: onboardingGenderDebounced !== 'all' ? onboardingGenderDebounced : undefined,
+        };
+        const res = await charactersAPI.getCharacters(params2);
+        return Array.isArray(res.data) ? res.data : [];
+      } catch (e) {
+        console.error('[HomePage] onboarding search failed:', e);
+        return [];
+      }
+    },
+    staleTime: 0,
+    refetchOnWindowFocus: false,
+  });
   // URL 쿼리로부터 초기 탭 결정
   const params = new URLSearchParams(location.search);
   const tabParam = params.get('tab');
@@ -798,7 +907,13 @@ const HomePage = () => {
     const now = Date.now();
     const arr = Array.isArray(homeSlots) ? homeSlots : [];
     return arr.filter((s) => {
-      try { return isHomeSlotActive(s, now); } catch (_) { return false; }
+      try {
+        // ✅ 초심자 추천 캐릭터 구좌는 홈 상단에서 별도로 고정 렌더링한다(중복/혼선 방지).
+        if (String(s?.id || '') === HOME_SLOTS_CURATED_CHARACTERS_SLOT_ID) return false;
+        return isHomeSlotActive(s, now);
+      } catch (_) {
+        return false;
+      }
     });
   }, [homeSlots]);
 
@@ -1000,21 +1115,168 @@ const HomePage = () => {
           {/* ✅ 캐러셀 배너(상단 탭 ↔ 필터 탭 사이) */}
           <HomeBannerCarousel className="mb-5 sm:mb-6" />
 
+          {/* ===== 온보딩(메인 탭): 검색 + 30초 생성 ===== */}
+          {!isCharacterTab && !isOrigSerialTab && (
+            <section className="mb-6">
+              <div className="rounded-2xl border border-gray-800/80 bg-gradient-to-b from-gray-900/70 to-gray-900/30 p-5 sm:p-6 shadow-lg shadow-black/20">
+                <div className="text-xl sm:text-2xl font-semibold text-white">
+                  원하는 캐릭터와 즐겁게 대화해보세요.
+                </div>
+                <div className="text-sm text-gray-300 mt-1 leading-relaxed">
+                  검색으로 찾거나, 30초만에 새 캐릭터를 만들어 바로 대화할 수 있어요.
+                </div>
+
+                <div className="mt-4 grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
+                  {/* ✅ 검색 컨트롤(좌) : 결과를 여기 안에 넣지 않고, 아래 별도 섹션으로 분리해서 CTA가 밀리지 않게 한다 */}
+                  <div className="lg:col-span-8">
+                    <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
+                      {/* 성별 */}
+                      <div className="sm:col-span-3">
+                        <Select value={onboardingGender} onValueChange={setOnboardingGender}>
+                          <SelectTrigger className="w-full h-11 rounded-xl bg-gray-800/60 border-gray-700/80 text-white hover:bg-gray-800/80 focus-visible:ring-purple-500/30">
+                            <SelectValue placeholder="전체" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="all">전체</SelectItem>
+                            <SelectItem value="male">남성</SelectItem>
+                            <SelectItem value="female">여성</SelectItem>
+                            <SelectItem value="other">그외</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      {/* 검색어 */}
+                      <div className="sm:col-span-9">
+                        <Input
+                          value={onboardingQueryRaw}
+                          onChange={(e) => setOnboardingQueryRaw(e.target.value)}
+                          placeholder="이름/키워드로 검색(예: 아이돌, 북부대공)"
+                          className="h-11 rounded-xl bg-gray-800/60 border-gray-700/80 text-white placeholder:text-gray-400 w-full focus-visible:ring-purple-500/30 focus-visible:border-purple-500/40"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* ✅ 30초 생성 CTA(우): 모바일에서도 결과보다 위에 오도록 '컨트롤 다음'에 배치 */}
+                  <div className="lg:col-span-4 self-start">
+                    <div className="rounded-xl border border-gray-800 bg-gray-950/20 p-4 flex flex-col">
+                      <div className="text-sm font-semibold text-white">바로 만들고 시작하기</div>
+                      <div className="text-xs text-gray-400 mt-1 leading-relaxed">
+                        원하는 캐릭터가 없으면 이미지와 한 줄 느낌만 입력하고 30초만에 만들 수 있어요.
+                      </div>
+                      <div className="mt-4">
+                        <Button
+                          type="button"
+                          className="w-full h-11 rounded-xl bg-purple-600 hover:bg-purple-700 text-white shadow-sm shadow-purple-900/30"
+                          onClick={() => openQuickMeet(onboardingSearchTerm || onboardingQueryRaw)}
+                        >
+                          30초만에 캐릭터 만나기
+                        </Button>
+                      </div>
+                      <div className="mt-3 text-xs text-gray-500">
+                        생성 후 프리뷰를 보고, 마음에 들면 바로 대화로 이동할 수 있어요.
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* ✅ 검색 결과(좌): 최대 높이 제한 + 내부 스크롤 */}
+                  <div className="lg:col-span-8">
+                    <div className="mt-3">
+                      {!onboardingSearchEnabled ? (
+                        <div className="rounded-xl border border-gray-800 bg-gray-950/20 px-4 py-3 text-xs text-gray-400">
+                          검색어를 2글자 이상 입력하면 결과가 표시됩니다.
+                        </div>
+                      ) : onboardingSearchLoading ? (
+                        <div className="rounded-xl border border-gray-800 bg-gray-950/20 p-3 space-y-2">
+                          {Array.from({ length: 3 }).map((_, i) => (
+                            <div key={`sk-onb-${i}`} className="h-12 rounded-lg bg-gray-800/40 border border-gray-800 animate-pulse" />
+                          ))}
+                        </div>
+                      ) : (Array.isArray(onboardingSearchResults) && onboardingSearchResults.length > 0) ? (
+                        <div className="rounded-xl border border-gray-800 bg-gray-950/20 overflow-hidden">
+                          <div className="max-h-72 overflow-y-auto">
+                            {onboardingSearchResults.slice(0, 8).map((c) => {
+                              const id = String(c?.id || '').trim();
+                              const nm = String(c?.name || '').trim();
+                              const desc = String(c?.description || '').trim();
+                              const thumb = getThumbnailUrl(c?.thumbnail_url || c?.avatar_url || '');
+                              return (
+                                <button
+                                  key={`onb-${id}`}
+                                  type="button"
+                                  className="w-full text-left px-3 py-2.5 flex items-center gap-3 border-b border-gray-800/80 last:border-b-0 hover:bg-gray-800/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-500/30"
+                                  onClick={() => startChatFromOnboarding(c)}
+                                >
+                                  <div className="w-10 h-10 rounded-full bg-gray-800/60 border border-gray-700/80 overflow-hidden flex items-center justify-center flex-shrink-0">
+                                    {thumb ? (
+                                      <img
+                                        src={thumb}
+                                        alt={nm}
+                                        className="w-full h-full object-cover object-top"
+                                        loading="lazy"
+                                        onError={(e) => { try { e.currentTarget.style.display = 'none'; } catch (_) {} }}
+                                      />
+                                    ) : null}
+                                    <span className={`text-sm text-gray-200 ${thumb ? 'hidden' : ''}`}>{(nm || 'C').charAt(0)}</span>
+                                  </div>
+                                  <div className="min-w-0 flex-1">
+                                    <div className="text-sm font-semibold text-white truncate">{nm || '캐릭터'}</div>
+                                    <div className="text-xs text-gray-400 truncate">{desc || '설명이 없습니다.'}</div>
+                                  </div>
+                                </button>
+                              );
+                            })}
+                          </div>
+                          <div className="px-3 py-2 text-xs text-gray-500 border-t border-gray-800/80 bg-gray-950/10">
+                            원하는 캐릭터를 클릭하면 대화가 시작됩니다.
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="rounded-xl border border-gray-800 bg-gray-950/20 p-4">
+                          <div className="text-sm text-gray-200">검색 결과가 없습니다.</div>
+                          <div className="text-xs text-gray-400 mt-1">
+                            바로 만들고 시작할 수 있어요.
+                          </div>
+                          <div className="mt-3 flex justify-end">
+                            <Button
+                              type="button"
+                              className="h-11 rounded-xl bg-purple-600 hover:bg-purple-700 text-white"
+                              onClick={() => openQuickMeet(onboardingSearchTerm || onboardingQueryRaw)}
+                            >
+                              30초 안에 원하는 캐릭터 만나기
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+          )}
+
+          <QuickMeetCharacterModal
+            open={quickMeetOpen}
+            onClose={() => setQuickMeetOpen(false)}
+            initialName={quickMeetInitialName}
+            initialSeedText={quickMeetInitialSeedText}
+          />
+
           {/* 상단 필터 바 + 검색 */}
           <div className="mb-6">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex flex-wrap items-center gap-3">
                 <button
                   onClick={() => updateTab(null, null)}
-                  className={`px-3 py-1 rounded-full border ${sourceFilter === null ? 'bg-yellow-500 text-black border-yellow-400' : 'bg-gray-800 text-gray-200 border-gray-700'}`}
+                  className={`h-9 px-4 rounded-full border text-sm font-medium transition-colors ${sourceFilter === null ? 'bg-purple-600 text-white border-purple-500 shadow-sm shadow-purple-900/30' : 'bg-gray-800/60 text-gray-200 border-gray-700/80 hover:bg-gray-800'}`}
                 >전체</button>
                 <button
                   onClick={() => updateTab('ORIGINAL', 'character')}
-                  className={`px-3 py-1 rounded-full border ${sourceFilter === 'ORIGINAL' ? 'bg-yellow-500 text-black border-yellow-400' : 'bg-gray-800 text-gray-200 border-gray-700'}`}
+                  className={`h-9 px-4 rounded-full border text-sm font-medium transition-colors ${sourceFilter === 'ORIGINAL' ? 'bg-purple-600 text-white border-purple-500 shadow-sm shadow-purple-900/30' : 'bg-gray-800/60 text-gray-200 border-gray-700/80 hover:bg-gray-800'}`}
                 >캐릭터</button>
                 <button
                   onClick={() => updateTab('ORIGSERIAL', 'origserial')}
-                  className={`px-3 py-1 rounded-full border ${isOrigSerialTab ? 'bg-yellow-500 text-black border-yellow-400' : 'bg-gray-800 text-gray-200 border-gray-700'}`}
+                  className={`h-9 px-4 rounded-full border text-sm font-medium transition-colors ${isOrigSerialTab ? 'bg-purple-600 text-white border-purple-500 shadow-sm shadow-purple-900/30' : 'bg-gray-800/60 text-gray-200 border-gray-700/80 hover:bg-gray-800'}`}
                 >원작연재</button>
 
                 {/* ✅ 검색 UI 비노출(요구사항): 전 탭에서 숨김 */}
@@ -1046,7 +1308,6 @@ const HomePage = () => {
                     }}
                     className="flex w-full sm:w-auto items-center justify-center px-4 py-2.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors font-medium text-sm shadow-lg"
                   >
-                    <Plus className="w-5 h-5 mr-2" />
                     캐릭터 생성
                   </Link>
                 )}
@@ -1094,7 +1355,6 @@ const HomePage = () => {
                   }}
                   className="flex w-full items-center justify-center px-4 py-2.5 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors font-medium text-sm"
                 >
-                  <BookOpen className="w-5 h-5 mr-2" />
                   원작 쓰기
                 </Link>
               </div>
@@ -1423,13 +1683,45 @@ const HomePage = () => {
               <>
                 <ErrorBoundary>
                   <div className={gridColumnClasses}>
-                    {visibleGridItems.map((item) => (
-                      item.kind === 'story' ? (
-                        <StoryExploreCard key={`story-${item.data.id}`} story={item.data} />
-                      ) : (
-                        <CharacterCard key={`char-${item.data.id}`} character={item.data} showOriginBadge />
-                      )
-                    ))}
+                    {visibleGridItems.map((item, idx) => {
+                      const kind = String(item?.kind || '').toLowerCase();
+                      const isStory = kind === 'story';
+                      const id = item?.data?.id;
+                      const key = `${isStory ? 'story' : 'char'}-${id || idx}`;
+
+                      // ✅ 메인(혼합) 탐색 그리드에서만 라벨/이동 안내를 강화한다(캐릭터 탭 UI는 과밀 방지)
+                      const showLabels = !isCharacterTab && !isOrigSerialTab;
+                      if (!showLabels) {
+                        return isStory ? (
+                          <StoryExploreCard key={key} story={item.data} />
+                        ) : (
+                          <CharacterCard key={key} character={item.data} showOriginBadge />
+                        );
+                      }
+
+                      return (
+                        <div key={key} className="relative">
+                          {/* NOTE: 캐릭터 카드는 내부에서 이미 원작/기본 배지를 표시하므로, '캐릭터챗' 배지는 중복/겹침 이슈로 제거 */}
+                          {isStory && (
+                            <div className="absolute left-2 top-2 z-10 pointer-events-none">
+                              <Badge className="bg-blue-600/80 hover:bg-blue-600 text-white text-[10px] px-2 py-0.5">
+                                웹소설
+                              </Badge>
+                            </div>
+                          )}
+
+                          {isStory ? (
+                            <StoryExploreCard story={item.data} />
+                          ) : (
+                            <CharacterCard character={item.data} showOriginBadge />
+                          )}
+
+                          <div className="mt-1 text-xs text-gray-400">
+                            {isStory ? '클릭하면 작품 상세로 이동합니다' : '클릭하면 채팅이 시작됩니다'}
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 </ErrorBoundary>
                 {/* ✅ 더보기 버튼 (메인탭 탐색영역 전용): 20개씩 단계 노출 */}
@@ -1518,7 +1810,6 @@ const HomePage = () => {
                     }}
                     className="flex items-center justify-center px-4 py-2.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors font-medium text-sm shadow-lg"
                   >
-                    <Plus className="w-5 h-5 mr-2" />
                     캐릭터 생성
                   </Link>
                 </div>

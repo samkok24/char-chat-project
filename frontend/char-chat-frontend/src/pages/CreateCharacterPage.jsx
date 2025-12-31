@@ -54,6 +54,29 @@ import DropzoneGallery from '../components/DropzoneGallery';
 import ErrorBoundary from '../components/ErrorBoundary';
 import { z } from 'zod';
 
+/**
+ * ✅ 필수 선택 옵션(메타) 정의
+ *
+ * 의도/원칙(최소 수정/최대 안전):
+ * - DB 컬럼/테이블을 새로 만들지 않고, 기존 tags 저장(`/characters/:id/tags`)에 함께 저장한다.
+ * - 백엔드 `set_character_tags`는 slug가 없으면 Tag를 자동 생성하므로, 프론트에서 선제 생성이 필요 없다.
+ * - 생성(Create) 시에는 필수 선택으로 강제하고, 편집(Edit)은 기존 데이터가 깨지지 않도록 강제하지 않는다.
+ */
+const REQUIRED_AUDIENCE_CHOICES = [
+  { slug: '남성향', label: '남성향', previewClass: 'bg-gradient-to-br from-slate-900 via-blue-900 to-purple-900' },
+  { slug: '여성향', label: '여성향', previewClass: 'bg-gradient-to-br from-rose-900 via-fuchsia-900 to-indigo-900' },
+  { slug: '전체', label: '전체', previewClass: 'bg-gradient-to-br from-emerald-900 via-slate-900 to-cyan-900' },
+];
+const REQUIRED_STYLE_CHOICES = [
+  { slug: '애니풍', label: '애니풍', previewClass: 'bg-gradient-to-br from-purple-600 via-indigo-600 to-blue-600' },
+  { slug: '실사풍', label: '실사풍', previewClass: 'bg-gradient-to-br from-zinc-900 via-gray-800 to-zinc-700' },
+  { slug: '반실사', label: '반실사', previewClass: 'bg-gradient-to-br from-slate-800 via-stone-700 to-neutral-800' },
+  { slug: '아트웤', label: '아트웤 혹은 디자인', previewClass: 'bg-gradient-to-br from-amber-700 via-orange-700 to-rose-700' },
+];
+const REQUIRED_AUDIENCE_SLUGS = REQUIRED_AUDIENCE_CHOICES.map((c) => c.slug);
+const REQUIRED_STYLE_SLUGS = REQUIRED_STYLE_CHOICES.map((c) => c.slug);
+const DEFAULT_AUDIENCE_SLUG = '남성향';
+
 const CreateCharacterPage = () => {
   const queryClient = useQueryClient();
   const { characterId } = useParams();
@@ -291,21 +314,45 @@ const CreateCharacterPage = () => {
     });
   }, []);
 
+  const { isAuthenticated } = useAuth();
+  const [allTags, setAllTags] = useState([]);
+  const [selectedTagSlugs, setSelectedTagSlugs] = useState([]);
+  const [isTagModalOpen, setIsTagModalOpen] = useState(false);
+  // ✅ 원작챗(OrigChat) 캐릭터는 이 페이지에서 "필수 선택 옵션"을 노출하지 않기 위한 플래그
+  const [isOrigChatCharacter, setIsOrigChatCharacter] = useState(false);
+
   const validateForm = useCallback(() => {
     const result = validationSchema.safeParse(formData);
-    if (result.success) {
-      setFieldErrors({});
-      return { success: true, data: result.data };
-    }
-    const issues = result.error.issues || [];
     const map = {};
-    for (const issue of issues) {
-      const key = issue.path.join('.');
-      if (!map[key]) map[key] = issue.message;
+
+    // 1) 기본(Zod) 검증 결과 반영
+    if (!result.success) {
+      const issues = result.error.issues || [];
+      for (const issue of issues) {
+        const key = issue.path.join('.');
+        if (!map[key]) map[key] = issue.message;
+      }
     }
+
+    // 2) ✅ 신규 필수 선택(메타) 검증 - 생성(Create)에서만 강제(기존 편집 안전)
+    try {
+      if (!isEditMode) {
+        const audience = (selectedTagSlugs || []).find((s) => REQUIRED_AUDIENCE_SLUGS.includes(s)) || null;
+        const style = (selectedTagSlugs || []).find((s) => REQUIRED_STYLE_SLUGS.includes(s)) || null;
+        if (!audience) {
+          map['basic_info.audience_pref'] = '남성향/여성향/전체 중 하나를 선택하세요.';
+        }
+        if (!style) {
+          map['basic_info.visual_style'] = '애니풍/실사풍/반실사/아트웤(디자인) 중 하나를 선택하세요.';
+        }
+      }
+    } catch (_) {}
+
+    const ok = Object.keys(map).length === 0;
     setFieldErrors(map);
+    if (ok) return { success: true, data: result.success ? result.data : formData };
     return { success: false, errors: map };
-  }, [formData, validationSchema]);
+  }, [formData, validationSchema, isEditMode, selectedTagSlugs]);
 
   // 입력 디바운스 검증
   useEffect(() => {
@@ -315,10 +362,32 @@ const CreateCharacterPage = () => {
     return () => clearTimeout(t);
   }, [formData, validateForm]);
 
-  const { isAuthenticated } = useAuth();
-  const [allTags, setAllTags] = useState([]);
-  const [selectedTagSlugs, setSelectedTagSlugs] = useState([]);
-  const [isTagModalOpen, setIsTagModalOpen] = useState(false);
+  /**
+   * ✅ 메타 태그 토글(레퍼런스 카드 선택)
+   *
+   * 의도/동작:
+   * - 같은 그룹에서는 1개만 선택되도록(상호배타) 처리
+   * - 같은 항목을 다시 클릭하면 해제(불 꺼짐)
+   */
+  const toggleExclusiveTag = useCallback((slug, groupSlugs) => {
+    setSelectedTagSlugs((prev) => {
+      const arr = Array.isArray(prev) ? prev : [];
+      const has = arr.includes(slug);
+      const cleaned = arr.filter((s) => !groupSlugs.includes(s));
+      return has ? cleaned : [...cleaned, slug];
+    });
+  }, []);
+
+  // ✅ 기본값(남성향): 새 캐릭터 생성 화면 최초 진입에서만 세팅(사용자가 끌 수 있어야 하므로 강제 재주입 금지)
+  useEffect(() => {
+    if (isEditMode) return;
+    setSelectedTagSlugs((prev) => {
+      const arr = Array.isArray(prev) ? prev : [];
+      const hasAudience = arr.some((s) => REQUIRED_AUDIENCE_SLUGS.includes(s));
+      if (hasAudience) return arr;
+      return [...arr, DEFAULT_AUDIENCE_SLUG];
+    });
+  }, [isEditMode]);
 
   useEffect(() => {
     (async () => {
@@ -571,6 +640,11 @@ const CreateCharacterPage = () => {
       // 이제 API가 항상 일관된 형식의 데이터를 주므로, 코드가 매우 깔끔해집니다.
       const response = await charactersAPI.getCharacter(characterId);
       const char = response.data;
+      // ✅ 원작챗 캐릭터(웹소설/OrigChat)면, 일반 캐릭터 전용 옵션 UI를 숨긴다.
+      try {
+        const isOrig = !!String(char?.origin_story_id || '').trim() || !!char?.is_origchat;
+        setIsOrigChatCharacter(isOrig);
+      } catch (_) {}
       
       // 🔥 고급 캐릭터 데이터 구조로 매핑
       setFormData(prev => ({
@@ -841,20 +915,122 @@ const CreateCharacterPage = () => {
   };
 
   const handleApplyImportedData = (data) => {
-    // StoryImporterModal에서 전달받은 데이터로 폼 채우기
+    /**
+     * AI 스토리 분석 결과를 "현재 고급 캐릭터 생성 폼"에 최대한 채워넣는다.
+     *
+     * 의도/원칙:
+     * - 과거(간단) 스키마 수준(name/description/world_setting)만 채우던 방식에서,
+     *   현재 확장된 입력 볼륨(성격/말투/인사말/예시대화/도입부 등)도 가능한 한 자동 채움.
+     * - 방어적으로: 누락/타입 흔들림이 있어도 폼이 깨지지 않게 기본값 유지 + 최소 유효성(예시대화 1개) 확보.
+     */
+    const safeText = (v) => {
+      try { return String(v ?? '').trim(); } catch (_) { return ''; }
+    };
+    const safeArray = (v) => (Array.isArray(v) ? v : []);
+    const clip = (v, maxLen) => {
+      const s = safeText(v);
+      if (!s) return '';
+      return s.length > maxLen ? s.slice(0, maxLen) : s;
+    };
+    const toGreetings = (v) => {
+      // greetings는 list[str]가 이상적이지만, 문자열/혼합 타입도 방어적으로 처리
+      const arr = safeArray(v)
+        .map((x) => clip(x, 500))
+        .map((x) => x.trim())
+        .filter(Boolean);
+      if (arr.length > 0) return arr.slice(0, 3);
+      return [];
+    };
+    const toExampleDialogues = (v) => {
+      // example_dialogues는 [{user_message, character_response}] 또는 {dialogues:[...]} 형태 모두 지원
+      const rawList = Array.isArray(v) ? v : (Array.isArray(v?.dialogues) ? v.dialogues : []);
+      const mapped = rawList
+        .map((d) => ({
+          user_message: clip(d?.user_message, 500),
+          character_response: clip(d?.character_response, 1000),
+          order_index: Number.isFinite(Number(d?.order_index)) ? Number(d.order_index) : undefined,
+        }))
+        .filter((d) => d.user_message.trim() && d.character_response.trim())
+        .map((d, idx) => ({ ...d, order_index: d.order_index ?? idx }));
+      return mapped;
+    };
+    const toIntroScenes = (v) => {
+      const rawList = safeArray(v);
+      const mapped = rawList
+        .map((s, idx) => ({
+          title: clip(s?.title || `도입부 ${idx + 1}`, 100),
+          content: clip(s?.content, 2000),
+          secret: clip(s?.secret, 1000),
+        }))
+        .filter((s) => s.content.trim() || s.secret.trim() || s.title.trim());
+      return mapped;
+    };
+
+    const nextName = clip(data?.name, 100) || '';
+    const nextDesc = clip(data?.description, 3000) || '';
+    const nextWorld = clip(data?.world_setting, 5000) || '';
+    const nextPersonality = clip(data?.personality, 2000) || '';
+    const nextSpeech = clip(data?.speech_style, 2000) || '';
+    const nextUserDisplay = clip(data?.user_display_description, 3000) || '';
+    const greetings = toGreetings(data?.greetings);
+    const exampleDialogues = toExampleDialogues(data?.example_dialogues);
+    const introScenes = toIntroScenes(data?.introduction_scenes);
+
+    // 예시 대화 최소 1개 확보(현재 UI 검증/UX 안정)
+    const fallbackDialogues = (() => {
+      const n = nextName || '캐릭터';
+      const g = greetings[0] || nextDesc || '안녕하세요. 어떤 이야기부터 시작해볼까요?';
+      return [{
+        user_message: '안녕, 오늘은 어떤 기분이야?',
+        character_response: `${n}: ${g}`.slice(0, 1000),
+        order_index: 0,
+      }];
+    })();
+
     setFormData(prev => ({
       ...prev,
       basic_info: {
         ...prev.basic_info,
-        name: data.name || prev.basic_info.name,
-        description: data.description || prev.basic_info.description,
-        world_setting: data.world_setting || prev.basic_info.world_setting,
-        // 필요에 따라 다른 필드도 채울 수 있습니다.
+        name: nextName || prev.basic_info.name,
+        description: nextDesc || prev.basic_info.description,
+        personality: nextPersonality || prev.basic_info.personality,
+        speech_style: nextSpeech || prev.basic_info.speech_style,
+        world_setting: nextWorld || prev.basic_info.world_setting,
+        user_display_description: nextUserDisplay || prev.basic_info.user_display_description,
+        use_custom_description: Boolean(nextUserDisplay) || prev.basic_info.use_custom_description,
+        // 인사말: UI에서는 greetings 배열을 사용한다(저장 시 greeting 문자열로 join)
+        greetings: greetings.length ? greetings : prev.basic_info.greetings,
+        // 도입부: AI가 생성한 도입부가 있으면 적용.
+        // 없으면 기존값을 최대한 보존하되, 기본 도입부가 "완전 빈값"이면 최소 1개를 자동 생성해 생성 실패를 방지한다.
+        introduction_scenes: (() => {
+          if (introScenes.length) return introScenes;
+          const prevScenes = Array.isArray(prev.basic_info.introduction_scenes) ? prev.basic_info.introduction_scenes : [];
+          const hasMeaningful = prevScenes.some(s => String(s?.content || '').trim() || String(s?.secret || '').trim());
+          if (hasMeaningful) return prevScenes;
+          const n = nextName || prev.basic_info.name || '캐릭터';
+          const w = nextWorld || prev.basic_info.world_setting || '';
+          return [{
+            title: '도입부 1',
+            content: (w ? `${w}\n\n` : '') + `${n}와(과) 대화가 시작됩니다. 지금 상황과 관계를 한 줄로 정해보세요.`,
+            secret: '',
+          }];
+        })(),
+      },
+      // 예시 대화: AI 생성분이 있으면 적용, 없으면 최소 1개 폴백
+      example_dialogues: {
+        ...prev.example_dialogues,
+        dialogues: (() => {
+          if (exampleDialogues.length) return exampleDialogues;
+          const prevDs = Array.isArray(prev.example_dialogues?.dialogues) ? prev.example_dialogues.dialogues : [];
+          const hasMeaningful = prevDs.some(d => String(d?.user_message || '').trim() && String(d?.character_response || '').trim());
+          return hasMeaningful ? prevDs : fallbackDialogues;
+        })(),
       },
       affinity_system: {
         ...prev.affinity_system,
-        has_affinity_system: data.social_tendency !== undefined,
-        affinity_rules: data.social_tendency !== undefined 
+        // 기존 로직 유지: social_tendency가 있으면 호감도 시스템을 켜고 간단 규칙을 채운다.
+        has_affinity_system: data?.social_tendency !== undefined,
+        affinity_rules: data?.social_tendency !== undefined 
           ? `대인관계 성향 점수(${data.social_tendency})를 기반으로 함` 
           : prev.affinity_system.affinity_rules,
       }
@@ -1059,6 +1235,91 @@ const CreateCharacterPage = () => {
               );
               })}
             </CardContent>
+          </Card>
+        )}
+
+        {/* ✅ 필수 선택(레퍼런스 카드): 일반 캐릭터(ORIGINAL)에서만 노출 */}
+        {!isOrigChatCharacter && (
+          <Card className="p-4 bg-gray-900/40 border border-gray-700 text-white">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h3 className="text-lg font-semibold">필수 선택</h3>
+                <p className="text-xs text-gray-400 mt-1">저장 전에 반드시 선택해야 합니다.</p>
+              </div>
+              {!isEditMode && (
+                <Badge variant="secondary" className="bg-white/10 text-gray-200 border border-white/10">
+                  기본값: {DEFAULT_AUDIENCE_SLUG}
+                </Badge>
+              )}
+            </div>
+
+            {/* 성향 */}
+            <div className="mt-4">
+              <div className="flex items-baseline justify-between">
+                <div className="text-sm font-semibold text-gray-200">남성향 / 여성향 / 전체 <span className="text-red-400">*</span></div>
+                <div className="text-xs text-gray-500">클릭하면 선택, 다시 클릭하면 해제</div>
+              </div>
+              <div className="mt-2 grid grid-cols-3 gap-2">
+                {REQUIRED_AUDIENCE_CHOICES.map((opt) => {
+                  const selected = Array.isArray(selectedTagSlugs) && selectedTagSlugs.includes(opt.slug);
+                  return (
+                    <button
+                      key={opt.slug}
+                      type="button"
+                      onClick={() => toggleExclusiveTag(opt.slug, REQUIRED_AUDIENCE_SLUGS)}
+                      aria-pressed={selected}
+                      className={`group rounded-xl border text-left overflow-hidden transition-all ${
+                        selected
+                          ? 'border-purple-500 ring-2 ring-purple-500/40 shadow-[0_0_20px_rgba(168,85,247,0.25)]'
+                          : 'border-white/10 hover:border-white/20 hover:bg-white/5'
+                      }`}
+                    >
+                      <div className={`w-full aspect-[16/10] ${opt.previewClass}`} />
+                      <div className="px-3 py-2">
+                        <div className="text-sm font-semibold text-white">{opt.label}</div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+              {fieldErrors['basic_info.audience_pref'] && (
+                <p className="text-xs text-red-400 mt-2">{fieldErrors['basic_info.audience_pref']}</p>
+              )}
+            </div>
+
+            {/* 스타일 */}
+            <div className="mt-5">
+              <div className="flex items-baseline justify-between">
+                <div className="text-sm font-semibold text-gray-200">이미지 스타일 <span className="text-red-400">*</span></div>
+                <div className="text-xs text-gray-500">레퍼런스 느낌을 선택하세요</div>
+              </div>
+              <div className="mt-2 grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {REQUIRED_STYLE_CHOICES.map((opt) => {
+                  const selected = Array.isArray(selectedTagSlugs) && selectedTagSlugs.includes(opt.slug);
+                  return (
+                    <button
+                      key={opt.slug}
+                      type="button"
+                      onClick={() => toggleExclusiveTag(opt.slug, REQUIRED_STYLE_SLUGS)}
+                      aria-pressed={selected}
+                      className={`group rounded-xl border text-left overflow-hidden transition-all ${
+                        selected
+                          ? 'border-purple-500 ring-2 ring-purple-500/40 shadow-[0_0_20px_rgba(168,85,247,0.25)]'
+                          : 'border-white/10 hover:border-white/20 hover:bg-white/5'
+                      }`}
+                    >
+                      <div className={`w-full aspect-[16/10] ${opt.previewClass}`} />
+                      <div className="px-3 py-2">
+                        <div className="text-sm font-semibold text-white">{opt.label}</div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+              {fieldErrors['basic_info.visual_style'] && (
+                <p className="text-xs text-red-400 mt-2">{fieldErrors['basic_info.visual_style']}</p>
+              )}
+            </div>
           </Card>
         )}
 

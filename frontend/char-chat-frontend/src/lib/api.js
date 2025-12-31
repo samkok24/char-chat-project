@@ -318,6 +318,11 @@ export const charactersAPI = {
   // 🔥 CAVEDUCK 스타일 고급 생성 API
   createAdvancedCharacter: (data) =>
     api.post('/characters/advanced', data),
+
+  // ⚡ 온보딩: 30초만에 캐릭터 만나기(초안 생성)
+  // - DB 저장은 하지 않고, 고급 생성 payload 초안만 반환한다.
+  quickGenerateCharacterDraft: (data) =>
+    api.post('/characters/quick-generate', data),
   
   updateAdvancedCharacter: (id, data) =>
     api.put(`/characters/advanced/${id}`, data),

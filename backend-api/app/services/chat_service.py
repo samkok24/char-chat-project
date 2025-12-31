@@ -7,6 +7,11 @@ from sqlalchemy import select, update, delete, func
 from sqlalchemy.orm import selectinload, joinedload
 from typing import Optional, List
 import uuid
+try:
+    from app.core.logger import logger
+except Exception:
+    import logging as _logging
+    logger = _logging.getLogger(__name__)
 
 from app.models.chat import ChatRoom, ChatMessage, ChatMessageEdit
 from app.models.user import User
@@ -62,7 +67,17 @@ async def get_chat_room_by_character_and_session(db, user_id: uuid.UUID, charact
 async def create_chat_room(
     db: AsyncSession, user_id: uuid.UUID, character_id: uuid.UUID
 ) -> ChatRoom:
-    """채팅방을 무조건 새로 생성한다."""
+    """
+    채팅방을 무조건 새로 생성한다.
+
+    중요(방어/안전):
+    - AsyncSession은 기본적으로 commit 시 ORM 인스턴스를 expire 시킨다(expire_on_commit=True).
+    - 여기서 Character를 commit 이전에 로드한 뒤 그대로 반환 객체에 붙이면,
+      FastAPI 응답 직렬화(Pydantic from_attributes) 과정에서 `character.name` 같은 속성 접근이
+      "지연 로드"를 유발하면서 ResponseValidationError/500으로 터질 수 있다.
+    - 따라서 commit 이후 Character를 refresh(또는 재조회)하여, 응답 직렬화 단계에서
+      추가 DB 접근이 발생하지 않도록 한다.
+    """
     character_result = await db.execute(select(Character).where(Character.id == character_id))
     character = character_result.scalar_one()
     chat_room = ChatRoom(
@@ -73,8 +88,42 @@ async def create_chat_room(
     db.add(chat_room)
     await db.commit()
     await db.refresh(chat_room)
+    # ✅ commit 이후 expire 방지: 응답 직렬화 단계에서 lazy load가 발생하지 않도록 캐릭터를 refresh
+    try:
+        await db.refresh(character)
+    except Exception as e:
+        # refresh 실패 시에도 안전하게 재조회 폴백
+        try:
+            logger.warning(f"[chat_service] refresh(character) failed, fallback to re-select: {e}")
+        except Exception:
+            pass
+        try:
+            character_result2 = await db.execute(select(Character).where(Character.id == character_id))
+            character = character_result2.scalar_one()
+        except Exception as e2:
+            try:
+                logger.exception(f"[chat_service] re-select(Character) failed: {e2}")
+            except Exception:
+                pass
+            raise
+
     # character 관계 보장
-    chat_room.character = character
+    try:
+        chat_room.character = character
+    except Exception as e:
+        try:
+            logger.exception(f"[chat_service] inject chat_room.character failed: {e}")
+        except Exception:
+            pass
+        raise
+
+    # 최종 방어: 응답 스키마(ChatRoomResponse)에서 character는 필수
+    if getattr(chat_room, "character", None) is None:
+        try:
+            logger.error("[chat_service] create_chat_room succeeded but character relationship is None (unexpected)")
+        except Exception:
+            pass
+        raise RuntimeError("create_chat_room: character relationship missing")
     return chat_room
 
 async def save_message(
@@ -113,6 +162,25 @@ async def get_messages_by_room_id(
         .limit(limit)
     )
     return result.scalars().all()
+
+async def get_message_count_by_room_id(
+    db: AsyncSession, chat_room_id: uuid.UUID
+) -> int:
+    """
+    채팅방의 총 메시지 개수를 조회한다.
+
+    의도/배경(최소 수정·최대 안전):
+    - 일반 캐릭터챗에서 "최근 N개 히스토리"를 모델 프롬프트로 전달하려면,
+      order_by(created_at.asc()) + offset/limit 조합으로 "마지막 N개"를 가져와야 한다.
+    - 따라서 먼저 전체 개수를 조회하고(skip = max(0, count - N)) 방식으로 슬라이싱한다.
+    """
+    result = await db.execute(
+        select(func.count(ChatMessage.id)).where(ChatMessage.chat_room_id == chat_room_id)
+    )
+    try:
+        return int(result.scalar_one() or 0)
+    except Exception:
+        return 0
 
 
 async def get_message_by_id(db: AsyncSession, message_id: uuid.UUID) -> Optional[ChatMessage]:

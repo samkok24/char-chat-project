@@ -10,6 +10,7 @@ import { useSocket } from '../contexts/SocketContext';
 import { charactersAPI, chatAPI, usersAPI, origChatAPI, mediaAPI, storiesAPI } from '../lib/api'; // usersAPI 추가
 import { showToastOnce } from '../lib/toastOnce';
 import { resolveImageUrl, getCharacterPrimaryImage, buildPortraitSrcSet } from '../lib/images';
+import { getReadingProgress } from '../lib/reading';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
@@ -152,9 +153,6 @@ const ChatPage = () => {
   const [origRangeTo, setOrigRangeTo] = useState(null);
   const [origTurnLoading, setOrigTurnLoading] = useState(false);
   const [lastOrigTurnPayload, setLastOrigTurnPayload] = useState(null);
-  const [relTrust, setRelTrust] = useState(50);
-  const [relAffinity, setRelAffinity] = useState(50);
-  const [relTension, setRelTension] = useState(50);
   const [pendingChoices, setPendingChoices] = useState([]);
   const [choiceLocked, setChoiceLocked] = useState(false);
   // 새로운 선택지가 도착하면 다시 활성화
@@ -168,6 +166,11 @@ const ChatPage = () => {
   const [ctxPollingDone, setCtxPollingDone] = useState(false);
   // 원작챗 비스트리밍 스테이지 표시
   const [turnStage, setTurnStage] = useState(null); // 'generating' | 'polishing' | null
+  // ✅ 유저용 상태 팝업(중앙): 3초 이상 지연 시 안내 문구를 추가로 보여준다.
+  const [showSlowHint, setShowSlowHint] = useState(false);
+  // ✅ 일반(소켓) 챗: 전송 ACK 지연(네트워크 지연) 감지 후 상태 팝업 노출
+  const [socketSendDelayActive, setSocketSendDelayActive] = useState(false);
+  const socketHadConnectedRef = useRef(false);
   // 상황 입력 토글/값
   const [showSituation, setShowSituation] = useState(false);
   const [situationText, setSituationText] = useState('');
@@ -189,7 +192,6 @@ const ChatPage = () => {
   const isPinnedRef = useRef(false);
   const pinnedUrlRef = useRef('');
   const autoScrollRef = useRef(true); // 사용자가 맨 아래에 있는지 추적
-  const clampRel = useCallback((v) => Math.max(0, Math.min(100, v)), []);
   const genIdemKey = useCallback(() => {
     try { return `${chatRoomId || 'room'}:${Date.now()}:${Math.random().toString(36).slice(2,8)}`; } catch (_) { return `${Date.now()}`; }
   }, [chatRoomId]);
@@ -216,18 +218,51 @@ const ChatPage = () => {
     return type === 'assistant' || type === 'ai' || type === 'character';
   }, []);
 
-  // 🎯 관계 미터 델타 적용(SSOT)
-  const applyRelDeltas = useCallback((meta) => {
-    if (!meta) return;
-    const d = meta.deltas || meta.delta || {};
-    if (typeof d.trust === 'number') setRelTrust((prev) => clampRel((prev ?? 50) + d.trust));
-    if (typeof d.affinity === 'number') setRelAffinity((prev) => clampRel((prev ?? 50) + d.affinity));
-    if (typeof d.tension === 'number') setRelTension((prev) => clampRel((prev ?? 50) + d.tension));
-  }, [clampRel]);
-
   // 완결 토스트/내레이터 중복 가드
   const completedNotifiedRef = useRef(false);
   const finalNarrationInsertedRef = useRef(false);
+
+  // ✅ 소켓 연결 이력(한 번이라도 연결되었는지) 기록: "연결 중" vs "재연결 중" 문구 분기용
+  useEffect(() => {
+    if (connected) socketHadConnectedRef.current = true;
+  }, [connected]);
+
+  // ✅ 일반(소켓) 챗 전송 지연 감지: pending 메시지가 3초 이상 유지되면 팝업 노출
+  useEffect(() => {
+    // 원작챗은 소켓 전송 지연 개념이 의미 없으므로 제외
+    if (isOrigChat) {
+      setSocketSendDelayActive(false);
+      return;
+    }
+    // 연결이 끊겨있으면 "재연결" 팝업이 우선이므로 전송 지연 팝업은 숨긴다.
+    if (!connected) {
+      setSocketSendDelayActive(false);
+      return;
+    }
+    const hasPending = (() => {
+      try {
+        return Array.isArray(messages) && messages.some((m) => {
+          const isUser = (m?.senderType === 'user' || m?.sender_type === 'user');
+          return isUser && Boolean(m?.pending);
+        });
+      } catch (_) {
+        return false;
+      }
+    })();
+    if (!hasPending) {
+      setSocketSendDelayActive(false);
+      return;
+    }
+    // 3초 이상 pending이면 네트워크 지연으로 간주(유저 불안 완화)
+    let cancelled = false;
+    const t = setTimeout(() => {
+      if (!cancelled) setSocketSendDelayActive(true);
+    }, 3000);
+    return () => {
+      cancelled = true;
+      try { clearTimeout(t); } catch (_) {}
+    };
+  }, [isOrigChat, connected, messages]);
 
   const notifyCompletion = (meta) => {
     if (!chatRoomId) return;
@@ -380,6 +415,34 @@ const ChatPage = () => {
         const modeParam = params.get('mode');
         const rangeFromParam = params.get('rangeFrom');
         const rangeToParam = params.get('rangeTo');
+        const modeNorm = String(modeParam || 'canon').toLowerCase();
+        
+        /**
+         * ✅ plain 모드 앵커/게이트(표시/워밍 기준) 결정
+         *
+         * 의도/동작(최소 수정·최대 안전):
+         * - URL에 anchor가 있으면 그 값을 우선 사용한다.
+         * - plain 모드에서 anchor가 없으면, 로컬 읽기 진도(lastReadNo) = reader_progress:{storyId}를 앵커로 사용한다.
+         * - 진도가 없으면(0) 1화로 폴백한다.
+         *
+         * 주의:
+         * - 서버 메타(start.chapter)가 과거 값(예: 1)이어도, plain 모드에서는 "현재 진도"가 우선이다.
+         */
+        const effectiveAnchor = (() => {
+          try {
+            const q = Number(anchorParam);
+            if (Number.isFinite(q) && q >= 1) return Math.floor(q);
+          } catch (_) {}
+          try {
+            if (modeNorm === 'plain' && storyIdParam) {
+              const p = Number(getReadingProgress(storyIdParam) || 0);
+              if (Number.isFinite(p) && p >= 1) return Math.floor(p);
+            }
+          } catch (e) {
+            console.warn('[ChatPage] plain anchor resolve failed (reading progress)', e);
+          }
+          return 1;
+        })();
         const buildLastRoomKey = (uid, cid, sid) => `cc:lastRoom:${uid || 'anon'}:${cid || 'none'}:${sid || 'none'}:origchat`;
         const buildNewGuardKey = (cid, sid) => `cc:newGuard:${cid || 'none'}:${sid || 'none'}`;
         // 새 방 생성 with retry 유틸
@@ -413,25 +476,55 @@ const ChatPage = () => {
           }
         }
 
+        /**
+         * ✅ 원작챗 진입 안전장치
+         *
+         * 문제:
+         * - URL에 source=origchat&storyId가 붙었는데, room 파라미터가 "일반챗 방"이면
+         *   ChatPage가 origchat 컨텍스트 프리페치를 시도하면서 상태가 꼬일 수 있다.
+         *
+         * 해결:
+         * - origchat 컨텍스트로 들어온 경우, room은 반드시 origchat room(meta.mode 존재)이어야 한다.
+         * - 그렇지 않으면 room을 무효화하고, 아래 origchat start 로직으로 폴백한다.
+         */
+        if (roomId && source === 'origchat' && storyIdParam) {
+          try {
+            const metaRes = await chatAPI.getRoomMeta(roomId);
+            const meta = metaRes?.data || {};
+            const raw = String(meta.mode || '').toLowerCase();
+            const isOrigChatRoom = raw === 'canon' || raw === 'parallel' || raw === 'plain';
+            if (!isOrigChatRoom) {
+              console.warn('[ChatPage] origchat source지만 room meta가 origchat이 아님 → room 무효화:', { roomId, meta });
+              roomId = null;
+            }
+          } catch (e) {
+            console.warn('[ChatPage] origchat source지만 room meta 조회 실패 → room 무효화:', { roomId, error: e });
+            roomId = null;
+          }
+        }
+
         if (!roomId) {
           if (source === 'origchat' && storyIdParam) {
             // 1) 로컬 최근 원작챗 방 시도
-            try {
-              const k = buildLastRoomKey(user?.id, characterId, storyIdParam);
-              const saved = localStorage.getItem(k);
-              if (saved) {
-                const parsed = JSON.parse(saved);
-                if (parsed?.roomId) {
-                  try {
-                    const r = await chatAPI.getChatRoom(parsed.roomId);
-                    if (r?.data?.id) roomId = r.data.id;
-                  } catch (_) {}
+            // - "새 대화(new=1)" 의도라면 절대 재사용하지 않고 새 방을 만든다.
+            if (!forceNew) {
+              try {
+                const k = buildLastRoomKey(user?.id, characterId, storyIdParam);
+                const saved = localStorage.getItem(k);
+                if (saved) {
+                  const parsed = JSON.parse(saved);
+                  if (parsed?.roomId) {
+                    try {
+                      const r = await chatAPI.getChatRoom(parsed.roomId);
+                      if (r?.data?.id) roomId = r.data.id;
+                    } catch (_) {}
+                  }
                 }
-              }
-            } catch (_) {}
+              } catch (_) {}
+            }
             // 2) 없으면 전용 start
             if (!roomId) {
-              const a = Number(anchorParam) || 1;
+              const a = effectiveAnchor;
               const rf = rangeFromParam ? Number(rangeFromParam) : null;
               const rt = rangeToParam ? Number(rangeToParam) : null;
               const startFn = async () => {
@@ -439,6 +532,8 @@ const ChatPage = () => {
                 story_id: storyIdParam, 
                 character_id: characterId, 
                 mode: (modeParam || 'canon'), 
+                // ✅ new=1(새로 대화)일 때는 백엔드가 기존 plain 방을 재사용하지 않도록 강제한다.
+                force_new: !!forceNew,
                 start: { chapter: a }, 
                 range_from: rf, 
                 range_to: rt, 
@@ -477,8 +572,9 @@ const ChatPage = () => {
               } catch (_) {}
 
               if (!reused) {
-                const roomResponse = await startChatWithRetry(() => chatAPI.startChat(characterId), 'chat');
-              roomId = roomResponse.data.id;
+                // ✅ 새 대화는 반드시 새 방 생성 (/chat/start-new)
+                const roomResponse = await startChatWithRetry(() => chatAPI.startNewChat(characterId), 'chat-new');
+                roomId = roomResponse.data.id;
                 try { sessionStorage.setItem(guardKey, JSON.stringify({ roomId, ts: Date.now() })); } catch (_) {}
               }
             } else {
@@ -530,7 +626,7 @@ const ChatPage = () => {
         if (source === 'origchat' && storyIdParam) {
           try {
             setIsOrigChat(true);
-            const a = Number(anchorParam) || 1;
+            const a = effectiveAnchor;
             setOrigAnchor(a);
             setOrigStoryId(storyIdParam);
             const rf = rangeFromParam ? Number(rangeFromParam) : null;
@@ -571,7 +667,8 @@ const ChatPage = () => {
                 setOrigMeta({ turnCount: tc, maxTurns: mt, completed: Boolean(meta.completed), mode: meta.mode || null, narrator_mode: Boolean(meta.narrator_mode), seed_label: meta.seed_label || null, init_stage: meta.init_stage || null, intro_ready: typeof meta.intro_ready === 'boolean' ? meta.intro_ready : null });
                 // 시작점/범위가 URL과 다르면 상태 보정(UI는 후순위)
                 const start = meta.start || {};
-                if (!anchorParam && typeof start.chapter === 'number') setOrigAnchor(Number(start.chapter) || a);
+                // ✅ plain 모드는 "현재 진도(lastReadNo)"가 우선이므로, 서버 start.chapter로 덮어쓰지 않는다.
+                if (!anchorParam && modeNorm !== 'plain' && typeof start.chapter === 'number') setOrigAnchor(Number(start.chapter) || a);
                 if (!rangeFromParam && typeof meta.range_from === 'number') setOrigRangeFrom(Number(meta.range_from));
                 if (!rangeToParam && typeof meta.range_to === 'number') setOrigRangeTo(Number(meta.range_to));
                 // 로컬 최근 방 touch
@@ -581,13 +678,17 @@ const ChatPage = () => {
                 } catch (_) {}
               }
             } catch (_) {}
-            const ctxRes = await origChatAPI.getContextPack(storyIdParam, { anchor: a, characterId, mode: (modeParam || 'canon'), rangeFrom: rf, rangeTo: rt });
-            const actor = ctxRes.data?.actor_context || {};
-            const director = ctxRes.data?.director_context || {};
-            if (typeof actor.trust === 'number') setRelTrust(actor.trust);
-            if (typeof actor.affinity === 'number') setRelAffinity(actor.affinity);
-            if (typeof actor.tension === 'number') setRelTension(actor.tension);
-            if (typeof director.total_chapters === 'number') setOrigTotalChapters(director.total_chapters);
+            /**
+             * ✅ 토큰/워밍 낭비 방지:
+             * - continue(이어하기) 진입에서는 컨텍스트 팩 호출을 스킵한다.
+             *   (backend /stories/:id/context-pack 이 백그라운드로 LLM 요약/스타일 준비까지 트리거할 수 있음)
+             * - new=1(새로 대화)일 때만 컨텍스트 팩을 호출해서 워밍을 시작한다.
+             */
+            if (forceNew) {
+              const ctxRes = await origChatAPI.getContextPack(storyIdParam, { anchor: a, characterId, mode: (modeParam || 'canon'), rangeFrom: rf, rangeTo: rt });
+              const director = ctxRes.data?.director_context || {};
+              if (typeof director.total_chapters === 'number') setOrigTotalChapters(director.total_chapters);
+            }
           } catch (_) {
             // 실패해도 일반 챗은 진행 가능
           }
@@ -607,7 +708,9 @@ const ChatPage = () => {
       const params2 = new URLSearchParams(location.search || '');
       const source2 = params2.get('source');
       const storyId2 = params2.get('storyId');
-      if (source2 === 'origchat' && storyId2) {
+      const isNewEntry = params2.get('new') === '1';
+      // ✅ continue 진입에서는 워밍 상태 폴링 자체를 하지 않는다(UX/토큰 낭비 방지)
+      if (source2 === 'origchat' && storyId2 && isNewEntry) {
         let mounted = true;
         let attempts = 0;
         const poll = async () => {
@@ -733,15 +836,6 @@ const ChatPage = () => {
       }
     }
   }, [messages, characterImages, isPinned, findMatchingImageByKeywords, aiMessageImages, isAssistantMessage]);
-
-  // 🎯 AI 메타 델타(호감/신뢰/긴장) 반영
-  useEffect(() => {
-    if (!messages.length) return;
-    const lastMsg = messages[messages.length - 1];
-    if (!isAssistantMessage(lastMsg)) return;
-    const meta = lastMsg.meta;
-    applyRelDeltas(meta);
-  }, [messages, isAssistantMessage, applyRelDeltas]);
 
   // 상세에서 미디어 변경 시 채팅방 이미지 갱신(세션 핀 유지)
   useEffect(() => {
@@ -1096,12 +1190,6 @@ const ChatPage = () => {
         if (meta && meta.completed && meta.turn_count && meta.max_turns && meta.turn_count >= meta.max_turns) {
           notifyCompletion(meta);
         }
-        // 관계 미터 업데이트(클램핑)
-        const clamp = (v) => Math.max(0, Math.min(100, v));
-        const d = meta.deltas || {};
-        if (typeof d.trust === 'number') setRelTrust(prev => clamp((prev ?? 50) + d.trust));
-        if (typeof d.affinity === 'number') setRelAffinity(prev => clamp((prev ?? 50) + d.affinity));
-        if (typeof d.tension === 'number') setRelTension(prev => clamp((prev ?? 50) + d.tension));
         setPendingChoices(Array.isArray(meta.choices) ? meta.choices : []);
         // 경고 문구 처리
         const warn = meta.warning;
@@ -1123,11 +1211,6 @@ const ChatPage = () => {
               created_at: new Date().toISOString()
             };
             setMessages(prev => [...prev, aiMessage]);
-            const clamp = (v) => Math.max(0, Math.min(100, v));
-            const d = meta.deltas || {};
-            if (typeof d.trust === 'number') setRelTrust(prev => clamp((prev ?? 50) + d.trust));
-            if (typeof d.affinity === 'number') setRelAffinity(prev => clamp((prev ?? 50) + d.affinity));
-            if (typeof d.tension === 'number') setRelTension(prev => clamp((prev ?? 50) + d.tension));
             setPendingChoices(Array.isArray(meta.choices) ? meta.choices : []);
             const warn = meta.warning;
             setRangeWarning(typeof warn === 'string' ? warn : '');
@@ -1217,11 +1300,6 @@ const ChatPage = () => {
         created_at: new Date().toISOString()
       };
       setMessages(prev => [...prev, aiMessage]);
-      const clamp = (v) => Math.max(0, Math.min(100, v));
-      const d = meta.deltas || {};
-      if (typeof d.trust === 'number') setRelTrust(prev => clamp((prev ?? 50) + d.trust));
-      if (typeof d.affinity === 'number') setRelAffinity(prev => clamp((prev ?? 50) + d.affinity));
-      if (typeof d.tension === 'number') setRelTension(prev => clamp((prev ?? 50) + d.tension));
       setPendingChoices(Array.isArray(meta.choices) ? meta.choices : []);
       // 진행도 갱신 + 설정 싱크 플래그 고정(선택지도 첫 턴이면 반영)
       try {
@@ -1260,11 +1338,6 @@ const ChatPage = () => {
             created_at: new Date().toISOString()
           };
           setMessages(prev => [...prev, aiMessage]);
-          const clamp = (v) => Math.max(0, Math.min(100, v));
-          const d = meta.deltas || {};
-          if (typeof d.trust === 'number') setRelTrust(prev => clamp((prev ?? 50) + d.trust));
-          if (typeof d.affinity === 'number') setRelAffinity(prev => clamp((prev ?? 50) + d.affinity));
-          if (typeof d.tension === 'number') setRelTension(prev => clamp((prev ?? 50) + d.tension));
           setPendingChoices(Array.isArray(meta.choices) ? meta.choices : []);
           const warn = meta.warning;
           setRangeWarning(typeof warn === 'string' ? warn : '');
@@ -1444,6 +1517,8 @@ const ChatPage = () => {
 
   // 원작챗은 소켓 연결 없이도 전송 가능
   const canSend = Boolean(newMessage.trim()) && (isOrigChat ? true : connected);
+  // ✅ 원작챗 생성 중에는 입력/전송을 UI에서도 잠가, "눌렀는데 왜 안 보내져?" 혼란을 방지한다.
+  const isOrigBusy = Boolean(isOrigChat && origTurnLoading);
   const textSizeClass = uiFontSize==='sm' ? 'text-sm' : uiFontSize==='lg' ? 'text-lg' : uiFontSize==='xl' ? 'text-xl' : 'text-base';
 
   /**
@@ -1510,7 +1585,6 @@ const ChatPage = () => {
   
   const MessageBubble = ({ message, isLast, triggerImageUrl }) => {
     const isUser = message.senderType === 'user' || message.sender_type === 'user';
-    const isPending = Boolean(message.pending);
     const rawContent = typeof message.content === 'string' ? message.content : '';
     const isNarrationMessage = (() => {
       try {
@@ -1575,6 +1649,34 @@ const ChatPage = () => {
       if (cursor < s.length) out.push(s.slice(cursor));
       return out.length ? out : s;
     };
+    
+    /**
+     * 인라인 이탤릭 토큰 페어 존재 여부
+     *
+     * 의도/동작:
+     * - 메시지에 `*...*`(단일 별표 페어)가 존재하면 "부분 이탤릭"으로 충분하므로,
+     *   말풍선 전체 이탤릭(나레이션 메시지 스타일)을 적용하지 않게 하기 위한 가드다.
+     * - `**`는 토큰으로 보지 않는다(오작동 방지).
+     */
+    const hasInlineItalicPair = (text) => {
+      const s = String(text ?? '');
+      if (!s.includes('*')) return false;
+      const isSingleStarAt = (idx) => {
+        if (s[idx] !== '*') return false;
+        const prev = idx > 0 ? s[idx - 1] : '';
+        const next = idx + 1 < s.length ? s[idx + 1] : '';
+        if (prev === '*' || next === '*') return false;
+        return true;
+      };
+      for (let i = 0; i < s.length; i += 1) {
+        if (!isSingleStarAt(i)) continue;
+        for (let j = i + 1; j < s.length; j += 1) {
+          if (isSingleStarAt(j)) return true;
+        }
+      }
+      return false;
+    };
+    const shouldApplyNarrationBubbleStyle = Boolean(isNarrationMessage && !hasInlineItalicPair(displayText));
 
     return (
       <div ref={bubbleRef} className={`mt-4 mb-1 ${isUser ? 'flex flex-col items-end' : 'flex flex-col'}`}>
@@ -1597,18 +1699,12 @@ const ChatPage = () => {
             ${isUser
               ? (resolvedTheme === 'light' ? 'bg-white border border-gray-300' : 'bg-white text-black')
               : (resolvedTheme === 'light' ? 'bg-white border border-gray-300' : 'bg-white/10 lg:bg-white/10')}
-            ${isPending ? 'opacity-70' : ''}
           `}
           style={{ color: isUser
             ? (resolvedTheme === 'light' ? '#111827' : (message.isNarration ? uiColors.userNarration : uiColors.userSpeech))
             : (resolvedTheme === 'light' ? '#0b0b0b' : (message.isNarration ? uiColors.charNarration : uiColors.charSpeech))
           }}
         >
-          {isPending && (
-            <span className="absolute right-3 top-2 text-[10px] px-2 py-0.5 rounded-full bg-amber-200 text-amber-800 border border-amber-300">
-              전송 중…
-            </span>
-          )}
           {(!isUser && editingMessageId === message.id) ? (
             <div className="space-y-2">
               <Textarea value={editText} onChange={(e)=>setEditText(e.target.value)} rows={4} />
@@ -1625,7 +1721,7 @@ const ChatPage = () => {
                   wordBreak: 'break-word',
                   overflowWrap: 'break-word',
                   hyphens: 'auto',
-                  ...(isNarrationMessage
+                  ...(shouldApplyNarrationBubbleStyle
                     ? { color: resolvedTheme === 'light' ? '#6b7280' : '#d1d5db', fontStyle: 'italic' }
                     : {})
                 }}
@@ -1724,23 +1820,82 @@ const ChatPage = () => {
     );
   }
 
+  // ✅ 상태 표시(유저용): 한 눈에 보이게 중앙 팝업으로 통일 (원작챗/일반챗 공통)
+  const isInitOverlayActive = Boolean(
+    loading ||
+    (isOrigChat && origMeta?.init_stage && origMeta.init_stage !== 'ready') ||
+    (isOrigChat && origMeta?.intro_ready === false)
+  );
+  const isOrigTurnPopupActive = Boolean(isOrigChat && (turnStage === 'generating' || turnStage === 'polishing'));
+  const isSocketDisconnectedPopupActive = Boolean(!isOrigChat && chatRoomId && !connected);
+  const isSocketSendDelayPopupActive = Boolean(!isOrigChat && chatRoomId && connected && socketSendDelayActive);
+  const isStatusPopupActive = Boolean(
+    isInitOverlayActive ||
+    isOrigTurnPopupActive ||
+    isSocketDisconnectedPopupActive ||
+    isSocketSendDelayPopupActive
+  );
+
+  useEffect(() => {
+    if (!isStatusPopupActive) {
+      setShowSlowHint(false);
+      return;
+    }
+    setShowSlowHint(false);
+    const t = setTimeout(() => setShowSlowHint(true), 3000);
+    return () => { try { clearTimeout(t); } catch (_) {} };
+  }, [isStatusPopupActive]);
+
+  const statusPopup = (() => {
+    // 우선순위: 초기 준비(입력 차단) > (일반챗) 네트워크 > (원작챗) 생성/보정 > (일반챗) 전송 지연
+    if (isInitOverlayActive) {
+      const title = '채팅을 준비하고 있어요';
+      const body = '첫 대사를 준비하는 중입니다. 잠시만 기다려 주세요.';
+      const slow = '네트워크/서버 상황에 따라 최대 10초 정도 걸릴 수 있어요.';
+      return { kind: 'init', title, body, slow };
+    }
+    if (isSocketDisconnectedPopupActive) {
+      const wasConnected = Boolean(socketHadConnectedRef.current);
+      const title = wasConnected ? '연결이 끊겼어요' : '서버에 연결하는 중…';
+      const body = wasConnected
+        ? '재연결 중입니다. 잠시만 기다려 주세요.'
+        : '잠시만 기다려 주세요.';
+      const slow = '지속되면 Wi‑Fi/데이터를 확인하거나 페이지를 새로고침 해주세요.';
+      return { kind: 'net', title, body, slow };
+    }
+    if (isOrigTurnPopupActive) {
+      const title = (turnStage === 'polishing') ? '문장을 다듬고 있어요' : '응답을 생성하고 있어요';
+      const body = (turnStage === 'polishing') ? '조금 더 자연스럽게 정리 중입니다.' : '잠시만 기다려 주세요.';
+      const slow = '조금만 더 기다려 주세요. 곧 완료돼요.';
+      return { kind: 'turn', title, body, slow };
+    }
+    if (isSocketSendDelayPopupActive) {
+      const title = '전송이 지연되고 있어요';
+      const body = '네트워크가 불안정할 수 있어요. 잠시 후에도 안 되면 다시 보내주세요.';
+      const slow = '지속되면 Wi‑Fi/데이터를 확인하거나 페이지를 새로고침 해주세요.';
+      return { kind: 'net', title, body, slow };
+    }
+    return null;
+  })();
+
   return (
     <div className="h-screen h-[100dvh] bg-[var(--app-bg)] text-[var(--app-fg)] flex flex-col">
-      {/* 준비/워밍 오버레이: 초기 로딩 또는 init_stage가 ready 전이면 입력 차단 */}
-      {(
-        loading ||
-        (isOrigChat && origMeta?.init_stage && origMeta.init_stage !== 'ready') ||
-        (isOrigChat && origMeta?.intro_ready === false)
-      ) && (
+      {/* ✅ 유저용 상태 팝업: 초기 준비는 전체 오버레이로 명확하게 표시(입력 차단) */}
+      {statusPopup && statusPopup.kind === 'init' && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
           <div className="bg-gray-900/90 text-white border border-gray-700 rounded-2xl px-6 py-5 shadow-2xl max-w-sm w-[320px] text-center space-y-3">
             <div className="flex items-center justify-center gap-2">
               <Loader2 className="w-5 h-5 animate-spin text-purple-300" />
-              <span className="text-sm font-semibold">채팅방을 준비 중입니다</span>
+              <span className="text-sm font-semibold">{statusPopup.title}</span>
             </div>
             <p className="text-xs text-gray-300 leading-relaxed">
-              컨텍스트를 로드하고 있어요. 잠시만 기다려 주세요.
+              {statusPopup.body}
             </p>
+            {showSlowHint && (
+              <p className="text-[11px] text-gray-400 leading-relaxed">
+                {statusPopup.slow}
+              </p>
+            )}
             <div className="w-full h-1.5 bg-gray-800 rounded-full overflow-hidden">
               <div className="h-full w-2/3 bg-gradient-to-r from-purple-500 via-blue-400 to-cyan-300 animate-pulse" />
             </div>
@@ -1791,10 +1946,6 @@ const ChatPage = () => {
                   {origMeta && (typeof origMeta.turnCount === 'number') && (
                     <span className="text-[10px] px-2 py-0.5 rounded-full bg-white text-black">{String(origMeta.turnCount)}/{String(origMeta.maxTurns || 500)}</span>
                   )}
-                  {/* 캐시 상태 배지 */}
-                  {ctxWarmed !== null && (
-                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-white text-black">{ctxWarmed ? 'warmed' : (ctxPollingDone ? 'warming(대기)' : 'warming')}</span>
-                  )}
                       {origAnchor && (
                         <span className="text-[10px] px-2 py-0.5 rounded-full bg-gray-700 text-gray-200">앵커 {origAnchor}화</span>
                       )}
@@ -1807,29 +1958,6 @@ const ChatPage = () => {
               </div>
             </div>
             <div className="flex items-center gap-3">
-              {isOrigChat && (
-                <>
-                  {/* ✅ 모바일(누락 방지): 관계 지표를 최소 UI로 노출 (텍스트 없이 바만 표시) */}
-                  <div className="md:hidden flex items-center gap-1" title="관계 지표">
-                    <div className="w-10 h-1.5 bg-white/10 rounded overflow-hidden">
-                      <div className="h-full bg-green-500" style={{ width: `${relTrust}%` }} />
-                    </div>
-                    <div className="w-10 h-1.5 bg-white/10 rounded overflow-hidden">
-                      <div className="h-full bg-pink-500" style={{ width: `${relAffinity}%` }} />
-                    </div>
-                    <div className="w-10 h-1.5 bg-white/10 rounded overflow-hidden">
-                      <div className="h-full bg-yellow-400" style={{ width: `${relTension}%` }} />
-                    </div>
-                  </div>
-
-                  {/* PC/태블릿: 기존 상세 UI 유지 */}
-                  <div className="hidden md:flex items-center gap-2 text-xs">
-                    <div className="flex items-center gap-1"><span className="text-gray-400">신뢰</span><div className="w-16 h-2 bg-gray-700 rounded"><div className="h-2 bg-green-500 rounded" style={{ width: `${relTrust}%` }} /></div></div>
-                    <div className="flex items-center gap-1"><span className="text-gray-400">호감</span><div className="w-16 h-2 bg-gray-700 rounded"><div className="h-2 bg-pink-500 rounded" style={{ width: `${relAffinity}%` }} /></div></div>
-                    <div className="flex items-center gap-1"><span className="text-gray-400">긴장</span><div className="w-16 h-2 bg-gray-700 rounded"><div className="h-2 bg-yellow-400 rounded" style={{ width: `${relTension}%` }} /></div></div>
-                  </div>
-                </>
-              )}
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button variant="ghost" size="icon" className="rounded-full text-[var(--app-fg)] hover:bg-[var(--hover-bg)]">
@@ -1893,12 +2021,25 @@ const ChatPage = () => {
           </div>
         </div>
       </header>
-      {/* 스테이지 토스트 (우상단, 다크테마) */}
-      {isOrigChat && (turnStage || (origMeta?.init_stage && origMeta.init_stage !== 'ready')) && (
-        <div className="fixed top-4 right-4 z-50">
-          <div className="flex items-center gap-2 bg-black/80 text-white border border-gray-700 rounded-md px-3 py-2 shadow-lg">
-            <Loader2 className="w-3.5 h-3.5 animate-spin text-white" />
-            <span className="text-xs">{origMeta?.init_stage && origMeta.init_stage !== 'ready' ? '초기 준비 중…' : (turnStage==='generating' ? '생성 중…' : '보정 중…')}</span>
+      {/* ✅ 유저용 상태 팝업: 생성/보정은 중앙에 작게 표시(비차단, 스크롤/읽기 가능) */}
+      {statusPopup && (statusPopup.kind === 'turn' || statusPopup.kind === 'net') && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center pointer-events-none">
+          <div className="pointer-events-none bg-black/70 text-white border border-gray-700 rounded-2xl px-5 py-4 shadow-2xl w-[320px] text-center space-y-2">
+            <div className="flex items-center justify-center gap-2">
+              <Loader2 className="w-4.5 h-4.5 animate-spin text-purple-200" />
+              <span className="text-sm font-semibold">{statusPopup.title}</span>
+            </div>
+            <p className="text-xs text-gray-300 leading-relaxed">
+              {statusPopup.body}
+            </p>
+            {showSlowHint && (
+              <p className="text-[11px] text-gray-400 leading-relaxed">
+                {statusPopup.slow}
+              </p>
+            )}
+            <div className="w-full h-1.5 bg-gray-800 rounded-full overflow-hidden">
+              <div className="h-full w-2/3 bg-gradient-to-r from-purple-500 via-blue-400 to-cyan-300 animate-pulse" />
+            </div>
           </div>
         </div>
       )}
@@ -2213,6 +2354,7 @@ const ChatPage = () => {
             {/* 모델 선택 버튼 */}
             <Button
               type="button"
+              disabled={isOrigBusy}
               className="h-10 w-12 rounded-xl bg-white text-black px-2 leading-tight"
               onClick={() => { setModalInitialTab('model'); setShowModelModal(true); }}
             >
@@ -2227,7 +2369,8 @@ const ChatPage = () => {
               value={newMessage}
               onChange={(e) => setNewMessage(e.target.value)}
               onKeyDown={handleKeyDown}
-                placeholder={isOrigChat && (origMeta?.narrator_mode || origMeta?.mode==='parallel' && false) ? '서술/묘사로 입력하세요. 예) *창밖에는 비가 내리고 있었다.' : '대사를 입력하세요. 예) 반가워!'}
+              disabled={isOrigBusy}
+                placeholder={isOrigChat && (origMeta?.narrator_mode || origMeta?.mode==='parallel' && false) ? '서술/묘사로 입력하세요. 예) * 창밖에는 비가 내리고 있었다.' : '대사를 입력하세요. 예) 반가워!'}
                 className="w-full bg-transparent border-0 focus:border-0 focus:ring-0 outline-none text-sm p-0 pl-3 placeholder:text-gray-500 resize-none"
                 style={{ minHeight: 36 }}
               rows={1}
@@ -2248,6 +2391,7 @@ const ChatPage = () => {
                 <input
                   value={situationText}
                   onChange={(e)=>setSituationText(e.target.value)}
+                  disabled={origTurnLoading || !chatRoomId}
                   placeholder="상황 한 줄 (선택)"
                   className="flex-1 bg-[var(--input-bg)] text-[var(--app-fg)] border border-gray-700 rounded-lg px-3 py-2 text-sm"
                 />
@@ -2276,6 +2420,7 @@ const ChatPage = () => {
               <Button
                 type="button"
                 onClick={() => setShowSituation((v)=>!v)}
+                disabled={isOrigBusy}
                 className="rounded-full w-10 h-10 p-0 flex-shrink-0 bg-white text-black"
                 size="icon"
                 title="상황 입력"
@@ -2288,6 +2433,7 @@ const ChatPage = () => {
             <Button
               type="button"
               onClick={() => setNewMessage(prev => (prev.startsWith('*') ? prev : (`* ${prev || ''}`).trimEnd()))}
+              disabled={isOrigBusy}
               className="rounded-full w-10 h-10 p-0 flex-shrink-0 bg-white text-black"
               size="icon"
               variant="ghost"
@@ -2303,11 +2449,13 @@ const ChatPage = () => {
               {/* 전송 */}
               <Button
                 type="submit"
-                disabled={!canSend}
-                className={`rounded-full w-10 h-10 p-0 flex-shrink-0 ${canSend ? 'bg-white text-black' : 'bg-gray-700 text-gray-400'}`}
+                disabled={!canSend || isOrigBusy}
+                className={`rounded-full w-10 h-10 p-0 flex-shrink-0 ${
+                  (!canSend || isOrigBusy) ? 'bg-gray-700 text-gray-400' : 'bg-white text-black'
+                }`}
                 size="icon"
               >
-                <Send className="w-5 h-5" />
+                {isOrigBusy ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
               </Button>
             </div>
           </form>
@@ -2432,6 +2580,7 @@ const ChatPage = () => {
                 <Input
                   value={situationText}
                   onChange={(e) => setSituationText(e.target.value)}
+                  disabled={origTurnLoading || !chatRoomId}
                   placeholder="상황 한 줄 (선택)"
                   className="flex-1 bg-[var(--input-bg)] text-[var(--app-fg)] border border-gray-700"
                 />
@@ -2477,7 +2626,8 @@ const ChatPage = () => {
             {/* 모델 선택 버튼 */}
             <Button
               type="button"
-              className="h-10 w-12 rounded-xl bg-gray-700 hover:bg-gray-600 text-white px-2 leading-tight"
+              disabled={isOrigBusy}
+              className="h-10 w-12 rounded-xl bg-white text-black px-2 leading-tight"
               onClick={() => { setModalInitialTab('model'); setShowModelModal(true); }}
             >
               <span className="block text-[11px] leading-4 text-center">모델<br/>선택</span>
@@ -2491,7 +2641,8 @@ const ChatPage = () => {
                 value={newMessage}
                 onChange={(e) => setNewMessage(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder={isOrigChat && (origMeta?.narrator_mode || origMeta?.mode==='parallel' && false) ? '서술/묘사로 입력하세요. 예) *창밖에는 비가 내리고 있었다.' : '대사를 입력하세요. 예) 반가워!'}
+                disabled={isOrigBusy}
+                placeholder={isOrigChat && (origMeta?.narrator_mode || origMeta?.mode==='parallel' && false) ? '서술/묘사로 입력하세요. 예) * 창밖에는 비가 내리고 있었다.' : '대사를 입력하세요. 예) 반가워!'}
                 className="w-full bg-transparent border-0 focus:border-0 focus:ring-0 outline-none text-sm p-0 pl-3 placeholder:text-gray-500 resize-none"
                 style={{ minHeight: 36 }}
                 rows={1}
@@ -2503,7 +2654,8 @@ const ChatPage = () => {
               <Button
                 type="button"
                 onClick={() => setShowSituation((v)=>!v)}
-                className="rounded-full w-10 h-10 p-0 flex-shrink-0 btn-asterisk"
+                disabled={isOrigBusy}
+                className="rounded-full w-10 h-10 p-0 flex-shrink-0 bg-white text-black"
                 size="icon"
                 variant="ghost"
                 title="상황 입력"
@@ -2516,7 +2668,8 @@ const ChatPage = () => {
             <Button
               type="button"
               onClick={() => setNewMessage(prev => (prev.startsWith('*') ? prev : (`* ${prev || ''}`).trimEnd()))}
-              className="rounded-full w-10 h-10 p-0 flex-shrink-0 btn-asterisk"
+              disabled={isOrigBusy}
+              className="rounded-full w-10 h-10 p-0 flex-shrink-0 bg-white text-black"
               size="icon"
               variant="ghost"
               title="지문/나레이션 시작"
@@ -2527,11 +2680,13 @@ const ChatPage = () => {
             {/* 전송 버튼 */}
             <Button
               type="submit"
-              disabled={!canSend}
-              className={`rounded-full w-10 h-10 p-0 flex-shrink-0 ${canSend ? 'btn-brand' : 'bg-gray-700 text-gray-400'}`}
+              disabled={!canSend || isOrigBusy}
+              className={`rounded-full w-10 h-10 p-0 flex-shrink-0 ${
+                (!canSend || isOrigBusy) ? 'bg-gray-700 text-gray-400' : 'bg-white text-black'
+              }`}
               size="icon"
             >
-              <Send className="w-5 h-5" />
+              {isOrigBusy ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
             </Button>
           </form>
           </ErrorBoundary>

@@ -127,16 +127,35 @@ const ChatHistoryPage = () => {
     }
   }, [page, fetchChatHistory]);
 
-  const handleCharacterClick = (characterId, chatRoomId) => {
+  const handleCharacterClick = (character) => {
     /**
-     * 대화 내역에서 "이어하기" 진입 시 안전하게 room을 유지한다.
+     * 대화 내역에서 채팅 진입(원클릭)
      *
-     * 의도/동작:
-     * - chatRoomId가 있으면 `/ws/chat/:characterId?room=:chatRoomId`로 진입해
-     *   동일 캐릭터의 다른 방(일반챗/원작챗)과 섞여도 정확히 해당 방을 복원한다.
+     * 요구사항:
+     * - 원작챗 캐릭터는 "항상" origchat plain 모드로 진입해야 한다.
+     * - 일반 캐릭터는 기존대로 room 기반 이어하기를 우선한다.
+     *
+     * 방어:
+     * - origin_story_id가 없으면(예: 레거시/비정상 데이터) 기존 동작으로 폴백한다.
      */
-    const qs = chatRoomId ? `?room=${chatRoomId}` : '';
-    navigate(`/ws/chat/${characterId}${qs}`);
+    const cid = String(character?.id || '').trim();
+    if (!cid) return;
+    const roomId = String(character?.chat_room_id || '').trim();
+    const storyId = String(character?.origin_story_id || '').trim();
+    const isOrig = !!storyId || !!(character?.is_origchat || character?.source === 'origchat');
+
+    if (isOrig && storyId) {
+      const usp = new URLSearchParams();
+      usp.set('source', 'origchat');
+      usp.set('storyId', storyId);
+      usp.set('mode', 'plain');
+      if (roomId) usp.set('room', roomId);
+      navigate(`/ws/chat/${cid}?${usp.toString()}`);
+      return;
+    }
+
+    const qs = roomId ? `?room=${roomId}` : '';
+    navigate(`/ws/chat/${cid}${qs}`);
   };
 
   const confirmDelete = (character) => {
@@ -248,7 +267,7 @@ const ChatHistoryPage = () => {
                       const label = map[mode] || '일대일';
                       return `${character.name} (${label})`;
                     })()}
-                    onClick={() => handleCharacterClick(character.id, character.chat_room_id)}
+                    onClick={() => handleCharacterClick(character)}
                     onPin={handlePinToggle}
                     onDelete={confirmDelete}
                   />

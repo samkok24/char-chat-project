@@ -1,7 +1,7 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-import { Plus, Save, Trash2, ArrowUp, ArrowDown, ExternalLink, Image as ImageIcon, Settings } from 'lucide-react';
+import { Plus, Save, Trash2, ArrowUp, ArrowDown, ExternalLink, Image as ImageIcon, Settings, X } from 'lucide-react';
 
 import AppLayout from '../components/layout/AppLayout';
 import { Button } from '../components/ui/button';
@@ -10,7 +10,9 @@ import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Switch } from '../components/ui/switch';
 import { Badge } from '../components/ui/badge';
+import { Avatar, AvatarFallback, AvatarImage } from '../components/ui/avatar';
 import { useAuth } from '../contexts/AuthContext';
+import { charactersAPI } from '../lib/api';
 import {
   HOME_BANNERS_STORAGE_KEY,
   HOME_BANNERS_CHANGED_EVENT,
@@ -22,6 +24,8 @@ import {
 import {
   HOME_SLOTS_STORAGE_KEY,
   HOME_SLOTS_CHANGED_EVENT,
+  HOME_SLOTS_CURATED_CHARACTERS_SLOT_ID,
+  HOME_SLOTS_CURATED_CHARACTERS_MAX,
   DEFAULT_HOME_SLOTS,
   getHomeSlots,
   setHomeSlots,
@@ -127,6 +131,12 @@ const CMSPage = () => {
   const [banners, setBannersState] = React.useState(() => getHomeBanners());
   const [slots, setSlotsState] = React.useState(() => getHomeSlots());
   const [saving, setSaving] = React.useState(false);
+
+  // ===== 추천 캐릭터(초심자 온보딩) 선택 UI 상태 =====
+  // - "구좌명"과 달리 추천 캐릭터 목록은 입력 중 trim 이슈가 없도록 배열 자체를 편집한다.
+  const [curatedSearch, setCuratedSearch] = React.useState('');
+  const [curatedSearchResults, setCuratedSearchResults] = React.useState([]);
+  const [curatedSearching, setCuratedSearching] = React.useState(false);
 
   // 배너 탭: 탭/창 동기화(방어적)
   // - focus 이벤트는 파일 업로드(File Picker)에서도 발생할 수 있어, "저장 전 편집 상태"를 로컬스토리지의 옛 값으로 덮어쓰는 버그를 만들 수 있다.
@@ -351,10 +361,37 @@ const CMSPage = () => {
   };
 
   // ===== 홈 구좌(슬롯) 관리 =====
+  /**
+   * 구좌(슬롯) 수정
+   *
+   * 주의(중요):
+   * - `sanitizeHomeSlot()`은 `title`에 `trim()`을 적용한다.
+   * - 구좌 제목 Input에서 매 키 입력마다 sanitize를 적용하면,
+   *   사용자가 띄어쓰기를 입력하는 순간(트레일링 스페이스)이 즉시 제거되어
+   *   "구좌명에 띄어쓰기가 안 들어가는" UX 버그가 발생한다.
+   * - 따라서 `title` 패치는 입력 중에는 원문을 유지하고,
+   *   최종 저장(`setHomeSlots`) 시점에만 sanitize(trim)되도록 한다.
+   */
   const updateSlot = (id, patch) => {
     setSlotsState((prev) => {
-      const next = (Array.isArray(prev) ? prev : []).map((s) => (String(s.id) === String(id) ? sanitizeHomeSlot({ ...s, ...patch, id: s.id }) : s));
-      return next;
+      const arr = Array.isArray(prev) ? prev : [];
+      const safePatch = (patch && typeof patch === 'object') ? patch : {};
+
+      const hasTitlePatch = Object.prototype.hasOwnProperty.call(safePatch, 'title');
+      const rawTitle = hasTitlePatch ? safePatch.title : undefined;
+
+      return arr.map((s) => {
+        if (String(s?.id) !== String(id)) return s;
+
+        const merged = { ...(s || {}), ...safePatch, id: s?.id };
+        const normalized = sanitizeHomeSlot(merged);
+
+        // ✅ 입력 UX: 띄어쓰기(특히 트레일링 스페이스)를 유지한다.
+        if (hasTitlePatch) {
+          normalized.title = (typeof rawTitle === 'string') ? rawTitle : String(rawTitle ?? '');
+        }
+        return normalized;
+      });
     });
   };
 
@@ -368,6 +405,56 @@ const CMSPage = () => {
     setSlotsState((prev) => [...(Array.isArray(prev) ? prev : []), s]);
     toast.success('구좌가 추가되었습니다. 아래에서 내용을 수정한 뒤 저장하세요.');
   };
+
+  /**
+   * 추천 캐릭터 검색(관리자용)
+   *
+   * 의도:
+   * - 추천 캐릭터는 하드코딩하지 않고, 운영자가 CMS에서 선택한다.
+   * - 지금은 "간단 검색 + 최대 20개"만 제공해도 데모/운영에 충분하다.
+   *
+   * 방어적:
+   * - API 응답 포맷이 배열/객체로 달라져도 안전하게 처리한다.
+   */
+  const runCuratedCharacterSearch = React.useCallback(async () => {
+    const q = String(curatedSearch || '').trim();
+    if (!q) {
+      setCuratedSearchResults([]);
+      return;
+    }
+
+    setCuratedSearching(true);
+    try {
+      const res = await charactersAPI.getCharacters({ search: q, limit: 20 });
+      const raw = res?.data;
+      const arr =
+        Array.isArray(raw)
+          ? raw
+          : Array.isArray(raw?.characters)
+            ? raw.characters
+            : [];
+
+      // 최소 필드만 보장 (id/name/avatar_url)
+      const normalized = arr
+        .map((c) => ({
+          id: c?.id,
+          name: c?.name,
+          avatar_url: c?.avatar_url || c?.thumbnail_url || '',
+          source_type: c?.source_type,
+          is_origchat: c?.is_origchat,
+          origin_story_id: c?.origin_story_id,
+        }))
+        .filter((c) => !!c.id);
+
+      setCuratedSearchResults(normalized);
+    } catch (e) {
+      try { console.error('[CMSPage] curated character search failed:', e); } catch (_) {}
+      toast.error('캐릭터 검색에 실패했습니다.');
+      setCuratedSearchResults([]);
+    } finally {
+      setCuratedSearching(false);
+    }
+  }, [curatedSearch]);
 
   const moveSlot = (id, dir) => {
     setSlotsState((prev) => {
@@ -832,6 +919,8 @@ const CMSPage = () => {
                 ) : (
                   (slots || []).map((s, idx) => {
                     const status = computeStatus(s);
+                    const isCuratedPickSlot = String(s?.id || '') === HOME_SLOTS_CURATED_CHARACTERS_SLOT_ID;
+                    const curatedPicks = Array.isArray(s?.characterPicks) ? s.characterPicks : [];
                     return (
                       <div key={s.id} className="rounded-xl border border-gray-700 bg-gray-900/30 p-4">
                         <div className="flex items-start justify-between gap-3">
@@ -853,8 +942,8 @@ const CMSPage = () => {
                               variant="outline"
                               className="h-9 px-3 bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
                               onClick={() => moveSlot(s.id, 'up')}
-                              disabled={idx === 0}
-                              title="위로"
+                              disabled={isCuratedPickSlot || idx === 0}
+                              title={isCuratedPickSlot ? '상단 고정 구좌' : '위로'}
                             >
                               <ArrowUp className="w-4 h-4" />
                             </Button>
@@ -862,8 +951,8 @@ const CMSPage = () => {
                               variant="outline"
                               className="h-9 px-3 bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
                               onClick={() => moveSlot(s.id, 'down')}
-                              disabled={idx === ((slots || []).length - 1)}
-                              title="아래로"
+                              disabled={isCuratedPickSlot || idx === ((slots || []).length - 1)}
+                              title={isCuratedPickSlot ? '상단 고정 구좌' : '아래로'}
                             >
                               <ArrowDown className="w-4 h-4" />
                             </Button>
@@ -871,6 +960,141 @@ const CMSPage = () => {
                         </div>
 
                         <div className="mt-4 space-y-4">
+                          {isCuratedPickSlot && (
+                            <div className="rounded-lg border border-purple-500/30 bg-purple-900/10 p-4">
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0">
+                                  <div className="text-sm font-semibold text-white">추천 캐릭터(최대 {HOME_SLOTS_CURATED_CHARACTERS_MAX}명)</div>
+                                  <div className="text-xs text-gray-400 mt-1">
+                                    메인 화면 상단에 고정 노출되는 초심자용 구좌입니다. (선택이 없으면 안내 문구만 보입니다)
+                                  </div>
+                                </div>
+                                <Badge className="bg-purple-700 text-white">
+                                  {Math.min(curatedPicks.length, HOME_SLOTS_CURATED_CHARACTERS_MAX)}/{HOME_SLOTS_CURATED_CHARACTERS_MAX}
+                                </Badge>
+                              </div>
+
+                              {/* 선택된 캐릭터 */}
+                              {curatedPicks.length === 0 ? (
+                                <div className="mt-3 text-sm text-gray-300">
+                                  아직 선택된 추천 캐릭터가 없습니다.
+                                </div>
+                              ) : (
+                                <div className="mt-3 flex flex-wrap gap-2">
+                                  {curatedPicks.slice(0, HOME_SLOTS_CURATED_CHARACTERS_MAX).map((p) => {
+                                    const pid = String(p?.id || '').trim();
+                                    const name = String(p?.name || '').trim() || `ID: ${pid}`;
+                                    const img = String(p?.avatar_url || '').trim();
+                                    return (
+                                      <div
+                                        key={pid || name}
+                                        className="inline-flex items-center gap-2 rounded-full border border-gray-700 bg-gray-900/40 px-2.5 py-1"
+                                      >
+                                        <Avatar className="h-6 w-6">
+                                          <AvatarImage src={img} alt={name} />
+                                          <AvatarFallback className="bg-gray-800 text-gray-200 text-xs">
+                                            {name?.charAt(0) || 'C'}
+                                          </AvatarFallback>
+                                        </Avatar>
+                                        <span className="text-xs text-gray-200 max-w-[180px] truncate" title={name}>{name}</span>
+                                        <button
+                                          type="button"
+                                          className="ml-1 inline-flex h-6 w-6 items-center justify-center rounded-full text-gray-300 hover:bg-gray-800 hover:text-white transition-colors"
+                                          onClick={() => {
+                                            const next = curatedPicks.filter((x) => String(x?.id || '') !== pid);
+                                            updateSlot(s.id, { characterPicks: next });
+                                          }}
+                                          aria-label="추천 캐릭터 제거"
+                                          title="제거"
+                                        >
+                                          <X className="h-4 w-4" />
+                                        </button>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+
+                              {/* 검색/추가 */}
+                              <form
+                                className="mt-4 flex flex-col sm:flex-row gap-2"
+                                onSubmit={(e) => {
+                                  e.preventDefault();
+                                  runCuratedCharacterSearch();
+                                }}
+                              >
+                                <Input
+                                  value={curatedSearch}
+                                  onChange={(e) => setCuratedSearch(e.target.value)}
+                                  className="bg-gray-900 border-gray-700 text-white"
+                                  placeholder="캐릭터 이름으로 검색 (예: 여우, 기사, 학생...)"
+                                />
+                                <Button
+                                  type="submit"
+                                  variant="outline"
+                                  className="bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
+                                  disabled={curatedSearching}
+                                >
+                                  {curatedSearching ? '검색 중...' : '검색'}
+                                </Button>
+                              </form>
+
+                              {curatedSearchResults.length > 0 && (
+                                <div className="mt-3 rounded-lg border border-gray-800 bg-gray-950/30">
+                                  <div className="max-h-[260px] overflow-auto">
+                                    {curatedSearchResults.map((c) => {
+                                      const cid = String(c?.id || '').trim();
+                                      const name = String(c?.name || '').trim() || `ID: ${cid}`;
+                                      const img = String(c?.avatar_url || '').trim();
+                                      const already = curatedPicks.some((p) => String(p?.id || '') === cid);
+                                      const disabled = already || curatedPicks.length >= HOME_SLOTS_CURATED_CHARACTERS_MAX;
+                                      return (
+                                        <div
+                                          key={cid}
+                                          className="flex items-center justify-between gap-3 px-3 py-2 border-b border-gray-900 last:border-b-0"
+                                        >
+                                          <div className="flex items-center gap-3 min-w-0">
+                                            <Avatar className="h-8 w-8">
+                                              <AvatarImage src={img} alt={name} />
+                                              <AvatarFallback className="bg-gray-800 text-gray-200 text-xs">
+                                                {name?.charAt(0) || 'C'}
+                                              </AvatarFallback>
+                                            </Avatar>
+                                            <div className="min-w-0">
+                                              <div className="text-sm text-gray-100 truncate" title={name}>{name}</div>
+                                              <div className="text-xs text-gray-500 truncate">ID: {cid}</div>
+                                            </div>
+                                          </div>
+                                          <Button
+                                            type="button"
+                                            variant="outline"
+                                            className="h-9 px-3 bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700 disabled:opacity-50"
+                                            disabled={disabled}
+                                            onClick={() => {
+                                              if (!cid) return;
+                                              if (already) return;
+                                              if (curatedPicks.length >= HOME_SLOTS_CURATED_CHARACTERS_MAX) {
+                                                toast.error(`추천 캐릭터는 최대 ${HOME_SLOTS_CURATED_CHARACTERS_MAX}명까지 선택할 수 있습니다.`);
+                                                return;
+                                              }
+                                              const next = [
+                                                ...curatedPicks,
+                                                { id: cid, name, avatar_url: img },
+                                              ];
+                                              updateSlot(s.id, { characterPicks: next });
+                                            }}
+                                          >
+                                            {already ? '선택됨' : '추가'}
+                                          </Button>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          )}
+
                           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                             <div className="space-y-2">
                               <Label className="text-gray-300">구좌 제목(관리용)</Label>

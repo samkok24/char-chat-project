@@ -422,7 +422,8 @@ const CharacterDetailPage = () => {
                 <Button
                   variant="secondary"
                   className="bg-pink-600 hover:bg-pink-700"
-                  onClick={() => navigate(`/ws/chat/${characterId}?source=origchat&storyId=${workId}&anchor=${continueChapter}`)}
+                  // ✅ "시작" 버튼은 새 원작챗 세션을 의도하므로 new=1로 강제(항상 새 대화)
+                  onClick={() => navigate(`/ws/chat/${characterId}?source=origchat&storyId=${workId}&anchor=${continueChapter}&mode=plain&new=1`)}
                 >
                   등장인물과 원작챗 시작
                 </Button>
@@ -445,7 +446,13 @@ const CharacterDetailPage = () => {
               </div>
             )}
 
-            <ChatInteraction onStartChat={startChat} characterId={characterId} isAuthenticated={isAuthenticated} isWebNovel={isWebNovel} />
+            <ChatInteraction
+              onStartChat={startChat}
+              characterId={characterId}
+              isAuthenticated={isAuthenticated}
+              isWebNovel={isWebNovel}
+              originStoryId={originStoryId}
+            />
             <CharacterDetails 
               character={character}
               comments={comments}

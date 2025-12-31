@@ -250,12 +250,13 @@ const StoryDetailPage = () => {
       const effectiveCharacterId = characterId || story.character_id;
       // 로딩 표시 (버튼 비활성은 생략)
       try {
-        await origChatAPI.getContextPack(storyId, { anchor: anchorNo, characterId: effectiveCharacterId, rangeFrom: f, rangeTo: t });
+        await origChatAPI.getContextPack(storyId, { anchor: anchorNo, characterId: effectiveCharacterId, mode: 'plain', rangeFrom: f, rangeTo: t });
       } catch (_) { /* 컨텍스트 팩은 선택적이므로 실패해도 계속 진행 */ }
-      const startRes = await origChatAPI.start({ story_id: storyId, character_id: effectiveCharacterId, chapter_anchor: anchorNo, timeline_mode: 'fixed', range_from: f, range_to: t });
+      const startRes = await origChatAPI.start({ story_id: storyId, character_id: effectiveCharacterId, mode: 'plain', force_new: true, start: { chapter: anchorNo }, chapter_anchor: anchorNo, timeline_mode: 'fixed', range_from: f, range_to: t });
       const roomId = startRes.data?.id || startRes.data?.room_id;
       if (roomId) {
-        navigate(`/ws/chat/${effectiveCharacterId}?source=origchat&storyId=${storyId}&anchor=${anchorNo}&rangeFrom=${f}&rangeTo=${t}`);
+        // ✅ 방금 생성된 room으로 정확히 진입(원작챗 새 대화 보장)
+        navigate(`/ws/chat/${effectiveCharacterId}?source=origchat&storyId=${storyId}&anchor=${anchorNo}&mode=plain&new=1&rangeFrom=${f}&rangeTo=${t}&room=${roomId}`);
       } else {
         navigate(`/ws/chat/${effectiveCharacterId}`);
       }

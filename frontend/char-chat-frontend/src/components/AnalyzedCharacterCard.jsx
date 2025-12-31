@@ -6,7 +6,7 @@ import { Textarea } from './ui/textarea';
 import { Label } from './ui/label';
 import { Save, UserPlus } from 'lucide-react'; // UserPlus 아이콘 추가
 
-const AnalyzedCharacterCard = ({ initialCharacter, onSave, buttonText = "이 캐릭터 저장하기", buttonIcon: ButtonIcon = Save, readOnly = false }) => {
+const AnalyzedCharacterCard = ({ initialCharacter, onSave, onChange, buttonText = "이 캐릭터 저장하기", buttonIcon: ButtonIcon = Save, readOnly = false }) => {
   const [character, setCharacter] = useState(initialCharacter);
 
   useEffect(() => {
@@ -15,7 +15,12 @@ const AnalyzedCharacterCard = ({ initialCharacter, onSave, buttonText = "이 캐
 
   const handleChange = (e) => {
     const { name, value } = e.target;
-    setCharacter(prev => ({ ...prev, [name]: value }));
+    setCharacter(prev => {
+      const next = { ...prev, [name]: value };
+      // ✅ 방어적: 부모가 선택 생성(벌크) 시 최신 편집값을 사용할 수 있도록 즉시 동기화
+      try { onChange?.(next); } catch (_) {}
+      return next;
+    });
   };
 
   const handleSave = () => {

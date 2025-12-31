@@ -4,6 +4,8 @@ CAVEDUCK 스타일: "Chat First, Story Later"
 """
 
 from fastapi import FastAPI, HTTPException
+from fastapi.exceptions import ResponseValidationError
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -332,6 +334,32 @@ async def health_check():
         "database": "connected",
         "focus": "AI 채팅 최우선"
     }
+
+
+@app.exception_handler(ResponseValidationError)
+async def response_validation_error_handler(request, exc: ResponseValidationError):
+    """
+    응답 스키마 검증 실패(ResponseValidationError) 로깅 강화.
+
+    배경/의도:
+    - FastAPI가 응답을 `response_model`로 직렬화하는 과정에서 ORM lazy-load/타입 불일치 등이 있으면
+      ResponseValidationError가 발생한다.
+    - 운영/개발에서 `str(exc)`가 깨지면서(`<exception str() failed>`) 로그가 손실되는 케이스가 있어,
+      반드시 `exc.errors()`를 남겨 원인 파악이 가능하도록 한다.
+    """
+    try:
+        path = getattr(request.url, "path", None) or str(getattr(request, "url", ""))
+        method = getattr(request, "method", "")
+        # errors() 자체가 예외일 수도 있으므로 방어
+        try:
+            errs = exc.errors()
+        except Exception as e:
+            errs = [{"type": "errors_failed", "msg": str(e)}]
+        logger.exception(f"[ResponseValidationError] {method} {path} errors={errs}")
+    except Exception:
+        # 최후 방어: 로깅 실패가 서버를 더 망가뜨리지 않도록
+        pass
+    return JSONResponse(status_code=500, content={"detail": "response_validation_error"})
 
 
 # @app.exception_handler(404)

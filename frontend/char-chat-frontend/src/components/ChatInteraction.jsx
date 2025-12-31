@@ -12,9 +12,13 @@ import { useQuery } from '@tanstack/react-query';
 import { usersAPI, chatAPI } from '../lib/api';
 import { useLoginModal } from '../contexts/LoginModalContext';
 
-const ChatInteraction = ({ onStartChat, characterId, isAuthenticated, isWebNovel = false }) => {
+const ChatInteraction = ({ onStartChat, characterId, isAuthenticated, isWebNovel = false, originStoryId = null }) => {
   const navigate = useNavigate();
   const { openLoginModal } = useLoginModal();
+  const isOrigChatCharacter = !!originStoryId;
+  const safeOriginStoryId = (() => {
+    try { return String(originStoryId || '').trim(); } catch (_) { return ''; }
+  })();
 
   const { data: recent = [] } = useQuery({
     queryKey: ['recent-characters-for-continue'],
@@ -42,6 +46,12 @@ const ChatInteraction = ({ onStartChat, characterId, isAuthenticated, isWebNovel
 
   const handleContinue = async () => {
     if (!isAuthenticated) { openLoginModal(); return; }
+    // ✅ 원작챗 캐릭터는 일반 채팅방(room) 재사용 로직이 아니라, origchat plain 모드로 진입해야 한다.
+    // - ChatPage가 localStorage의 마지막 원작챗 room을 재사용하거나, 없으면 새로 생성한다(SSOT).
+    if (isOrigChatCharacter && safeOriginStoryId) {
+      navigate(`/ws/chat/${characterId}?source=origchat&storyId=${safeOriginStoryId}&mode=plain`);
+      return;
+    }
     try {
       const sessionsRes = await chatAPI.getChatSessions();
       const sessions = Array.isArray(sessionsRes.data) ? sessionsRes.data : [];
@@ -64,6 +74,12 @@ const ChatInteraction = ({ onStartChat, characterId, isAuthenticated, isWebNovel
 
   const handleNew = async () => {
     if (!isAuthenticated) { openLoginModal(); return; }
+    // ✅ 원작챗 캐릭터는 "새로 대화"도 origchat plain 모드로 진입해야 한다.
+    // - new=1을 붙이면 ChatPage가 기존 원작챗 방을 재사용하지 않고 새 방을 생성한다.
+    if (isOrigChatCharacter && safeOriginStoryId) {
+      navigate(`/ws/chat/${characterId}?source=origchat&storyId=${safeOriginStoryId}&mode=plain&new=1`);
+      return;
+    }
     try {
       // 무조건 새 방 생성 API 사용
       const roomResponse = await chatAPI.startNewChat(characterId);
@@ -88,10 +104,10 @@ const ChatInteraction = ({ onStartChat, characterId, isAuthenticated, isWebNovel
         </div>
       ) : (
         <Button
-          onClick={onStartChat}
+          onClick={isOrigChatCharacter ? handleContinue : onStartChat}
           className="w-full bg-red-600 hover:bg-red-700 text-white font-bold text-lg py-6"
         >
-          {isWebNovel ? '등장인물과 원작챗 시작' : '대화 시작'}
+          {isOrigChatCharacter ? '원작챗 시작' : (isWebNovel ? '등장인물과 원작챗 시작' : '대화 시작')}
         </Button>
       )}
     </div>

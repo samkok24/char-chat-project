@@ -389,7 +389,19 @@ const Sidebar = () => {
                     title: `${room.character?.name || '캐릭터'}${suffix}`,
                     thumb: characterImageById[room.character?.id] || getCharacterPrimaryImage(room.character || {}),
                     at: new Date(room.last_message_time || room.updated_at || room.created_at || 0).getTime() || 0,
-                    href: `/ws/chat/${room.character?.id}?room=${room.id}`,
+                    href: (() => {
+                      // ✅ 원작챗 캐릭터는 origchat plain 모드로 진입하도록 쿼리를 보강한다.
+                      // - room을 유지하면 "정확히 그 방"으로 이어하기가 가능하다.
+                      const usp = new URLSearchParams();
+                      usp.set('room', String(room.id));
+                      const sid = String(room?.character?.origin_story_id || '').trim();
+                      if (sid) {
+                        usp.set('source', 'origchat');
+                        usp.set('storyId', sid);
+                        usp.set('mode', 'plain');
+                      }
+                      return `/ws/chat/${room.character?.id}?${usp.toString()}`;
+                    })(),
                     is_origchat: isOrig,
                   });
                 });

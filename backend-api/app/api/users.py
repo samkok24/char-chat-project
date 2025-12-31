@@ -74,6 +74,9 @@ async def get_my_recent_characters(
                 is_public=bool(getattr(char, 'is_public', True)),
                 created_at=getattr(char, 'created_at', None),
                 creator_username=char.creator.username if char.creator else None,
+                # ✅ 최근대화/대화내역 UI에서 크리에이터 프로필 이미지를 표시하기 위한 필드
+                # - 프론트는 creator_avatar_url을 사용한다.
+                creator_avatar_url=getattr(char.creator, 'avatar_url', None) if getattr(char, 'creator', None) else None,
                 chat_room_id=getattr(char, 'chat_room_id', None),
                 last_chat_time=getattr(char, 'last_chat_time', None),
                 last_message_snippet=getattr(char, 'last_message_snippet', None),

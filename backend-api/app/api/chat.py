@@ -70,23 +70,88 @@ def _merge_character_tokens(character, user):
     try:
         username = getattr(user, 'username', None) or getattr(user, 'email', '').split('@')[0] or '사용자'
         charname = getattr(character, 'name', None) or '캐릭터'
-        
-        # 단일 인사말 처리
-        if hasattr(character, 'greeting') and character.greeting:
-            character.greeting = character.greeting.replace('{{user}}', username).replace('{{character}}', charname)
-        
-        # 다중 인사말 처리 + 랜덤 선택
-        if hasattr(character, 'greetings') and character.greetings and len(character.greetings) > 0:
-            import random
-            merged_greetings = []
-            for greeting in character.greetings:
-                if greeting and isinstance(greeting, str):
-                    merged = greeting.replace('{{user}}', username).replace('{{character}}', charname)
-                    merged_greetings.append(merged)
-            
-            if merged_greetings:
-                # 랜덤 선택해서 greeting 필드에 설정
-                character.greeting = random.choice(merged_greetings)
+
+        def _norm_text(v):
+            try:
+                return str(v or '').strip()
+            except Exception:
+                return ''
+
+        def _is_or_separator(v):
+            """
+            인사말 구분자(= 실제 인사말이 아닌 텍스트) 판별
+
+            배경:
+            - 프론트에서 인사말을 여러 개 입력할 때, 사용자가 '혹은'을 별도 줄로 넣는 경우가 있다.
+            - 또한 과거 구현에서 greetings 배열을 greeting 문자열로 '\n' join하여 저장하는 케이스가 있어,
+              '혹은'이 실제 첫 메시지로 그대로 노출되는 문제가 발생했다.
+            """
+            t = _norm_text(v).lower()
+            return t in ('혹은', 'or', '또는', '|', '/', 'or:', '혹은:')
+
+        def _replace_tokens(text: str) -> str:
+            # ✅ 토큰 호환: {{assistant}}(프론트 UI 토큰) / {{character}}(백엔드 토큰) 모두 지원
+            return (
+                str(text or '')
+                .replace('{{user}}', username)
+                .replace('{{assistant}}', charname)
+                .replace('{{character}}', charname)
+            )
+
+        candidates = []
+
+        # 1) DB JSON greetings(정식) 우선
+        try:
+            if hasattr(character, 'greetings') and isinstance(character.greetings, list) and len(character.greetings) > 0:
+                for g in character.greetings:
+                    if not isinstance(g, str):
+                        continue
+                    gg = _norm_text(g)
+                    if not gg or _is_or_separator(gg):
+                        continue
+                    candidates.append(gg)
+        except Exception:
+            candidates = candidates or []
+
+        # 2) 레거시/현행(프론트 join) 대응: greeting 문자열에 여러 줄이 있으면 옵션으로 간주
+        if not candidates:
+            raw = _norm_text(getattr(character, 'greeting', None))
+            if raw:
+                try:
+                    lines = str(raw).splitlines()
+                    # '혹은' 같은 명시적 구분자가 있으면 블록 단위로 묶어서 옵션 구성(멀티라인 인사말 보존)
+                    has_sep = any(_is_or_separator(ln) for ln in lines)
+                    if has_sep:
+                        buf = []
+                        for ln in lines:
+                            if _is_or_separator(ln):
+                                block = '\n'.join(buf).strip()
+                                if block:
+                                    candidates.append(block)
+                                buf = []
+                                continue
+                            buf.append(ln)
+                        block = '\n'.join(buf).strip()
+                        if block:
+                            candidates.append(block)
+                    else:
+                        # 구분자가 없으면 각 줄을 옵션으로 간주(프론트에서 greetings를 '\n' join 저장하는 케이스 대응)
+                        for ln in lines:
+                            t = _norm_text(ln)
+                            if not t or _is_or_separator(t):
+                                continue
+                            candidates.append(t)
+                except Exception:
+                    candidates = [raw]
+
+        # 3) 최종 선택: 1개만 랜덤 선택(있으면) → 토큰 치환 후 greeting에 반영
+        import random
+        if candidates:
+            picked = random.choice(candidates)
+            character.greeting = _replace_tokens(picked)
+        else:
+            # 방어: 인사말이 비어있으면 안전 기본값
+            character.greeting = _replace_tokens(getattr(character, 'greeting', None) or '안녕하세요.')
         
         # 다른 필드들도 처리...
     except Exception:
@@ -892,7 +957,19 @@ async def start_chat(
         await chat_service.save_message(
             db, chat_room.id, "assistant", chat_room.character.greeting
         )
-        await db.commit()
+        # ✅ 방어: AsyncSession은 commit 시 객체가 expire될 수 있어, 응답 직렬화(Pydantic) 단계에서
+        # 지연 로드가 발생하며 ResponseValidationError(500)로 터질 수 있다.
+        # 첫 메시지 저장(내부 commit) 이후에는 room을 관계 포함(selectinload)으로 재조회하여 반환한다.
+        try:
+            from sqlalchemy.orm import selectinload
+            stmt = select(ChatRoom).where(ChatRoom.id == chat_room.id).options(selectinload(ChatRoom.character))
+            result = await db.execute(stmt)
+            chat_room = result.scalar_one()
+        except Exception as e:
+            try:
+                logger.warning(f"[chat] reload room after greeting failed (start): {e}")
+            except Exception:
+                pass
     
     return chat_room
 
@@ -914,7 +991,19 @@ async def start_new_chat(
         await chat_service.save_message(
             db, chat_room.id, "assistant", chat_room.character.greeting
         )
-        await db.commit()
+        # ✅ 방어: 첫 메시지 저장(내부 commit) 이후 expire된 ORM을 그대로 반환하면
+        # 응답 직렬화에서 지연 로드가 발생해 ResponseValidationError가 날 수 있다.
+        # room을 관계 포함(selectinload)으로 재조회하여 안전한 객체를 반환한다.
+        try:
+            from sqlalchemy.orm import selectinload
+            stmt = select(ChatRoom).where(ChatRoom.id == chat_room.id).options(selectinload(ChatRoom.character))
+            result = await db.execute(stmt)
+            chat_room = result.scalar_one()
+        except Exception as e:
+            try:
+                logger.warning(f"[chat] reload room after greeting failed (start-new): {e}")
+            except Exception:
+                pass
     
     return chat_room
 
@@ -1267,7 +1356,16 @@ async def send_message(
     await db.flush()  # ← 즉시 커밋
 
     # 3. AI 응답 생성 (CAVEDUCK 스타일 최적화)
-    history = await chat_service.get_messages_by_room_id(db, room.id, limit=20)
+    # ✅ 최근 대화 윈도우(기본 50개)를 사용해야 "방금까지의 맥락"을 유지할 수 있다.
+    # - 과거 버그: limit=20 + skip=0 + asc 정렬 → 오래된 메시지 20개만 모델에 전달되는 문제가 있었다.
+    # - 해결: count로 skip을 계산해 "마지막 50개"를 가져오되, asc(시간순)는 유지한다.
+    recent_limit = 50
+    try:
+        total_messages_count = await chat_service.get_message_count_by_room_id(db, room.id)
+    except Exception:
+        total_messages_count = 0
+    history_skip = max(0, int(total_messages_count or 0) - int(recent_limit))
+    history = await chat_service.get_messages_by_room_id(db, room.id, skip=history_skip, limit=recent_limit)
     
     # 예시 대화 가져오기
     example_dialogues_result = await db.execute(
@@ -1393,8 +1491,7 @@ async def send_message(
     if getattr(room, 'summary', None):
         history_for_ai.append({"role": "system", "parts": [f"(요약) {room.summary}"]})
     
-    # 2) 최근 50개 사용
-    recent_limit = 50
+    # 2) 최근 N개 사용 (recent_limit)
     for msg in history[-recent_limit:]:
         if msg.sender_type == "user":
             history_for_ai.append({"role": "user", "parts": [msg.content]})
@@ -1644,11 +1741,28 @@ async def origchat_start(
         # mode 확인
         mode = (payload.get("mode") or "canon").lower()
         
+        # ✅ 새 대화 강제 플래그(프론트 new=1 대응)
+        # - plain 모드는 기본적으로 "최근 plain 방 재사용"을 허용하지만,
+        #   사용자가 '새로 대화'를 눌렀을 때는 반드시 새 방을 만들어야 한다(요구사항).
+        force_new = False
+        try:
+            raw_force_new = payload.get("force_new")
+            if raw_force_new is None:
+                raw_force_new = payload.get("forceNew")
+            if raw_force_new is None:
+                raw_force_new = payload.get("force-new")
+            if isinstance(raw_force_new, str):
+                force_new = raw_force_new.strip().lower() in ("1", "true", "yes", "y", "on")
+            else:
+                force_new = bool(raw_force_new)
+        except Exception:
+            force_new = False
+        
         # ✅ plain 모드인 경우 기존 room 재사용 시도
         room = None
         is_reusing_existing_room = False
         created_new_room = False
-        if mode == "plain":
+        if mode == "plain" and not force_new:
             try:
                 # user_id + character_id로 최근 ChatRoom 조회 (최신순)
                 result = await db.execute(
@@ -2567,11 +2681,33 @@ async def origchat_turn(
         else:
             # ✅ 일반 턴: AI 응답 생성
             # 1. 히스토리 조회
-            history = await chat_service.get_messages_by_room_id(db, room.id, limit=20)
+            # ✅ 방어: get_messages_by_room_id는 created_at ASC + offset/limit 형태라,
+            # skip을 주지 않으면 "최신 20개"가 아니라 "처음 20개"가 반환될 수 있다.
+            # 원작챗은 최신 맥락이 중요하므로, 전체 카운트 기반으로 마지막 20개 구간을 조회한다.
+            try:
+                from app.models.chat import ChatMessage as _ChatMessage
+                total_count = await db.scalar(
+                    select(func.count(_ChatMessage.id)).where(_ChatMessage.chat_room_id == room.id)
+                ) or 0
+                skip_n = max(0, int(total_count) - 20)
+            except Exception:
+                skip_n = 0
+            history = await chat_service.get_messages_by_room_id(db, room.id, skip=skip_n, limit=20)
             history_for_ai = []
             
             
-            for msg in history[-20:]:
+            # ✅ 현재 턴의 사용자 입력은 user_message로 별도 전달되므로,
+            # 히스토리 블록에서는 중복 포함을 피한다(모델 혼란 방지).
+            trimmed = history
+            try:
+                if user_text and trimmed:
+                    last = trimmed[-1]
+                    if getattr(last, "sender_type", None) == "user" and (getattr(last, "content", "") or "").strip() == user_text:
+                        trimmed = trimmed[:-1]
+            except Exception:
+                trimmed = history
+
+            for msg in (trimmed[-20:] if isinstance(trimmed, list) else history[-20:]):
                 if msg.sender_type == "user":
                     history_for_ai.append({"role": "user", "parts": [msg.content]})
                 else:

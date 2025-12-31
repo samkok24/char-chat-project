@@ -405,6 +405,7 @@ async def get_public_characters(
     sort: Optional[str] = None,
     source_type: Optional[str] = None,
     tags: Optional[list[str]] = None,
+    gender: Optional[str] = None,
     only: Optional[str] = None,
 ) -> List[Character]:
     """공개 캐릭터 목록 조회"""
@@ -447,18 +448,36 @@ async def get_public_characters(
             query = query.where(Character.origin_story_id.isnot(None))
         elif only_key in ["regular", "normal", "characterchat", "characters"]:
             query = query.where(Character.origin_story_id.is_(None))
+
+    # 성별 필터(태그 기반)
+    # - 요구사항: 전체/남성/여성/그외
+    # - 남성/여성: 해당 태그를 가진 캐릭터만
+    # - 그외: 남성/여성 태그가 "없는" 캐릭터
+    if gender:
+        try:
+            g = (gender or "").strip().lower()
+        except Exception:
+            g = ""
+        if g in ["male", "m", "남성"]:
+            query = query.where(Character.tags.any(Tag.slug == "남성"))
+        elif g in ["female", "f", "여성"]:
+            query = query.where(Character.tags.any(Tag.slug == "여성"))
+        elif g in ["other", "etc", "그외", "기타"]:
+            # ✅ 남성/여성 태그가 모두 없는 경우
+            query = query.where(~Character.tags.any(Tag.slug.in_(["남성", "여성"])))
     
     # 태그 필터 (AND)
+    # - 기존 구현은 join + Tag.slug == A AND Tag.slug == B 형태로 다중 태그가 사실상 동작하지 않았다.
+    # - `Character.tags.any(...)`를 slug별로 AND로 누적하면 의도대로 "모든 태그 포함" 필터가 된다.
     if tags:
-        query = query.join(Character.tags)
         for slug in tags:
-            query = query.where(Tag.slug == slug)
-    
-    # 태그 필터 (AND)
-    if tags:
-        query = query.join(Character.tags)
-        for slug in tags:
-            query = query.where(Tag.slug == slug)
+            try:
+                s = str(slug or "").strip()
+            except Exception:
+                s = ""
+            if not s:
+                continue
+            query = query.where(Character.tags.any(Tag.slug == s))
 
     # 정렬 옵션
     order_sort = (sort or "").lower() if sort else None

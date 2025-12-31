@@ -12,6 +12,8 @@
 
 export const HOME_SLOTS_STORAGE_KEY = 'cms:homeSlots:v1';
 export const HOME_SLOTS_CHANGED_EVENT = 'cms:homeSlotsChanged';
+export const HOME_SLOTS_CURATED_CHARACTERS_SLOT_ID = 'slot_curated_characters';
+export const HOME_SLOTS_CURATED_CHARACTERS_MAX = 6;
 
 const nowIso = () => {
   try { return new Date().toISOString(); } catch (_) { return ''; }
@@ -51,6 +53,19 @@ const genId = () => {
  *   현재 홈 컴포넌트(TopOrigChat 등)가 내부에서 제목을 가지고 있어 홈 반영은 추후 단계로 둔다.
  */
 export const DEFAULT_HOME_SLOTS = [
+  // 0) (초심자 온보딩) 운영자 추천 캐릭터 (최대 6개 선택)
+  // - 홈 상단에 "바로 대화 시작" CTA로 활용된다.
+  // - 선택이 없으면 홈에서 안내 메시지만 노출된다(요구사항).
+  {
+    id: HOME_SLOTS_CURATED_CHARACTERS_SLOT_ID,
+    title: '추천 캐릭터로 시작하기',
+    enabled: true,
+    startAt: null,
+    endAt: null,
+    characterPicks: [], // [{ id, name, avatar_url }]
+    createdAt: nowIso(),
+    updatedAt: nowIso(),
+  },
   // 1) 지금 대화가 활발한 원작 캐릭터
   {
     id: 'slot_top_origchat',
@@ -110,6 +125,34 @@ export function sanitizeHomeSlot(raw) {
   const title = String(obj.title || '').trim() || '구좌';
   const enabled = obj.enabled !== false; // default true
 
+  /**
+   * 운영자 추천 캐릭터(초심자 온보딩)
+   *
+   * 의도:
+   * - 홈 상단 추천 캐릭터 구좌는 "최대 6개"만 지원한다(UX/레이아웃 고정).
+   * - 저장 시점에만 sanitize하여, 런타임 렌더에서 예외가 발생하지 않도록 한다.
+   * - 중복 id는 제거하고, 순서는 유지한다(관리자가 선택/정렬한 순서 보존).
+   */
+  const rawPicks = Array.isArray(obj.characterPicks) ? obj.characterPicks : [];
+  const seenPickIds = new Set();
+  const characterPicks = [];
+  for (const p of rawPicks) {
+    try {
+      const pid = String(p?.id || '').trim();
+      if (!pid) continue;
+      if (seenPickIds.has(pid)) continue;
+      seenPickIds.add(pid);
+      characterPicks.push({
+        id: pid,
+        name: String(p?.name || '').trim(),
+        avatar_url: String(p?.avatar_url || p?.avatarUrl || '').trim(),
+      });
+      if (characterPicks.length >= HOME_SLOTS_CURATED_CHARACTERS_MAX) break;
+    } catch (_) {
+      // ignore bad item
+    }
+  }
+
   const startAt = obj.startAt ? String(obj.startAt) : null;
   const endAt = obj.endAt ? String(obj.endAt) : null;
 
@@ -120,6 +163,7 @@ export function sanitizeHomeSlot(raw) {
     id,
     title,
     enabled,
+    characterPicks,
     startAt,
     endAt,
     createdAt,

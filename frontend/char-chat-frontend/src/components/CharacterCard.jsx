@@ -36,7 +36,14 @@ export const CharacterCard = ({ character, onCardClick, onButtonClick, footerCon
     if (onButtonClick) {
       onButtonClick(charId, character.chat_room_id);
     } else {
-      if (charId) navigate(`/ws/chat/${charId}`);
+      if (!charId) return;
+      // ✅ 원작챗 캐릭터는 일반챗이 아니라 origchat plain 모드로 진입해야 한다.
+      const sid = String(character?.origin_story_id || '').trim();
+      if (isFromOrigChat && sid) {
+        navigate(`/ws/chat/${charId}?source=origchat&storyId=${sid}&mode=plain`);
+        return;
+      }
+      navigate(`/ws/chat/${charId}`);
     }
   };
 

@@ -77,6 +77,13 @@ const WebNovelSection = () => {
               character={c}
               onClick={() => {
                 if (!requireAuth('웹소설 캐릭터 채팅')) return;
+                // ✅ 웹소설(원작) 캐릭터는 원작챗(plain)로 진입해야 한다.
+                const sid = String(c?.origin_story_id || '').trim();
+                if (sid) {
+                  navigate(`/ws/chat/${c.id}?source=origchat&storyId=${sid}&mode=plain`);
+                  return;
+                }
+                // 방어적 폴백: 원작 id가 없으면 기존 동작 유지
                 navigate(`/ws/chat/${c.id}`);
               }}
             />

@@ -49,8 +49,36 @@ export const RecentCharactersList = ({ limit = 4 }) => {
     };
   }, [refetch]);
 
-  const handleCharacterClick = (characterId, chatRoomId) => {
-    navigate(`/chat/${chatRoomId || characterId}`);
+  const handleCharacterClick = (character) => {
+    /**
+     * 최근대화 원클릭 진입
+     *
+     * 요구사항:
+     * - 원작챗 캐릭터는 origchat plain 모드로 진입해야 한다.
+     * - roomId가 있으면 유지하여 "정확히 그 방" 이어하기가 가능해야 한다(다른 방과 혼선 방지).
+     *
+     * 구현:
+     * - `/chat/:id` 리다이렉트 라우트를 사용하면 roomId/characterId 모두 안전하게 처리할 수 있다.
+     * - query(source/storyId/mode)는 ChatRedirectPage가 유지한다.
+     */
+    const cid = String(character?.id || '').trim();
+    if (!cid) return;
+    const roomId = String(character?.chat_room_id || '').trim();
+    const storyId = String(character?.origin_story_id || '').trim();
+    const isOrig = !!storyId || !!(character?.is_origchat || character?.source === 'origchat');
+
+    if (isOrig && storyId) {
+      const usp = new URLSearchParams();
+      usp.set('source', 'origchat');
+      usp.set('storyId', storyId);
+      usp.set('mode', 'plain');
+      const qs = usp.toString();
+      // roomId가 있으면 room 기반으로 이동(정확 복원), 없으면 character 기반으로 이동(새 세션 생성)
+      navigate(`/chat/${roomId || cid}${qs ? `?${qs}` : ''}`);
+      return;
+    }
+
+    navigate(`/chat/${roomId || cid}`);
   };
   
   const handleDeleteChatRoom = async (chatRoomId) => {
@@ -107,7 +135,7 @@ export const RecentCharactersList = ({ limit = 4 }) => {
           <RecentChatCard
             character={char}
             displayTitle={title}
-            onClick={() => handleCharacterClick(char.id, char.chat_room_id)}
+            onClick={() => handleCharacterClick(char)}
           />
         </div>
       ); })}
