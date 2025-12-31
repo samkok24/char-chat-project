@@ -12,6 +12,7 @@ import { Badge } from './ui/badge';
 import { formatCount } from '../lib/format';
 import { storiesAPI } from '../lib/api';
 import { useAuth } from '../contexts/AuthContext';
+import { replacePromptTokens } from '../lib/prompt';
 
 export const CharacterCard = ({ character, onCardClick, onButtonClick, footerContent, showOriginBadge = false }) => {
   const navigate = useNavigate();
@@ -36,7 +37,14 @@ export const CharacterCard = ({ character, onCardClick, onButtonClick, footerCon
     if (onButtonClick) {
       onButtonClick(charId, character.chat_room_id);
     } else {
-      if (charId) navigate(`/ws/chat/${charId}`);
+      if (!charId) return;
+      // ✅ 원작챗 캐릭터는 일반챗이 아니라 origchat plain 모드로 진입해야 한다.
+      const sid = String(character?.origin_story_id || '').trim();
+      if (isFromOrigChat && sid) {
+        navigate(`/ws/chat/${charId}?source=origchat&storyId=${sid}&mode=plain`);
+        return;
+      }
+      navigate(`/ws/chat/${charId}`);
     }
   };
 
@@ -113,7 +121,12 @@ export const CharacterCard = ({ character, onCardClick, onButtonClick, footerCon
         <h3 className="font-medium text-white truncate text-[13px] leading-tight">{character.name}</h3>
         {/* 설명 */}
         <p className="text-[12px] text-gray-400 mt-0.5 line-clamp-2 pr-1">
-          {character.description || '설명이 없습니다.'}
+          {(() => {
+            const nm = character?.name || '캐릭터';
+            const raw = character?.description || '';
+            const rendered = replacePromptTokens(raw, { assistantName: nm, userName: '당신' }).trim();
+            return rendered || '설명이 없습니다.';
+          })()}
         </p>
         
         {/* 상태 정보 제거: 이미지 영역으로 이동 */}

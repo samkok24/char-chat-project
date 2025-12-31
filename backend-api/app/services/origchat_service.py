@@ -16,6 +16,8 @@ from app.models.character import Character
 import math
 from typing import Iterable
 
+from app.services.ai_service import CLAUDE_MODEL_PRIMARY
+
 
 async def build_context_pack(db: AsyncSession, story_id, anchor: int, character_id: Optional[str] = None) -> Dict[str, Any]:
     # Redis 캐시 우선
@@ -101,7 +103,7 @@ async def _enrich_character_fields(
     combined_context: str,
     *,
     model: str = "claude",
-    sub_model: str = "claude-3-5-sonnet-20241022",
+    sub_model: str = CLAUDE_MODEL_PRIMARY,
 ) -> None:
     """회차 텍스트 컨텍스트를 바탕으로 캐릭터 필드를 LLM으로 보강한다.
     실패해도 조용히 무시한다(서비스 지속성 우선).
@@ -309,7 +311,7 @@ async def detect_style_profile(
             user_message=user,
             history=[],
             preferred_model="claude",
-            preferred_sub_model="claude-3-5-sonnet-20241022",
+            preferred_sub_model=CLAUDE_MODEL_PRIMARY,
             response_length_pref="short",
         )
         txt = (raw or '').strip()
@@ -421,7 +423,7 @@ async def _llm_summarize(text: str, *, max_chars: int = 300) -> str:
             user_message=user[:6000],
             history=[],
             preferred_model="claude",
-            preferred_sub_model="claude-3-5-sonnet-20241022",
+            preferred_sub_model=CLAUDE_MODEL_PRIMARY,
             response_length_pref="short",
         )
         s = (raw or "").strip()
@@ -631,7 +633,7 @@ async def generate_what_if_seeds(
             user_message=user,
             history=[],
             preferred_model="claude",
-            preferred_sub_model="claude-3-5-sonnet-20241022",
+            preferred_sub_model=CLAUDE_MODEL_PRIMARY,
             response_length_pref="short",
         )
         txt = (raw or '').strip()
@@ -813,7 +815,7 @@ async def enforce_character_consistency(
             user_message=user,
             history=[],
             preferred_model="claude",
-            preferred_sub_model="claude-3-5-sonnet-20241022",
+            preferred_sub_model=CLAUDE_MODEL_PRIMARY,
             response_length_pref="medium",
         )
         refined = (refined or "").strip()
@@ -874,7 +876,7 @@ async def normalize_dialogue_speakers(
             user_message=ai_text,
             history=[],
             preferred_model="claude",
-            preferred_sub_model="claude-3-5-sonnet-20241022",
+            preferred_sub_model=CLAUDE_MODEL_PRIMARY,
             response_length_pref="medium",
         )
         refined = (refined or '').strip()
@@ -1118,7 +1120,7 @@ async def extract_characters_from_story(db: AsyncSession, story_id, max_chapters
                 user_message=win,
                 history=[],
                 preferred_model="claude",
-                preferred_sub_model="claude-3-5-sonnet-20241022",
+                preferred_sub_model=CLAUDE_MODEL_PRIMARY,
                 response_length_pref="short",
             )
         except Exception:
@@ -1274,7 +1276,7 @@ async def extract_characters_from_story(db: AsyncSession, story_id, max_chapters
                 user_message="JSON만 출력",
                 history=[],
                 preferred_model="claude",
-                preferred_sub_model="claude-3-5-sonnet-20241022",
+                preferred_sub_model=CLAUDE_MODEL_PRIMARY,
                 response_length_pref="short",
             )
             alias_txt = (alias_raw or "").strip()
@@ -1472,7 +1474,7 @@ async def refresh_extracted_characters_for_story(
                 user_message=win,
                 history=[],
                 preferred_model="claude",
-                preferred_sub_model="claude-3-5-sonnet-20241022",
+                preferred_sub_model=CLAUDE_MODEL_PRIMARY,
                 response_length_pref="short",
             )
             text = (raw or "").strip()

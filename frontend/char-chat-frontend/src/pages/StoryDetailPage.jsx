@@ -173,8 +173,66 @@ const StoryDetailPage = () => {
     likeMutation.mutate(isLiked);
   };
 
+  /**
+   * 공유 링크 복사
+   *
+   * 의도/동작:
+   * - ... 메뉴의 "공유 링크 복사"에서 현재 페이지 URL을 클립보드에 복사한다.
+   * - Clipboard API가 막히는 환경(권한/비보안 컨텍스트 등)에서는 execCommand('copy')로 폴백한다.
+   *
+   * 방어적:
+   * - 실패를 조용히 무시하지 않고, 콘솔 로그 + 토스트(pageToast)로 사용자에게 알려준다.
+   */
   const handleShare = async () => {
-    try { await navigator.clipboard.writeText(window.location.href); } catch (_) {}
+    const url = (() => {
+      try { return String(window.location?.href || '').trim(); } catch (_) { return ''; }
+    })();
+
+    if (!url) {
+      setPageToast({ show: true, type: 'error', message: '공유 링크를 가져오지 못했습니다.' });
+      return;
+    }
+
+    const tryClipboardApi = async () => {
+      try {
+        if (!navigator?.clipboard?.writeText) return false;
+        await navigator.clipboard.writeText(url);
+        return true;
+      } catch (e) {
+        try { console.error('[StoryDetailPage] copy link failed (clipboard api):', e); } catch (_) {}
+        return false;
+      }
+    };
+
+    const tryExecCommand = () => {
+      try {
+        // execCommand('copy')는 deprecated지만, Clipboard API가 막힌 환경에서도 동작하는 경우가 많다.
+        const el = document.createElement('textarea');
+        el.value = url;
+        el.setAttribute('readonly', '');
+        el.style.position = 'fixed';
+        el.style.top = '0';
+        el.style.left = '0';
+        el.style.opacity = '0';
+        document.body.appendChild(el);
+        el.select();
+        try { el.setSelectionRange(0, el.value.length); } catch (_) {}
+        const ok = !!document.execCommand?.('copy');
+        document.body.removeChild(el);
+        return ok;
+      } catch (e) {
+        try { console.error('[StoryDetailPage] copy link failed (execCommand):', e); } catch (_) {}
+        return false;
+      }
+    };
+
+    const ok = (await tryClipboardApi()) || tryExecCommand();
+    if (ok) {
+      setPageToast({ show: true, type: 'success', message: '공유 링크가 복사되었습니다.' });
+      return;
+    }
+
+    setPageToast({ show: true, type: 'error', message: '공유 링크 복사에 실패했습니다. 브라우저 권한을 확인해주세요.' });
   };
 
   const handleStartOrigChatWithRange = async ({ range_from, range_to, characterId = null }) => {
@@ -192,12 +250,13 @@ const StoryDetailPage = () => {
       const effectiveCharacterId = characterId || story.character_id;
       // 로딩 표시 (버튼 비활성은 생략)
       try {
-        await origChatAPI.getContextPack(storyId, { anchor: anchorNo, characterId: effectiveCharacterId, rangeFrom: f, rangeTo: t });
+        await origChatAPI.getContextPack(storyId, { anchor: anchorNo, characterId: effectiveCharacterId, mode: 'plain', rangeFrom: f, rangeTo: t });
       } catch (_) { /* 컨텍스트 팩은 선택적이므로 실패해도 계속 진행 */ }
-      const startRes = await origChatAPI.start({ story_id: storyId, character_id: effectiveCharacterId, chapter_anchor: anchorNo, timeline_mode: 'fixed', range_from: f, range_to: t });
+      const startRes = await origChatAPI.start({ story_id: storyId, character_id: effectiveCharacterId, mode: 'plain', force_new: true, start: { chapter: anchorNo }, chapter_anchor: anchorNo, timeline_mode: 'fixed', range_from: f, range_to: t });
       const roomId = startRes.data?.id || startRes.data?.room_id;
       if (roomId) {
-        navigate(`/ws/chat/${effectiveCharacterId}?source=origchat&storyId=${storyId}&anchor=${anchorNo}&rangeFrom=${f}&rangeTo=${t}`);
+        // ✅ 방금 생성된 room으로 정확히 진입(원작챗 새 대화 보장)
+        navigate(`/ws/chat/${effectiveCharacterId}?source=origchat&storyId=${storyId}&anchor=${anchorNo}&mode=plain&new=1&rangeFrom=${f}&rangeTo=${t}&room=${roomId}`);
       } else {
         navigate(`/ws/chat/${effectiveCharacterId}`);
       }
@@ -254,6 +313,11 @@ const StoryDetailPage = () => {
 
   const handleTogglePublic = async () => {
     if (!story) return;
+    // 방어: 소유자/관리자만 공개 상태 변경 가능
+    if (!(isOwner || isAdmin)) {
+      setPageToast({ show: true, type: 'error', message: '공개/비공개를 변경할 권한이 없습니다.' });
+      return;
+    }
     const next = !story.is_public;
     // 낙관적 업데이트: 먼저 UI 업데이트
     queryClient.setQueryData(['story', storyId], (prev) => ({ ...(prev || {}), is_public: next }));
@@ -299,6 +363,7 @@ const StoryDetailPage = () => {
     return [g, ...rest];
   })();
   const isOwner = user && story?.creator_id === user.id;
+  const isAdmin = user && !!user?.is_admin;
   // 이어보기 진행 상황 (스토리 기준 localStorage 키 사용)
   const progressChapterNo = getReadingProgress(storyId);
   const [sortDesc, setSortDesc] = useState(false);
@@ -461,12 +526,15 @@ const StoryDetailPage = () => {
             {/* Left: 이미지 갤러리 (캐릭터 상세와 동일 톤) */}
             <div className="lg:col-span-1">
               {/* 메인 프리뷰: 첫 이미지 비율에 맞춰 컨테이너 고정 */}
-              <div className="relative w-full mb-3" style={{ paddingTop: `${Math.max(0.1, baseRatio) * 100}%` }}>
+              <div
+                className="relative w-full mb-3 overflow-hidden rounded-lg bg-gray-800"
+                style={{ paddingTop: `${Math.max(0.1, baseRatio) * 100}%` }}
+              >
                 {activeImage ? (
                   <img
                     src={resolveImageUrl(activeImage) || activeImage}
                     alt={story.title}
-                    className="absolute inset-0 w-full h-full object-cover rounded-lg"
+                    className="absolute inset-0 w-full h-full object-contain sm:object-cover"
                     aria-live="polite"
                     aria-label={`${galleryImages.indexOf(activeImage) + 1} / ${galleryImages.length}`}
                   />
@@ -507,10 +575,10 @@ const StoryDetailPage = () => {
 
             {/* Right: Info & Actions */}
             <div className="lg:col-span-2 space-y-6">
-              <div className="flex items-start justify-between gap-4">
+              <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
                 <div>
                   {/* 작품명 */}
-                  <h1 className="text-4xl font-bold">{story.title}</h1>
+                  <h1 className="text-2xl sm:text-4xl font-bold leading-tight break-words">{story.title}</h1>
                   {/* 닉네임(작성자) */}
                   <div className="flex items-center gap-2 mt-2">
                     <button type="button" onClick={() => navigate(`/users/${story.creator_id}`)} className="flex items-center gap-2 hover:opacity-90">
@@ -525,21 +593,18 @@ const StoryDetailPage = () => {
                     )}
                   </div>
                   {/* 인디케이터(총회차/조회수/좋아요)를 장르 위치로 이동 */}
-                  <div className="flex items-center gap-2 mt-2">
+                  <div className="flex flex-wrap items-center gap-2 mt-2">
                     <Badge variant="secondary" className="bg-gray-800 border border-gray-700 text-gray-300">총회차 {Number(episodesSorted.length || 0).toLocaleString()}</Badge>
                     <Badge variant="secondary" className="bg-gray-800 border border-gray-700 text-gray-300">조회수 {Number(story.view_count || 0).toLocaleString()}</Badge>
                     <Badge variant="secondary" className="bg-gray-800 border border-gray-700 text-gray-300">좋아요 {likeCount.toLocaleString()}</Badge>
                   </div>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
                   <Button variant="outline" onClick={handleLike}>
                     <Heart className="w-4 h-4 mr-2 text-pink-500" fill={isLiked ? 'currentColor' : 'none'} />
                     {likeCount.toLocaleString()}
                   </Button>
-                  <Button variant="outline" onClick={handleShare} className="bg-white text-black hover:bg-gray-100">
-                    <Copy className="w-4 h-4 mr-2" /> 공유
-                  </Button>
-                  {isOwner && (
+                  {(isOwner || isAdmin) && (
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button variant="ghost" size="icon" className="rounded-full">
@@ -547,18 +612,26 @@ const StoryDetailPage = () => {
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end" className="bg-gray-800 text-white border-gray-700">
-                        <DropdownMenuItem onClick={() => navigate(`/stories/${storyId}/edit`)}>
-                          <Edit className="w-4 h-4 mr-2" /> 수정
-                        </DropdownMenuItem>
-                        <DropdownMenuSeparator className="bg-gray-700" />
+                        {isOwner && (
+                          <>
+                            <DropdownMenuItem onClick={() => navigate(`/stories/${storyId}/edit`)}>
+                              <Edit className="w-4 h-4 mr-2" /> 수정
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator className="bg-gray-700" />
+                          </>
+                        )}
                         <div className="relative flex cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none">
                           <Label htmlFor="story-public-toggle" className="flex-1">{story.is_public ? '공개' : '비공개'}</Label>
                           <Switch id="story-public-toggle" checked={!!story.is_public} onCheckedChange={handleTogglePublic} />
                         </div>
-                        <DropdownMenuSeparator className="bg-gray-700" />
-                        <DropdownMenuItem onClick={handleDeleteStory} className="text-red-500">
-                          <Trash2 className="w-4 h-4 mr-2" /> 삭제
-                        </DropdownMenuItem>
+                        {isOwner && (
+                          <>
+                            <DropdownMenuSeparator className="bg-gray-700" />
+                            <DropdownMenuItem onClick={handleDeleteStory} className="text-red-500">
+                              <Trash2 className="w-4 h-4 mr-2" /> 삭제
+                            </DropdownMenuItem>
+                          </>
+                        )}
                         <DropdownMenuSeparator className="bg-gray-700" />
                         <DropdownMenuItem onClick={handleShare}>
                           <Copy className="w-4 h-4 mr-2" /> 공유 링크 복사
@@ -583,15 +656,15 @@ const StoryDetailPage = () => {
 
               {/* 액션: 첫화보기/이어보기 + 대화하기 (캐릭터 상세 버튼 톤과 맞춤) */}
               <section className="space-y-3">
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   <Button
                     onClick={() => navigate(`/stories/${storyId}/chapters/${targetReadNo}`)}
-                    className={`bg-gray-700 hover:bg-gray-600 w-full text-white font-semibold py-5`}
+                    className={`bg-gray-700 hover:bg-gray-600 w-full text-white font-semibold py-4 sm:py-5 text-sm sm:text-base`}
                   >
                     {showContinue ? `이어보기 (${progressChapterNo}화)` : `첫화보기 (${firstChapterNo}화)`}
                   </Button>
                   <Button
-                    className="w-full bg-red-600 hover:bg-red-700 text-white font-semibold py-5"
+                    className="w-full bg-red-600 hover:bg-red-700 text-white font-semibold py-4 sm:py-5 text-sm sm:text-base"
                     onClick={() => {
                       if (!isAuthenticated) { openLoginModal(); return; }
                       // 항상 모달 먼저 오픈(후속 동작은 모달 내부에서 처리)
@@ -844,20 +917,28 @@ const StoryDetailPage = () => {
                 {isAuthenticated && (
                   <form onSubmit={handleSubmitComment} className="mb-4">
                     <div className="flex items-start gap-2">
-                      <Avatar className="w-8 h-8">
+                      <Avatar className="w-8 h-8 flex-shrink-0">
                         <AvatarImage src={user?.avatar_url || ''} />
                         <AvatarFallback>{user?.username?.charAt(0)?.toUpperCase() || 'U'}</AvatarFallback>
                       </Avatar>
-                      <textarea
-                        value={commentText}
-                        onChange={(e) => setCommentText(e.target.value)}
-                        rows={3}
-                        placeholder="댓글을 입력하세요"
-                        className="flex-1 rounded-md bg-gray-800 border border-gray-700 text-sm p-2 outline-none focus:ring-2 focus:ring-purple-600"
-                      />
-                      <Button type="submit" disabled={submittingComment || !commentText.trim()}>
-                        등록
-                      </Button>
+                      <div className="flex-1 min-w-0 flex flex-col gap-2">
+                        <textarea
+                          value={commentText}
+                          onChange={(e) => setCommentText(e.target.value)}
+                          rows={3}
+                          placeholder="댓글을 입력하세요"
+                          className="w-full rounded-md bg-gray-800 border border-gray-700 text-sm p-2 outline-none focus:ring-2 focus:ring-purple-600"
+                        />
+                        <div className="flex justify-end">
+                          <Button
+                            type="submit"
+                            disabled={submittingComment || !commentText.trim()}
+                            className="w-full sm:w-auto"
+                          >
+                            등록
+                          </Button>
+                        </div>
+                      </div>
                     </div>
                   </form>
                 )}

@@ -6,7 +6,7 @@ import { Avatar, AvatarFallback, AvatarImage } from '../ui/avatar';
 import { resolveImageUrl, getCharacterPrimaryImage } from '../../lib/images';
 import { getReadingProgress, getReadingProgressAt } from '../../lib/reading';
 import { Button } from '../ui/button';
-import { MessageSquare, Plus, Home, Star, User, History, UserCog, LogOut, Settings, Gem, BookOpen, LogIn, HelpCircle } from 'lucide-react';
+import { MessageSquare, Plus, Home, Star, User, History, UserCog, LogOut, BookOpen, LogIn, HelpCircle, Bell, Settings } from 'lucide-react';
 import { Skeleton } from '../ui/skeleton';
 import { Badge } from '../ui/badge';
 import {
@@ -389,7 +389,19 @@ const Sidebar = () => {
                     title: `${room.character?.name || '캐릭터'}${suffix}`,
                     thumb: characterImageById[room.character?.id] || getCharacterPrimaryImage(room.character || {}),
                     at: new Date(room.last_message_time || room.updated_at || room.created_at || 0).getTime() || 0,
-                    href: `/ws/chat/${room.character?.id}?room=${room.id}`,
+                    href: (() => {
+                      // ✅ 원작챗 캐릭터는 origchat plain 모드로 진입하도록 쿼리를 보강한다.
+                      // - room을 유지하면 "정확히 그 방"으로 이어하기가 가능하다.
+                      const usp = new URLSearchParams();
+                      usp.set('room', String(room.id));
+                      const sid = String(room?.character?.origin_story_id || '').trim();
+                      if (sid) {
+                        usp.set('source', 'origchat');
+                        usp.set('storyId', sid);
+                        usp.set('mode', 'plain');
+                      }
+                      return `/ws/chat/${room.character?.id}?${usp.toString()}`;
+                    })(),
                     is_origchat: isOrig,
                   });
                 });
@@ -468,20 +480,24 @@ const Sidebar = () => {
                 </div>
               </DropdownMenuLabel>
               <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => navigate('/notices')}>
+                <Bell className="mr-2 h-4 w-4" />
+                <span>공지사항</span>
+              </DropdownMenuItem>
+              {user?.is_admin && (
+                <DropdownMenuItem
+                  onClick={() => {
+                    try { window.open('/cms', '_blank', 'noopener,noreferrer'); }
+                    catch (_) { navigate('/cms'); }
+                  }}
+                >
+                  <Settings className="mr-2 h-4 w-4" />
+                  <span>관리자페이지</span>
+                </DropdownMenuItem>
+              )}
               <DropdownMenuItem onClick={() => navigate('/profile')}>
                 <User className="mr-2 h-4 w-4" />
                 <span>마이페이지</span>
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => navigate('/ruby/charge')}>
-                <Gem className="mr-2 h-4 w-4 text-pink-500" />
-                <span>루비 충전</span>
-                <Badge className="ml-auto bg-pink-100 text-pink-800" variant="secondary">
-                  0
-                </Badge>
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => navigate('/settings')}>
-                <Settings className="mr-2 h-4 w-4" />
-                <span>설정</span>
               </DropdownMenuItem>
               <DropdownMenuItem onClick={() => navigate('/faq')}>
                 <HelpCircle className="mr-2 h-4 w-4" />

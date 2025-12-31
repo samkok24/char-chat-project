@@ -98,7 +98,7 @@ const StorySkeleton = () => (
   </li>
 );
 
-const TopStories = () => {
+const TopStories = ({ title } = {}) => {
   const { data = [], isLoading, isError, refetch } = useQuery({
     queryKey: ['top-stories-daily'],
     queryFn: async () => {
@@ -119,12 +119,13 @@ const TopStories = () => {
   }, [refetch]);
   const empty = !isLoading && (!data || data.length === 0);
   const displayData = data.slice(0, 14); // 최대 14개만 표시 (7x2)
+  const slotTitle = String(title || '').trim() || '지금 인기 있는 원작 웹소설';
 
   return (
-    <section className="mt-8">
+    <section className="mt-6 sm:mt-8">
       <div className="flex items-center justify-between mb-4">
         <div className="space-y-1">
-          <h2 className="text-xl font-bold text-white">지금 인기 있는 원작 웹소설</h2>
+          <h2 className="text-lg sm:text-xl font-bold text-white">{slotTitle}</h2>
           <p className="text-xs text-gray-400">원작연재에서 더 많은 작품을 확인해보세요.</p>
         </div>
         <Link to="/dashboard?tab=origserial&sub=novel" className="text-sm text-gray-400 hover:text-white">
@@ -132,7 +133,7 @@ const TopStories = () => {
         </Link>
       </div>
       <ErrorBoundary>
-        <ul className="grid grid-cols-7 gap-4">
+        <ul className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-7 gap-3 sm:gap-4">
           {isLoading && Array.from({ length: 14 }).map((_, idx) => (
             <StorySkeleton key={idx} />
           ))}
@@ -140,7 +141,7 @@ const TopStories = () => {
             <StoryItem key={story.id} story={story} />
           ))}
           {!isLoading && !isError && empty && (
-            <li className="col-span-7 text-center text-gray-400 py-8">
+            <li className="col-span-full text-center text-gray-400 py-8">
               <div className="space-y-1">
                 <div>노출할 웹소설이 없습니다.</div>
               </div>

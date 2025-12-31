@@ -138,7 +138,7 @@ const OrigChatSkeleton = () => (
   </li>
 );
 
-const TopOrigChat = () => {
+const TopOrigChat = ({ title } = {}) => {
   const { data = [], isLoading, isError, refetch } = useQuery({
     queryKey: ['top-origchat-daily'],
     queryFn: async () => {
@@ -159,12 +159,13 @@ const TopOrigChat = () => {
 
   const empty = !isLoading && (!data || data.length === 0);
   const displayData = data.slice(0, 14); // 최대 14개만 표시 (7x2)
+  const slotTitle = String(title || '').trim() || '지금 대화가 활발한 원작 캐릭터';
 
   return (
-    <section className="mt-8">
+    <section className="mt-6 sm:mt-8">
       <div className="flex items-center justify-between mb-4">
         <div className="space-y-1">
-          <h2 className="text-xl font-bold text-white">지금 대화가 활발한 원작 캐릭터</h2>
+          <h2 className="text-lg sm:text-xl font-bold text-white">{slotTitle}</h2>
           <p className="text-xs text-gray-400">원작 세계관 속 캐릭터와 대화를 시작해보세요.</p>
         </div>
         <Link
@@ -175,7 +176,7 @@ const TopOrigChat = () => {
         </Link>
       </div>
       <ErrorBoundary>
-        <ul className="grid grid-cols-7 gap-4">
+        <ul className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-7 gap-3 sm:gap-4">
           {isLoading && Array.from({ length: 14 }).map((_, idx) => (
             <OrigChatSkeleton key={idx} />
           ))}
@@ -183,7 +184,7 @@ const TopOrigChat = () => {
             <OrigChatItem key={char.id} character={char} />
           ))}
           {!isLoading && empty && (
-            <li className="col-span-7 text-center text-gray-400 py-8">
+            <li className="col-span-full text-center text-gray-400 py-8">
               <div className="space-y-1">
                 <div>원작 기반 콘텐츠가 아직 없습니다.</div>
               </div>

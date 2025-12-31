@@ -318,6 +318,11 @@ export const charactersAPI = {
   // 🔥 CAVEDUCK 스타일 고급 생성 API
   createAdvancedCharacter: (data) =>
     api.post('/characters/advanced', data),
+
+  // ⚡ 온보딩: 30초만에 캐릭터 만나기(초안 생성)
+  // - DB 저장은 하지 않고, 고급 생성 payload 초안만 반환한다.
+  quickGenerateCharacterDraft: (data) =>
+    api.post('/characters/quick-generate', data),
   
   updateAdvancedCharacter: (id, data) =>
     api.put(`/characters/advanced/${id}`, data),
@@ -650,6 +655,8 @@ export const rankingAPI = {
 export const metricsAPI = {
   // params: { day?: 'YYYYMMDD', story_id?, room_id?, mode? }
   getSummary: (params = {}) => api.get('/metrics/summary', { params }),
+  // 스토리 에이전트 상단 카피용: (일반캐릭터챗 + 원작챗 캐릭터 + 웹소설) 합산 수
+  getContentCounts: (params = {}) => api.get('/metrics/content-counts', { params }),
 };
 
 // 📖 회차(Chapters) API
@@ -669,6 +676,30 @@ export const storyImporterAPI = {
   analyzeStory: (content, ai_model, title = null) => {
     return api.post('/story-importer/analyze', { content, ai_model, title });
   },
+};
+
+// 📢 공지사항 API
+export const noticesAPI = {
+  list: (params = {}) => api.get('/notices/', { params }),
+  latest: () => api.get('/notices/latest'),
+  get: (id) => api.get(`/notices/${id}`),
+  create: (data) => api.post('/notices/', data),
+  update: (id, data) => api.put(`/notices/${id}`, data),
+  delete: (id) => api.delete(`/notices/${id}`),
+};
+
+// ❓ FAQ API
+export const faqsAPI = {
+  list: (params = {}) => api.get('/faqs/', { params }),
+  create: (data) => api.post('/faqs/', data),
+  update: (id, data) => api.put(`/faqs/${id}`, data),
+  delete: (id) => api.delete(`/faqs/${id}`),
+};
+
+// ❓ FAQ 카테고리(큰 항목) API
+export const faqCategoriesAPI = {
+  list: (params = {}) => api.get('/faq-categories/', { params }),
+  upsert: (id, data) => api.put(`/faq-categories/${id}`, data),
 };
 
 // 💎 포인트 관련 API

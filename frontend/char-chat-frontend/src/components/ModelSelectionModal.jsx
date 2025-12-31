@@ -12,11 +12,11 @@ import { Badge } from './ui/badge';
 import { Input } from './ui/input';
 import { Textarea } from './ui/textarea';
 import { Switch } from './ui/switch';
+import { Slider } from './ui/slider';
 import { 
   ChevronDown, 
   Check, 
   X, 
-  Coins 
 } from 'lucide-react';
 import {
   Collapsible,
@@ -25,14 +25,15 @@ import {
 } from './ui/collapsible';
 
 const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, onModelChange, initialTab = 'model', characterName = '캐릭터', characterId, onUpdateChatSettings }) => {
+  // temperature 기본값: 백엔드 ai_service의 기본 temperature(0.7)와 정합
+  const DEFAULT_TEMPERATURE = 0.7;
   const [selectedModel, setSelectedModel] = useState(currentModel || 'gemini');
   const [selectedSubModel, setSelectedSubModel] = useState(currentSubModel || 'gemini-2.5-pro');
   const [activeTab, setActiveTab] = useState(initialTab);
   const [expandedSections, setExpandedSections] = useState({
     gemini: true,
     claude: false,
-    gpt: false,
-    argo: false
+    gpt: false
   });
   const [responseLength, setResponseLength] = useState('medium'); // short|medium|long
   // 원작챗 추가 설정 초기값 바인딩용 상태
@@ -52,6 +53,7 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
   });
   const [uiTheme, setUiTheme] = useState('system'); // system|dark|light
   const [typingSpeed, setTypingSpeed] = useState(40); // 10~80 cps
+  const [temperatureSel, setTemperatureSel] = useState(DEFAULT_TEMPERATURE); // 0.0~1.0 (0.1 step)
   
   // 기억노트 관련 상태
   const [memories, setMemories] = useState([]);
@@ -65,15 +67,82 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
   const [editingPersona, setEditingPersona] = useState(null);
   const [activePersona, setActivePersona] = useState(null);
 
-  // 현재 모델이 변경되면 선택된 모델 업데이트
+  const models = {
+    gemini: {
+      name: 'Gemini 모델',
+      cost: 8,
+      subModels: [
+        { id: 'gemini-3-flash', name: 'Gemini 3 Flash', description: '빠르면서 밀도 있는 AI', cost: 4, badge: '이벤트', badgeClass: 'bg-amber-500 text-black hover:bg-amber-500' },
+        { id: 'gemini-3-pro', name: 'Gemini 3 Pro', description: '상황 묘사와 플롯테이킹이 강한 최고 성능의 AI', cost: 8, badge: '이벤트', badgeClass: 'bg-amber-500 text-black hover:bg-amber-500' },
+        // ✅ 기존 기본값(gemini-2.5-pro) 유지: 백엔드 호환 + 기본 선택값 유지
+        { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro Standard', description: '비판적 사고, 냉철한 판단과 직설적 어조의 응답', cost: 8, badge: '인기', badgeClass: 'bg-pink-600 text-white hover:bg-pink-600' },
+      ]
+    },
+    claude: {
+      name: 'Claude 모델',
+      cost: 10,
+      subModels: [
+        // ✅ 최신 Claude(4.0+) 모델명 기준으로 정리 (백엔드에서도 동일 문자열로 호출)
+        { id: 'claude-sonnet-4', name: 'Claude Sonnet 4', description: '빠르고 안정적인 올라운더', cost: 10, badge: '기본', badgeClass: 'bg-pink-600 text-white hover:bg-pink-600' },
+        { id: 'claude-opus-4-1', name: 'Claude Opus 4.1', description: '더 깊은 추론/품질을 지향하는 플래그십', cost: 20, badge: '신규', badgeClass: 'bg-pink-600 text-white hover:bg-pink-600' },
+        { id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5', description: '더 향상된 성능의 Sonnet 라인', cost: 12, badge: '인기', badgeClass: 'bg-pink-600 text-white hover:bg-pink-600' },
+        { id: 'claude-opus-4-5', name: 'Claude Opus 4.5', description: '최상위 품질의 Opus 라인', cost: 25, badge: '최고', badgeClass: 'bg-pink-600 text-white hover:bg-pink-600' },
+      ]
+    },
+    gpt: {
+      name: 'GPT 모델',
+      cost: 10,
+      subModels: [
+        // ✅ 기존 사용자 설정 모델도 유지(호환)
+        { id: 'gpt-4o', name: 'GPT-4o', description: 'OpenAI의 멀티모달 모델', cost: 10 },
+        { id: 'gpt-5.1', name: 'GPT-5.1', description: '깊은 이해와 유연한 대화를 겸비한 GPT의 최상위 모델', cost: 10, badge: '신규', badgeClass: 'bg-pink-600 text-white hover:bg-pink-600' },
+        { id: 'gpt-5.2', name: 'GPT-5.2', description: '차세대 추론/지식 강화 모델 (연동 준비 중)', cost: 10, badge: '신규', badgeClass: 'bg-pink-600 text-white hover:bg-pink-600' },
+      ]
+    },
+    // ✅ 경쟁사 UI 구성 맞춤(프론트만): 아직 연동 전이라도 섹션은 유지
+    deepseek: {
+      name: 'Deepseek 모델',
+      cost: 0,
+      subModels: [
+        { id: 'deepseek-r1', name: 'Deepseek R1', description: '연동 준비 중', cost: 0, badge: '준비중', badgeClass: 'bg-gray-700 text-gray-200 hover:bg-gray-700' }
+      ]
+    },
+    short: {
+      name: '단문 모델',
+      cost: 1,
+      subModels: [
+        { id: 'breeze', name: 'Breeze', description: '가볍고 시원하게 소개하는 대화', cost: 1 }
+      ]
+    },
+    caveduck: {
+      name: '케이브덕 전용 모델',
+      cost: 0,
+      subModels: [
+        { id: 'caveduck-special', name: 'Caveduck Special', description: '연동 준비 중', cost: 0, badge: '준비중', badgeClass: 'bg-gray-700 text-gray-200 hover:bg-gray-700' }
+      ]
+    }
+  };
+
+  // 현재 모델이 변경되면 선택된 모델 업데이트(방어적)
   useEffect(() => {
-    if (currentModel) {
-      setSelectedModel(currentModel);
+    try {
+      const safeModel = (currentModel && models[currentModel]) ? currentModel : 'gemini';
+      if (currentModel && !models[currentModel]) {
+        console.warn('[ModelSelectionModal] unsupported model, fallback to gemini:', currentModel);
+      }
+      setSelectedModel(safeModel);
+
+      const list = models[safeModel]?.subModels || [];
+      const safeSub =
+        (currentSubModel && list.some((s) => s.id === currentSubModel))
+          ? currentSubModel
+          : (list[0]?.id || 'gemini-2.5-pro');
+      setSelectedSubModel(safeSub);
+    } catch (_) {
+      setSelectedModel('gemini');
+      setSelectedSubModel('gemini-2.5-pro');
     }
-    if (currentSubModel) {
-      setSelectedSubModel(currentSubModel);
-    }
-  }, [currentModel, currentSubModel]);
+  }, [currentModel, currentSubModel, isOpen]);
 
   // initialTab이 변경되면 activeTab 업데이트
   useEffect(() => {
@@ -96,6 +165,14 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
           if (parsed.next_event_len === 1 || parsed.next_event_len === 2) setNextLenSel(parsed.next_event_len);
           if (typeof parsed.prewarm_on_start === 'boolean') setPrewarmSel(!!parsed.prewarm_on_start);
           if (parsed.response_length_pref) setResponseLength(String(parsed.response_length_pref));
+          // ✅ 공통 temperature: 숫자만 허용 + 0~1 클램핑 + 0.1 단위 반올림
+          if (parsed.temperature !== undefined && parsed.temperature !== null) {
+            const t = Number(parsed.temperature);
+            if (Number.isFinite(t)) {
+              const clipped = Math.max(0, Math.min(1, t));
+              setTemperatureSel(Math.round(clipped * 10) / 10);
+            }
+          }
         }
       } catch (_) {}
       // 로컬 UI 설정 로드
@@ -255,58 +332,7 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
     }
   };
 
-  const models = {
-    gemini: {
-      name: 'Gemini 모델',
-      cost: 10,
-      subModels: [
-        { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', description: 'Google의 최신 2.5 Pro 모델', cost: 10 },
-        { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', description: '빠른 응답 속도의 2.5 Flash', cost: 5 }
-      ]
-    },
-    claude: {
-      name: 'Claude 모델',
-      cost: 10,
-      subModels: [
-        { 
-          id: 'claude-4-sonnet', 
-          name: 'Claude 4 Sonnet', 
-          description: 'Claude 시리즈 중 가장 최신 모델을 현존 최고 지능의 모델',
-          cost: 10,
-          isNew: true
-        },
-        { 
-          id: 'claude-3.7-sonnet', 
-          name: 'Claude 3.7 Sonnet', 
-          description: 'Claude 3.5 Sonnet v2의 후속 모델을 뛰어난 지능의 모델',
-          cost: 10
-        },
-        { 
-          id: 'claude-3.5-sonnet-v2', 
-          name: 'Claude 3.5 Sonnet v2', 
-          description: '기존 Claude 3.5 Sonnet 보다 향상된 표현력과 지능',
-          cost: 10
-        }
-      ]
-    },
-    gpt: {
-      name: 'GPT 모델',
-      cost: 10,
-      subModels: [
-        { id: 'gpt-4.1', name: 'GPT-4.1', description: 'OpenAI의 최신 GPT-4.1 모델', cost: 12 },
-        { id: 'gpt-4.1-mini', name: 'GPT-4.1 Mini', description: '경량화된 GPT-4.1 모델', cost: 6 },
-        { id: 'gpt-4o', name: 'GPT-4o', description: 'OpenAI의 멀티모달 모델', cost: 10 }
-      ]
-    },
-    argo: {
-      name: 'ARGO 모델',
-      isEvent: true,
-      cost: 4,
-      subModels: [
-        { id: 'argo-custom', name: 'ARGO Custom', description: '자사 커스텀 파인튜닝 모델', cost: 4 }
-      ]
-    }
-  };
+  // NOTE: models는 상단에서 경쟁사 구성에 맞춰 정의됨 (ARGO는 당분간 비노출)
 
   const toggleSection = (section) => {
     setExpandedSections(prev => ({
@@ -355,7 +381,7 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
           <div className="mt-2 p-3 bg-blue-50 rounded-lg border">
             <div className="text-sm text-gray-600">현재 선택된 모델</div>
             <div className="font-medium text-blue-800">
-              {models[selectedModel]?.name} - {models[selectedModel]?.subModels.find(sub => sub.id === selectedSubModel)?.name}
+              {models[selectedModel]?.name || selectedModel} - {models[selectedModel]?.subModels?.find(sub => sub.id === selectedSubModel)?.name || selectedSubModel}
             </div>
           </div>
         </DialogHeader>
@@ -402,6 +428,58 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
             </p>
           </div>
 
+          {/* ✅ 공통 Temperature 설정 (0~1, 0.1 step) */}
+          <div className="rounded-lg border border-gray-700 bg-gray-900 text-white p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-sm font-semibold">Temperature</div>
+                <div className="text-xs text-gray-300 mt-1">
+                  0에 가까울수록 안정적/일관적, 1에 가까울수록 창의적/다양해요.
+                </div>
+                <div className="text-[11px] text-gray-400 mt-1">
+                  기본값: {DEFAULT_TEMPERATURE.toFixed(1)}
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="text-sm font-mono text-white/90">
+                  {Number(temperatureSel).toFixed(1)}
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-8 px-3 border-white/20 bg-white/5 text-white hover:bg-white/10"
+                  onClick={() => {
+                    const v = DEFAULT_TEMPERATURE;
+                    setTemperatureSel(v);
+                    try { onUpdateChatSettings && onUpdateChatSettings({ temperature: v }); } catch (_) {}
+                  }}
+                >
+                  기본값
+                </Button>
+              </div>
+            </div>
+            <div className="mt-3">
+              <Slider
+                value={[Number(temperatureSel) || DEFAULT_TEMPERATURE]}
+                min={0}
+                max={1}
+                step={0.1}
+                onValueChange={(vals) => {
+                  const raw = Array.isArray(vals) ? vals[0] : DEFAULT_TEMPERATURE;
+                  const clipped = Math.max(0, Math.min(1, Number(raw)));
+                  const v = Math.round(clipped * 10) / 10;
+                  setTemperatureSel(v);
+                  try { onUpdateChatSettings && onUpdateChatSettings({ temperature: v }); } catch (_) {}
+                }}
+              />
+              <div className="mt-2 flex justify-between text-[10px] text-gray-400">
+                <span>0.0</span>
+                <span>{DEFAULT_TEMPERATURE.toFixed(1)}</span>
+                <span>1.0</span>
+              </div>
+            </div>
+          </div>
+
           {Object.entries(models).map(([modelId, model]) => (
             <Collapsible 
               key={modelId}
@@ -439,8 +517,10 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
                         <div>
                           <div className="flex items-center space-x-2">
                             <span className="font-medium">{subModel.name}</span>
-                            {subModel.isNew && (
-                              <Badge className="bg-red-500 text-white text-xs">신규</Badge>
+                            {subModel.badge && (
+                              <Badge className={`${subModel.badgeClass || 'bg-red-500 text-white'} text-xs`}>
+                                {subModel.badge}
+                              </Badge>
                             )}
                             {isSelected(modelId, subModel.id) && (
                               <Check className="w-4 h-4 text-purple-600" />
@@ -449,9 +529,6 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
                           <p className="text-sm text-gray-600 mt-1">{subModel.description}</p>
                         </div>
                       </div>
-                      <Badge className="bg-yellow-100 text-yellow-800">
-                        {subModel.cost}P
-                      </Badge>
                     </div>
                   </div>
                 ))}

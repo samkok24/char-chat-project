@@ -45,6 +45,22 @@ from .tag import (
     TagResponse,
     TagList,
 )
+from .notice import (
+    NoticeCreate,
+    NoticeUpdate,
+    NoticeResponse,
+    NoticeLatestResponse,
+)
+
+from .faq import (
+    FAQItemCreate,
+    FAQItemUpdate,
+    FAQItemResponse,
+)
+from .faq_category import (
+    FAQCategoryUpdate,
+    FAQCategoryResponse,
+)
 from .payment import (
     PaymentProductResponse,
     PaymentProductCreate,

@@ -10,6 +10,10 @@ from typing import Optional, Union, Dict, List
 import uuid
 from sqlalchemy import func
 from sqlalchemy.orm import selectinload, aliased
+from sqlalchemy import case
+from datetime import datetime, timedelta, timezone
+
+from app.core.database import engine as _engine
 
 from app.models.character import Character
 from app.models.story import Story
@@ -23,6 +27,57 @@ from app.schemas import StatsOverview, TimeSeriesResponse, TimeSeriesPoint, TopC
 
 logger = logging.getLogger(__name__)
 
+def _dialect_name() -> str:
+    """
+    현재 실행 중인 DB dialect 이름을 반환한다.
+
+    의도/동작:
+    - 통계 쿼리는 SQLite/Postgres 모두 지원해야 한다.
+    - SQLite에선 date_trunc/interval 같은 Postgres 전용 함수가 없어 500이 나기 쉬우므로,
+      dialect를 감지해 분기한다.
+    """
+    try:
+        return str(getattr(getattr(_engine, "dialect", None), "name", "") or "")
+    except Exception:
+        return ""
+
+def _to_utc_naive(dt):
+    """timezone-aware datetime을 UTC naive로 정규화한다(키 포맷 일치 목적)."""
+    try:
+        if getattr(dt, "tzinfo", None) is not None:
+            return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    except Exception:
+        pass
+    return dt
+
+def _format_hour_key(v) -> str:
+    """시간 버킷 키를 'YYYY-MM-DD HH:00' 형태로 통일한다."""
+    if v is None:
+        return ""
+    if isinstance(v, str):
+        return v
+    dt = _to_utc_naive(v)
+    try:
+        dt = dt.replace(minute=0, second=0, microsecond=0)
+    except Exception:
+        pass
+    try:
+        return dt.strftime("%Y-%m-%d %H:00")
+    except Exception:
+        return str(v)
+
+def _format_day_key(v) -> str:
+    """일 버킷 키를 'YYYY-MM-DD' 형태로 통일한다."""
+    if v is None:
+        return ""
+    if isinstance(v, str):
+        # SQLite strftime('%Y-%m-%d', ...) 결과를 그대로 사용
+        return v[:10]
+    dt = _to_utc_naive(v)
+    try:
+        return dt.date().isoformat()
+    except Exception:
+        return str(v)
 
 def _normalize_email(raw: str) -> str:
     """이메일을 일관되게 비교/저장하기 위해 lower/trim 정규화한다."""
@@ -317,38 +372,47 @@ async def update_user_response_length_pref(
 
 # ----- 통계 서비스 (경량) -----
 async def get_stats_overview(db: AsyncSession, user_id: uuid.UUID) -> StatsOverview:
+    """
+    통계 개요(집계)를 반환한다.
+
+    의도/동작:
+    - 운영에서 SQLite를 쓰거나, Postgres/asyncpg 환경이 바뀌어도 500이 나지 않도록
+      DB-중립적인 방식(Python datetime 기준)으로 기간 필터를 수행한다.
+    - 프론트 `ProfilePage`는 이 값을 KPI로 사용하므로, 실패 시에도 0으로 안전하게 반환한다.
+    """
     # 캐릭터 수/공개 수/누적 대화/좋아요
     char_counts = await db.execute(
         select(
             func.count(Character.id),
-            func.sum(func.case((Character.is_public == True, 1), else_=0)),
+            func.coalesce(func.sum(case((Character.is_public.is_(True), 1), else_=0)), 0),
             func.coalesce(func.sum(Character.chat_count), 0),
             func.coalesce(func.sum(Character.like_count), 0),
         ).where(Character.creator_id == user_id)
     )
-    total, public, chats_total, likes_total = char_counts.first()
+    row = char_counts.first()
+    total, public, chats_total, likes_total = row if row else (0, 0, 0, 0)
 
     # 최근 30일 유니크 유저: 메시지 발신자가 user이고, 해당 캐릭터 생성자가 user_id
     # ChatRoom.character_id -> Character.creator_id == user_id
-    sub = (
-        select(ChatMessage.sender_type, ChatMessage.created_at, ChatRoom.character_id, ChatRoom.user_id)
-        .join(ChatRoom, ChatMessage.chat_room_id == ChatRoom.id)
-        .subquery()
-    )
-    uniq_q = await db.execute(
-        select(func.count(func.distinct(ChatRoom.user_id)))
-        .join(ChatMessage, ChatMessage.chat_room_id == ChatRoom.id)
-        .join(Character, Character.id == ChatRoom.character_id)
-        .where(
-            Character.creator_id == user_id,
-            ChatMessage.sender_type == 'user',
-            ChatMessage.created_at >= func.now() - func.cast(30, Integer) * func.interval('1 day')
-        )
-    )
-    # 일부 DB에서 위 표현이 제한될 수 있어, 실패 시 0 유지
     try:
+        since = datetime.utcnow() - timedelta(days=30)
+        uniq_q = await db.execute(
+            select(func.count(func.distinct(ChatRoom.user_id)))
+            .select_from(ChatRoom)
+            .join(ChatMessage, ChatMessage.chat_room_id == ChatRoom.id)
+            .join(Character, Character.id == ChatRoom.character_id)
+            .where(
+                Character.creator_id == user_id,
+                ChatMessage.sender_type == 'user',
+                ChatMessage.created_at >= since,
+            )
+        )
         unique_users_30d = uniq_q.scalar() or 0
-    except Exception:
+    except Exception as e:
+        try:
+            logger.warning("[stats] overview.unique_users_30d query failed (fallback=0): %s", e)
+        except Exception:
+            pass
         unique_users_30d = 0
 
     return StatsOverview(
@@ -366,6 +430,14 @@ async def get_stats_timeseries(
     metric: str = 'chats',
     range_str: str = '7d',
 ) -> TimeSeriesResponse:
+    """
+    기간별 메시지 수 시계열을 반환한다.
+
+    의도/동작:
+    - Postgres는 date_trunc를 사용해 DB에서 그룹핑
+    - SQLite는 strftime로 그룹핑(별도 분기)
+    - 어떤 DB든 프론트에서 바로 그릴 수 있도록 "빈 구간은 0"으로 채운 series를 반환한다.
+    """
     # 24h(시간별) 또는 Nd(일별)
     use_hour = False
     count = 7
@@ -381,36 +453,47 @@ async def get_stats_timeseries(
         except Exception:
             count = 7
 
-    trunc_unit = 'hour' if use_hour else 'day'
-    interval_unit = '1 hour' if use_hour else '1 day'
+    # 방어적: 비정상 값 방지
+    if not isinstance(count, int) or count <= 0:
+        count = 24 if use_hour else 7
+
+    since = datetime.utcnow() - (timedelta(hours=count) if use_hour else timedelta(days=count))
+    dialect = _dialect_name()
+    if dialect == "sqlite":
+        bucket = func.strftime("%Y-%m-%d %H:00" if use_hour else "%Y-%m-%d", ChatMessage.created_at).label("t")
+    else:
+        bucket = func.date_trunc("hour" if use_hour else "day", ChatMessage.created_at).label("t")
 
     result = await db.execute(
-        select(
-            func.date_trunc(trunc_unit, ChatMessage.created_at).label('t'),
-            func.count(ChatMessage.id)
-        )
+        select(bucket, func.count(ChatMessage.id))
+        .select_from(ChatMessage)
         .join(ChatRoom, ChatMessage.chat_room_id == ChatRoom.id)
         .join(Character, Character.id == ChatRoom.character_id)
         .where(
             Character.creator_id == user_id,
-            ChatMessage.created_at >= func.now() - func.cast(count, Integer) * func.interval(interval_unit)
+            ChatMessage.created_at >= since,
         )
-        .group_by(func.date_trunc(trunc_unit, ChatMessage.created_at))
-        .order_by(func.date_trunc(trunc_unit, ChatMessage.created_at))
+        .group_by(bucket)
+        .order_by(bucket)
     )
-    rows = result.all()
+    rows = result.all() or []
 
-    from datetime import datetime, timedelta
     series_map = {}
     if use_hour:
-        series_map = {r[0].replace(minute=0, second=0, microsecond=0).isoformat(): int(r[1]) for r in rows}
+        for t, cnt in rows:
+            k = _format_hour_key(t)
+            if k:
+                series_map[k] = int(cnt or 0)
         now = datetime.utcnow().replace(minute=0, second=0, microsecond=0)
         points = []
         for i in range(count-1, -1, -1):
-            ts = (now - timedelta(hours=i)).isoformat()
+            ts = (now - timedelta(hours=i)).strftime("%Y-%m-%d %H:00")
             points.append(TimeSeriesPoint(date=ts, value=series_map.get(ts, 0)))
     else:
-        series_map = {r[0].date().isoformat(): int(r[1]) for r in rows}
+        for t, cnt in rows:
+            k = _format_day_key(t)
+            if k:
+                series_map[k] = int(cnt or 0)
         today = datetime.utcnow().date()
         points = []
         for i in range(count-1, -1, -1):
@@ -427,21 +510,31 @@ async def get_stats_top_characters(
     range_str: str = '7d',
     limit: int = 5,
 ) -> list[TopCharacterItem]:
+    """
+    기간 내 메시지 수 기준 상위 캐릭터 목록을 반환한다.
+
+    의도/동작:
+    - interval() 같은 DB 전용 함수를 쓰지 않고, Python datetime으로 기간 필터를 수행한다.
+    - SQLite/Postgres 모두에서 안정적으로 동작하도록 한다.
+    """
     days = 7
     if range_str.endswith('d'):
         try:
             days = int(range_str[:-1])
         except Exception:
             days = 7
+    if not isinstance(days, int) or days <= 0:
+        days = 7
 
     # 캐릭터별 최근 N일 메시지 수
+    since = datetime.utcnow() - timedelta(days=days)
     res = await db.execute(
         select(Character.id, Character.name, Character.avatar_url, func.count(ChatMessage.id).label('cnt'))
         .join(ChatRoom, ChatRoom.character_id == Character.id)
         .join(ChatMessage, ChatMessage.chat_room_id == ChatRoom.id)
         .where(
             Character.creator_id == user_id,
-            ChatMessage.created_at >= func.now() - func.cast(days, Integer) * func.interval('1 day')
+            ChatMessage.created_at >= since
         )
         .group_by(Character.id, Character.name, Character.avatar_url)
         .order_by(func.count(ChatMessage.id).desc())

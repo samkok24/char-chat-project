@@ -45,14 +45,8 @@ const ChapterViewer = ({ chapter }) => {
         // 웹툰 모드: 여러 이미지를 세로로 표시 (웹툰 플랫폼 스타일)
         // 텍스트는 완전히 숨김 (AI용으로만 사용)
         <div className="webtoon-mode w-full min-h-screen bg-white flex flex-col items-center justify-start">
-          <div 
-            className="flex flex-col items-center"
-            style={{
-              maxWidth: '940px',
-              margin: '0 auto',
-              padding: '50px 80px 50px 80px',
-              width: '100%'
-            }}
+          <div
+            className="w-full max-w-[940px] mx-auto flex flex-col items-center px-0 sm:px-6 md:px-10 lg:px-20 py-4 sm:py-[50px]"
           >
             {imageUrls.map((imageUrl, index) => (
               <img
@@ -78,10 +72,10 @@ const ChapterViewer = ({ chapter }) => {
         </div>
       ) : (
         // 웹소설 모드: 텍스트 표시 (본문만)
-        <div className="novel-mode max-w-4xl mx-auto px-4 py-12">
+        <div className="novel-mode max-w-4xl mx-auto px-4 py-6 sm:py-12">
           {/* 텍스트 콘텐츠 */}
           <div className="prose prose-invert max-w-none mt-0">
-            <div className="text-white text-lg leading-relaxed whitespace-pre-wrap">
+            <div className="text-white text-base sm:text-lg leading-7 sm:leading-relaxed whitespace-pre-wrap break-words">
               {chapter.content}
             </div>
           </div>

@@ -289,7 +289,10 @@ export const SocketProvider = ({ children }) => {
       };
 
       if (messageType === 'continue') {
-        socket.emit('continue', { roomId }, ack);
+        // ✅ continue도 설정 패치(예: temperature/응답 길이)를 전달할 수 있게 확장
+        const contPayload = { roomId };
+        if (options.settingsPatch) contPayload.settings_patch = options.settingsPatch;
+        socket.emit('continue', contPayload, ack);
       } else {
         socket.emit('send_message', payload, ack);
       }
@@ -298,12 +301,27 @@ export const SocketProvider = ({ children }) => {
     if (needsJoin) {
       try {
         socket.emit('join_room', { roomId });
+        // ✅ join_room 응답(room_joined)이 오지 않으면 Promise가 영구 pending 되는 문제 방지
+        // - 네트워크 지연/서버 이슈에서도 UI가 "멈춘 것처럼" 보이지 않게 한다.
+        let finished = false;
+        let joinTimeout = null;
         const once = (data) => {
-          try { if (data?.roomId === roomId) doSend(); } finally { socket.off('room_joined', once); }
+          if (finished) return;
+          // roomId가 일치할 때만 전송 진행
+          if (data?.roomId !== roomId) return;
+          finished = true;
+          try { if (joinTimeout) clearTimeout(joinTimeout); } catch (_) {}
+          try { socket.off('room_joined', once); } catch (_) {}
+          doSend();
         };
         socket.on('room_joined', once);
-        // 안전장치: 1.5초 후 리스너 정리
-        setTimeout(() => { try { socket.off('room_joined', once); } catch {} }, 1500);
+        // join 응답이 일정 시간 내로 오지 않으면 실패 처리
+        joinTimeout = setTimeout(() => {
+          if (finished) return;
+          finished = true;
+          try { socket.off('room_joined', once); } catch (_) {}
+          reject(new Error('join_timeout'));
+        }, 3000);
         } catch(_) { reject(new Error('join_failed')); }
       return;
     }

@@ -116,6 +116,7 @@ const UserPersonaModal = ({ isOpen, onClose }) => {
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
+      {/* ✅ 모바일 최적화: 화면 높이 내에서 스크롤 가능하도록 제한 */}
       <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="text-xl font-bold">유저 페르소나 관리</DialogTitle>
@@ -125,7 +126,7 @@ const UserPersonaModal = ({ isOpen, onClose }) => {
           {activePersona && (
             <div className="mt-3 p-3 bg-green-50 rounded-lg border border-green-200">
               <div className="text-sm text-green-600">현재 활성 페르소나</div>
-              <div className="font-medium text-green-800">
+              <div className="font-medium text-green-800 break-words">
                 {activePersona.name} - {activePersona.description}
               </div>
             </div>
@@ -148,7 +149,7 @@ const UserPersonaModal = ({ isOpen, onClose }) => {
               className="min-h-[80px]"
             />
             {/* 적용 범위 선택 */}
-            <div className="flex items-center gap-3 py-2">
+            <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 py-2">
               <span className="text-sm text-gray-600 whitespace-nowrap">적용 범위:</span>
               <div className="flex gap-2 flex-wrap">
                 {APPLY_SCOPE_OPTIONS.map(opt => (
@@ -240,7 +241,7 @@ const UserPersonaModal = ({ isOpen, onClose }) => {
                     />
                     
                     {/* 적용 범위 선택 (편집 모드) */}
-                    <div className="flex items-center gap-3 py-2">
+                    <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 py-2">
                       <span className="text-sm text-gray-600 whitespace-nowrap">적용 범위:</span>
                       <div className="flex gap-2 flex-wrap">
                         {APPLY_SCOPE_OPTIONS.map(opt => (
@@ -263,11 +264,12 @@ const UserPersonaModal = ({ isOpen, onClose }) => {
                       </div>
                     </div>
                     
-                    <div className="flex justify-end gap-2">
+                    <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
                       <Button
                         onClick={() => setEditingPersona(null)}
                         variant="outline"
                         size="sm"
+                        className="w-full sm:w-auto"
                       >
                         취소
                       </Button>
@@ -277,7 +279,7 @@ const UserPersonaModal = ({ isOpen, onClose }) => {
                           setEditingPersona(null);
                         }}
                         size="sm"
-                        className="bg-purple-600 hover:bg-purple-700"
+                        className="w-full sm:w-auto bg-purple-600 hover:bg-purple-700"
                       >
                         저장
                       </Button>
@@ -290,8 +292,8 @@ const UserPersonaModal = ({ isOpen, onClose }) => {
                       ? 'bg-blue-50 border-blue-300' 
                       : 'bg-gray-50 border-gray-200'
                   }`}>
-                    <div className="flex items-start justify-between">
-                      <div className="flex-1">
+                    <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+                      <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 mb-1">
                           <h4 className="font-semibold">{persona.name}</h4>
                           {persona.isDefault && (
@@ -307,7 +309,7 @@ const UserPersonaModal = ({ isOpen, onClose }) => {
                         </p>
                       </div>
                       
-                      <div className="flex items-center gap-1 ml-4">
+                      <div className="flex flex-wrap items-center gap-1 ml-0 sm:ml-4">
                         {/* 활성화 버튼 */}
                         <Button
                           onClick={() => setActiveUserPersona(persona.id)}
@@ -375,12 +377,13 @@ const UserPersonaModal = ({ isOpen, onClose }) => {
           <Button 
             onClick={onClose}
             variant="outline"
+            className="w-full sm:w-auto"
           >
             취소
           </Button>
           <Button 
             onClick={handleConfirm}
-            className="bg-purple-600 hover:bg-purple-700"
+            className="w-full sm:w-auto bg-purple-600 hover:bg-purple-700"
           >
             확인
           </Button>

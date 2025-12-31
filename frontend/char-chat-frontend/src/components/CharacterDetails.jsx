@@ -9,6 +9,7 @@ import { Button } from './ui/button';
 import { Badge } from './ui/badge';  // 이 줄 추가
 import { Input } from './ui/input';
 import { Loader2, Trash2 } from 'lucide-react';
+import { replacePromptTokens } from '../lib/prompt';
 
 const timeAgo = (dateString) => {
   if (!dateString) return '';
@@ -36,7 +37,12 @@ const CharacterDetails = ({ character, comments, commentText, setCommentText, ha
       <section id="overview">
         <h2 className="text-lg font-semibold mb-2">캐릭터 설명</h2>
         <div className="bg-gray-800 rounded-md border border-gray-700 p-4 text-gray-200 whitespace-pre-wrap min-h-[56px]">
-          {character.description || '아직 캐릭터 설명이 없습니다.'}
+          {(() => {
+            const nm = character?.name || '캐릭터';
+            const raw = character?.description || '';
+            const rendered = replacePromptTokens(raw, { assistantName: nm, userName: '당신' }).trim();
+            return rendered || '아직 캐릭터 설명이 없습니다.';
+          })()}
         </div>
       </section>
 
@@ -44,7 +50,12 @@ const CharacterDetails = ({ character, comments, commentText, setCommentText, ha
       <section id="world">
         <h2 className="text-lg font-semibold mb-2">세계관</h2>
         <div className="bg-gray-800 rounded-md border border-gray-700 p-4 text-gray-200 whitespace-pre-wrap min-h-[56px]">
-          {character.world_setting || '아직 세계관 설정이 없습니다.'}
+          {(() => {
+            const nm = character?.name || '캐릭터';
+            const raw = character?.world_setting || '';
+            const rendered = replacePromptTokens(raw, { assistantName: nm, userName: '당신' }).trim();
+            return rendered || '아직 세계관 설정이 없습니다.';
+          })()}
         </div>
       </section>
 
@@ -71,13 +82,19 @@ const CharacterDetails = ({ character, comments, commentText, setCommentText, ha
       {/* 댓글 */}
       <section id="comments">
         <h2 className="text-lg font-semibold mb-2">댓글 ({comments.length})</h2>
-        <form onSubmit={handleCommentSubmit} className="flex space-x-2 mb-4">
-          <Input value={commentText} onChange={(e) => setCommentText(e.target.value)} placeholder="댓글을 남겨보세요..." className="bg-gray-700 border-gray-600" />
-          <Button type="submit" disabled={submittingComment}>
+        <form onSubmit={handleCommentSubmit} className="flex flex-col sm:flex-row gap-2 mb-4">
+          <Input
+            value={commentText}
+            onChange={(e) => setCommentText(e.target.value)}
+            placeholder="댓글을 남겨보세요..."
+            className="bg-gray-700 border-gray-600"
+          />
+          <Button type="submit" disabled={submittingComment} className="w-full sm:w-auto">
             {submittingComment ? <Loader2 className="w-4 h-4 animate-spin" /> : '작성'}
           </Button>
         </form>
-        <div className="space-y-4 max-h-96 overflow-y-auto">
+        {/* ✅ 모바일 UX: 내부 스크롤(중첩 스크롤) 제거 → 페이지 스크롤로 자연스럽게 읽기 */}
+        <div className="space-y-4 max-h-none overflow-visible sm:max-h-96 sm:overflow-y-auto">
           {comments.map(comment => (
             <div key={comment.id} className="flex justify-between items-start">
               <div className="flex-1">

@@ -115,6 +115,8 @@ const MiniChatWindow = ({ open, onClose, storyId, currentChapterNo }) => {
           story_id: storyId,
           character_id: selectedCharId,
           mode: 'plain',  // 일대일 모드
+          // ✅ 요구사항: 뷰어(플로팅)에서의 진입은 '새로 대화'로 취급 → 새 방 강제
+          force_new: true,
           start: null,
           range_from: null,
           range_to: null,
@@ -207,6 +209,8 @@ const MiniChatWindow = ({ open, onClose, storyId, currentChapterNo }) => {
         story_id: storyId,
         character_id: selectedCharId,
         mode: 'plain',  // 일대일 모드
+        // ✅ reset은 항상 새로 대화
+        force_new: true,
         start: null,
         range_from: null,
         range_to: null,

@@ -238,6 +238,7 @@ const CharacterDetailPage = () => {
   };
 
   const isOwner = !authLoading && user && character?.creator_id === user.id;
+  const isAdmin = !authLoading && user && !!user?.is_admin;
   const originStoryId = character?.origin_story_id || null;
 
   const togglePublicMutation = useMutation({
@@ -331,8 +332,8 @@ const CharacterDetailPage = () => {
     <div className="bg-gray-900 text-white min-h-screen p-4 sm:p-6 lg:p-8">
       <div className="max-w-7xl mx-auto">
         {/* 뒤로가기 버튼 등 헤더 영역 */}
-        <header className="mb-6">
-          <Button variant="ghost" onClick={handleGoBack} className="mb-4">
+        <header className="mb-5 sm:mb-6">
+          <Button variant="ghost" onClick={handleGoBack} className="mb-3 sm:mb-4">
             <ArrowLeft className="w-5 h-5 mr-2" />
             뒤로 가기
           </Button>
@@ -344,7 +345,7 @@ const CharacterDetailPage = () => {
         </header>
 
         {/* 메인 컨텐츠 그리드 */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 sm:gap-8">
           {/* Left: 이미지 갤러리 */}
           <div className="lg:col-span-1">
             {/* 메인 프리뷰: 첫 이미지 비율에 맞춰 컨테이너 고정 */}
@@ -390,13 +391,14 @@ const CharacterDetailPage = () => {
           </div>
 
           {/* Right: 캐릭터 정보 */}
-          <div className="lg:col-span-2 space-y-8">
-            <CharacterInfoHeader 
+          <div className="lg:col-span-2 space-y-6 sm:space-y-8">
+              <CharacterInfoHeader 
               character={character}
               likeCount={likeCount}
               isLiked={isLiked}
               handleLike={handleLike}
               isOwner={isOwner}
+              canTogglePublic={!!(isOwner || isAdmin)}
               onEdit={() => navigate(`/characters/${characterId}/edit`)}
               onDelete={deleteCharacter}
               onSettings={() => navigate(`/characters/${characterId}/settings`)}
@@ -420,7 +422,8 @@ const CharacterDetailPage = () => {
                 <Button
                   variant="secondary"
                   className="bg-pink-600 hover:bg-pink-700"
-                  onClick={() => navigate(`/ws/chat/${characterId}?source=origchat&storyId=${workId}&anchor=${continueChapter}`)}
+                  // ✅ "시작" 버튼은 새 원작챗 세션을 의도하므로 new=1로 강제(항상 새 대화)
+                  onClick={() => navigate(`/ws/chat/${characterId}?source=origchat&storyId=${workId}&anchor=${continueChapter}&mode=plain&new=1`)}
                 >
                   등장인물과 원작챗 시작
                 </Button>
@@ -443,7 +446,13 @@ const CharacterDetailPage = () => {
               </div>
             )}
 
-            <ChatInteraction onStartChat={startChat} characterId={characterId} isAuthenticated={isAuthenticated} isWebNovel={isWebNovel} />
+            <ChatInteraction
+              onStartChat={startChat}
+              characterId={characterId}
+              isAuthenticated={isAuthenticated}
+              isWebNovel={isWebNovel}
+              originStoryId={originStoryId}
+            />
             <CharacterDetails 
               character={character}
               comments={comments}
@@ -455,13 +464,32 @@ const CharacterDetailPage = () => {
               user={user}
               tags={tags}
               originStoryCard={originStoryId ? (
-                <div className="max-w-sm">
-                  <StoryExploreCard
-                    story={{ id: originStoryId, title: character?.origin_story_title, cover_url: character?.origin_story_cover, creator_username: character?.origin_story_creator, view_count: character?.origin_story_views, like_count: character?.origin_story_likes, excerpt: character?.origin_story_excerpt }}
-                    compact
-                    onClick={() => navigate(`/stories/${originStoryId}`)}
-                  />
-                </div>
+                /**
+                 * 원작 정보(원작 격자) UI
+                 *
+                 * 요구사항:
+                 * - 모바일 메인화면에서 보이는 "웹소설 격자" UI를 그대로 사용한다.
+                 * - 기존 컴포넌트(StoryExploreCard)는 변경하지 않고, 레이아웃/배치만 조정한다.
+                 */
+                <section id="origin-story" className="mt-2">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
+                    {/* 단일 카드라도 모바일에서는 꽉 차게 보여주기 위해 2칸(span) 처리 */}
+                    <div className="col-span-2 sm:col-span-2 md:col-span-2 lg:col-span-2">
+                      <StoryExploreCard
+                        story={{
+                          id: originStoryId,
+                          title: character?.origin_story_title,
+                          cover_url: character?.origin_story_cover,
+                          creator_username: character?.origin_story_creator,
+                          view_count: character?.origin_story_views,
+                          like_count: character?.origin_story_likes,
+                          excerpt: character?.origin_story_excerpt,
+                        }}
+                        onClick={() => navigate(`/stories/${originStoryId}`)}
+                      />
+                    </div>
+                  </div>
+                </section>
               ) : null}
             />
             {/* 최근 생성물 스트립 제거 */}

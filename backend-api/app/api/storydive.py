@@ -482,8 +482,8 @@ async def create_storydive_novel_from_story(
     if not story:
         raise HTTPException(status_code=404, detail="Story not found")
 
-    # 비공개 스토리 접근 제한
-    if not getattr(story, "is_public", True) and getattr(story, "creator_id", None) != current_user.id:
+    # 비공개 스토리 접근 제한(작성자/관리자만)
+    if not getattr(story, "is_public", True) and getattr(story, "creator_id", None) != current_user.id and not getattr(current_user, "is_admin", False):
         raise HTTPException(status_code=403, detail="Not authorized")
 
     # 웹툰 작품은 다이브 비활성 (요구사항)

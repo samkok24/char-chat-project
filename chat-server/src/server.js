@@ -141,15 +141,57 @@ process.on('SIGINT', () => {
   });
 });
 
+/**
+ * 치명 예외/리젝션 로깅을 사람이 읽을 수 있게 정리한다.
+ * - Error 객체는 JSON.stringify 시 {}로 떨어지는 경우가 많아서(message/stack) 형태로 보강한다.
+ */
+const formatFatal = (err) => {
+  try {
+    if (!err) return { message: String(err) };
+    if (err instanceof Error) {
+      return { name: err.name, message: err.message, stack: err.stack };
+    }
+    if (typeof err === 'object') {
+      // 가능한 정보는 최대한 노출(순환 구조면 try/catch로 보호)
+      return err;
+    }
+    return { message: String(err) };
+  } catch (_) {
+    return { message: 'unknown fatal error' };
+  }
+};
+
+/**
+ * Docker 환경(restart policy)에서 재시작이 걸려있으므로,
+ * 프로세스는 종료하되 로그를 남기고 서버를 닫는 "베스트-에포트"를 수행한다.
+ */
+const gracefulFatalExit = (code = 1) => {
+  try {
+    // 새 연결 수락 중지(기존 연결은 강제 종료될 수 있음)
+    server.close(() => {
+      try { logger.info('서버가 종료되었습니다.'); } catch (_) {}
+      process.exit(code);
+    });
+    // WebSocket 등으로 close 콜백이 지연될 수 있으니 강제 종료 타이머를 둔다.
+    const t = setTimeout(() => {
+      process.exit(code);
+    }, 1500);
+    // 프로세스가 다른 작업 없이도 종료되도록 unref
+    try { t.unref(); } catch (_) {}
+  } catch (_) {
+    process.exit(code);
+  }
+};
+
 // 처리되지 않은 예외 처리
 process.on('uncaughtException', (error) => {
-  logger.error('Uncaught Exception:', error);
-  process.exit(1);
+  try { logger.error('Uncaught Exception:', formatFatal(error)); } catch (_) {}
+  gracefulFatalExit(1);
 });
 
 process.on('unhandledRejection', (reason, promise) => {
-  logger.error('Unhandled Rejection at:', promise, 'reason:', reason);
-  process.exit(1);
+  try { logger.error('Unhandled Rejection:', formatFatal(reason)); } catch (_) {}
+  gracefulFatalExit(1);
 });
 
 module.exports = { app, server, io };

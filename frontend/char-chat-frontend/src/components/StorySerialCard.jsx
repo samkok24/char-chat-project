@@ -86,14 +86,27 @@ const StorySerialCard = ({ story, onClick }) => {
   const showUpBadge = latestChapterAt
     ? (Date.now() - latestChapterAt.getTime()) < 24 * 60 * 60 * 1000
     : false;
+
+  /**
+   * 원작연재(원작소설) 모바일 최적화
+   *
+   * 목표:
+   * - 요소(표지/통계/태그/등장인물 아바타)가 많은 리스트에서도 모바일에서 레이아웃이 깨지지 않게 한다.
+   * - 제목이 길어질 때는 말줄임(ellipsis) 처리.
+   * - 원형 아바타(등장인물)는 모바일에서도 생략하지 않는다(요구사항).
+   *
+   * 전략:
+   * - 모바일에서 표지/패딩/폰트를 축소해 가로 여유를 확보한다.
+   * - 시간 뱃지는 모바일에서는 본문 하단으로 내려서 폭 경쟁을 제거한다.
+   */
   return (
     <div 
-      className="flex gap-4 py-5 px-4 border-b border-gray-700/50 bg-gray-800/50 hover:bg-gray-700/50 transition-all duration-200 cursor-pointer group"
+      className="flex gap-3 sm:gap-4 py-4 sm:py-5 px-3 sm:px-4 border-b border-gray-700/50 bg-gray-800/50 hover:bg-gray-700/50 transition-all duration-200 cursor-pointer group"
       onClick={handleClick}
     >
       {/* 좌측: 표지 이미지 */}
       <div className="flex-shrink-0 relative">
-        <div className="w-[100px] h-[140px] rounded-lg overflow-hidden bg-gray-900 shadow-lg border border-gray-700/50 group-hover:border-purple-500/50 transition-colors">
+        <div className="w-[88px] h-[124px] sm:w-[100px] sm:h-[140px] rounded-lg overflow-hidden bg-gray-900 shadow-lg border border-gray-700/50 group-hover:border-purple-500/50 transition-colors">
           {coverUrl ? (
             <img
               src={coverUrl}
@@ -121,13 +134,13 @@ const StorySerialCard = ({ story, onClick }) => {
       {/* 우측: 정보 영역 */}
       <div className="flex-1 min-w-0 flex flex-col">
         {/* 제목 */}
-        <h3 className="font-bold text-white text-base leading-tight mb-1 line-clamp-1 group-hover:text-purple-300 transition-colors">
+        <h3 className="font-bold text-white text-sm sm:text-base leading-tight mb-1 line-clamp-1 group-hover:text-purple-300 transition-colors">
           {story?.title || '제목 없음'}
         </h3>
         
         {/* 닉네임 (클릭 시 크리에이터 페이지로 이동) */}
         <p 
-          className="text-sm text-gray-400 mb-2 hover:text-purple-300 hover:underline transition-colors cursor-pointer w-fit"
+          className="text-xs sm:text-sm text-gray-400 mb-2 hover:text-purple-300 hover:underline transition-colors cursor-pointer w-fit max-w-full truncate"
           onClick={(e) => {
             e.stopPropagation();
             if (story?.creator_id) {
@@ -139,33 +152,33 @@ const StorySerialCard = ({ story, onClick }) => {
         </p>
         
         {/* 소개글 */}
-        <p className="text-sm text-gray-300 line-clamp-2 mb-3 leading-relaxed">
+        <p className="text-xs sm:text-sm text-gray-300 line-clamp-1 sm:line-clamp-2 mb-3 leading-relaxed">
           {excerpt}
         </p>
         
         {/* 통계 */}
-        <div className="flex items-center gap-4 text-sm text-gray-400 mb-3">
-          <span className="inline-flex items-center gap-1">
-            <Eye className="w-4 h-4" />
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs sm:text-sm text-gray-400 mb-3">
+          <span className="inline-flex items-center gap-1 whitespace-nowrap">
+            <Eye className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
             {viewCount.toLocaleString()}명
           </span>
-          <span className="inline-flex items-center gap-1">
-            <BookOpen className="w-4 h-4" />
+          <span className="inline-flex items-center gap-1 whitespace-nowrap">
+            <BookOpen className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
             {episodeCount}회차
           </span>
-          <span className="inline-flex items-center gap-1">
-            <Heart className="w-4 h-4" />
+          <span className="inline-flex items-center gap-1 whitespace-nowrap">
+            <Heart className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
             {likeCount.toLocaleString()}회
           </span>
         </div>
         
         {/* 태그 리스트 */}
         {tags.length > 0 && (
-          <div className="flex flex-wrap gap-1.5 mb-3">
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 mb-3 scrollbar-hide">
             {tags.slice(0, 8).map((tag, idx) => (
               <span
                 key={idx}
-                className="inline-block px-2 py-0.5 text-xs rounded-full bg-purple-100 text-purple-700 border border-purple-300 hover:bg-purple-200 transition-colors"
+                className="inline-block px-2 py-0.5 text-[11px] rounded-full bg-purple-100 text-purple-700 border border-purple-300 hover:bg-purple-200 transition-colors flex-shrink-0 whitespace-nowrap"
                 onClick={(e) => {
                   e.stopPropagation();
                   // 태그 클릭 시 검색 등 추가 기능 구현 가능
@@ -179,9 +192,9 @@ const StorySerialCard = ({ story, onClick }) => {
 
         {/* 등장인물 (추출된 캐릭터) - 이미지 참고 레이아웃 */}
         {hasCharacters && (
-          <div className="flex items-center gap-2 mt-1">
+          <div className="flex flex-wrap items-center gap-2 mt-1">
             {/* 캐릭터 아바타 (최대 3개, 파란 원형) */}
-            <div className="flex items-center -space-x-1">
+            <div className="flex items-center -space-x-1 flex-shrink-0">
               {visibleCharacters.map((char, idx) => {
                 const avatarUrl = char?.avatar_url ? resolveImageUrl(char.avatar_url) : null;
                 const fallbackText = char?.initial || char?.name?.charAt(0) || '?';
@@ -213,9 +226,19 @@ const StorySerialCard = ({ story, onClick }) => {
               )}
             </div>
             {/* 등장인물 안내 텍스트 */}
-            <span className="text-sm text-gray-500">
-              총 <span className="text-blue-500 font-medium">{extractedCharacters.length}명</span>의 등장인물과 원작챗 가능
+            <span className="text-xs sm:text-sm text-gray-500 min-w-0">
+              총 <span className="text-blue-500 font-medium">{extractedCharacters.length}명</span>
+              <span className="hidden sm:inline">의 등장인물과 원작챗 가능</span>
             </span>
+          </div>
+        )}
+
+        {/* ✅ 모바일: 시간 뱃지를 본문 하단으로 내려 폭 경쟁을 제거 */}
+        {timeAgo && (
+          <div className="mt-2 sm:hidden">
+            <div className="inline-flex items-center px-3 py-1.5 text-xs text-gray-700 border border-gray-300 rounded bg-white">
+              {timeAgo} UP
+            </div>
           </div>
         )}
       </div>
@@ -223,7 +246,7 @@ const StorySerialCard = ({ story, onClick }) => {
       {/* 우하단: 업로드 시간 */}
       <div className="flex-shrink-0 self-end">
         {timeAgo && (
-          <div className="px-3 py-1.5 text-sm text-gray-600 border border-gray-300 rounded bg-white hover:bg-gray-50 transition-colors">
+          <div className="hidden sm:inline-flex px-3 py-1.5 text-sm text-gray-600 border border-gray-300 rounded bg-white hover:bg-gray-50 transition-colors">
             {timeAgo} UP
           </div>
         )}

@@ -2,7 +2,7 @@
 캐릭터 관련 API 라우터 - CAVEDUCK 스타일 고급 캐릭터 생성
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional
 import uuid
@@ -39,6 +39,7 @@ from app.schemas.character import (
     CharacterSettingCreate,  # 추가
     CharacterSettingUpdate   # 추가
 )
+from app.schemas.quick_character import QuickCharacterGenerateRequest
 from app.schemas.comment import (
     CommentCreate,
     CommentUpdate, 
@@ -67,6 +68,7 @@ from app.services.character_service import (
     update_character_public_status, # 서비스 함수 임포트 추가
     increment_character_chat_count,
 )
+from app.services.quick_character_service import generate_quick_character_draft
 from app.schemas.tag import CharacterTagsUpdate, TagResponse
 from app.models.tag import Tag, CharacterTag
 from app.models.story_extracted_character import StoryExtractedCharacter
@@ -83,6 +85,71 @@ from app.services.comment_service import (
 router = APIRouter()
 
 # 🔥 CAVEDUCK 스타일 고급 캐릭터 생성 API
+
+@router.post("/quick-generate", response_model=CharacterCreateRequest)
+async def quick_generate_character_draft(
+    payload: QuickCharacterGenerateRequest,
+    current_user: User = Depends(get_current_active_user),
+    request: Request = None,
+):
+    """
+    온보딩(30초만에 캐릭터 만나기)용: 이미지+느낌+태그로 고급 캐릭터 생성 초안을 생성합니다.
+
+    주의:
+    - 이 엔드포인트는 DB에 저장하지 않습니다(SSOT: 실제 저장은 /characters/advanced).
+    - 실패 시 조용히 무시하지 않고 500 + 상세 메시지로 반환합니다(로그 포함).
+    """
+    try:
+        # ✅ 방어: 업로드 API는 `/static/...` 상대경로를 반환한다.
+        # Vision(서버 내부 requests.get)은 절대 URL이 필요하므로, 분석용으로만 절대 URL로 변환한다.
+        raw_url = getattr(payload, "image_url", None)
+        abs_url = raw_url
+        try:
+            if raw_url and isinstance(raw_url, str) and raw_url.startswith("/") and request is not None:
+                base = str(getattr(request, "base_url", "") or "").rstrip("/")
+                abs_url = f"{base}{raw_url}"
+        except Exception:
+            abs_url = raw_url
+
+        if abs_url != raw_url:
+            try:
+                payload = QuickCharacterGenerateRequest(**{**payload.model_dump(), "image_url": abs_url})
+            except Exception:
+                # 변환 실패 시 원본 유지
+                pass
+
+        draft = await generate_quick_character_draft(payload)
+
+        # 응답은 저장/표시를 위해 원본 상대경로를 유지하는 것이 안전하다.
+        try:
+            if raw_url and abs_url != raw_url and getattr(draft, "media_settings", None):
+                if getattr(draft.media_settings, "avatar_url", None) == abs_url:
+                    draft.media_settings.avatar_url = raw_url
+                imgs = getattr(draft.media_settings, "image_descriptions", None)
+                if isinstance(imgs, list):
+                    for img in imgs:
+                        try:
+                            if isinstance(img, dict):
+                                if img.get("url") == abs_url:
+                                    img["url"] = raw_url
+                            else:
+                                if getattr(img, "url", None) == abs_url:
+                                    img.url = raw_url
+                        except Exception:
+                            continue
+        except Exception:
+            pass
+
+        return draft
+    except Exception as e:
+        try:
+            logger.exception(f"[characters.quick-generate] failed: {e}")
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"quick_generate_failed: {str(e)}"
+        )
 
 @router.post("/advanced", response_model=CharacterDetailResponse, status_code=status.HTTP_201_CREATED)
 async def create_advanced_character_endpoint(
@@ -168,8 +235,11 @@ async def get_advanced_character_detail(
             detail="캐릭터를 찾을 수 없습니다."
         )
     
-    # 비공개 캐릭터는 생성자만 조회 가능
-    if not character.is_public and (not current_user or character.creator_id != current_user.id):
+    # 비공개 캐릭터는 생성자/관리자만 조회 가능
+    if not character.is_public and (
+        (not current_user)
+        or (character.creator_id != current_user.id and not getattr(current_user, "is_admin", False))
+    ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="이 캐릭터에 접근할 권한이 없습니다."
@@ -462,6 +532,7 @@ async def get_characters(
     sort: Optional[str] = Query(None, description="정렬: views|likes|recent"),
     source_type: Optional[str] = Query(None, description="생성 출처: ORIGINAL|IMPORTED"),
     tags: Optional[str] = Query(None, description="필터 태그 목록(콤마 구분 slug)"),
+    gender: Optional[str] = Query(None, description="성별 필터: all|male|female|other (태그 기반)"),
     only: Optional[str] = Query(None, description="origchat|regular"),
     db: AsyncSession = Depends(get_db)
 ):
@@ -486,6 +557,7 @@ async def get_characters(
             sort=sort,
             source_type=source_type,
             tags=[s for s in (tags.split(',') if tags else []) if s],
+            gender=gender,
             only=only,
         )
 
@@ -662,8 +734,11 @@ async def get_character(
             detail="캐릭터를 찾을 수 없습니다."
         )
     
-    # 비공개 캐릭터는 생성자만 조회 가능
-    if not character.is_public and (not current_user or character.creator_id != current_user.id):
+    # 비공개 캐릭터는 생성자/관리자만 조회 가능
+    if not character.is_public and (
+        (not current_user)
+        or (character.creator_id != current_user.id and not getattr(current_user, "is_admin", False))
+    ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="이 캐릭터에 접근할 권한이 없습니다."
@@ -754,8 +829,8 @@ async def toggle_character_public_status(
             detail="캐릭터를 찾을 수 없습니다."
         )
     
-    # 생성자만 상태 변경 가능
-    if character.creator_id != current_user.id:
+    # 생성자/관리자만 상태 변경 가능
+    if character.creator_id != current_user.id and not getattr(current_user, "is_admin", False):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="이 캐릭터의 공개 상태를 변경할 권한이 없습니다."

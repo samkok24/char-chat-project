@@ -198,7 +198,7 @@ class SocketController {
     const safeAck = (payload) => { try { if (typeof ack === 'function') ack(payload); } catch (_) {} };
 
     try {
-      const { roomId, content, messageType = 'text' } = data;
+      const { roomId, content, messageType = 'text', settings_patch } = data || {};
       const userId = socket.userId;
       const userInfo = socket.userInfo;
 
@@ -210,6 +210,7 @@ class SocketController {
       }
 
       if (content.length > config.MAX_MESSAGE_LENGTH) {
+        safeAck({ ok: false, error: 'too_long', max: config.MAX_MESSAGE_LENGTH });
         socket.emit('error', { message: `메시지는 ${config.MAX_MESSAGE_LENGTH}자를 초과할 수 없습니다.` });
         return;
       }
@@ -217,6 +218,7 @@ class SocketController {
       // 속도 제한 확인
       const isAllowed = await redisService.checkRateLimit(userId);
       if (!isAllowed) {
+        safeAck({ ok: false, error: 'rate_limited' });
         socket.emit('error', { message: '메시지 전송 속도 제한을 초과했습니다.' });
         return;
       }
@@ -224,6 +226,7 @@ class SocketController {
       // 채팅방 정보 확인
       const room = this.activeRooms.get(roomId);
       if (!room || room.userId !== userId) {
+        safeAck({ ok: false, error: 'forbidden_room' });
         socket.emit('error', { message: '유효하지 않은 채팅방이거나 접근 권한이 없습니다.' });
         return;
       }
@@ -255,6 +258,8 @@ class SocketController {
             room_id: roomId,               // ✅ “현재 방” 정합성
             character_id: room.characterId,
             content,
+            // ✅ 프론트에서 넘어온 설정(temperature/응답길이 등)을 백엔드로 전달
+            settings_patch: settings_patch || undefined,
           },
           {
             headers: { Authorization: `Bearer ${socket.token}` },
@@ -298,6 +303,7 @@ class SocketController {
 
     } catch (error) {
       logger.error('메시지 전송 처리 오류:', error);
+      safeAck({ ok: false, error: 'server_error' });
       io.to(data.roomId).emit('ai_typing_stop', { roomId: data.roomId });
       socket.emit('error', { message: '메시지 전송 중 오류가 발생했습니다.' });
     }
@@ -310,7 +316,7 @@ class SocketController {
     const safeAck = (payload) => { try { if (typeof ack === 'function') ack(payload); } catch (_) {} };
 
     try {
-      const { roomId } = data || {};
+      const { roomId, settings_patch } = data || {};
       const userId = socket.userId;
 
       if (!roomId) {
@@ -336,7 +342,8 @@ class SocketController {
         const resp = await axios.post(`${config.BACKEND_API_URL}/chat/messages`, {
           room_id: roomId, 
           character_id: room.characterId,
-          content: ''
+          content: '',
+          settings_patch: settings_patch || undefined,
         }, 
           { headers: { Authorization: `Bearer ${socket.token}` }, timeout: timeoutMs },
         );

@@ -368,12 +368,37 @@ const OrigChatStartModal = ({ open, onClose, storyId, totalChapters = 1, lastRea
     try {
       setStarting(true);
       if (!isOrigMode) {
+        /**
+         * 일대일(plain) 모드: 회차 선택 UI는 비활성화하되,
+         * "진도 기반(lastReadNo)"으로 앵커를 자동 설정한다.
+         *
+         * 의도/효과:
+         * - 원작을 안 본 유저: 1화 앵커(스포일러 안전)
+         * - 원작을 본 유저: 본 데(lastReadNo)부터 앵커(원작감/일관성 강화)
+         *
+         * 주의:
+         * - UI는 그대로(최소 수정)
+         * - 서버에는 start.chapter로만 전달(범위 선택은 유지 비활성)
+         */
+        const plainAnchor = (() => {
+          try {
+            const raw = Number(lastReadNo || 0);
+            const base = (Number.isFinite(raw) && raw >= 1) ? Math.floor(raw) : 1;
+            const maxN = Math.max(1, Number(totalChapters || 1));
+            return Math.min(Math.max(1, base), maxN);
+          } catch (_) {
+            return 1;
+          }
+        })();
         // 일대일 모드: 원작챗 API를 사용하되 mode='plain'으로 설정하여 페르소나 지원
         const payload = { 
           story_id: storyId, 
           character_id: selectedId, 
           mode: 'plain',  // 일대일 모드
-          start: null, 
+          // ✅ 요구사항: 웹소설 상세/뷰어에서의 "원작챗 시작"은 항상 '새로 대화'로 취급한다.
+          // - plain 모드도 기본 재사용이 가능하므로, 여기서는 강제로 새 방을 만든다.
+          force_new: true,
+          start: { chapter: plainAnchor }, 
           range_from: null, 
           range_to: null, 
           focus_character_id: selectedId, 
@@ -383,7 +408,7 @@ const OrigChatStartModal = ({ open, onClose, storyId, totalChapters = 1, lastRea
         const startRes = await origChatAPI.start(payload);
         const roomId = startRes.data?.id || startRes.data?.room_id;
         onClose?.();
-        if (roomId) navigate(`/ws/chat/${selectedId}?source=origchat&storyId=${storyId}&room=${roomId}`);
+        if (roomId) navigate(`/ws/chat/${selectedId}?source=origchat&storyId=${storyId}&mode=plain&new=1&room=${roomId}`);
         else navigate(`/ws/chat/${selectedId}`);
         return;
       }
@@ -396,7 +421,7 @@ const OrigChatStartModal = ({ open, onClose, storyId, totalChapters = 1, lastRea
       const startRes = await origChatAPI.start(payload);
       const roomId = startRes.data?.id || startRes.data?.room_id;
       onClose?.();
-      if (roomId) navigate(`/ws/chat/${selectedId}?source=origchat&storyId=${storyId}&anchor=${cappedF}&rangeFrom=${cappedF}&rangeTo=${cappedT}&room=${roomId}`);
+      if (roomId) navigate(`/ws/chat/${selectedId}?source=origchat&storyId=${storyId}&mode=${encodeURIComponent(String(modeSel || 'canon'))}&new=1&anchor=${cappedF}&rangeFrom=${cappedF}&rangeTo=${cappedT}&room=${roomId}`);
       else navigate(`/ws/chat/${selectedId}`);
     } catch (e) {
       vibrate();

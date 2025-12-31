@@ -24,10 +24,19 @@ async def analyze_story_endpoint(
             detail="입력 가능한 최대 글자 수를 초과했습니다."
         )
 
+    # 방어적: ai_model 허용값 보정 (프론트/유저가 임의 문자열을 보내는 경우 대비)
+    ai_model = (request.ai_model or "gemini").strip().lower()
+    if ai_model not in ("gemini", "claude", "gpt"):
+        try:
+            logging.warning(f"[story_importer] invalid ai_model='{request.ai_model}', fallback to gemini")
+        except Exception:
+            pass
+        ai_model = "gemini"
+
     try:
         analysis_result = await analyze_story_from_text(
             content=request.content, 
-            ai_model=request.ai_model
+            ai_model=ai_model  # type: ignore[arg-type]
         )
         return analysis_result
     except Exception as e:

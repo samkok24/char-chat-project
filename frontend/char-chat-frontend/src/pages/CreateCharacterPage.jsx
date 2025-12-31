@@ -9,7 +9,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { useQueryClient } from '@tanstack/react-query';
 import { charactersAPI, filesAPI, API_BASE_URL, tagsAPI, api, mediaAPI } from '../lib/api';
 import { resolveImageUrl } from '../lib/images';
-import { replacePromptTokens } from '../lib/prompt';
+import { sanitizePromptTokens } from '../lib/prompt';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
@@ -53,6 +53,57 @@ import { CharacterCard } from '../components/CharacterCard';
 import DropzoneGallery from '../components/DropzoneGallery';
 import ErrorBoundary from '../components/ErrorBoundary';
 import { z } from 'zod';
+
+/**
+ * ✅ 필수 선택 옵션(메타) 정의
+ *
+ * 의도/원칙(최소 수정/최대 안전):
+ * - DB 컬럼/테이블을 새로 만들지 않고, 기존 tags 저장(`/characters/:id/tags`)에 함께 저장한다.
+ * - 백엔드 `set_character_tags`는 slug가 없으면 Tag를 자동 생성하므로, 프론트에서 선제 생성이 필요 없다.
+ * - 생성(Create) 시에는 필수 선택으로 강제하고, 편집(Edit)은 기존 데이터가 깨지지 않도록 강제하지 않는다.
+ */
+const REQUIRED_AUDIENCE_CHOICES = [
+  { slug: '남성향', label: '남성향', previewClass: 'bg-gradient-to-br from-slate-900 via-blue-900 to-purple-900' },
+  { slug: '여성향', label: '여성향', previewClass: 'bg-gradient-to-br from-rose-900 via-fuchsia-900 to-indigo-900' },
+  { slug: '전체', label: '전체', previewClass: 'bg-gradient-to-br from-emerald-900 via-slate-900 to-cyan-900' },
+];
+const REQUIRED_STYLE_CHOICES = [
+  { slug: '애니풍', label: '애니풍', previewClass: 'bg-gradient-to-br from-purple-600 via-indigo-600 to-blue-600' },
+  { slug: '실사풍', label: '실사풍', previewClass: 'bg-gradient-to-br from-zinc-900 via-gray-800 to-zinc-700' },
+  { slug: '반실사', label: '반실사', previewClass: 'bg-gradient-to-br from-slate-800 via-stone-700 to-neutral-800' },
+  { slug: '아트웤', label: '아트웤/디자인', previewClass: 'bg-gradient-to-br from-amber-700 via-orange-700 to-rose-700' },
+];
+const REQUIRED_AUDIENCE_SLUGS = REQUIRED_AUDIENCE_CHOICES.map((c) => c.slug);
+const REQUIRED_STYLE_SLUGS = REQUIRED_STYLE_CHOICES.map((c) => c.slug);
+
+/**
+ * ✅ 호감도 규칙 예시 템플릿
+ *
+ * 의도:
+ * - "주관식"으로 작성하더라도 LLM이 일관되게 따르도록 형식/제약을 제시한다.
+ * - 사용자가 복붙해서 바로 수정/응용할 수 있도록 줄바꿈 기반 텍스트로 제공한다.
+ */
+const AFFINITY_RULES_TEMPLATE = `# 호감도 시스템 템플릿(예시)
+
+- 호감도 범위: 0 ~ 300 (시작: 0)
+- 1턴당 변화량: 최대 +20 / -20 (급변 금지)
+- 증가 조건(예):
+  - 배려/공감: +10
+  - 진심 어린 칭찬: +10
+  - 약속을 지킴/신뢰 행동: +20
+- 감소 조건(예):
+  - 무례/비하: -15
+  - 강요/협박: -20
+  - 거짓말/배신: -20
+- 표현 규칙:
+  - 숫자/점수/단계를 직접 말하지 말 것
+  - 말투/행동/거리감으로만 변화가 드러나게 할 것
+- 구간별 반응(예):
+  - 0~100: 건조, 선 긋기, 경계
+  - 101~200: 친근, 농담, 호감 표현 시작
+  - 201~300: 친밀, 설렘, 적극적 배려
+
+(필요하면 항목을 추가/수정해서 사용하세요)`;
 
 const CreateCharacterPage = () => {
   const queryClient = useQueryClient();
@@ -156,9 +207,12 @@ const CreateCharacterPage = () => {
   }, [setFormData]);
 
   // 토큰 정의
+  // - {{character}}: 권장(직관적)
+  // - {{assistant}}: 레거시 호환(기존 데이터/입력 지원)
+  const TOKEN_CHARACTER = '{{character}}';
   const TOKEN_ASSISTANT = '{{assistant}}';
   const TOKEN_USER = '{{user}}';
-  const ALLOWED_TOKENS = [TOKEN_ASSISTANT, TOKEN_USER];
+  const ALLOWED_TOKENS = [TOKEN_ASSISTANT, TOKEN_CHARACTER, TOKEN_USER];
   const HEADER_OFFSET = 72;
 
   const scrollToField = useCallback((key) => {
@@ -219,7 +273,7 @@ const CreateCharacterPage = () => {
   // Zod 스키마 정의
   const validationSchema = useMemo(() => {
     const tokenRegex = /\{\{[^}]+\}\}/g;
-    const allowedTokens = [TOKEN_ASSISTANT, TOKEN_USER];
+    const allowedTokens = [TOKEN_ASSISTANT, TOKEN_CHARACTER, TOKEN_USER];
     const noIllegalTokens = (val) => !val || [...(val.matchAll(tokenRegex) || [])].every(m => allowedTokens.includes(m[0]));
 
     const introductionSceneSchema = z.object({
@@ -291,21 +345,45 @@ const CreateCharacterPage = () => {
     });
   }, []);
 
+  const { isAuthenticated } = useAuth();
+  const [allTags, setAllTags] = useState([]);
+  const [selectedTagSlugs, setSelectedTagSlugs] = useState([]);
+  const [isTagModalOpen, setIsTagModalOpen] = useState(false);
+  // ✅ 원작챗(OrigChat) 캐릭터는 이 페이지에서 "필수 선택 옵션"을 노출하지 않기 위한 플래그
+  const [isOrigChatCharacter, setIsOrigChatCharacter] = useState(false);
+
   const validateForm = useCallback(() => {
     const result = validationSchema.safeParse(formData);
-    if (result.success) {
-      setFieldErrors({});
-      return { success: true, data: result.data };
-    }
-    const issues = result.error.issues || [];
     const map = {};
-    for (const issue of issues) {
-      const key = issue.path.join('.');
-      if (!map[key]) map[key] = issue.message;
+
+    // 1) 기본(Zod) 검증 결과 반영
+    if (!result.success) {
+      const issues = result.error.issues || [];
+      for (const issue of issues) {
+        const key = issue.path.join('.');
+        if (!map[key]) map[key] = issue.message;
+      }
     }
+
+    // 2) ✅ 신규 필수 선택(메타) 검증 - 생성(Create)에서만 강제(기존 편집 안전)
+    try {
+      if (!isEditMode) {
+        const audience = (selectedTagSlugs || []).find((s) => REQUIRED_AUDIENCE_SLUGS.includes(s)) || null;
+        const style = (selectedTagSlugs || []).find((s) => REQUIRED_STYLE_SLUGS.includes(s)) || null;
+        if (!audience) {
+          map['basic_info.audience_pref'] = '남성향/여성향/전체 중 하나를 선택하세요.';
+        }
+        if (!style) {
+          map['basic_info.visual_style'] = '애니풍/실사풍/반실사/아트웤(디자인) 중 하나를 선택하세요.';
+        }
+      }
+    } catch (_) {}
+
+    const ok = Object.keys(map).length === 0;
     setFieldErrors(map);
+    if (ok) return { success: true, data: result.success ? result.data : formData };
     return { success: false, errors: map };
-  }, [formData, validationSchema]);
+  }, [formData, validationSchema, isEditMode, selectedTagSlugs]);
 
   // 입력 디바운스 검증
   useEffect(() => {
@@ -315,10 +393,21 @@ const CreateCharacterPage = () => {
     return () => clearTimeout(t);
   }, [formData, validateForm]);
 
-  const { isAuthenticated } = useAuth();
-  const [allTags, setAllTags] = useState([]);
-  const [selectedTagSlugs, setSelectedTagSlugs] = useState([]);
-  const [isTagModalOpen, setIsTagModalOpen] = useState(false);
+  /**
+   * ✅ 메타 태그 토글(레퍼런스 카드 선택)
+   *
+   * 의도/동작:
+   * - 같은 그룹에서는 1개만 선택되도록(상호배타) 처리
+   * - 같은 항목을 다시 클릭하면 해제(불 꺼짐)
+   */
+  const toggleExclusiveTag = useCallback((slug, groupSlugs) => {
+    setSelectedTagSlugs((prev) => {
+      const arr = Array.isArray(prev) ? prev : [];
+      const has = arr.includes(slug);
+      const cleaned = arr.filter((s) => !groupSlugs.includes(s));
+      return has ? cleaned : [...cleaned, slug];
+    });
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -476,7 +565,9 @@ const CreateCharacterPage = () => {
     const firstImage = formData.media_settings.image_descriptions?.[0]?.url || '';
     const avatar = formData.media_settings.avatar_url || firstImage;
     const replaceTokens = (text) => (text || '')
+      // 레거시/신규 토큰 모두 동일하게 처리
       .replaceAll(TOKEN_ASSISTANT, formData.basic_info.name || '캐릭터')
+      .replaceAll(TOKEN_CHARACTER, formData.basic_info.name || '캐릭터')
       .replaceAll(TOKEN_USER, '나');
     return {
       id: 'preview',
@@ -571,6 +662,11 @@ const CreateCharacterPage = () => {
       // 이제 API가 항상 일관된 형식의 데이터를 주므로, 코드가 매우 깔끔해집니다.
       const response = await charactersAPI.getCharacter(characterId);
       const char = response.data;
+      // ✅ 원작챗 캐릭터(웹소설/OrigChat)면, 일반 캐릭터 전용 옵션 UI를 숨긴다.
+      try {
+        const isOrig = !!String(char?.origin_story_id || '').trim() || !!char?.is_origchat;
+        setIsOrigChatCharacter(isOrig);
+      } catch (_) {}
       
       // 🔥 고급 캐릭터 데이터 구조로 매핑
       setFormData(prev => ({
@@ -675,6 +771,48 @@ const CreateCharacterPage = () => {
     updateFormData('example_dialogues', 'dialogues', dialogues);
   };
 
+  /**
+   * ✅ 호감도 구간(stage) 편집 핸들러
+   *
+   * 의도/동작(최소 수정/안전):
+   * - 기존 `affinity_stages`(number/null/string) 구조를 유지한 채로 UI 입력을 가능하게 한다.
+   * - `max_value`는 빈칸('')을 `null`(무한대, ∞)로 정규화한다.
+   * - 숫자 입력은 NaN 방지를 위해 안전 파싱한다.
+   */
+  const updateAffinityStage = (index, field, rawValue) => {
+    const stages = Array.isArray(formData?.affinity_system?.affinity_stages)
+      ? [...formData.affinity_system.affinity_stages]
+      : [];
+
+    if (!stages[index]) return;
+
+    if (field === 'min_value') {
+      const next = Number.parseInt(String(rawValue ?? ''), 10);
+      stages[index] = { ...stages[index], min_value: Number.isFinite(next) ? next : 0 };
+      updateFormData('affinity_system', 'affinity_stages', stages);
+      return;
+    }
+
+    if (field === 'max_value') {
+      const s = String(rawValue ?? '').trim();
+      if (!s) {
+        stages[index] = { ...stages[index], max_value: null };
+        updateFormData('affinity_system', 'affinity_stages', stages);
+        return;
+      }
+      const next = Number.parseInt(s, 10);
+      stages[index] = { ...stages[index], max_value: Number.isFinite(next) ? next : null };
+      updateFormData('affinity_system', 'affinity_stages', stages);
+      return;
+    }
+
+    if (field === 'description') {
+      stages[index] = { ...stages[index], description: String(rawValue ?? '') };
+      updateFormData('affinity_system', 'affinity_stages', stages);
+      return;
+    }
+  };
+
   const allowedExt = ['jpg','jpeg','png','webp','gif'];
   const validateExt = (file) => {
     const ext = (file.name || '').toLowerCase().split('.').pop();
@@ -742,15 +880,10 @@ const CreateCharacterPage = () => {
       const existingImageUrls = formData.media_settings.image_descriptions.map(img => img.url);
       const finalImageUrls = [...existingImageUrls, ...uploadedImageUrls];
 
-      // 요청 직전 단일 치환 레이어
-      const safeDescription = replacePromptTokens(
-        formData.basic_info.description,
-        { assistantName: formData.basic_info.name || '캐릭터', userName: '나' }
-      );
-      const safeUserDisplay = replacePromptTokens(
-        formData.basic_info.user_display_description,
-        { assistantName: formData.basic_info.name || '캐릭터', userName: '나' }
-      );
+      // ✅ 저장 시점에는 토큰을 "치환"하지 않고 원문 보존(SSOT)
+      // - 금지/미등록 토큰만 제거(안전)
+      const safeDescription = sanitizePromptTokens(formData.basic_info.description);
+      const safeUserDisplay = sanitizePromptTokens(formData.basic_info.user_display_description);
 
       // greetings 배열을 greeting 단일 문자열로 변환
       // UI에서는 greetings 배열을 사용하지만, 백엔드는 greeting 단일 문자열을 기대함
@@ -841,20 +974,122 @@ const CreateCharacterPage = () => {
   };
 
   const handleApplyImportedData = (data) => {
-    // StoryImporterModal에서 전달받은 데이터로 폼 채우기
+    /**
+     * AI 스토리 분석 결과를 "현재 고급 캐릭터 생성 폼"에 최대한 채워넣는다.
+     *
+     * 의도/원칙:
+     * - 과거(간단) 스키마 수준(name/description/world_setting)만 채우던 방식에서,
+     *   현재 확장된 입력 볼륨(성격/말투/인사말/예시대화/도입부 등)도 가능한 한 자동 채움.
+     * - 방어적으로: 누락/타입 흔들림이 있어도 폼이 깨지지 않게 기본값 유지 + 최소 유효성(예시대화 1개) 확보.
+     */
+    const safeText = (v) => {
+      try { return String(v ?? '').trim(); } catch (_) { return ''; }
+    };
+    const safeArray = (v) => (Array.isArray(v) ? v : []);
+    const clip = (v, maxLen) => {
+      const s = safeText(v);
+      if (!s) return '';
+      return s.length > maxLen ? s.slice(0, maxLen) : s;
+    };
+    const toGreetings = (v) => {
+      // greetings는 list[str]가 이상적이지만, 문자열/혼합 타입도 방어적으로 처리
+      const arr = safeArray(v)
+        .map((x) => clip(x, 500))
+        .map((x) => x.trim())
+        .filter(Boolean);
+      if (arr.length > 0) return arr.slice(0, 3);
+      return [];
+    };
+    const toExampleDialogues = (v) => {
+      // example_dialogues는 [{user_message, character_response}] 또는 {dialogues:[...]} 형태 모두 지원
+      const rawList = Array.isArray(v) ? v : (Array.isArray(v?.dialogues) ? v.dialogues : []);
+      const mapped = rawList
+        .map((d) => ({
+          user_message: clip(d?.user_message, 500),
+          character_response: clip(d?.character_response, 1000),
+          order_index: Number.isFinite(Number(d?.order_index)) ? Number(d.order_index) : undefined,
+        }))
+        .filter((d) => d.user_message.trim() && d.character_response.trim())
+        .map((d, idx) => ({ ...d, order_index: d.order_index ?? idx }));
+      return mapped;
+    };
+    const toIntroScenes = (v) => {
+      const rawList = safeArray(v);
+      const mapped = rawList
+        .map((s, idx) => ({
+          title: clip(s?.title || `도입부 ${idx + 1}`, 100),
+          content: clip(s?.content, 2000),
+          secret: clip(s?.secret, 1000),
+        }))
+        .filter((s) => s.content.trim() || s.secret.trim() || s.title.trim());
+      return mapped;
+    };
+
+    const nextName = clip(data?.name, 100) || '';
+    const nextDesc = clip(data?.description, 3000) || '';
+    const nextWorld = clip(data?.world_setting, 5000) || '';
+    const nextPersonality = clip(data?.personality, 2000) || '';
+    const nextSpeech = clip(data?.speech_style, 2000) || '';
+    const nextUserDisplay = clip(data?.user_display_description, 3000) || '';
+    const greetings = toGreetings(data?.greetings);
+    const exampleDialogues = toExampleDialogues(data?.example_dialogues);
+    const introScenes = toIntroScenes(data?.introduction_scenes);
+
+    // 예시 대화 최소 1개 확보(현재 UI 검증/UX 안정)
+    const fallbackDialogues = (() => {
+      const n = nextName || '캐릭터';
+      const g = greetings[0] || nextDesc || '안녕하세요. 어떤 이야기부터 시작해볼까요?';
+      return [{
+        user_message: '안녕, 오늘은 어떤 기분이야?',
+        character_response: `${n}: ${g}`.slice(0, 1000),
+        order_index: 0,
+      }];
+    })();
+
     setFormData(prev => ({
       ...prev,
       basic_info: {
         ...prev.basic_info,
-        name: data.name || prev.basic_info.name,
-        description: data.description || prev.basic_info.description,
-        world_setting: data.world_setting || prev.basic_info.world_setting,
-        // 필요에 따라 다른 필드도 채울 수 있습니다.
+        name: nextName || prev.basic_info.name,
+        description: nextDesc || prev.basic_info.description,
+        personality: nextPersonality || prev.basic_info.personality,
+        speech_style: nextSpeech || prev.basic_info.speech_style,
+        world_setting: nextWorld || prev.basic_info.world_setting,
+        user_display_description: nextUserDisplay || prev.basic_info.user_display_description,
+        use_custom_description: Boolean(nextUserDisplay) || prev.basic_info.use_custom_description,
+        // 인사말: UI에서는 greetings 배열을 사용한다(저장 시 greeting 문자열로 join)
+        greetings: greetings.length ? greetings : prev.basic_info.greetings,
+        // 도입부: AI가 생성한 도입부가 있으면 적용.
+        // 없으면 기존값을 최대한 보존하되, 기본 도입부가 "완전 빈값"이면 최소 1개를 자동 생성해 생성 실패를 방지한다.
+        introduction_scenes: (() => {
+          if (introScenes.length) return introScenes;
+          const prevScenes = Array.isArray(prev.basic_info.introduction_scenes) ? prev.basic_info.introduction_scenes : [];
+          const hasMeaningful = prevScenes.some(s => String(s?.content || '').trim() || String(s?.secret || '').trim());
+          if (hasMeaningful) return prevScenes;
+          const n = nextName || prev.basic_info.name || '캐릭터';
+          const w = nextWorld || prev.basic_info.world_setting || '';
+          return [{
+            title: '도입부 1',
+            content: (w ? `${w}\n\n` : '') + `${n}와(과) 대화가 시작됩니다. 지금 상황과 관계를 한 줄로 정해보세요.`,
+            secret: '',
+          }];
+        })(),
+      },
+      // 예시 대화: AI 생성분이 있으면 적용, 없으면 최소 1개 폴백
+      example_dialogues: {
+        ...prev.example_dialogues,
+        dialogues: (() => {
+          if (exampleDialogues.length) return exampleDialogues;
+          const prevDs = Array.isArray(prev.example_dialogues?.dialogues) ? prev.example_dialogues.dialogues : [];
+          const hasMeaningful = prevDs.some(d => String(d?.user_message || '').trim() && String(d?.character_response || '').trim());
+          return hasMeaningful ? prevDs : fallbackDialogues;
+        })(),
       },
       affinity_system: {
         ...prev.affinity_system,
-        has_affinity_system: data.social_tendency !== undefined,
-        affinity_rules: data.social_tendency !== undefined 
+        // 기존 로직 유지: social_tendency가 있으면 호감도 시스템을 켜고 간단 규칙을 채운다.
+        has_affinity_system: data?.social_tendency !== undefined,
+        affinity_rules: data?.social_tendency !== undefined 
           ? `대인관계 성향 점수(${data.social_tendency})를 기반으로 함` 
           : prev.affinity_system.affinity_rules,
       }
@@ -1094,6 +1329,79 @@ const CreateCharacterPage = () => {
           </Select>
         </div>
 
+        {/* ✅ (요구사항 반영) 필수 선택 박스/이미지형 카드 제거 → '캐릭터 설명' 바로 위에 심플 세그먼트 UI로 배치 */}
+        {!isOrigChatCharacter && (
+          <div className="space-y-4">
+            {/* 성향 */}
+            <div>
+              <div className="flex items-baseline justify-between">
+                <div className="text-sm font-semibold text-gray-200">
+                  남성향 / 여성향 / 전체 <span className="text-red-400">*</span>
+                </div>
+                <div className="text-xs text-gray-500">클릭하면 선택, 다시 클릭하면 해제</div>
+              </div>
+              <div className="mt-2 grid grid-cols-3 overflow-hidden rounded-lg border border-gray-700/80 bg-gray-900/30">
+                {REQUIRED_AUDIENCE_CHOICES.map((opt, idx) => {
+                  const selected = Array.isArray(selectedTagSlugs) && selectedTagSlugs.includes(opt.slug);
+                  const isLast = idx === REQUIRED_AUDIENCE_CHOICES.length - 1;
+                  return (
+                    <button
+                      key={opt.slug}
+                      type="button"
+                      onClick={() => toggleExclusiveTag(opt.slug, REQUIRED_AUDIENCE_SLUGS)}
+                      aria-pressed={selected}
+                      className={`h-10 px-3 text-sm font-medium transition-colors ${
+                        isLast ? '' : 'border-r border-gray-700/80'
+                      } ${
+                        selected ? 'bg-purple-600 text-white' : 'bg-transparent text-gray-200 hover:bg-gray-800/60'
+                      } focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-500/30`}
+                    >
+                      <span className="block w-full truncate">{opt.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              {fieldErrors['basic_info.audience_pref'] && (
+                <p className="text-xs text-red-400 mt-2">{fieldErrors['basic_info.audience_pref']}</p>
+              )}
+            </div>
+
+            {/* 스타일 */}
+            <div>
+              <div className="flex items-baseline justify-between">
+                <div className="text-sm font-semibold text-gray-200">
+                  이미지 스타일 <span className="text-red-400">*</span>
+                </div>
+                <div className="text-xs text-gray-500">레퍼런스 느낌을 선택하세요</div>
+              </div>
+              <div className="mt-2 grid grid-cols-4 overflow-hidden rounded-lg border border-gray-700/80 bg-gray-900/30">
+                {REQUIRED_STYLE_CHOICES.map((opt, idx) => {
+                  const selected = Array.isArray(selectedTagSlugs) && selectedTagSlugs.includes(opt.slug);
+                  const isLast = idx === REQUIRED_STYLE_CHOICES.length - 1;
+                  return (
+                    <button
+                      key={opt.slug}
+                      type="button"
+                      onClick={() => toggleExclusiveTag(opt.slug, REQUIRED_STYLE_SLUGS)}
+                      aria-pressed={selected}
+                      className={`h-10 px-2 text-xs sm:text-sm font-medium transition-colors ${
+                        isLast ? '' : 'border-r border-gray-700/80'
+                      } ${
+                        selected ? 'bg-purple-600 text-white' : 'bg-transparent text-gray-200 hover:bg-gray-800/60'
+                      } focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-500/30`}
+                    >
+                      <span className="block w-full truncate">{opt.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              {fieldErrors['basic_info.visual_style'] && (
+                <p className="text-xs text-red-400 mt-2">{fieldErrors['basic_info.visual_style']}</p>
+              )}
+            </div>
+          </div>
+        )}
+
 
         <div>
           <Label htmlFor="description">캐릭터 설명 *</Label>
@@ -1112,7 +1420,7 @@ const CreateCharacterPage = () => {
           )}
           <div className="flex items-center gap-2 mt-2">
             <span className="text-xs text-gray-500">토큰 삽입:</span>
-            <Button type="button" variant="secondary" size="sm" title="{{assistant}} 삽입" onClick={() => insertBasicToken('description','description', TOKEN_ASSISTANT)}>캐릭터</Button>
+            <Button type="button" variant="secondary" size="sm" title="{{character}} 삽입" onClick={() => insertBasicToken('description','description', TOKEN_CHARACTER)}>캐릭터</Button>
             <Button type="button" variant="secondary" size="sm" title="{{user}} 삽입" onClick={() => insertBasicToken('description','description', TOKEN_USER)}>유저</Button>
           </div>
         </div>
@@ -1133,7 +1441,7 @@ const CreateCharacterPage = () => {
           )}
           <div className="flex items-center gap-2 mt-2">
             <span className="text-xs text-gray-500">토큰 삽입:</span>
-            <Button type="button" variant="secondary" size="sm" title="{{assistant}} 삽입" onClick={() => insertBasicToken('personality','personality', TOKEN_ASSISTANT)}>캐릭터</Button>
+            <Button type="button" variant="secondary" size="sm" title="{{character}} 삽입" onClick={() => insertBasicToken('personality','personality', TOKEN_CHARACTER)}>캐릭터</Button>
             <Button type="button" variant="secondary" size="sm" title="{{user}} 삽입" onClick={() => insertBasicToken('personality','personality', TOKEN_USER)}>유저</Button>
           </div>
         </div>
@@ -1154,7 +1462,7 @@ const CreateCharacterPage = () => {
           )}
           <div className="flex items-center gap-2 mt-2">
             <span className="text-xs text-gray-500">토큰 삽입:</span>
-            <Button type="button" variant="secondary" size="sm" title="{{assistant}} 삽입" onClick={() => insertBasicToken('speech_style','speech_style', TOKEN_ASSISTANT)}>캐릭터</Button>
+            <Button type="button" variant="secondary" size="sm" title="{{character}} 삽입" onClick={() => insertBasicToken('speech_style','speech_style', TOKEN_CHARACTER)}>캐릭터</Button>
             <Button type="button" variant="secondary" size="sm" title="{{user}} 삽입" onClick={() => insertBasicToken('speech_style','speech_style', TOKEN_USER)}>유저</Button>
           </div>
         </div>
@@ -1198,11 +1506,11 @@ const CreateCharacterPage = () => {
                   type="button" 
                   variant="secondary" 
                   size="sm" 
-                  title="{{assistant}} 삽입" 
+                  title="{{character}} 삽입" 
                   onClick={() => {
                     const el = document.getElementById(index === 0 ? "greeting" : `greeting_${index}`);
                     const current = greeting || '';
-                    const { next, caret } = insertAtCursor(el, current, TOKEN_ASSISTANT);
+                    const { next, caret } = insertAtCursor(el, current, TOKEN_CHARACTER);
                     const newGreetings = [...(formData.basic_info.greetings || [''])];
                     newGreetings[index] = next;
                     updateFormData('basic_info', 'greetings', newGreetings);
@@ -1280,7 +1588,7 @@ const CreateCharacterPage = () => {
           )}
           <div className="flex items-center gap-2 mt-2">
             <span className="text-xs text-gray-500">토큰 삽입:</span>
-            <Button type="button" variant="secondary" size="sm" title="{{assistant}} 삽입" onClick={() => insertBasicToken('world_setting','world_setting', TOKEN_ASSISTANT)}>캐릭터</Button>
+            <Button type="button" variant="secondary" size="sm" title="{{character}} 삽입" onClick={() => insertBasicToken('world_setting','world_setting', TOKEN_CHARACTER)}>캐릭터</Button>
             <Button type="button" variant="secondary" size="sm" title="{{user}} 삽입" onClick={() => insertBasicToken('world_setting','world_setting', TOKEN_USER)}>유저</Button>
           </div>
         </div>
@@ -1311,7 +1619,7 @@ const CreateCharacterPage = () => {
             />
             <div className="flex items-center gap-2 mt-2">
               <span className="text-xs text-gray-500">토큰 삽입:</span>
-              <Button type="button" variant="secondary" size="sm" title="{{assistant}} 삽입" onClick={() => insertBasicToken('user_display_description','user_display_description', TOKEN_ASSISTANT)}>캐릭터</Button>
+              <Button type="button" variant="secondary" size="sm" title="{{character}} 삽입" onClick={() => insertBasicToken('user_display_description','user_display_description', TOKEN_CHARACTER)}>캐릭터</Button>
               <Button type="button" variant="secondary" size="sm" title="{{user}} 삽입" onClick={() => insertBasicToken('user_display_description','user_display_description', TOKEN_USER)}>유저</Button>
             </div>
           </div>
@@ -1389,7 +1697,7 @@ const CreateCharacterPage = () => {
                 )}
                 <div className="flex items-center gap-2 mt-2">
                   <span className="text-xs text-gray-500">토큰 삽입:</span>
-                  <Button type="button" variant="secondary" size="sm" title="{{assistant}} 삽입" onClick={() => insertIntroToken(index, 'content', TOKEN_ASSISTANT)}>캐릭터</Button>
+                  <Button type="button" variant="secondary" size="sm" title="{{character}} 삽입" onClick={() => insertIntroToken(index, 'content', TOKEN_CHARACTER)}>캐릭터</Button>
                   <Button type="button" variant="secondary" size="sm" title="{{user}} 삽입" onClick={() => insertIntroToken(index, 'content', TOKEN_USER)}>유저</Button>
                 </div>
               </div>
@@ -1411,7 +1719,7 @@ const CreateCharacterPage = () => {
                 )}
                 <div className="flex items-center gap-2 mt-2">
                   <span className="text-xs text-gray-600">토큰 삽입:</span>
-                  <Button type="button" variant="secondary" size="sm" title="{{assistant}} 삽입" onClick={() => insertIntroToken(index, 'secret', TOKEN_ASSISTANT)}>캐릭터</Button>
+                  <Button type="button" variant="secondary" size="sm" title="{{character}} 삽입" onClick={() => insertIntroToken(index, 'secret', TOKEN_CHARACTER)}>캐릭터</Button>
                   <Button type="button" variant="secondary" size="sm" title="{{user}} 삽입" onClick={() => insertIntroToken(index, 'secret', TOKEN_USER)}>유저</Button>
                 </div>
               </div>
@@ -1554,7 +1862,7 @@ const CreateCharacterPage = () => {
                 />
                 <div className="flex items-center gap-2 mt-2">
                   <span className="text-xs text-gray-600">토큰 삽입:</span>
-                  <Button type="button" variant="secondary" size="sm" title="{{assistant}} 삽입" onClick={() => insertDialogueToken(index, 'user_message', TOKEN_ASSISTANT)}>캐릭터</Button>
+                  <Button type="button" variant="secondary" size="sm" title="{{character}} 삽입" onClick={() => insertDialogueToken(index, 'user_message', TOKEN_CHARACTER)}>캐릭터</Button>
                   <Button type="button" variant="secondary" size="sm" title="{{user}} 삽입" onClick={() => insertDialogueToken(index, 'user_message', TOKEN_USER)}>유저</Button>
                 </div>
               </div>
@@ -1572,7 +1880,7 @@ const CreateCharacterPage = () => {
                 />
                 <div className="flex items-center gap-2 mt-2">
                   <span className="text-xs text-gray-600">토큰 삽입:</span>
-                  <Button type="button" variant="secondary" size="sm" title="{{assistant}} 삽입" onClick={() => insertDialogueToken(index, 'character_response', TOKEN_ASSISTANT)}>캐릭터</Button>
+                  <Button type="button" variant="secondary" size="sm" title="{{character}} 삽입" onClick={() => insertDialogueToken(index, 'character_response', TOKEN_CHARACTER)}>캐릭터</Button>
                   <Button type="button" variant="secondary" size="sm" title="{{user}} 삽입" onClick={() => insertDialogueToken(index, 'character_response', TOKEN_USER)}>유저</Button>
                 </div>
               </div>
@@ -1620,6 +1928,34 @@ const CreateCharacterPage = () => {
               rows={6}
               maxLength={2000}
             />
+            {/* ✅ 복붙용 템플릿(예시): 사용자가 바로 응용할 수 있게 제공 */}
+            <div className="mt-3 rounded-lg border border-gray-700/80 bg-gray-900/40 p-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-xs text-gray-400">예시 템플릿(복붙해서 수정하세요)</div>
+                <button
+                  type="button"
+                  className="text-xs text-gray-300 hover:text-white underline underline-offset-2"
+                  onClick={async () => {
+                    try {
+                      if (!navigator?.clipboard?.writeText) {
+                        dispatchToast('error', '복사 기능을 사용할 수 없습니다. 아래 텍스트를 드래그해서 복사해주세요.');
+                        return;
+                      }
+                      await navigator.clipboard.writeText(AFFINITY_RULES_TEMPLATE);
+                      dispatchToast('success', '호감도 템플릿을 클립보드에 복사했습니다.');
+                    } catch (err) {
+                      console.error('[affinity_rules] template copy failed:', err);
+                      dispatchToast('error', '복사에 실패했습니다. 아래 텍스트를 드래그해서 복사해주세요.');
+                    }
+                  }}
+                >
+                  복사
+                </button>
+              </div>
+              <pre className="mt-2 whitespace-pre-wrap text-xs text-gray-200 leading-relaxed select-text">
+                {AFFINITY_RULES_TEMPLATE}
+              </pre>
+            </div>
           </div>
 
           <div>
@@ -1630,26 +1966,26 @@ const CreateCharacterPage = () => {
                   <div className="flex items-center space-x-2">
                     <Input
                       type="number"
-                      value={stage.min_value}
+                      value={stage?.min_value ?? 0}
                       className="w-20 mt-4"
-                      readOnly
+                      onChange={(e) => updateAffinityStage(index, 'min_value', e.target.value)}
                     />
                     <span>~</span>
                     <Input
                       type="number"
-                      value={stage.max_value || ''}
+                      value={stage?.max_value ?? ''}
                       placeholder="∞"
                       className="w-20 mt-4"
-                      readOnly
+                      onChange={(e) => updateAffinityStage(index, 'max_value', e.target.value)}
                     />
                   </div>
                   <Textarea
-                    value={stage.description}
+                    value={stage?.description ?? ''}
                     placeholder="호감도에 따라 캐릭터에게 줄 변화를 입력해보세요"
                     rows={1}
                     className="flex-1 mt-4"
                     maxLength={500}
-                    readOnly
+                    onChange={(e) => updateAffinityStage(index, 'description', e.target.value)}
                   />
                 </div>
               ))}

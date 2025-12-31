@@ -75,13 +75,13 @@ const CreatorInfoPage = () => {
           </header>
 
           <Card className="bg-gray-800 border-gray-700 mb-8">
-            <CardContent className="p-6 flex items-center gap-4">
+            <CardContent className="p-4 sm:p-6 flex flex-col sm:flex-row sm:items-center gap-4">
               {profileLoading ? (
-                <div className="flex items-center gap-4">
-                  <div className="w-20 h-20 rounded-full bg-gray-700" />
-                  <div>
+                <div className="flex flex-col sm:flex-row sm:items-center gap-4 w-full">
+                  <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-full bg-gray-700" />
+                  <div className="flex-1">
                     <div className="w-40 h-5 bg-gray-700 mb-2" />
-                    <div className="w-64 h-4 bg-gray-700" />
+                    <div className="w-full max-w-[22rem] h-4 bg-gray-700" />
                   </div>
                 </div>
               ) : profileError ? (
@@ -91,29 +91,29 @@ const CreatorInfoPage = () => {
                 </div>
               ) : (
                 <>
-                  <Avatar className="w-20 h-20 text-2xl">
+                  <Avatar className="w-16 h-16 sm:w-20 sm:h-20 text-xl sm:text-2xl">
                     <AvatarImage src={resolveImageUrl(profile?.avatar_url)} alt={profile?.username} />
                     <AvatarFallback className="bg-purple-600 text-white">
                       {profile?.username?.[0]?.toUpperCase() || 'U'}
                     </AvatarFallback>
                   </Avatar>
-                  <div className="flex-1">
-                    <h1 className="text-2xl font-bold">{profile?.username || 'Creator'}</h1>
+                  <div className="flex-1 min-w-0">
+                    <h1 className="text-xl sm:text-2xl font-bold break-words">{profile?.username || 'Creator'}</h1>
                     <p className="text-gray-400 mt-1">
                       {profile?.greeting || profile?.bio || '자기소개가 없습니다.'}
                     </p>
                   </div>
                   {profile && (
-                    <div className="flex gap-6 text-sm">
-                      <div className="text-center">
+                    <div className="grid grid-cols-3 gap-3 w-full sm:w-auto text-sm">
+                      <div className="text-center rounded-lg bg-gray-900/30 border border-gray-700/60 px-3 py-2">
                         <div className="text-gray-400">캐릭터 수</div>
                         <div className="text-white font-semibold">{profile.character_count?.toLocaleString?.() || 0}</div>
                       </div>
-                      <div className="text-center">
+                      <div className="text-center rounded-lg bg-gray-900/30 border border-gray-700/60 px-3 py-2">
                         <div className="text-gray-400">총 대화</div>
                         <div className="text-white font-semibold">{profile.total_chat_count?.toLocaleString?.() || 0}</div>
                       </div>
-                      <div className="text-center">
+                      <div className="text-center rounded-lg bg-gray-900/30 border border-gray-700/60 px-3 py-2">
                         <div className="text-gray-400">총 좋아요</div>
                         <div className="text-white font-semibold">{profile.total_like_count?.toLocaleString?.() || 0}</div>
                       </div>
@@ -126,11 +126,11 @@ const CreatorInfoPage = () => {
 
           {/* 공지/댓글 탭 유지 */}
           <Card className="bg-gray-800 border-gray-700 mb-8">
-            <CardContent className="p-6">
+            <CardContent className="p-4 sm:p-6">
               <Tabs defaultValue="notice">
-                <TabsList className="bg-gray-900 border border-gray-700">
-                  <TabsTrigger value="notice">공지사항</TabsTrigger>
-                  <TabsTrigger value="comments">댓글</TabsTrigger>
+                <TabsList className="bg-gray-900 border border-gray-700 w-full sm:w-auto grid grid-cols-2">
+                  <TabsTrigger value="notice" className="flex-1">공지사항</TabsTrigger>
+                  <TabsTrigger value="comments" className="flex-1">댓글</TabsTrigger>
                 </TabsList>
 
                 <TabsContent value="notice" className="mt-4">
@@ -144,18 +144,20 @@ const CreatorInfoPage = () => {
             </CardContent>
           </Card>
 
-          <div className="flex items-center justify-between mb-3">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-3">
             <h2 className="text-xl font-semibold">크리에이터 작품</h2>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 w-full sm:w-auto">
               <Button
                 variant={sort === 'latest' ? 'default' : 'outline'}
                 onClick={() => setSort('latest')}
+                className="flex-1 sm:flex-none"
               >
                 최신순
               </Button>
               <Button
                 variant={sort === 'popular' ? 'default' : 'outline'}
                 onClick={() => setSort('popular')}
+                className="flex-1 sm:flex-none"
               >
                 인기순
               </Button>
@@ -171,7 +173,7 @@ const CreatorInfoPage = () => {
               </div>
             )}
             {(charsLoading || storiesLoading) ? (
-              <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 mt-4">
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 mt-4">
                 {Array.from({ length: 12 }).map((_, i) => (
                   <SharedCharacterCardSkeleton key={i} />
                 ))}
@@ -197,7 +199,7 @@ const CreatorInfoPage = () => {
                   );
                 }
                 return (
-                  <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 mt-4">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 mt-4">
                     {mixed.map((item) => (
                       item.type === 'story' ? (
                         <StoryExploreCard key={`s-${item.id}`} story={item.data} />
