@@ -76,6 +76,11 @@ services:
       # 환경 설정
       ENVIRONMENT: ${ENVIRONMENT:-production}
       DEBUG: ${DEBUG:-false}
+    volumes:
+      # 업로드 파일(avatar/cover 등) 영구 보관
+      # - DB(Supabase) 마이그레이션과 무관하게, 파일은 별도 자산이라 컨테이너 재생성 시 사라질 수 있음
+      # - /static/* 는 backend-api/app/main.py 에서 UPLOAD_DIRECTORY(/app/data/uploads)로 서빙됨
+      - ../backend-api/data/uploads:/app/data/uploads
     ports:
       - "8000:8000"
     depends_on:

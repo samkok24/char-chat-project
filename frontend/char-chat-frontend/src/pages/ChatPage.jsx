@@ -1814,32 +1814,6 @@ const ChatPage = () => {
     );
   };
 
-  if (loading && !character) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-purple-50 via-blue-50 to-indigo-50 flex items-center justify-center">
-        <div className="text-center">
-          <Loader2 className="w-8 h-8 animate-spin mx-auto mb-4" />
-          <p className="text-gray-600">캐릭터 정보를 불러오는 중...</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (error && !character) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-purple-50 via-blue-50 to-indigo-50 flex items-center justify-center">
-        <div className="text-center">
-          <AlertCircle className="w-12 h-12 text-red-500 mx-auto mb-4" />
-          <h3 className="text-lg font-medium text-gray-900 mb-2">오류가 발생했습니다</h3>
-          <p className="text-gray-600 mb-4">{error}</p>
-          <Button onClick={() => navigate('/')} variant="outline">
-            홈으로 돌아가기
-          </Button>
-        </div>
-      </div>
-    );
-  }
-
   // ✅ 상태 표시(유저용): 한 눈에 보이게 중앙 팝업으로 통일 (원작챗/일반챗 공통)
   const isInitOverlayActive = Boolean(
     loading ||
@@ -1865,6 +1839,35 @@ const ChatPage = () => {
     const t = setTimeout(() => setShowSlowHint(true), 3000);
     return () => { try { clearTimeout(t); } catch (_) {} };
   }, [isStatusPopupActive]);
+
+  // ⚠️ React Hooks 규칙:
+  // - 아래의 로딩/에러 화면은 "조건부 return"이지만, Hook 호출 이후에만 return 해야 한다.
+  // - 그렇지 않으면 렌더마다 Hook 개수가 달라져(=Rendered more hooks...) 화면이 하얗게 깨진다.
+  if (loading && !character) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-purple-50 via-blue-50 to-indigo-50 flex items-center justify-center">
+        <div className="text-center">
+          <Loader2 className="w-8 h-8 animate-spin mx-auto mb-4" />
+          <p className="text-gray-600">캐릭터 정보를 불러오는 중...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (error && !character) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-purple-50 via-blue-50 to-indigo-50 flex items-center justify-center">
+        <div className="text-center">
+          <AlertCircle className="w-12 h-12 text-red-500 mx-auto mb-4" />
+          <h3 className="text-lg font-medium text-gray-900 mb-2">오류가 발생했습니다</h3>
+          <p className="text-gray-600 mb-4">{error}</p>
+          <Button onClick={() => navigate('/')} variant="outline">
+            홈으로 돌아가기
+          </Button>
+        </div>
+      </div>
+    );
+  }
 
   const statusPopup = (() => {
     // 우선순위: 초기 준비(입력 차단) > (일반챗) 네트워크 > (원작챗) 생성/보정 > (일반챗) 전송 지연
