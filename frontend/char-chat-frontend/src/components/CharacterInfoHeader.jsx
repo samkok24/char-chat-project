@@ -1,4 +1,4 @@
-import { MessageCircle, MoreVertical, Heart, Edit, Trash2, Settings, Users, EyeOff } from 'lucide-react';
+import { MessageCircle, MoreVertical, Heart, Edit, Trash2, Users, EyeOff } from 'lucide-react';
 import { formatCount } from '../lib/format';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
@@ -16,7 +16,7 @@ import {
 } from "./ui/dropdown-menu";
 import { useAuth } from '../contexts/AuthContext';
 
-const CharacterInfoHeader = ({ character, likeCount, isLiked, handleLike, isOwner, canTogglePublic = false, onEdit, onDelete, onSettings, onTogglePublic, isWebNovel = false, workId = null, tags = [] }) => {
+const CharacterInfoHeader = ({ character, likeCount, isLiked, handleLike, isOwner, canTogglePublic = false, onEdit, onDelete, onTogglePublic, isWebNovel = false, workId = null, tags = [] }) => {
   const navigate = useNavigate();
   const { profileVersion } = useAuth();
 
@@ -45,9 +45,6 @@ const CharacterInfoHeader = ({ character, likeCount, isLiked, handleLike, isOwne
                 <>
                   <DropdownMenuItem onClick={onEdit}>
                     <Edit className="mr-2 h-4 w-4" /> 수정
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={onSettings}>
-                    <Settings className="mr-2 h-4 w-4" /> AI 설정
                   </DropdownMenuItem>
                   <DropdownMenuSeparator className="bg-gray-700" />
                 </>

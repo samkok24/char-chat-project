@@ -3,9 +3,10 @@ import { useQuery } from '@tanstack/react-query';
 import { rankingAPI } from '../lib/api';
 import { Link, useNavigate } from 'react-router-dom';
 import { resolveImageUrl } from '../lib/images';
-import { Eye, Heart } from 'lucide-react';
+import { Eye, Heart, ChevronLeft, ChevronRight } from 'lucide-react';
 import ErrorBoundary from './ErrorBoundary';
 import { Badge } from './ui/badge';
+import { useIsMobile } from '../hooks/use-mobile';
 
 const StoryItem = ({ story }) => {
   const navigate = useNavigate();
@@ -99,6 +100,9 @@ const StorySkeleton = () => (
 );
 
 const TopStories = ({ title } = {}) => {
+  const isMobile = useIsMobile();
+  const pageSize = isMobile ? 4 : 14;
+  const [page, setPage] = React.useState(0);
   const { data = [], isLoading, isError, refetch } = useQuery({
     queryKey: ['top-stories-daily'],
     queryFn: async () => {
@@ -118,8 +122,28 @@ const TopStories = ({ title } = {}) => {
     return () => window.removeEventListener('media:updated', h);
   }, [refetch]);
   const empty = !isLoading && (!data || data.length === 0);
-  const displayData = data.slice(0, 14); // 최대 14개만 표시 (7x2)
+
+  React.useEffect(() => {
+    // 화면 크기/레이아웃 전환 시 첫 페이지로 리셋(UX 안정)
+    setPage(0);
+  }, [isMobile]);
+
+  const items = Array.isArray(data) ? data : [];
+  const cappedItems = items.slice(0, 14); // 기존 정책 유지: 최대 14개(7x2) 안에서 페이징
+  const pageCount = Math.max(1, Math.ceil(cappedItems.length / pageSize));
+  const hasCarousel = cappedItems.length > pageSize;
+  const displayData = cappedItems.slice(page * pageSize, page * pageSize + pageSize);
+  const skeletonCount = pageSize;
   const slotTitle = String(title || '').trim() || '지금 인기 있는 원작 웹소설';
+
+  React.useEffect(() => {
+    if (pageCount <= 0) return;
+    if (page >= pageCount) setPage(0);
+  }, [page, pageCount]);
+
+  const gotoPrev = () => setPage((prev) => (prev - 1 + pageCount) % pageCount);
+  const gotoNext = () => setPage((prev) => (prev + 1) % pageCount);
+  const showMobileOverlayArrows = Boolean(isMobile && hasCarousel);
 
   return (
     <section className="mt-6 sm:mt-8">
@@ -128,26 +152,52 @@ const TopStories = ({ title } = {}) => {
           <h2 className="text-lg sm:text-xl font-bold text-white">{slotTitle}</h2>
           <p className="text-xs text-gray-400">원작연재에서 더 많은 작품을 확인해보세요.</p>
         </div>
-        <Link to="/dashboard?tab=origserial&sub=novel" className="text-sm text-gray-400 hover:text-white">
-          더보기
-        </Link>
+        {!isMobile && (
+          <Link to="/dashboard?tab=origserial&sub=novel" className="text-sm text-gray-400 hover:text-white">
+            더보기
+          </Link>
+        )}
       </div>
       <ErrorBoundary>
-        <ul className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-7 gap-3 sm:gap-4">
-          {isLoading && Array.from({ length: 14 }).map((_, idx) => (
-            <StorySkeleton key={idx} />
-          ))}
-          {!isLoading && !isError && !empty && displayData.map((story) => (
-            <StoryItem key={story.id} story={story} />
-          ))}
-          {!isLoading && !isError && empty && (
-            <li className="col-span-full text-center text-gray-400 py-8">
-              <div className="space-y-1">
-                <div>노출할 웹소설이 없습니다.</div>
-              </div>
-            </li>
+        <div className="relative">
+          <ul className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3 sm:gap-4">
+            {isLoading && Array.from({ length: skeletonCount }).map((_, idx) => (
+              <StorySkeleton key={idx} />
+            ))}
+            {!isLoading && !isError && !empty && displayData.map((story) => (
+              <StoryItem key={story.id} story={story} />
+            ))}
+            {!isLoading && !isError && empty && (
+              <li className="col-span-full text-center text-gray-400 py-8">
+                <div className="space-y-1">
+                  <div>노출할 웹소설이 없습니다.</div>
+                </div>
+              </li>
+            )}
+          </ul>
+
+          {/* 모바일: 4개씩 <> 페이지 이동 */}
+          {showMobileOverlayArrows && (
+            <>
+              <button
+                type="button"
+                aria-label="이전"
+                onClick={gotoPrev}
+                className="absolute -left-3 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-gray-800/90 hover:bg-gray-700 text-white border border-gray-700 shadow-lg backdrop-blur flex items-center justify-center"
+              >
+                <ChevronLeft className="w-5 h-5" />
+              </button>
+              <button
+                type="button"
+                aria-label="다음"
+                onClick={gotoNext}
+                className="absolute -right-3 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-gray-800/90 hover:bg-gray-700 text-white border border-gray-700 shadow-lg backdrop-blur flex items-center justify-center"
+              >
+                <ChevronRight className="w-5 h-5" />
+              </button>
+            </>
           )}
-        </ul>
+        </div>
       </ErrorBoundary>
     </section>
   );

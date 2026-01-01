@@ -4,12 +4,13 @@ import { rankingAPI } from '../lib/api';
 import { Link, useNavigate } from 'react-router-dom';
 import { getThumbnailUrl, resolveImageUrl } from '../lib/images';
 import { DEFAULT_SQUARE_URI } from '../lib/placeholder';
-import { MessageCircle, Heart } from 'lucide-react';
+import { MessageCircle, Heart, ChevronLeft, ChevronRight } from 'lucide-react';
 import { formatCount } from '../lib/format';
 import ErrorBoundary from './ErrorBoundary';
 import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
 import { Badge } from './ui/badge';
 import { useAuth } from '../contexts/AuthContext';
+import { useIsMobile } from '../hooks/use-mobile';
 
 const OrigChatItem = ({ character }) => {
   const navigate = useNavigate();
@@ -139,6 +140,9 @@ const OrigChatSkeleton = () => (
 );
 
 const TopOrigChat = ({ title } = {}) => {
+  const isMobile = useIsMobile();
+  const pageSize = isMobile ? 4 : 14;
+  const [page, setPage] = React.useState(0);
   const { data = [], isLoading, isError, refetch } = useQuery({
     queryKey: ['top-origchat-daily'],
     queryFn: async () => {
@@ -158,8 +162,28 @@ const TopOrigChat = ({ title } = {}) => {
   }, [refetch]);
 
   const empty = !isLoading && (!data || data.length === 0);
-  const displayData = data.slice(0, 14); // 최대 14개만 표시 (7x2)
+
+  React.useEffect(() => {
+    // 화면 크기/레이아웃 전환 시 첫 페이지로 리셋(UX 안정)
+    setPage(0);
+  }, [isMobile]);
+
+  const items = Array.isArray(data) ? data : [];
+  const cappedItems = items.slice(0, 14); // 기존 정책 유지: 최대 14개(7x2) 안에서 페이징
+  const pageCount = Math.max(1, Math.ceil(cappedItems.length / pageSize));
+  const hasCarousel = cappedItems.length > pageSize;
+  const displayData = cappedItems.slice(page * pageSize, page * pageSize + pageSize);
+  const skeletonCount = pageSize;
   const slotTitle = String(title || '').trim() || '지금 대화가 활발한 원작 캐릭터';
+
+  React.useEffect(() => {
+    if (pageCount <= 0) return;
+    if (page >= pageCount) setPage(0);
+  }, [page, pageCount]);
+
+  const gotoPrev = () => setPage((prev) => (prev - 1 + pageCount) % pageCount);
+  const gotoNext = () => setPage((prev) => (prev + 1) % pageCount);
+  const showMobileOverlayArrows = Boolean(isMobile && hasCarousel);
 
   return (
     <section className="mt-6 sm:mt-8">
@@ -168,29 +192,55 @@ const TopOrigChat = ({ title } = {}) => {
           <h2 className="text-lg sm:text-xl font-bold text-white">{slotTitle}</h2>
           <p className="text-xs text-gray-400">원작 세계관 속 캐릭터와 대화를 시작해보세요.</p>
         </div>
-        <Link
-          to="/dashboard?tab=origserial&sub=origchat"
-          className="text-sm text-gray-400 hover:text-white"
-        >
-          더보기
-        </Link>
+        {!isMobile && (
+          <Link
+            to="/dashboard?tab=origserial&sub=origchat"
+            className="text-sm text-gray-400 hover:text-white"
+          >
+            더보기
+          </Link>
+        )}
       </div>
       <ErrorBoundary>
-        <ul className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-7 gap-3 sm:gap-4">
-          {isLoading && Array.from({ length: 14 }).map((_, idx) => (
-            <OrigChatSkeleton key={idx} />
-          ))}
-          {!isLoading && !empty && displayData.map((char) => (
-            <OrigChatItem key={char.id} character={char} />
-          ))}
-          {!isLoading && empty && (
-            <li className="col-span-full text-center text-gray-400 py-8">
-              <div className="space-y-1">
-                <div>원작 기반 콘텐츠가 아직 없습니다.</div>
-              </div>
-            </li>
+        <div className="relative">
+          <ul className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3 sm:gap-4">
+            {isLoading && Array.from({ length: skeletonCount }).map((_, idx) => (
+              <OrigChatSkeleton key={idx} />
+            ))}
+            {!isLoading && !empty && displayData.map((char) => (
+              <OrigChatItem key={char.id} character={char} />
+            ))}
+            {!isLoading && empty && (
+              <li className="col-span-full text-center text-gray-400 py-8">
+                <div className="space-y-1">
+                  <div>원작 기반 콘텐츠가 아직 없습니다.</div>
+                </div>
+              </li>
+            )}
+          </ul>
+
+          {/* 모바일: 4개씩 <> 페이지 이동 */}
+          {showMobileOverlayArrows && (
+            <>
+              <button
+                type="button"
+                aria-label="이전"
+                onClick={gotoPrev}
+                className="absolute -left-3 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-gray-800/90 hover:bg-gray-700 text-white border border-gray-700 shadow-lg backdrop-blur flex items-center justify-center"
+              >
+                <ChevronLeft className="w-5 h-5" />
+              </button>
+              <button
+                type="button"
+                aria-label="다음"
+                onClick={gotoNext}
+                className="absolute -right-3 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-gray-800/90 hover:bg-gray-700 text-white border border-gray-700 shadow-lg backdrop-blur flex items-center justify-center"
+              >
+                <ChevronRight className="w-5 h-5" />
+              </button>
+            </>
           )}
-        </ul>
+        </div>
       </ErrorBoundary>
     </section>
   );

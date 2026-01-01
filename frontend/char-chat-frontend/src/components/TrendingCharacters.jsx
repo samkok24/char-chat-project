@@ -9,6 +9,7 @@ import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
 import { Badge } from './ui/badge';
 import { formatCount } from '../lib/format';
 import { useAuth } from '../contexts/AuthContext';
+import { useIsMobile } from '../hooks/use-mobile';
 
 const TrendingItem = ({ character }) => {
   const navigate = useNavigate();
@@ -126,6 +127,8 @@ const TrendingSkeleton = () => (
 );
 
 const TrendingCharacters = ({ title } = {}) => {
+  const isMobile = useIsMobile();
+
   const { data = [], isLoading, isError } = useQuery({
     queryKey: ['trending-characters-daily'],
     queryFn: async () => {
@@ -139,7 +142,7 @@ const TrendingCharacters = ({ title } = {}) => {
 
   // 데스크탑 기준(7열 x 2행)으로 14개를 기본 페이지로 사용한다.
   // 모바일에서는 반응형 그리드(2~4열)로 더 크게 보이도록 한다.
-  const pageSize = 14;
+  const pageSize = isMobile ? 4 : 14;
   const [page, setPage] = useState(0);
   const items = data || [];
   const empty = !isLoading && (!items || items.length === 0);
@@ -147,22 +150,31 @@ const TrendingCharacters = ({ title } = {}) => {
   const hasCarousel = items.length > pageSize;
   const slotTitle = String(title || '').trim() || '지금 대화가 활발한 캐릭터';
 
+  useEffect(() => {
+    // 화면 크기/레이아웃 전환 시 첫 페이지로 리셋(UX 안정)
+    setPage(0);
+  }, [isMobile]);
+
   const visibleItems = useMemo(() => {
-    // 첫 페이지는 항상 14개 표시 (7x2)
-    if (page === 0) {
-      return items.slice(0, 14);
-    }
-    if (!hasCarousel) return items;
     const start = page * pageSize;
     return items.slice(start, start + pageSize);
-  }, [items, page, hasCarousel]);
+  }, [items, page, pageSize]);
 
   useEffect(() => {
     return () => {};
   }, []);
 
+  useEffect(() => {
+    // 데이터 길이가 줄어 페이지가 범위를 벗어나면 0으로 보정
+    if (pageCount <= 0) return;
+    if (page >= pageCount) setPage(0);
+  }, [page, pageCount]);
+
   const gotoPrev = () => setPage((prev) => (prev - 1 + pageCount) % pageCount);
   const gotoNext = () => setPage((prev) => (prev + 1) % pageCount);
+  const skeletonCount = pageSize;
+  const showHeaderArrows = Boolean(!isMobile && hasCarousel);
+  const showMobileOverlayArrows = Boolean(isMobile && hasCarousel);
 
   return (
     <section className="mt-6 sm:mt-8">
@@ -172,10 +184,12 @@ const TrendingCharacters = ({ title } = {}) => {
           <p className="text-xs text-gray-400">지금 가장 많은 대화가 오가는 캐릭터를 만나보세요.</p>
         </div>
         <div className="flex items-center gap-3">
-          <Link to="/dashboard?tab=character" className="text-sm text-gray-400 hover:text-white">
-            더보기
-          </Link>
-          {hasCarousel && (
+          {!isMobile && (
+            <Link to="/dashboard?tab=character" className="text-sm text-gray-400 hover:text-white">
+              더보기
+            </Link>
+          )}
+          {showHeaderArrows && (
             <div className="flex items-center gap-2">
               <button
                 type="button"
@@ -198,8 +212,8 @@ const TrendingCharacters = ({ title } = {}) => {
         </div>
       </div>
       <div className="relative">
-        <ul className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-7 gap-3 sm:gap-4">
-          {isLoading && Array.from({ length: 14 }).map((_, idx) => (
+        <ul className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3 sm:gap-4">
+          {isLoading && Array.from({ length: skeletonCount }).map((_, idx) => (
             <TrendingSkeleton key={idx} />
           ))}
           {!isLoading && !isError && visibleItems.map((c) => (
@@ -211,6 +225,28 @@ const TrendingCharacters = ({ title } = {}) => {
             </li>
           )}
         </ul>
+
+        {/* 모바일: 4개씩 <> 페이지 이동 (경쟁사 스타일) */}
+        {showMobileOverlayArrows && (
+          <>
+            <button
+              type="button"
+              aria-label="이전"
+              onClick={gotoPrev}
+              className="absolute -left-3 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-gray-800/90 hover:bg-gray-700 text-white border border-gray-700 shadow-lg backdrop-blur flex items-center justify-center"
+            >
+              <ChevronLeft className="w-5 h-5" />
+            </button>
+            <button
+              type="button"
+              aria-label="다음"
+              onClick={gotoNext}
+              className="absolute -right-3 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-gray-800/90 hover:bg-gray-700 text-white border border-gray-700 shadow-lg backdrop-blur flex items-center justify-center"
+            >
+              <ChevronRight className="w-5 h-5" />
+            </button>
+          </>
+        )}
       </div>
     </section>
   );

@@ -31,6 +31,17 @@ const ChapterReaderPage = () => {
     },
     enabled: !!storyId,
   });
+
+  // 등장인물(추출 캐릭터) - 뷰어 플로팅 버튼 노출 판단용
+  const { data: extractedResp } = useQuery({
+    queryKey: ['story-extracted-characters', storyId],
+    queryFn: async () => {
+      const res = await storiesAPI.getExtractedCharacters(storyId);
+      return res.data;
+    },
+    enabled: !!storyId,
+    staleTime: 30 * 1000,
+  });
   // 스토리 미디어 자산 목록 (대표/갤러리)
   const { data: mediaAssets = [] } = useQuery({
     queryKey: ['media-assets', 'story', storyId],
@@ -78,6 +89,25 @@ const ChapterReaderPage = () => {
   const coverUrl = useMemo(() => galleryImages[0] || '', [galleryImages]);
 
   const hasChapter = !!chapter;
+
+  /**
+   * 플로팅 버튼 노출 정책 (UX 안전장치):
+   * - 크리에이터가 '등장인물 추출'을 아직 안 해서 후보가 0개면, 뷰어에서는 버튼 2개 모두 숨긴다.
+   *   (미니챗/원작챗 모달을 열어도 "선택 가능한 캐릭터 없음"만 보여 혼란을 주기 때문)
+   */
+  const extractedItems = useMemo(() => {
+    const items = Array.isArray(extractedResp?.items) ? extractedResp.items : [];
+    return items.filter((c) => !!c?.character_id);
+  }, [extractedResp]);
+  const firstExtracted = extractedItems[0] || null;
+  const firstExtractedLabel = String(firstExtracted?.name || '').trim();
+  const firstExtractedInitial = (firstExtractedLabel || 'C').charAt(0).toUpperCase();
+  const firstExtractedAvatarUrl = useMemo(() => {
+    const raw = String(firstExtracted?.avatar_url || '').trim();
+    if (!raw) return '';
+    return resolveImageUrl(raw) || raw;
+  }, [firstExtracted]);
+  const canShowFloatingButtons = hasChapter && !!story && extractedItems.length > 0;
   // image_url이 배열인지 확인
   const getImageUrl = (imageUrl) => {
     if (!imageUrl) return null;
@@ -191,16 +221,29 @@ const ChapterReaderPage = () => {
         <ChapterViewer chapter={chapter} />
         
         {/* 우측 하단 플로팅 버튼들 */}
-        {story && (
+        {canShowFloatingButtons && (
           <>
             {/* 미니 채팅 버튼 (상단) */}
             <div className="fixed bottom-36 right-4 sm:bottom-40 sm:right-6 z-50">
               <Button 
-                className="rounded-full w-12 h-12 sm:w-14 sm:h-14 bg-pink-600 hover:bg-pink-700 text-white shadow-lg" 
+                className={`rounded-full w-12 h-12 sm:w-14 sm:h-14 p-0 overflow-hidden shadow-lg border border-white/20 ${
+                  firstExtractedAvatarUrl ? 'bg-black/20 hover:bg-black/30' : 'bg-pink-600 hover:bg-pink-700 text-white'
+                }`}
                 onClick={() => setMiniChatOpen(true)}
-                title="빠른 채팅"
+                title={firstExtractedLabel ? `${firstExtractedLabel}와 빠른 채팅` : '빠른 채팅'}
+                aria-label={firstExtractedLabel ? `${firstExtractedLabel}와 빠른 채팅 열기` : '빠른 채팅 열기'}
               >
-                <MessageCircle className="w-5 h-5 sm:w-6 sm:h-6" />
+                {firstExtractedAvatarUrl ? (
+                  <img
+                    src={firstExtractedAvatarUrl}
+                    alt={firstExtractedLabel || '캐릭터'}
+                    className="w-full h-full object-cover rounded-full"
+                  />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center text-white">
+                    <span className="text-sm font-bold">{firstExtractedInitial}</span>
+                  </div>
+                )}
               </Button>
             </div>
             
@@ -420,16 +463,29 @@ const ChapterReaderPage = () => {
         </div>
 
         {/* 우측 하단 플로팅 버튼들 */}
-        {hasChapter && story && (
+        {canShowFloatingButtons && (
           <>
             {/* 미니 채팅 버튼 (상단) */}
             <div className="fixed bottom-36 right-4 sm:bottom-40 sm:right-6 z-40">
               <Button 
-                className="rounded-full w-12 h-12 sm:w-14 sm:h-14 bg-pink-600 hover:bg-pink-700 text-white shadow-lg" 
+                className={`rounded-full w-12 h-12 sm:w-14 sm:h-14 p-0 overflow-hidden shadow-lg border border-white/20 ${
+                  firstExtractedAvatarUrl ? 'bg-black/20 hover:bg-black/30' : 'bg-pink-600 hover:bg-pink-700 text-white'
+                }`}
                 onClick={() => setMiniChatOpen(true)}
-                title="빠른 채팅"
+                title={firstExtractedLabel ? `${firstExtractedLabel}와 빠른 채팅` : '빠른 채팅'}
+                aria-label={firstExtractedLabel ? `${firstExtractedLabel}와 빠른 채팅 열기` : '빠른 채팅 열기'}
               >
-                <MessageCircle className="w-5 h-5 sm:w-6 sm:h-6" />
+                {firstExtractedAvatarUrl ? (
+                  <img
+                    src={firstExtractedAvatarUrl}
+                    alt={firstExtractedLabel || '캐릭터'}
+                    className="w-full h-full object-cover rounded-full"
+                  />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center text-white">
+                    <span className="text-sm font-bold">{firstExtractedInitial}</span>
+                  </div>
+                )}
               </Button>
             </div>
             

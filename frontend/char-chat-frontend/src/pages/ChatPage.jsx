@@ -133,7 +133,8 @@ const ChatPage = () => {
     userSpeech: '#111111',
     userNarration: '#333333'
   });
-  const [uiTheme, setUiTheme] = useState('system');
+  // ✅ 현재는 다크테마를 기본/고정으로 사용한다(시스템/라이트는 추후 디자인 작업 후 오픈).
+  const [uiTheme, setUiTheme] = useState('dark');
   const [typingSpeed, setTypingSpeed] = useState(40);
   // 해상된 테마 상태 (light/dark)
   const [resolvedTheme, setResolvedTheme] = useState('dark');
@@ -171,6 +172,8 @@ const ChatPage = () => {
   const [turnStage, setTurnStage] = useState(null); // 'generating' | 'polishing' | null
   // ✅ 유저용 상태 팝업(중앙): 3초 이상 지연 시 안내 문구를 추가로 보여준다.
   const [showSlowHint, setShowSlowHint] = useState(false);
+  // ✅ 초기 준비가 너무 길어지면(무한 대기 방지) 재시도/새로고침 액션 노출
+  const [showInitActions, setShowInitActions] = useState(false);
   // ✅ 일반(소켓) 챗: 전송 ACK 지연(네트워크 지연) 감지 후 상태 팝업 노출
   const [socketSendDelayActive, setSocketSendDelayActive] = useState(false);
   const socketHadConnectedRef = useRef(false);
@@ -759,7 +762,11 @@ const ChatPage = () => {
           userSpeech: parsed.colors.userSpeech || '#111111',
           userNarration: parsed.colors.userNarration || '#333333'
         });
-        if (parsed.theme) setUiTheme(parsed.theme);
+        // ✅ 테마는 현재 다크로 고정(레거시 저장값: system/light → dark로 클램핑)
+        if (parsed.theme) {
+          const t = String(parsed.theme || '').trim().toLowerCase();
+          setUiTheme(t === 'dark' ? 'dark' : 'dark');
+        }
         if (typeof parsed.typingSpeed === 'number') setTypingSpeed(parsed.typingSpeed);
       }
     } catch (_) {}
@@ -778,7 +785,8 @@ const ChatPage = () => {
           userSpeech: d.colors.userSpeech || '#111111',
           userNarration: d.colors.userNarration || '#333333'
         });
-        if (d.theme) setUiTheme(d.theme);
+        // ✅ 테마는 현재 다크로 고정(시스템/라이트 비활성화)
+        if (d.theme) setUiTheme('dark');
         if (typeof d.typingSpeed === 'number') setTypingSpeed(d.typingSpeed);
       } catch (_) {}
     };
@@ -970,35 +978,35 @@ const ChatPage = () => {
       if (messages.length > 0) {
         setMessages(messages);
         
-        // ✅ 4. 선택지 복원 강화
-        console.log('[선택지 복원] pending_choices_active:', meta.pending_choices_active);
-        
-        if (meta.pending_choices_active) {
-          // ✅ 백엔드에 선택지 재요청 (최신 AI 메시지 기반)
-          try {
-            console.log('[선택지 복원] 백엔드에 요청 중...');
-            const choiceResp = await origChatAPI.turn({ 
-              room_id: chatRoomId, 
-              trigger: 'choices', 
-              idempotency_key: `restore-${Date.now()}` 
-            });
-            const choiceMeta = choiceResp.data?.meta || {};
-            if (Array.isArray(choiceMeta.choices) && choiceMeta.choices.length > 0) {
-              console.log('[선택지 복원] 성공:', choiceMeta.choices);
-              setPendingChoices(choiceMeta.choices);
-            } else {
-              console.warn('[선택지 복원] 선택지 없음');
-            }
-          } catch (err) {
-            console.error('[선택지 복원] 실패:', err);
+        // ✅ plain 모드는 선택지 메타를 내려주지 않으므로(의도), 복원 로직도 스킵한다.
+        if (meta.mode !== 'plain') {
+          if (meta.pending_choices_active) {
+            // 백엔드에 선택지 재요청 (최신 AI 메시지 기반)
+            try {
+              const choiceResp = await origChatAPI.turn({
+                room_id: chatRoomId,
+                trigger: 'choices',
+                idempotency_key: `restore-${Date.now()}`
+              });
+              const choiceMeta = choiceResp.data?.meta || {};
+              if (Array.isArray(choiceMeta.choices) && choiceMeta.choices.length > 0) {
+                setPendingChoices(choiceMeta.choices);
+              }
+            } catch (_) {}
+          } else if (Array.isArray(meta.initial_choices) && meta.initial_choices.length > 0 && messages.length <= 1) {
+            // 초기 선택지 복원 (첫 메시지만 있을 때)
+            setPendingChoices(meta.initial_choices);
           }
-        } else if (Array.isArray(meta.initial_choices) && meta.initial_choices.length > 0 && messages.length <= 1) {
-          // 초기 선택지 복원 (첫 메시지만 있을 때)
-          console.log('[선택지 복원] 초기 선택지 사용:', meta.initial_choices);
-          setPendingChoices(meta.initial_choices);
-        } else {
-          console.log('[선택지 복원] 조건 불충족 - pending_active:', meta.pending_choices_active, ', initial_choices:', meta.initial_choices, ', messages:', messages.length);
         }
+
+        // ✅ 인사말이 존재(assistant 메시지)하면, 준비 상태가 늦게 갱신되더라도 UI는 즉시 ready로 본다.
+        // (plain 모드에서 init_stage/intro_ready가 누락/지연될 때 '무한 준비중'을 방지)
+        try {
+          const hasAssistant = messages.some((m) => String(m?.senderType || '').toLowerCase() === 'assistant');
+          if (hasAssistant) {
+            setOrigMeta((prev) => ({ ...(prev || {}), init_stage: 'ready', intro_ready: true }));
+          }
+        } catch (_) {}
       }
       
     } catch (error) {
@@ -1539,6 +1547,8 @@ const ChatPage = () => {
   const canSend = Boolean(newMessage.trim()) && (isOrigChat ? true : connected);
   // ✅ 원작챗 생성 중에는 입력/전송을 UI에서도 잠가, "눌렀는데 왜 안 보내져?" 혼란을 방지한다.
   const isOrigBusy = Boolean(isOrigChat && origTurnLoading);
+  // ✅ 원작챗은 HTTP 호출이므로, 소켓의 aiTyping 대신 origTurnLoading을 타이핑 상태로 취급한다.
+  const aiTypingEffective = Boolean(aiTyping || (isOrigChat && origTurnLoading));
   const textSizeClass = uiFontSize==='sm' ? 'text-sm' : uiFontSize==='lg' ? 'text-lg' : uiFontSize==='xl' ? 'text-xl' : 'text-base';
 
   /**
@@ -1815,10 +1825,20 @@ const ChatPage = () => {
   };
 
   // ✅ 상태 표시(유저용): 한 눈에 보이게 중앙 팝업으로 통일 (원작챗/일반챗 공통)
+  // 원작챗 준비 오버레이는 "첫 메시지(인사말) 도착 전"에만 전체 입력을 막는다.
+  // - plain 모드는 백그라운드에서 인사말이 생성되며, meta(intro_ready/init_stage)가 늦게 갱신되거나 누락될 수 있다.
+  // - 따라서 메시지가 1개라도 있으면(특히 assistant 인사말) 오버레이를 강제로 해제해 '무한 준비중' UX를 방지한다.
+  const hasAnyMessages = Boolean(Array.isArray(messages) && messages.length > 0);
   const isInitOverlayActive = Boolean(
     loading ||
-    (isOrigChat && origMeta?.init_stage && origMeta.init_stage !== 'ready') ||
-    (isOrigChat && origMeta?.intro_ready === false)
+    (
+      isOrigChat &&
+      !hasAnyMessages &&
+      (
+        (origMeta?.init_stage && origMeta.init_stage !== 'ready') ||
+        (origMeta?.intro_ready === false)
+      )
+    )
   );
   const isOrigTurnPopupActive = Boolean(isOrigChat && (turnStage === 'generating' || turnStage === 'polishing'));
   const isSocketDisconnectedPopupActive = Boolean(!isOrigChat && chatRoomId && !connected);
@@ -1839,6 +1859,17 @@ const ChatPage = () => {
     const t = setTimeout(() => setShowSlowHint(true), 3000);
     return () => { try { clearTimeout(t); } catch (_) {} };
   }, [isStatusPopupActive]);
+
+  useEffect(() => {
+    if (!isInitOverlayActive) {
+      setShowInitActions(false);
+      return;
+    }
+    setShowInitActions(false);
+    // 12초 이상이면 유저가 직접 액션을 취할 수 있게 한다.
+    const t = setTimeout(() => setShowInitActions(true), 12000);
+    return () => { try { clearTimeout(t); } catch (_) {} };
+  }, [isInitOverlayActive]);
 
   // ⚠️ React Hooks 규칙:
   // - 아래의 로딩/에러 화면은 "조건부 return"이지만, Hook 호출 이후에만 return 해야 한다.
@@ -1901,6 +1932,41 @@ const ChatPage = () => {
     return null;
   })();
 
+  const handleInitRetry = async () => {
+    try {
+      if (!chatRoomId) return;
+      // 1) 메타 재조회
+      try {
+        const metaRes = await chatAPI.getRoomMeta(chatRoomId);
+        const meta = metaRes?.data || {};
+        setOrigMeta((prev) => ({
+          ...(prev || {}),
+          turnCount: Number(meta.turn_count || meta.turnCount || prev?.turnCount || 0) || 0,
+          maxTurns: Number(meta.max_turns || meta.maxTurns || prev?.maxTurns || 500) || 500,
+          completed: Boolean(meta.completed),
+          mode: meta.mode || prev?.mode || null,
+          narrator_mode: Boolean(meta.narrator_mode),
+          seed_label: meta.seed_label || prev?.seed_label || null,
+          init_stage: meta.init_stage || prev?.init_stage || null,
+          intro_ready: typeof meta.intro_ready === 'boolean' ? meta.intro_ready : (prev?.intro_ready ?? null),
+        }));
+      } catch (_) {}
+      // 2) 메시지 재조회(plain 인사말 생성 완료 여부 확인)
+      try {
+        const res = await chatAPI.getMessages(chatRoomId);
+        const items = Array.isArray(res?.data) ? res.data : [];
+        if (items.length > 0) {
+          setMessages(items);
+          // assistant 메시지가 하나라도 있으면 "준비 완료"로 간주(무한 오버레이 방지)
+          const hasAssistant = items.some((m) => String(m?.senderType || '').toLowerCase() === 'assistant');
+          if (hasAssistant) {
+            setOrigMeta((prev) => ({ ...(prev || {}), init_stage: 'ready', intro_ready: true }));
+          }
+        }
+      } catch (_) {}
+    } catch (_) {}
+  };
+
   return (
     <div className="h-screen h-[100dvh] bg-[var(--app-bg)] text-[var(--app-fg)] flex flex-col">
       {/* ✅ 유저용 상태 팝업: 초기 준비는 전체 오버레이로 명확하게 표시(입력 차단) */}
@@ -1922,6 +1988,24 @@ const ChatPage = () => {
             <div className="w-full h-1.5 bg-gray-800 rounded-full overflow-hidden">
               <div className="h-full w-2/3 bg-gradient-to-r from-purple-500 via-blue-400 to-cyan-300 animate-pulse" />
             </div>
+            {showInitActions && (
+              <div className="pt-1 flex items-center justify-center gap-2">
+                <Button
+                  variant="outline"
+                  className="h-8 px-3 bg-gray-900 border-gray-700 text-gray-100 hover:bg-gray-800"
+                  onClick={handleInitRetry}
+                >
+                  다시 확인
+                </Button>
+                <Button
+                  variant="outline"
+                  className="h-8 px-3 bg-gray-900 border-gray-700 text-gray-100 hover:bg-gray-800"
+                  onClick={() => { try { window.location.reload(); } catch (_) {} }}
+                >
+                  새로고침
+                </Button>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -1954,7 +2038,7 @@ const ChatPage = () => {
                 <div className="leading-tight">
                   <div className="flex items-baseline gap-2">
                     <h1 className="text-md font-bold text-[var(--app-fg)]">{character?.name}</h1>
-                    <span className="text-xs text-gray-400">{aiTyping ? '입력 중...' : '온라인'}</span>
+                    <span className="text-xs text-gray-400">{aiTypingEffective ? '입력 중...' : '온라인'}</span>
                   </div>
                   {isOrigChat && (
                     <div className="flex items-center gap-2 mt-1">
@@ -2254,7 +2338,7 @@ const ChatPage = () => {
             </Alert>
           )}
 
-          {messages.length === 0 && !aiTyping ? (
+          {messages.length === 0 && !aiTypingEffective ? (
             <div className="text-center py-8">
               <MessageCircle className="w-12 h-12 text-gray-300 mx-auto mb-4" />
               <p className={resolvedTheme === 'light' ? 'text-gray-600' : 'text-gray-200'}>
@@ -2270,12 +2354,18 @@ const ChatPage = () => {
                 const isIntro = (m.message_metadata && (m.message_metadata.kind === 'intro')) || false;
                 if (isIntro) {
                   return (
-                    <div key={`intro-${m.id || index}`} className="mt-2 ml-12 max-w-full sm:max-w-[85%] text-left">
+                    <div key={`intro-${m.id || index}`} className="flex items-start space-x-3">
+                      <Avatar className="w-8 h-8 flex-shrink-0">
+                        <AvatarImage className="object-cover object-top" src={getCharacterPrimaryImage(character)} alt={character?.name} />
+                        <AvatarFallback className="bg-gradient-to-r from-purple-500 to-blue-500 text-white">
+                          {character?.name?.charAt(0) || <Bot className="w-4 h-4" />}
+                        </AvatarFallback>
+                      </Avatar>
                       <div
-                        className={`px-4 py-3 rounded-lg border text-sm whitespace-pre-wrap text-left ${
+                        className={`max-w-xs lg:max-w-md px-4 py-3 rounded-lg shadow-md border text-sm whitespace-pre-wrap ${
                           resolvedTheme === 'light'
-                            ? 'bg-gray-50 border-gray-200 text-gray-900'
-                            : 'bg-white/5 border-white/10 text-white'
+                            ? 'bg-gray-100 text-gray-900 border-gray-200'
+                            : 'bg-white/10 text-white border-white/10'
                         }`}
                       >
                         {m.content}
@@ -2288,7 +2378,7 @@ const ChatPage = () => {
                   <MessageBubble
                     key={m.id || `msg-${index}`}
                     message={m}
-                    isLast={index === messages.length - 1 && !aiTyping}
+                    isLast={index === messages.length - 1 && !aiTypingEffective}
                     triggerImageUrl={aiMessageImages[m.id || m._id || `temp-${index}`]}
                   />
                 );
@@ -2332,7 +2422,7 @@ const ChatPage = () => {
                 const last = messages[messages.length - 1];
                 return null;
               })()}
-              {aiTyping && (
+              {aiTypingEffective && (
                 <div className="flex items-start space-x-3">
                   <Avatar className="w-8 h-8 flex-shrink-0">
                     <AvatarImage className="object-cover object-top" src={getCharacterPrimaryImage(character)} alt={character?.name} />
@@ -2393,7 +2483,7 @@ const ChatPage = () => {
               onChange={(e) => setNewMessage(e.target.value)}
               onKeyDown={handleKeyDown}
               disabled={isOrigBusy}
-                placeholder={isOrigChat && (origMeta?.narrator_mode || origMeta?.mode==='parallel' && false) ? '서술/묘사로 입력하세요. 예) * 창밖에는 비가 내리고 있었다.' : '대사를 입력하세요. 예) 반가워!'}
+                placeholder={isOrigChat && (origMeta?.narrator_mode || origMeta?.mode==='parallel' && false) ? '서술/묘사로 입력하세요. 예) * 창밖에는 비가 내리고 있었다.' : '대사입력 예) 반가워!'}
                 className="w-full bg-transparent border-0 focus:border-0 focus:ring-0 outline-none text-sm p-0 pl-3 placeholder:text-gray-500 resize-none"
                 style={{ minHeight: 36 }}
               rows={1}
@@ -2665,7 +2755,7 @@ const ChatPage = () => {
                 onChange={(e) => setNewMessage(e.target.value)}
                 onKeyDown={handleKeyDown}
                 disabled={isOrigBusy}
-                placeholder={isOrigChat && (origMeta?.narrator_mode || origMeta?.mode==='parallel' && false) ? '서술/묘사로 입력하세요. 예) * 창밖에는 비가 내리고 있었다.' : '대사를 입력하세요. 예) 반가워!'}
+                placeholder={isOrigChat && (origMeta?.narrator_mode || origMeta?.mode==='parallel' && false) ? '서술/묘사로 입력하세요. 예) * 창밖에는 비가 내리고 있었다.' : '대사입력 예) 반가워!'}
                 className="w-full bg-transparent border-0 focus:border-0 focus:ring-0 outline-none text-sm p-0 pl-3 placeholder:text-gray-500 resize-none"
                 style={{ minHeight: 36 }}
                 rows={1}
@@ -2728,6 +2818,8 @@ const ChatPage = () => {
         characterName={character?.name}
         characterId={character?.id}
         onUpdateChatSettings={updateChatSettings}
+        // ✅ 원작챗: 모델 선택 UI 비활성 + 안내 문구 노출 (현재는 Claude 고정 동작)
+        isOrigChat={isOrigChat}
       />
       </ErrorBoundary>
 

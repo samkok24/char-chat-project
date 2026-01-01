@@ -5,6 +5,7 @@ StoryDive AI 응답 생성 서비스
 from typing import List, Dict, Any, Optional
 from app.services import ai_service
 import re
+import json
 
 
 def format_ai_response_with_linebreaks(text: str) -> str:
@@ -132,6 +133,14 @@ def build_system_prompt(story_cards: Dict[str, Any] | list, context_text: str, m
     """
     Story Cards + 원작 컨텍스트 + 모드별 지시문을 포함한 시스템 프롬프트 생성
     """
+    # 방어적: DB/캐시 경로에 따라 story_cards가 문자열(JSON)로 들어오는 경우가 있어 파싱한다.
+    if isinstance(story_cards, str):
+        try:
+            parsed = json.loads(story_cards)
+            story_cards = parsed if isinstance(parsed, (dict, list)) else {}
+        except Exception:
+            story_cards = {}
+
     # Story Cards가 리스트인 경우 첫 번째 요소 사용
     if isinstance(story_cards, list):
         story_cards = story_cards[0] if story_cards else {}
@@ -189,6 +198,12 @@ def build_system_prompt(story_cards: Dict[str, Any] | list, context_text: str, m
 
 **현재 모드**
 {MODE_SYSTEM_PROMPTS.get(mode, '')}
+
+---
+
+## 출력 형식(중요)
+1. 항상 "완결된 문장"으로 끝내세요. 마지막 줄은 반드시 문장 부호(., !, ?, " 등)로 자연스럽게 마무리하세요.
+2. 중간에 끊긴 것처럼 보이는 미완 문장/미완 구절로 끝내지 마세요.
 """
     
     return system_prompt
@@ -276,6 +291,42 @@ async def get_storydive_response(
     
     # 후처리: 개행 추가
     response = format_ai_response_with_linebreaks(response)
+
+    # 방어적: 출력이 문장 중간에서 끊긴 것처럼 보이면 짧게 마무리 문장만 덧붙인다.
+    # - 모델이 "클리프행어"로 끝낼 수는 있지만, 미완 문장으로 끝나는 UX는 거칠다.
+    # - 비용/지연을 최소화하기 위해 1회만 짧게 후속 호출한다.
+    try:
+        tail = (response or "").strip()
+        looks_cut = bool(tail) and not re.search(r'[\.\!\?\"”\']\s*$', tail)
+        # 너무 짧은 응답은 굳이 보정하지 않음
+        if looks_cut and len(tail) >= 120:
+            # 마지막 400자만 가지고 자연스러운 마무리를 요청
+            suffix_ctx = tail[-400:]
+            finish_prompt = (
+                "아래는 방금 네가 작성한 소설 텍스트의 마지막 부분이다.\n"
+                "이 문맥을 자연스럽게 2~4문장만 이어서 '완결된 문장'으로 마무리해라.\n"
+                "- 이미 쓴 문장은 반복하지 마라\n"
+                "- 새로운 인사말/도입부 없이 바로 이어서 써라\n"
+                "- 마지막 줄은 반드시 문장부호(.,!,?,\" 등)로 끝내라\n\n"
+                f"[마지막 부분]\n{suffix_ctx}\n\n[마무리 텍스트만 출력]:"
+            )
+            extra = await ai_service.get_ai_chat_response(
+                character_prompt=system_prompt,
+                user_message=finish_prompt,
+                history=history[-10:] if isinstance(history, list) else [],
+                preferred_model=preferred_model,
+                preferred_sub_model=preferred_sub_model,
+                response_length_pref="short"
+            )
+            if isinstance(extra, bytes):
+                extra = extra.decode("utf-8", errors="replace")
+            extra = str(extra).strip()
+            if extra:
+                response = (tail + "\n\n" + extra).strip()
+                response = format_ai_response_with_linebreaks(response)
+    except Exception:
+        # 마무리 실패는 치명적이지 않으므로 원문 유지
+        pass
     
     return response
 
@@ -316,6 +367,37 @@ async def get_continue_response(
     
     # 후처리: 개행 추가
     response = format_ai_response_with_linebreaks(response)
+
+    # 방어적: 이어쓰기 결과도 미완 문장으로 끝나면 아주 짧게 마무리
+    try:
+        tail = (response or "").strip()
+        looks_cut = bool(tail) and not re.search(r'[\.\!\?\"”\']\s*$', tail)
+        if looks_cut and len(tail) >= 120:
+            suffix_ctx = tail[-400:]
+            finish_prompt = (
+                "아래는 방금 네가 작성한 소설 텍스트의 마지막 부분이다.\n"
+                "이 문맥을 자연스럽게 2~4문장만 이어서 '완결된 문장'으로 마무리해라.\n"
+                "- 이미 쓴 문장은 반복하지 마라\n"
+                "- 새로운 인사말/도입부 없이 바로 이어서 써라\n"
+                "- 마지막 줄은 반드시 문장부호(.,!,?,\" 등)로 끝내라\n\n"
+                f"[마지막 부분]\n{suffix_ctx}\n\n[마무리 텍스트만 출력]:"
+            )
+            extra = await ai_service.get_ai_chat_response(
+                character_prompt=system_prompt,
+                user_message=finish_prompt,
+                history=history[-10:] if isinstance(history, list) else [],
+                preferred_model=preferred_model,
+                preferred_sub_model=preferred_sub_model,
+                response_length_pref="short"
+            )
+            if isinstance(extra, bytes):
+                extra = extra.decode("utf-8", errors="replace")
+            extra = str(extra).strip()
+            if extra:
+                response = (tail + "\n\n" + extra).strip()
+                response = format_ai_response_with_linebreaks(response)
+    except Exception:
+        pass
     
     return response
 
@@ -383,6 +465,37 @@ async def get_retry_response(
     
     # 후처리: 개행 추가
     response = format_ai_response_with_linebreaks(response)
+
+    # 방어적: 재생성도 미완 문장으로 끝나면 아주 짧게 마무리
+    try:
+        tail = (response or "").strip()
+        looks_cut = bool(tail) and not re.search(r'[\.\!\?\"”\']\s*$', tail)
+        if looks_cut and len(tail) >= 120:
+            suffix_ctx = tail[-400:]
+            finish_prompt = (
+                "아래는 방금 네가 작성한 소설 텍스트의 마지막 부분이다.\n"
+                "이 문맥을 자연스럽게 2~4문장만 이어서 '완결된 문장'으로 마무리해라.\n"
+                "- 이미 쓴 문장은 반복하지 마라\n"
+                "- 새로운 인사말/도입부 없이 바로 이어서 써라\n"
+                "- 마지막 줄은 반드시 문장부호(.,!,?,\" 등)로 끝내라\n\n"
+                f"[마지막 부분]\n{suffix_ctx}\n\n[마무리 텍스트만 출력]:"
+            )
+            extra = await ai_service.get_ai_chat_response(
+                character_prompt=system_prompt,
+                user_message=finish_prompt,
+                history=history[-10:] if isinstance(history, list) else [],
+                preferred_model=preferred_model,
+                preferred_sub_model=preferred_sub_model,
+                response_length_pref="short"
+            )
+            if isinstance(extra, bytes):
+                extra = extra.decode("utf-8", errors="replace")
+            extra = str(extra).strip()
+            if extra:
+                response = (tail + "\n\n" + extra).strip()
+                response = format_ai_response_with_linebreaks(response)
+    except Exception:
+        pass
     
     return response
 

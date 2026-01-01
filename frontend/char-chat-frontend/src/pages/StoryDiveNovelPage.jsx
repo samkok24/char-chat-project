@@ -160,7 +160,19 @@ const StoryDiveNovelPage = () => {
       toast.success('스토리 다이브 시작!');
     },
     onError: (error) => {
-      toast.error(error.response?.data?.detail || '세션 생성에 실패했습니다');
+      try {
+        const data = error?.response?.data;
+        const detail =
+          (data && typeof data === 'object' && data.detail) ||
+          (data && typeof data === 'object' && data.message) ||
+          (typeof data === 'string' ? data : '') ||
+          error?.message ||
+          '세션 생성에 실패했습니다';
+        console.error('[StoryDive] createSession failed:', { status: error?.response?.status, data, message: error?.message });
+        toast.error(detail || '세션 생성에 실패했습니다');
+      } catch (_) {
+        toast.error('세션 생성에 실패했습니다');
+      }
     },
   });
 
@@ -183,7 +195,19 @@ const StoryDiveNovelPage = () => {
     },
     onError: (error) => {
       setIsGenerating(false);
-      toast.error(error.response?.data?.detail || '응답 생성에 실패했습니다');
+      try {
+        const data = error?.response?.data;
+        const detail =
+          (data && typeof data === 'object' && data.detail) ||
+          (data && typeof data === 'object' && data.message) ||
+          (typeof data === 'string' ? data : '') ||
+          error?.message ||
+          '응답 생성에 실패했습니다';
+        console.error('[StoryDive] turn failed:', { status: error?.response?.status, data, message: error?.message });
+        toast.error(detail || '응답 생성에 실패했습니다');
+      } catch (_) {
+        toast.error('응답 생성에 실패했습니다');
+      }
     },
   });
 
@@ -199,7 +223,19 @@ const StoryDiveNovelPage = () => {
       toast.success('마지막 응답이 삭제되었습니다');
     },
     onError: (error) => {
-      toast.error(error.response?.data?.detail || '삭제에 실패했습니다');
+      try {
+        const data = error?.response?.data;
+        const detail =
+          (data && typeof data === 'object' && data.detail) ||
+          (data && typeof data === 'object' && data.message) ||
+          (typeof data === 'string' ? data : '') ||
+          error?.message ||
+          '삭제에 실패했습니다';
+        console.error('[StoryDive] erase failed:', { status: error?.response?.status, data, message: error?.message });
+        toast.error(detail || '삭제에 실패했습니다');
+      } catch (_) {
+        toast.error('삭제에 실패했습니다');
+      }
     },
   });
 

@@ -389,7 +389,11 @@ async def get_characters_by_creator(
         if only_key in ["origchat", "original_chat", "origin"]:
             query = query.where(Character.origin_story_id.isnot(None))
         elif only_key in ["regular", "normal", "characterchat", "characters"]:
+            # ✅ "일반 캐릭터챗" = 원작챗이 아니고 + 웹소설(임포트)도 아닌 것
+            # - 프론트에서 '캐릭터' 배지 대상만 보여주기 위함
+            # - legacy 데이터에서 source_type이 NULL일 수 있어 OR 조건으로 포함한다.
             query = query.where(Character.origin_story_id.is_(None))
+            query = query.where(or_(Character.source_type.is_(None), Character.source_type != "IMPORTED"))
     
     query = query.order_by(Character.created_at.desc()).offset(skip).limit(limit)
     
@@ -447,7 +451,9 @@ async def get_public_characters(
         if only_key in ["origchat", "original_chat", "origin"]:
             query = query.where(Character.origin_story_id.isnot(None))
         elif only_key in ["regular", "normal", "characterchat", "characters"]:
+            # ✅ "일반 캐릭터챗" = 원작챗이 아니고 + 웹소설(임포트)도 아닌 것
             query = query.where(Character.origin_story_id.is_(None))
+            query = query.where(or_(Character.source_type.is_(None), Character.source_type != "IMPORTED"))
 
     # 성별 필터(태그 기반)
     # - 요구사항: 전체/남성/여성/그외

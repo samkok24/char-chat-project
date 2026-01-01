@@ -19,12 +19,12 @@ import asyncio
 logger = logging.getLogger(__name__)
 
 # Claude 모델명 상수 (전역 참조용)
-# CLAUDE_MODEL_PRIMARY = 'claude-sonnet-4-5-20250929'
 # NOTE:
 # - Claude는 4.0+만 사용 (3.x 지원 종료 대응)
-# - 아래 값들은 Anthropic에 전달되는 "model" 문자열이므로, 운영에서 최신 모델명으로 교체 가능
-CLAUDE_MODEL_PRIMARY = 'claude-sonnet-4'
-CLAUDE_MODEL_LEGACY = 'claude-sonnet-4-20250514'  # 폴백/호환용(구버전 저장값 대응)
+# - Anthropic API의 model 값은 "별칭(예: claude-sonnet-4)"이 아니라 "스냅샷 모델명(날짜 포함)"이 안정적이다.
+#   (별칭은 계정/권한/버전에 따라 404(not_found)로 실패하는 사례가 있어 스냅샷을 SSOT로 사용한다.)
+CLAUDE_MODEL_PRIMARY = 'claude-sonnet-4-20250514'
+CLAUDE_MODEL_LEGACY = 'claude-sonnet-4-20250514'  # 후방 호환/폴백(구버전 저장값 대응)
 
 GPT_MODEL_PRIMARY = 'gpt-5'
 
@@ -1469,37 +1469,108 @@ async def get_openai_completion(
         from openai import AsyncOpenAI
         client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 
-        def _use_responses_api(model_name: str) -> bool:
-            """GPT-5/o-series 등 최신 모델은 Responses API가 권장이라 분기한다.
+        def _supports_responses_api(_client: object) -> bool:
+            """현재 설치된 OpenAI Python SDK가 Responses API를 지원하는지 확인한다.
 
-            배경:
-            - 기존 Chat Completions도 동작할 수 있지만, GPT-5 계열은 Responses에서 기능/성능(Reasoning 등) 정합이 더 좋다.
-            - 기존 GPT-4 계열은 현재 코드의 chat.completions 경로를 그대로 유지해 리스크를 줄인다.
+            배경/의도:
+            - 일부 환경(구버전 SDK)에서는 AsyncOpenAI에 .responses가 없어 AttributeError가 발생한다.
+            - 패키지 업그레이드 없이도 GPT-5.x를 쓸 수 있도록, 미지원 시 REST(/v1/responses)로 폴백한다.
             """
+            try:
+                r = getattr(_client, "responses", None)
+                return bool(r and hasattr(r, "create"))
+            except Exception:
+                return False
+
+        def _reasoning_effort_for_model(model_name: str) -> str | None:
+            """GPT-5.1/5.2는 reasoning effort를 'medium'으로 강제한다."""
             try:
                 m = (model_name or "").strip().lower()
             except Exception:
                 m = ""
-            return m.startswith("gpt-5") or m.startswith("o")
+            if m.startswith("gpt-5.1") or m.startswith("gpt-5.2"):
+                return "medium"
+            return None
 
-        # GPT-5 계열: Responses API 사용 (권장)
-        if _use_responses_api(model):
-            resp = await client.responses.create(
-                model=model,
-                input=prompt,
-                temperature=temperature,
-                max_output_tokens=max_tokens,
-            )
-            # SDK convenience: output_text (Python SDK 지원)
+        def _style_instruction_for_temperature(temp_value: float) -> str | None:
+            """GPT-5.x(Responses API)에서 temperature 파라미터가 막힌 경우를 대비해 스타일 지침으로 온도를 반영한다.
+
+            의도/동작:
+            - 프론트 슬라이더는 0.0~1.0 범위(0.1 step)이며, 다른 모델(Gemini/Claude/GPT-4 계열)은
+              temperature 파라미터로 직접 반영된다.
+            - GPT-5.x(Responses API)는 일부 환경에서 temperature 파라미터가 미지원(400)이라,
+              user 설정 온도를 developer 지침으로 변환해 "대화 스타일"을 간접 제어한다.
+
+            매핑:
+            - 0.0에 가까울수록: 설정/요청에 충실, 보수적/일관적
+            - 1.0에 가까울수록: 표현이 창의적/다양
+            """
             try:
-                out_txt = getattr(resp, "output_text", None)
+                t = float(temp_value)
+            except Exception:
+                return None
+            # 0~1 클램핑 + 0.1 step 정합(프론트/백엔드 컨벤션)
+            try:
+                if t < 0:
+                    t = 0.0
+                if t > 1:
+                    t = 1.0
+                t = round(t * 10) / 10.0
+            except Exception:
+                return None
+
+            # 구간별 가이드(너무 장황하지 않게)
+            if t <= 0.2:
+                band = "매우 설정에 충실(보수적)"
+                guidance = "설정/대화 맥락에서 벗어나는 상상/추측을 최대한 줄이고, 간결하고 일관되게 답하세요."
+            elif t <= 0.5:
+                band = "설정 우선(안정적)"
+                guidance = "설정/대화 맥락을 우선하되, 표현은 자연스럽게 다듬어 답하세요."
+            elif t <= 0.8:
+                band = "균형(적당히 창의적)"
+                guidance = "표현을 조금 더 풍부하게 하되, 설정/캐릭터 성격/대화 맥락을 절대 깨지 마세요."
+            else:
+                band = "매우 창의적(다양한 표현)"
+                guidance = "표현/비유/묘사를 더 창의적으로 하되, 설정을 바꾸거나 새 사실을 단정해 만들지 마세요."
+
+            return (
+                "대화 스타일(온도) 지침:\n"
+                f"- 온도: {t:.1f} (0.0=설정/요청에 매우 충실, 1.0=창의적/다양)\n"
+                f"- 현재 스타일: {band}\n"
+                f"- 지침: {guidance}\n"
+                "- 공통 규칙: 설정/대화 맥락/캐릭터 성격을 임의로 변경하거나 새 설정을 단정해 추가하지 마세요."
+            )
+
+        def _build_responses_input(user_prompt: str, *, style_instruction: str | None = None) -> list[dict]:
+            """Responses API의 input 포맷으로 변환한다."""
+            try:
+                p = "" if user_prompt is None else str(user_prompt)
+            except Exception:
+                p = ""
+            items: list[dict] = []
+            try:
+                s = (style_instruction or "").strip()
+            except Exception:
+                s = ""
+            if s:
+                # GPT-5 계열은 developer 지침으로 스타일을 간접 제어(temperature 미지원 대응)
+                items.append({"role": "developer", "content": s})
+            items.append({"role": "user", "content": p})
+            return items
+
+        def _extract_responses_text(resp: object) -> str:
+            """Responses API 응답(SDK 객체 또는 dict)에서 텍스트를 방어적으로 추출한다."""
+            # 1) SDK convenience: output_text
+            try:
+                out_txt = resp.get("output_text") if isinstance(resp, dict) else getattr(resp, "output_text", None)
                 if isinstance(out_txt, str) and out_txt.strip():
                     return out_txt
             except Exception:
                 pass
-            # 방어적 파싱: output 배열의 message/output_text 수집
+
+            # 2) output 배열의 message/output_text 수집
             try:
-                outputs = getattr(resp, "output", None)
+                outputs = resp.get("output") if isinstance(resp, dict) else getattr(resp, "output", None)
                 texts: list[str] = []
                 if isinstance(outputs, list):
                     for item in outputs:
@@ -1520,10 +1591,140 @@ async def get_openai_completion(
                                 if isinstance(refusal, str) and refusal:
                                     texts.append(refusal)
                 joined = "".join(texts).strip()
-                if joined:
-                    return joined
+                return joined
             except Exception:
-                pass
+                return ""
+
+        async def _responses_rest_create(
+            *,
+            model_name: str,
+            user_prompt: str,
+            temp: float,
+            max_out_tokens: int,
+            reasoning_effort: str | None,
+        ) -> str:
+            """SDK에 responses가 없을 때 OpenAI Responses REST API를 직접 호출해 텍스트를 반환한다."""
+            import os
+            import json
+            import aiohttp
+
+            api_key = settings.OPENAI_API_KEY or os.getenv("OPENAI_API_KEY")
+            if not api_key:
+                raise ValueError("OPENAI_API_KEY가 설정되어 있지 않습니다.")
+
+            base = (os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
+            url = f"{base}/responses"
+
+            payload: dict = {
+                "model": model_name,
+                "input": _build_responses_input(user_prompt, style_instruction=_style_instruction_for_temperature(temp)),
+                "max_output_tokens": int(max_out_tokens),
+            }
+            if reasoning_effort:
+                payload["reasoning"] = {"effort": reasoning_effort}
+
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            }
+
+            timeout = aiohttp.ClientTimeout(total=120)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(url, headers=headers, json=payload) as resp:
+                    raw = await resp.read()
+                    txt = raw.decode("utf-8", errors="replace") if isinstance(raw, (bytes, bytearray)) else str(raw)
+                    try:
+                        data = json.loads(txt) if isinstance(txt, str) else {}
+                    except Exception:
+                        data = {"_raw": txt}
+
+                    if resp.status >= 400:
+                        try:
+                            logger.error(f"OpenAI Responses REST error {resp.status}: {txt[:800]}")
+                        except Exception:
+                            pass
+                        raise ValueError(f"OpenAI Responses API error {resp.status}")
+
+                    extracted = _extract_responses_text(data)
+                    if extracted:
+                        return extracted
+
+                    # 방어적 폴백:
+                    # - 일부 케이스(특히 reasoning 모델에서 max_output_tokens가 너무 작을 때)는
+                    #   output이 reasoning만 채워지고 message/output_text가 아예 없을 수 있다.
+                    # - 이때 JSON 원문을 사용자에게 그대로 노출하면 UX가 크게 깨지므로,
+                    #   1회에 한해 출력 토큰을 늘려 재시도(비용/시간 고려해 제한) 후,
+                    #   그래도 실패하면 사용자 친화 메시지를 반환한다.
+                    try:
+                        reason = ((data or {}).get("incomplete_details") or {}).get("reason")
+                        outputs = (data or {}).get("output") or []
+                        has_message = False
+                        if isinstance(outputs, list):
+                            for it in outputs:
+                                it_type = it.get("type") if isinstance(it, dict) else getattr(it, "type", None)
+                                if it_type == "message":
+                                    has_message = True
+                                    break
+                        if (not has_message) and reason == "max_output_tokens" and int(max_out_tokens) < 1024:
+                            # 1회 재시도: 1024로 상향(무한 재시도 방지)
+                            return await _responses_rest_create(
+                                model_name=model_name,
+                                user_prompt=user_prompt,
+                                temp=temp,
+                                max_out_tokens=1024,
+                                reasoning_effort=reasoning_effort,
+                            )
+                    except Exception:
+                        pass
+
+                    try:
+                        logger.error(
+                            f"OpenAI Responses REST: output_text extraction failed (model={model_name}, reason={(data or {}).get('incomplete_details')})"
+                        )
+                    except Exception:
+                        pass
+                    return "OpenAI 응답을 생성했지만 텍스트를 추출하지 못했습니다. 잠시 후 다시 시도해 주세요."
+
+        def _use_responses_api(model_name: str) -> bool:
+            """GPT-5/o-series 등 최신 모델은 Responses API가 권장이라 분기한다.
+
+            배경:
+            - 기존 Chat Completions도 동작할 수 있지만, GPT-5 계열은 Responses에서 기능/성능(Reasoning 등) 정합이 더 좋다.
+            - 기존 GPT-4 계열은 현재 코드의 chat.completions 경로를 그대로 유지해 리스크를 줄인다.
+            """
+            try:
+                m = (model_name or "").strip().lower()
+            except Exception:
+                m = ""
+            return m.startswith("gpt-5") or m.startswith("o")
+
+        # GPT-5 계열: Responses API 사용 (권장)
+        if _use_responses_api(model):
+            effort = _reasoning_effort_for_model(model)
+            if _supports_responses_api(client):
+                kwargs = {
+                    "model": model,
+                    "input": _build_responses_input(prompt, style_instruction=_style_instruction_for_temperature(temperature)),
+                    "max_output_tokens": max_tokens,
+                }
+                if effort:
+                    kwargs["reasoning"] = {"effort": effort}
+                resp = await client.responses.create(**kwargs)
+                extracted = _extract_responses_text(resp)
+                if extracted:
+                    return extracted
+                return "OpenAI 응답을 생성했지만 텍스트를 추출하지 못했습니다. 잠시 후 다시 시도해 주세요."
+
+            # ✅ SDK 미지원 폴백: REST(/v1/responses)
+            extracted = await _responses_rest_create(
+                model_name=model,
+                user_prompt=prompt,
+                temp=temperature,
+                max_out_tokens=max_tokens,
+                reasoning_effort=effort,
+            )
+            if extracted:
+                return extracted
             return "OpenAI 응답을 생성했지만 텍스트를 추출하지 못했습니다. 잠시 후 다시 시도해 주세요."
 
         # GPT-4 계열(기존): Chat Completions 유지
@@ -1548,6 +1749,155 @@ async def get_openai_completion_stream(prompt: str, temperature: float = 0.7, ma
         from openai import AsyncOpenAI
         client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 
+        def _supports_responses_api(_client: object) -> bool:
+            """현재 설치된 OpenAI Python SDK가 Responses API 스트리밍을 지원하는지 확인한다."""
+            try:
+                r = getattr(_client, "responses", None)
+                return bool(r and hasattr(r, "create"))
+            except Exception:
+                return False
+
+        def _reasoning_effort_for_model(model_name: str) -> str | None:
+            """GPT-5.1/5.2는 reasoning effort를 'medium'으로 강제한다."""
+            try:
+                m = (model_name or "").strip().lower()
+            except Exception:
+                m = ""
+            if m.startswith("gpt-5.1") or m.startswith("gpt-5.2"):
+                return "medium"
+            return None
+
+        def _style_instruction_for_temperature(temp_value: float) -> str | None:
+            """GPT-5.x(Responses API)에서 temperature 파라미터 미지원 시, 스타일 지침으로 온도를 반영한다."""
+            try:
+                t = float(temp_value)
+            except Exception:
+                return None
+            try:
+                if t < 0:
+                    t = 0.0
+                if t > 1:
+                    t = 1.0
+                t = round(t * 10) / 10.0
+            except Exception:
+                return None
+
+            if t <= 0.2:
+                band = "매우 설정에 충실(보수적)"
+                guidance = "설정/대화 맥락에서 벗어나는 상상/추측을 최대한 줄이고, 간결하고 일관되게 답하세요."
+            elif t <= 0.5:
+                band = "설정 우선(안정적)"
+                guidance = "설정/대화 맥락을 우선하되, 표현은 자연스럽게 다듬어 답하세요."
+            elif t <= 0.8:
+                band = "균형(적당히 창의적)"
+                guidance = "표현을 조금 더 풍부하게 하되, 설정/캐릭터 성격/대화 맥락을 절대 깨지 마세요."
+            else:
+                band = "매우 창의적(다양한 표현)"
+                guidance = "표현/비유/묘사를 더 창의적으로 하되, 설정을 바꾸거나 새 사실을 단정해 만들지 마세요."
+
+            return (
+                "대화 스타일(온도) 지침:\n"
+                f"- 온도: {t:.1f} (0.0=설정/요청에 매우 충실, 1.0=창의적/다양)\n"
+                f"- 현재 스타일: {band}\n"
+                f"- 지침: {guidance}\n"
+                "- 공통 규칙: 설정/대화 맥락/캐릭터 성격을 임의로 변경하거나 새 설정을 단정해 추가하지 마세요."
+            )
+
+        def _build_responses_input(user_prompt: str, *, style_instruction: str | None = None) -> list[dict]:
+            """Responses API의 input 포맷으로 변환한다."""
+            try:
+                p = "" if user_prompt is None else str(user_prompt)
+            except Exception:
+                p = ""
+            items: list[dict] = []
+            try:
+                s = (style_instruction or "").strip()
+            except Exception:
+                s = ""
+            if s:
+                items.append({"role": "developer", "content": s})
+            items.append({"role": "user", "content": p})
+            return items
+
+        async def _responses_rest_stream(
+            *,
+            model_name: str,
+            user_prompt: str,
+            temp: float,
+            max_out_tokens: int,
+            reasoning_effort: str | None,
+        ):
+            """SDK에 responses가 없을 때 OpenAI Responses REST 스트리밍을 SSE로 파싱해 delta를 yield한다."""
+            import os
+            import json
+            import aiohttp
+
+            api_key = settings.OPENAI_API_KEY or os.getenv("OPENAI_API_KEY")
+            if not api_key:
+                yield "오류: OpenAI 모델 호출에 실패했습니다 - OPENAI_API_KEY가 설정되어 있지 않습니다."
+                return
+
+            base = (os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
+            url = f"{base}/responses"
+
+            payload: dict = {
+                "model": model_name,
+                "input": _build_responses_input(user_prompt, style_instruction=_style_instruction_for_temperature(temp)),
+                "max_output_tokens": int(max_out_tokens),
+                "stream": True,
+            }
+            if reasoning_effort:
+                payload["reasoning"] = {"effort": reasoning_effort}
+
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            }
+
+            timeout = aiohttp.ClientTimeout(total=300)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(url, headers=headers, json=payload) as resp:
+                    if resp.status >= 400:
+                        try:
+                            txt = await resp.text()
+                        except Exception:
+                            txt = ""
+                        try:
+                            logger.error(f"OpenAI Responses REST stream error {resp.status}: {txt[:800]}")
+                        except Exception:
+                            pass
+                        yield f"오류: OpenAI 모델 호출에 실패했습니다 - HTTP {resp.status}"
+                        return
+
+                    buf = b""
+                    async for chunk in resp.content.iter_chunked(1024):
+                        if not chunk:
+                            continue
+                        buf += chunk
+                        while b"\n" in buf:
+                            line, buf = buf.split(b"\n", 1)
+                            line = line.strip()
+                            if not line:
+                                continue
+                            if not line.startswith(b"data:"):
+                                continue
+                            data_part = line[len(b"data:"):].strip()
+                            if data_part == b"[DONE]":
+                                return
+                            try:
+                                evt = json.loads(data_part.decode("utf-8", errors="replace"))
+                            except Exception:
+                                continue
+                            et = evt.get("type")
+                            if et in ("response.output_text.delta", "response.refusal.delta"):
+                                delta = evt.get("delta")
+                                if isinstance(delta, str) and delta:
+                                    yield delta
+                            elif et == "response.error":
+                                err = evt.get("error")
+                                yield f"오류: OpenAI 모델 호출에 실패했습니다 - {err}"
+                                return
+
         def _use_responses_api(model_name: str) -> bool:
             """GPT-5/o-series 등 최신 모델은 Responses API 스트리밍 이벤트를 사용한다."""
             try:
@@ -1558,27 +1908,43 @@ async def get_openai_completion_stream(prompt: str, temperature: float = 0.7, ma
 
         # GPT-5 계열: Responses API 스트리밍
         if _use_responses_api(model):
-            stream = await client.responses.create(
-                model=model,
-                input=prompt,
-                temperature=temperature,
-                max_output_tokens=max_tokens,
-                stream=True,
-            )
-            async for event in stream:
-                try:
-                    et = getattr(event, "type", None) if not isinstance(event, dict) else event.get("type")
-                    if et in ("response.output_text.delta", "response.refusal.delta"):
-                        delta = getattr(event, "delta", None) if not isinstance(event, dict) else event.get("delta")
-                        if isinstance(delta, str) and delta:
-                            yield delta
-                    elif et == "response.error":
-                        err = getattr(event, "error", None) if not isinstance(event, dict) else event.get("error")
-                        if err:
-                            yield f"오류: OpenAI 모델 호출에 실패했습니다 - {err}"
-                except Exception:
-                    # 이벤트 파싱 실패는 조용히 무시(스트림 유지)
-                    continue
+            effort = _reasoning_effort_for_model(model)
+            if _supports_responses_api(client):
+                kwargs = {
+                    "model": model,
+                    "input": _build_responses_input(prompt, style_instruction=_style_instruction_for_temperature(temperature)),
+                    "max_output_tokens": max_tokens,
+                    "stream": True,
+                }
+                if effort:
+                    kwargs["reasoning"] = {"effort": effort}
+                stream = await client.responses.create(**kwargs)
+                async for event in stream:
+                    try:
+                        et = getattr(event, "type", None) if not isinstance(event, dict) else event.get("type")
+                        if et in ("response.output_text.delta", "response.refusal.delta"):
+                            delta = getattr(event, "delta", None) if not isinstance(event, dict) else event.get("delta")
+                            if isinstance(delta, str) and delta:
+                                yield delta
+                        elif et == "response.error":
+                            err = getattr(event, "error", None) if not isinstance(event, dict) else event.get("error")
+                            if err:
+                                yield f"오류: OpenAI 모델 호출에 실패했습니다 - {err}"
+                                return
+                    except Exception:
+                        # 이벤트 파싱 실패는 조용히 무시(스트림 유지)
+                        continue
+                return
+
+            # ✅ SDK 미지원 폴백: REST(/v1/responses) SSE 스트리밍
+            async for delta in _responses_rest_stream(
+                model_name=model,
+                user_prompt=prompt,
+                temp=temperature,
+                max_out_tokens=max_tokens,
+                reasoning_effort=effort,
+            ):
+                yield delta
             return
 
         # GPT-4 계열(기존): Chat Completions 스트리밍 유지
@@ -1702,8 +2068,38 @@ async def get_ai_chat_response(
     # - 일반챗은 최근 50개 윈도우 슬라이싱을 의도하고 있어 max_items도 50으로 정합을 맞춘다.
     history_block = _format_history_block(history, max_items=50, max_chars=4000)
 
+    # ✅ 응답 길이 선호도 프롬프트 지침(체감 강화)
+    # - 기존에는 max_tokens(상한)만 조정되어 "길게" 체감이 약할 수 있다.
+    # - 그래서 모델에게도 길이 기대치를 명시적으로 가이드한다(출력은 자연스러운 대화만).
+    length_block = ""
+    try:
+        rlp = (response_length_pref or "").strip().lower()
+    except Exception:
+        rlp = ""
+    if rlp == "short":
+        length_block = (
+            "\n[응답 길이]\n"
+            "- 짧게: 1~2문장(또는 1단락)으로 핵심만.\n"
+            "- 불필요한 설명/설정 추가/장황한 묘사 금지.\n"
+            "- 출력은 자연스러운 대화만(불릿/라벨/번호/헤더 금지).\n"
+        )
+    elif rlp == "long":
+        length_block = (
+            "\n[응답 길이]\n"
+            "- 길게: 6~12문장 정도로 충분히 풍부하게.\n"
+            "- 감정/행동/상황을 더 묘사하되, 설정/사실을 임의로 추가하거나 단정하지 않는다.\n"
+            "- 출력은 자연스러운 대화만(불릿/라벨/번호/헤더 금지).\n"
+        )
+    else:
+        # medium(기본)
+        length_block = (
+            "\n[응답 길이]\n"
+            "- 보통: 3~6문장 정도로 자연스럽게.\n"
+            "- 출력은 자연스러운 대화만(불릿/라벨/번호/헤더 금지).\n"
+        )
+
     # 프롬프트와 사용자 메시지 결합(+히스토리 + 의도 블록)
-    full_prompt = f"{character_prompt}{history_block}{intent_block}\n\n사용자 메시지: {user_message}\n\n위 설정에 맞게 자연스럽게 응답하세요 (대화만 출력, 라벨 없이):"
+    full_prompt = f"{character_prompt}{history_block}{intent_block}{length_block}\n\n사용자 메시지: {user_message}\n\n위 설정에 맞게 자연스럽게 응답하세요 (대화만 출력, 라벨 없이):"
 
     # 응답 길이 선호도 → 최대 토큰 비율 조정 (중간 기준 1.0)
     base_max_tokens = 1800
@@ -1742,21 +2138,25 @@ async def get_ai_chat_response(
         # 유효하지 않은 값이 들어오면 최신 안정 버전으로 폴백
         claude_default = CLAUDE_MODEL_PRIMARY
         claude_mapping = {
-            # UI 표기 → 실제 모델 ID
-            # - 프론트(ModelSelectionModal)의 최신 Claude 모델명(4.0+)을 그대로 허용한다.
-            # - 과거에 저장된 값(점 표기/버전 스냅샷 등)은 안전하게 4.0+로 폴백한다.
-            # 최신 (권장)
-            'claude-sonnet-4': 'claude-sonnet-4',
-            'claude-opus-4-1': 'claude-opus-4-1',
-            'claude-sonnet-4-5': 'claude-sonnet-4-5',
-            'claude-opus-4-5': 'claude-opus-4-5',
+            # ✅ 권장(SSOT): Anthropic에 전달되는 스냅샷 모델명(날짜 포함)
+            'claude-sonnet-4-20250514': 'claude-sonnet-4-20250514',
+            'claude-sonnet-4-5-20250929': 'claude-sonnet-4-5-20250929',
+            'claude-opus-4-1-20250805': 'claude-opus-4-1-20250805',
+            'claude-opus-4-5-20251101': 'claude-opus-4-5-20251101',
 
-            # 레거시(UI/저장값) 호환
-            'claude-4-sonnet': 'claude-sonnet-4',
-            'claude-sonnet-4-20250514': 'claude-sonnet-4',
-            'claude-sonnet-4.5': 'claude-sonnet-4-5',
-            'claude-opus-4.5': 'claude-opus-4-5',
-            'claude-sonnet-4.5-think': 'claude-sonnet-4-5',
+            # ✅ UI/저장값 호환(별칭/레거시) → 스냅샷으로 변환
+            'claude-sonnet-4': 'claude-sonnet-4-20250514',
+            'claude-sonnet-4-0': 'claude-sonnet-4-20250514',
+            'claude-4-sonnet': 'claude-sonnet-4-20250514',
+            'claude-sonnet-4.0': 'claude-sonnet-4-20250514',
+
+            'claude-opus-4-1': 'claude-opus-4-1-20250805',
+            'claude-opus-4-5': 'claude-opus-4-5-20251101',
+
+            'claude-sonnet-4-5': 'claude-sonnet-4-5-20250929',
+            'claude-sonnet-4.5': 'claude-sonnet-4-5-20250929',
+            'claude-sonnet-4.5-think': 'claude-sonnet-4-5-20250929',
+            'claude-opus-4.5': 'claude-opus-4-5-20251101',
         }
 
         try:

@@ -414,7 +414,11 @@ async def get_stories_by_creator(
     query = (
         select(Story)
         .options(
+            # ✅ API에서 creator/character/extracted_characters를 접근하므로 eager-load(Async lazy-load 500 방지)
+            selectinload(Story.creator),
+            selectinload(Story.character),
             selectinload(Story.tags),
+            selectinload(Story.extracted_characters),
         )
         .where(Story.creator_id == creator_id)
     )

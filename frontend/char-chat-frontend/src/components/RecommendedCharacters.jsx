@@ -9,6 +9,7 @@ import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
 import { Badge } from './ui/badge';
 import { formatCount } from '../lib/format';
 import { useAuth } from '../contexts/AuthContext';
+import { useIsMobile } from '../hooks/use-mobile';
 
 /**
  * 홈 "추천 캐릭터" 구좌
@@ -134,6 +135,7 @@ const RecommendedSkeleton = () => (
 );
 
 const RecommendedCharacters = ({ title } = {}) => {
+  const isMobile = useIsMobile();
   const RECOMMENDED_LIMIT = 60;
   // 추천 구좌는 "캐릭터챗(일반) : 원작챗"을 적당히 섞어서 노출한다.
   // - 패턴: 캐릭터챗 2개 → 원작챗 1개 (2:1)
@@ -209,7 +211,7 @@ const RecommendedCharacters = ({ title } = {}) => {
 
   // 데스크탑 기준(7열 x 2행)으로 14개를 기본 페이지로 사용한다.
   // 모바일에서는 반응형 그리드(2~4열)로 더 크게 보이도록 한다.
-  const pageSize = 14;
+  const pageSize = isMobile ? 4 : 14;
   const [page, setPage] = useState(0);
   const items = data || [];
   const empty = !isLoading && (!items || items.length === 0);
@@ -217,15 +219,15 @@ const RecommendedCharacters = ({ title } = {}) => {
   const hasCarousel = items.length > pageSize;
   const slotTitle = String(title || '').trim() || '챕터8이 추천하는 캐릭터';
 
+  useEffect(() => {
+    // 화면 크기/레이아웃 전환 시 첫 페이지로 리셋(UX 안정)
+    setPage(0);
+  }, [isMobile]);
+
   const visibleItems = useMemo(() => {
-    // 첫 페이지는 항상 14개 표시 (7x2)
-    if (page === 0) {
-      return items.slice(0, 14);
-    }
-    if (!hasCarousel) return items;
     const start = page * pageSize;
     return items.slice(start, start + pageSize);
-  }, [items, page, hasCarousel]);
+  }, [items, page, pageSize]);
 
   useEffect(() => {
     return () => {};
@@ -233,12 +235,21 @@ const RecommendedCharacters = ({ title } = {}) => {
 
   const gotoPrev = () => setPage((prev) => (prev - 1 + pageCount) % pageCount);
   const gotoNext = () => setPage((prev) => (prev + 1) % pageCount);
+  const skeletonCount = pageSize;
+  const showHeaderArrows = Boolean(!isMobile && hasCarousel);
+  const showMobileOverlayArrows = Boolean(isMobile && hasCarousel);
+
+  useEffect(() => {
+    // 데이터 길이가 줄어 페이지가 범위를 벗어나면 0으로 보정
+    if (pageCount <= 0) return;
+    if (page >= pageCount) setPage(0);
+  }, [page, pageCount]);
 
   return (
     <section className="mt-6 sm:mt-8">
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-lg sm:text-xl font-bold text-white">{slotTitle}</h2>
-        {hasCarousel && (
+        {showHeaderArrows && (
           <div className="flex items-center gap-2">
             <button
               type="button"
@@ -260,8 +271,8 @@ const RecommendedCharacters = ({ title } = {}) => {
         )}
       </div>
       <div className="relative">
-        <ul className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-7 gap-3 sm:gap-4">
-          {isLoading && Array.from({ length: 14 }).map((_, idx) => (
+        <ul className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3 sm:gap-4">
+          {isLoading && Array.from({ length: skeletonCount }).map((_, idx) => (
             <RecommendedSkeleton key={idx} />
           ))}
           {!isLoading && !isError && visibleItems.map((c) => (
@@ -273,6 +284,28 @@ const RecommendedCharacters = ({ title } = {}) => {
             </li>
           )}
         </ul>
+
+        {/* 모바일: 4개씩 <> 페이지 이동 (경쟁사 스타일) */}
+        {showMobileOverlayArrows && (
+          <>
+            <button
+              type="button"
+              aria-label="이전"
+              onClick={gotoPrev}
+              className="absolute -left-3 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-gray-800/90 hover:bg-gray-700 text-white border border-gray-700 shadow-lg backdrop-blur flex items-center justify-center"
+            >
+              <ChevronLeft className="w-5 h-5" />
+            </button>
+            <button
+              type="button"
+              aria-label="다음"
+              onClick={gotoNext}
+              className="absolute -right-3 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-gray-800/90 hover:bg-gray-700 text-white border border-gray-700 shadow-lg backdrop-blur flex items-center justify-center"
+            >
+              <ChevronRight className="w-5 h-5" />
+            </button>
+          </>
+        )}
       </div>
     </section>
   );

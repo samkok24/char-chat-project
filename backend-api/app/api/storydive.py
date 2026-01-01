@@ -790,6 +790,43 @@ async def process_turn(
             history.append({"role": "user", "content": turn["user"]})
         if turn.get("ai"):
             history.append({"role": "assistant", "content": turn["ai"]})
+
+    async def _call_storydive_ai(fn, kwargs: dict, label: str) -> str:
+        """
+        StoryDive AI 호출을 안전하게 수행한다.
+
+        배경/의도:
+        - 운영 환경에서 Claude 키 누락/모델명 변경/일시 장애가 발생하면 StoryDive가 통째로 실패해 UX가 크게 깨진다.
+        - 최소 수정으로 1) Claude(primary) → 2) Claude(legacy) → 3) Gemini(폴백) 순으로 재시도해
+          '완전 실패'를 최대한 줄인다.
+
+        방어적:
+        - 각 실패는 logger.exception으로 스택을 남긴다.
+        - 모든 폴백이 실패하면 503(AiUnavailable)로 통일한다.
+        """
+        try:
+            return await fn(**kwargs)
+        except Exception as e:
+            logger.exception("[storydive] %s llm failed (primary): %s", label, e)
+
+        # 2) Claude legacy (구버전/스냅샷 모델명 호환)
+        try:
+            kwargs2 = dict(kwargs)
+            kwargs2["preferred_model"] = "claude"
+            kwargs2["preferred_sub_model"] = getattr(ai_service, "CLAUDE_MODEL_LEGACY", "claude-sonnet-4-20250514")
+            return await fn(**kwargs2)
+        except Exception as e:
+            logger.exception("[storydive] %s llm failed (legacy): %s", label, e)
+
+        # 3) Gemini fallback (Claude 불가 환경에서도 서비스가 죽지 않게)
+        try:
+            kwargs3 = dict(kwargs)
+            kwargs3["preferred_model"] = "gemini"
+            kwargs3["preferred_sub_model"] = "gemini-2.5-pro"
+            return await fn(**kwargs3)
+        except Exception as e:
+            logger.exception("[storydive] %s llm failed (gemini fallback): %s", label, e)
+            raise HTTPException(status_code=503, detail="AiUnavailable")
     
     # Action 처리
     if request.action == "retry":
@@ -827,16 +864,17 @@ async def process_turn(
             highlighted_context = (prefix_text or context_text)[-600:]
         
         # Retry 응답 생성
-        ai_response = await storydive_ai_service.get_retry_response(
-            highlighted_context=highlighted_context,
-            story_cards=novel.story_cards or {},
-            context_text=context_text,
-            history=history,
-            mode=last_mode or "do",
-            preferred_model='claude',
-            preferred_sub_model='claude-sonnet-4-20250514',
-            response_length_pref=getattr(current_user, 'response_length_pref', 'medium')
-        )
+        ai_kwargs = {
+            "highlighted_context": highlighted_context,
+            "story_cards": novel.story_cards or {},
+            "context_text": context_text,
+            "history": history,
+            "mode": (last_mode or "do"),
+            "preferred_model": "claude",
+            "preferred_sub_model": getattr(ai_service, "CLAUDE_MODEL_PRIMARY", "claude-sonnet-4-20250514"),
+            "response_length_pref": getattr(current_user, "response_length_pref", "medium"),
+        }
+        ai_response = await _call_storydive_ai(storydive_ai_service.get_retry_response, ai_kwargs, "retry")
         
         # 새 턴 추가
         new_turn = {
@@ -893,15 +931,16 @@ async def process_turn(
             end_idx = session.entry_point + 1
             highlighted_context = ' '.join(paragraphs[start_idx:end_idx])
         
-        ai_response = await storydive_ai_service.get_continue_response(
-            last_ai_response=highlighted_context,
-            story_cards=novel.story_cards or {},
-            context_text=context_text,
-            history=history,
-            preferred_model='claude',
-            preferred_sub_model='claude-sonnet-4-20250514',
-            response_length_pref=getattr(current_user, 'response_length_pref', 'medium')
-        )
+        ai_kwargs = {
+            "last_ai_response": highlighted_context,
+            "story_cards": novel.story_cards or {},
+            "context_text": context_text,
+            "history": history,
+            "preferred_model": "claude",
+            "preferred_sub_model": getattr(ai_service, "CLAUDE_MODEL_PRIMARY", "claude-sonnet-4-20250514"),
+            "response_length_pref": getattr(current_user, "response_length_pref", "medium"),
+        }
+        ai_response = await _call_storydive_ai(storydive_ai_service.get_continue_response, ai_kwargs, "continue")
         
         # 새 턴 추가
         new_turn = {
@@ -931,17 +970,18 @@ async def process_turn(
         raise HTTPException(status_code=400, detail="Input is required for turn action")
     
     # AI 응답 생성
-    ai_response = await storydive_ai_service.get_storydive_response(
-        novel_title=novel.title,
-        story_cards=novel.story_cards or {},
-        context_text=context_text,
-        user_input=request.input,
-        mode=request.mode,
-        history=history,
-        preferred_model='claude',
-        preferred_sub_model='claude-sonnet-4-20250514',
-        response_length_pref=getattr(current_user, 'response_length_pref', 'medium')
-    )
+    ai_kwargs = {
+        "novel_title": novel.title,
+        "story_cards": novel.story_cards or {},
+        "context_text": context_text,
+        "user_input": request.input,
+        "mode": request.mode,
+        "history": history,
+        "preferred_model": "claude",
+        "preferred_sub_model": getattr(ai_service, "CLAUDE_MODEL_PRIMARY", "claude-sonnet-4-20250514"),
+        "response_length_pref": getattr(current_user, "response_length_pref", "medium"),
+    }
+    ai_response = await _call_storydive_ai(storydive_ai_service.get_storydive_response, ai_kwargs, "turn")
     
     # 새 턴 추가
     new_turn = {

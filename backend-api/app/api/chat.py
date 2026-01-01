@@ -2755,6 +2755,38 @@ async def origchat_turn(
         except Exception as e:
             logger.warning(f"캐릭터 정보 로드 실패: {e}")
 
+        # ✅ 로어북(기억노트): 원작챗에도 실제로 반영되도록 프롬프트에 주입 (최소 수정)
+        # - UI에서 저장/활성화한 기억노트가 대화에 영향이 있어야 "작동"으로 느껴진다.
+        # - 과도한 프롬프트 팽창을 막기 위해 최대 N개만 포함한다.
+        try:
+            active_memories = await get_active_memory_notes_by_character(db, current_user.id, room.character_id)
+        except Exception:
+            active_memories = []
+        try:
+            if isinstance(active_memories, list) and len(active_memories) > 0:
+                lore_lines = [
+                    "[로어북(기억노트)]",
+                    "아래 내용은 사용자가 저장한 중요한 설정/기억입니다. 대화에서 잊지 말고 반드시 반영하세요.",
+                ]
+                MAX_LORE = 6
+                for memory in active_memories[:MAX_LORE]:
+                    title = (getattr(memory, "title", "") or "").strip()
+                    content = (getattr(memory, "content", "") or "").strip()
+                    if not (title or content):
+                        continue
+                    if title and content:
+                        lore_lines.append(f"- {title}: {content}")
+                    elif title:
+                        lore_lines.append(f"- {title}")
+                    else:
+                        lore_lines.append(f"- {content}")
+                if len(lore_lines) > 2:
+                    # 캐릭터 블록 바로 다음(가능하면 상단)에 배치
+                    insert_idx = 1 if parts else 0
+                    parts.insert(insert_idx, "\n".join(lore_lines))
+        except Exception:
+            pass
+
 
         if progress_hint:
             parts.append(progress_hint)
