@@ -9,7 +9,7 @@ import json
 
 from app.core.database import get_db
 from app.models.user import User
-from app.schemas.user import UserProfileResponse
+from app.schemas.user import UserProfileResponse, AdminUserListResponse
 from app.schemas import StatsOverview, TimeSeriesResponse, TimeSeriesPoint, TopCharacterItem
 from app.schemas.character import RecentCharacterResponse, CharacterListResponse
 from app.schemas.comment import CommentResponse, CommentWithUser, StoryCommentResponse, StoryCommentWithUser
@@ -22,6 +22,12 @@ from app.services.comment_service import (
 
 
 router = APIRouter()
+
+
+def _ensure_admin(user: User) -> None:
+    """관리자 권한 방어 체크"""
+    if not getattr(user, "is_admin", False):
+        raise HTTPException(status_code=403, detail="관리자만 사용할 수 있습니다.")
 
 @router.get(
     "/me/characters/recent",
@@ -185,6 +191,18 @@ async def update_user_profile_endpoint(
     if not profile_data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="해당 사용자를 찾을 수 없습니다.")
     return profile_data
+
+
+# ----- 관리자: 회원 목록 -----
+@router.get("/admin/users", response_model=AdminUserListResponse, summary="관리자: 회원 목록(페이지네이션)")
+async def admin_list_users_endpoint(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=200),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    _ensure_admin(current_user)
+    return await user_service.admin_list_users(db, skip=skip, limit=limit)
 
 
 @router.get(

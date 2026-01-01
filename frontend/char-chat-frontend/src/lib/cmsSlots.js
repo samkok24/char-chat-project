@@ -12,8 +12,38 @@
 
 export const HOME_SLOTS_STORAGE_KEY = 'cms:homeSlots:v1';
 export const HOME_SLOTS_CHANGED_EVENT = 'cms:homeSlotsChanged';
-export const HOME_SLOTS_CURATED_CHARACTERS_SLOT_ID = 'slot_curated_characters';
-export const HOME_SLOTS_CURATED_CHARACTERS_MAX = 6;
+
+// ✅ (삭제됨) 구버전 호환: 과거 "추천 캐릭터로 시작하기" 구좌 id
+// - 현재 요구사항에서 제거되었으므로, 로컬스토리지에 남아있더라도 UI에서 자동으로 제외한다.
+const LEGACY_REMOVED_SLOT_IDS = new Set(['slot_curated_characters']);
+
+/**
+ * 홈 구좌 ID(시스템 기본 구좌) 목록
+ *
+ * 의도/동작:
+ * - 기본 홈 섹션(트렌딩/원작챗/추천 등)은 HomePage에서 "정해진 컴포넌트"로 렌더링된다.
+ * - CMS에서 "커스텀 구좌(수동 선택 컨텐츠)"를 추가할 때, 시스템 구좌와 구분이 필요하다.
+ *
+ * 주의:
+ * - id는 SSOT로 여기에서만 관리한다(프론트/홈 렌더링, CMS 편집 UI에서 공통 사용).
+ */
+export const HOME_SLOTS_SYSTEM_IDS = [
+  'slot_top_origchat',
+  'slot_trending_characters',
+  'slot_top_stories',
+  'slot_recommended_characters',
+  'slot_daily_tag_characters',
+];
+
+export function isSystemHomeSlotId(idLike) {
+  try {
+    const id = String(idLike || '').trim();
+    if (!id) return false;
+    return HOME_SLOTS_SYSTEM_IDS.includes(id);
+  } catch (_) {
+    return false;
+  }
+}
 
 const nowIso = () => {
   try { return new Date().toISOString(); } catch (_) { return ''; }
@@ -53,19 +83,6 @@ const genId = () => {
  *   현재 홈 컴포넌트(TopOrigChat 등)가 내부에서 제목을 가지고 있어 홈 반영은 추후 단계로 둔다.
  */
 export const DEFAULT_HOME_SLOTS = [
-  // 0) (초심자 온보딩) 운영자 추천 캐릭터 (최대 6개 선택)
-  // - 홈 상단에 "바로 대화 시작" CTA로 활용된다.
-  // - 선택이 없으면 홈에서 안내 메시지만 노출된다(요구사항).
-  {
-    id: HOME_SLOTS_CURATED_CHARACTERS_SLOT_ID,
-    title: '추천 캐릭터로 시작하기',
-    enabled: true,
-    startAt: null,
-    endAt: null,
-    characterPicks: [], // [{ id, name, avatar_url }]
-    createdAt: nowIso(),
-    updatedAt: nowIso(),
-  },
   // 1) 지금 대화가 활발한 원작 캐릭터
   {
     id: 'slot_top_origchat',
@@ -126,35 +143,113 @@ export function sanitizeHomeSlot(raw) {
   const enabled = obj.enabled !== false; // default true
 
   /**
-   * 운영자 추천 캐릭터(초심자 온보딩)
+   * 커스텀 구좌 타입
    *
-   * 의도:
-   * - 홈 상단 추천 캐릭터 구좌는 "최대 6개"만 지원한다(UX/레이아웃 고정).
-   * - 저장 시점에만 sanitize하여, 런타임 렌더에서 예외가 발생하지 않도록 한다.
-   * - 중복 id는 제거하고, 순서는 유지한다(관리자가 선택/정렬한 순서 보존).
+   * 의도/동작:
+   * - system: 홈에서 정해진 컴포넌트로 렌더링되는 기본 구좌
+   * - custom: 운영자가 CMS에서 "선택한 캐릭터/웹소설"을 담아 노출하는 커스텀 구좌
+   *
+   * 방어적:
+   * - 저장값이 없으면 id 기반으로 추론한다.
    */
-  const rawPicks = Array.isArray(obj.characterPicks) ? obj.characterPicks : [];
-  const seenPickIds = new Set();
-  const characterPicks = [];
-  for (const p of rawPicks) {
+  let slotType = String(obj.slotType || obj.type || '').trim().toLowerCase();
+  if (slotType !== 'system' && slotType !== 'custom') {
+    slotType = isSystemHomeSlotId(id) ? 'system' : 'custom';
+  }
+
+  const startAt = obj.startAt ? String(obj.startAt) : null;
+  const endAt = obj.endAt ? String(obj.endAt) : null;
+
+  /**
+   * 커스텀 구좌: 선택한 콘텐츠 목록
+   *
+   * 요구사항:
+   * - 캐릭터(일반/원작챗) + 웹소설(스토리)을 혼합 선택 가능
+   * - 다중 선택 후 저장
+   * - 정렬: 대화수/조회수 순 또는 랜덤(새로고침마다)
+   *
+   * 저장 형태(SSOT):
+   * - contentPicks: [{ type: 'character'|'story', item: {...} }]
+   * - contentSortMode: 'metric'|'random'
+   *
+   * 방어적:
+   * - 중복(type+id) 제거
+   * - 최대 개수 제한(로컬스토리지 용량 보호)
+   */
+  const rawContentPicks = Array.isArray(obj.contentPicks) ? obj.contentPicks : [];
+  const contentPicks = [];
+  const seenKeys = new Set();
+  const MAX_CUSTOM_PICKS = 40;
+  for (const p of rawContentPicks) {
     try {
-      const pid = String(p?.id || '').trim();
-      if (!pid) continue;
-      if (seenPickIds.has(pid)) continue;
-      seenPickIds.add(pid);
-      characterPicks.push({
-        id: pid,
-        name: String(p?.name || '').trim(),
-        avatar_url: String(p?.avatar_url || p?.avatarUrl || '').trim(),
-      });
-      if (characterPicks.length >= HOME_SLOTS_CURATED_CHARACTERS_MAX) break;
+      const t = String(p?.type || p?.kind || '').trim().toLowerCase();
+      const type = (t === 'story' || t === 'webnovel') ? 'story' : (t === 'character' ? 'character' : '');
+      if (!type) continue;
+
+      const src = (p && typeof p === 'object')
+        ? (p.item || p.character || p.story || p.data || p)
+        : null;
+      const rid = String(src?.id || src?.story_id || src?.character_id || '').trim();
+      if (!rid) continue;
+
+      const k = `${type}:${rid}`;
+      if (seenKeys.has(k)) continue;
+      seenKeys.add(k);
+
+      if (type === 'character') {
+        const originStoryId = src?.origin_story_id || src?.originStoryId || null;
+        const chatCount = Number(src?.chat_count ?? src?.chatCount ?? 0) || 0;
+        const likeCount = Number(src?.like_count ?? src?.likeCount ?? 0) || 0;
+        contentPicks.push({
+          type: 'character',
+          item: {
+            id: rid,
+            name: String(src?.name || '').trim() || '캐릭터',
+            description: String(src?.description || '').trim(),
+            avatar_url: String(src?.avatar_url || src?.thumbnail_url || '').trim(),
+            thumbnail_url: String(src?.thumbnail_url || '').trim(),
+            origin_story_id: originStoryId ? String(originStoryId) : null,
+            is_origchat: !!originStoryId || !!src?.is_origchat,
+            source_type: src?.source_type,
+            chat_count: chatCount,
+            like_count: likeCount,
+            creator_id: src?.creator_id || null,
+            creator_username: src?.creator_username || '',
+            creator_avatar_url: src?.creator_avatar_url || '',
+          },
+        });
+      } else {
+        // story/webnovel
+        const viewCount = Number(src?.view_count ?? src?.viewCount ?? 0) || 0;
+        const likeCount = Number(src?.like_count ?? src?.likeCount ?? 0) || 0;
+        const tags = Array.isArray(src?.tags) ? src.tags.filter(Boolean).map((x) => String(x)) : [];
+        contentPicks.push({
+          type: 'story',
+          item: {
+            id: rid,
+            title: String(src?.title || '').trim() || '제목 없음',
+            excerpt: String(src?.excerpt || '').trim(),
+            cover_url: String(src?.cover_url || src?.coverUrl || '').trim(),
+            is_webtoon: !!src?.is_webtoon,
+            is_origchat: !!src?.is_origchat,
+            view_count: viewCount,
+            like_count: likeCount,
+            tags,
+            creator_id: src?.creator_id || null,
+            creator_username: src?.creator_username || '',
+            creator_avatar_url: src?.creator_avatar_url || '',
+          },
+        });
+      }
+
+      if (contentPicks.length >= MAX_CUSTOM_PICKS) break;
     } catch (_) {
       // ignore bad item
     }
   }
 
-  const startAt = obj.startAt ? String(obj.startAt) : null;
-  const endAt = obj.endAt ? String(obj.endAt) : null;
+  let contentSortMode = String(obj.contentSortMode || obj.sortMode || '').trim().toLowerCase();
+  if (contentSortMode !== 'random' && contentSortMode !== 'metric') contentSortMode = 'metric';
 
   const createdAt = obj.createdAt ? String(obj.createdAt) : nowIso();
   const updatedAt = nowIso();
@@ -163,7 +258,10 @@ export function sanitizeHomeSlot(raw) {
     id,
     title,
     enabled,
-    characterPicks,
+    slotType,
+    // custom
+    contentPicks,
+    contentSortMode,
     startAt,
     endAt,
     createdAt,
@@ -190,7 +288,14 @@ export function getHomeSlots() {
     if (!raw) return defaults;
     const parsed = JSON.parse(raw);
     const arr = Array.isArray(parsed) ? parsed : [];
-    const normalized = arr.map(sanitizeHomeSlot);
+    const normalized = arr
+      .map(sanitizeHomeSlot)
+      // ✅ 과거 제거된 구좌는 자동 제외 (CMS/홈 모두에서 안 보이게)
+      .filter((s) => {
+        const id = String(s?.id || '').trim();
+        if (!id) return false;
+        return !LEGACY_REMOVED_SLOT_IDS.has(id);
+      });
 
     // ✅ 구버전(초기 더미 1개) 마이그레이션:
     // - 기존에 slot_1 하나만 있던 버전에서, "실제 홈 구좌 기본목록"으로 업그레이드한다.

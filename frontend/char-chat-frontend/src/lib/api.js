@@ -299,6 +299,10 @@ export const usersAPI = {
   // 통계: 상위 캐릭터
   getCreatorTopCharacters: (userId, params = {}) =>
     api.get(`/users/${userId}/stats/top-characters`, { params }),
+
+  // ===== 관리자: 회원 목록 =====
+  adminListUsers: (params = {}) =>
+    api.get('/admin/users', { params }),
 };
 
 // 🎭 캐릭터 관련 API
@@ -657,6 +661,8 @@ export const metricsAPI = {
   getSummary: (params = {}) => api.get('/metrics/summary', { params }),
   // 스토리 에이전트 상단 카피용: (일반캐릭터챗 + 원작챗 캐릭터 + 웹소설) 합산 수
   getContentCounts: (params = {}) => api.get('/metrics/content-counts', { params }),
+  // 관리자용: 트래픽(채팅 기반) DAU/WAU/MAU
+  getTraffic: (params = {}) => api.get('/metrics/traffic', { params }),
 };
 
 // 📖 회차(Chapters) API

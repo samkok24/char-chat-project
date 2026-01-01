@@ -207,7 +207,7 @@ speaker: '내가',
 
 const STORY_MODELS = [
 { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
-{ value: 'claude-sonnet-4-0', label: 'Claude Sonnet 4.0' },
+{ value: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4' },
 { value: 'gpt-4o', label: 'GPT-4o' },
 { value: 'gpt-4.1', label: 'GPT-4.1' },
 ];
@@ -2505,7 +2505,7 @@ return (
            >메인</Link>
            <span
             className={`${onAgentTab ? 'bg-gradient-to-r from-purple-600 to-fuchsia-600 text-white shadow-md' : 'bg-transparent text-purple-300'} px-3 py-1 rounded-full border ${onAgentTab ? 'border-transparent' : 'border-purple-500/60'} hover:bg-purple-700/20 transition-colors select-none whitespace-nowrap`}
-           >스토리 에이전트</span>
+           >스토리 에이전트(Beta)</span>
     </div>
          <div className="justify-self-end flex items-center gap-2">
            <button onClick={() => navigate('/dashboard')} className="p-2 rounded-full border border-gray-600/60 bg-transparent text-gray-300 hover:bg-gray-700/40" title="닫기">

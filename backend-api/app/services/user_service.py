@@ -17,6 +17,7 @@ from app.core.database import engine as _engine
 
 from app.models.character import Character
 from app.models.story import Story
+from app.models.story_chapter import StoryChapter
 from app.models.like import CharacterLike
 from app.models.bookmark import CharacterBookmark
 from app.schemas.user import UserProfileResponse
@@ -24,6 +25,7 @@ from app.schemas.user import UserProfileResponse
 from app.models.user import User
 from app.models.chat import ChatRoom, ChatMessage
 from app.schemas import StatsOverview, TimeSeriesResponse, TimeSeriesPoint, TopCharacterItem
+from app.schemas.user import AdminUserListResponse, AdminUserListItem
 
 logger = logging.getLogger(__name__)
 
@@ -234,6 +236,125 @@ async def get_user_profile(db: AsyncSession, user_id: str) -> UserProfileRespons
         total_chat_count=stats.total_chat_count or 0,
         total_like_count=stats.total_like_count or 0
     )
+
+
+async def admin_list_users(
+    db: AsyncSession,
+    skip: int = 0,
+    limit: int = 100,
+) -> AdminUserListResponse:
+    """
+    관리자용 회원 목록(+누적 지표) 반환
+
+    지표 정의(현재 구현):
+    - created_character_count: 해당 유저가 생성한 캐릭터 수
+    - used_chat_count: 해당 유저가 보낸 채팅 메시지 수(모든 캐릭터챗/원작챗 포함, sender_type='user')
+    - used_view_count: 해당 유저가 생성한 스토리(웹소설/웹툰 포함)의 누적 조회수 합(Story.view_count 합)
+    - last_login_at: 로그인 기록 컬럼이 없어서, 현재는 "최근 채팅 활동 시간"으로 대체 (user 메시지 기준)
+    """
+    # 방어
+    if skip < 0:
+        skip = 0
+    if limit <= 0:
+        limit = 100
+    limit = min(int(limit), 200)
+
+    try:
+        total_res = await db.execute(select(func.count(User.id)))
+        total = int(total_res.scalar() or 0)
+
+        # 캐릭터 생성 수
+        char_sq = (
+            select(
+                Character.creator_id.label("user_id"),
+                func.count(Character.id).label("created_character_count"),
+            )
+            .group_by(Character.creator_id)
+            .subquery()
+        )
+
+        # 유저가 보낸 메시지 수 + 최근 메시지 시각
+        chat_sq = (
+            select(
+                ChatRoom.user_id.label("user_id"),
+                func.count(ChatMessage.id).label("used_chat_count"),
+                func.max(ChatMessage.created_at).label("last_login_at"),
+            )
+            .select_from(ChatRoom)
+            .join(ChatMessage, ChatMessage.chat_room_id == ChatRoom.id)
+            .where(ChatMessage.sender_type == "user")
+            .group_by(ChatRoom.user_id)
+            .subquery()
+        )
+
+        # 스토리 조회수 합(작성자 기준)
+        # - 기준: Story.view_count(스토리 상세 진입) + 모든 회차(StoryChapter.view_count) 합
+        chapter_views_sq = (
+            select(
+                StoryChapter.story_id.label("story_id"),
+                func.coalesce(func.sum(func.coalesce(StoryChapter.view_count, 0)), 0).label("chapter_views"),
+            )
+            .group_by(StoryChapter.story_id)
+            .subquery()
+        )
+        story_sq = (
+            select(
+                Story.creator_id.label("user_id"),
+                func.coalesce(
+                    func.sum(
+                        func.coalesce(Story.view_count, 0) + func.coalesce(chapter_views_sq.c.chapter_views, 0)
+                    ),
+                    0,
+                ).label("used_view_count"),
+            )
+            .select_from(Story)
+            .outerjoin(chapter_views_sq, chapter_views_sq.c.story_id == Story.id)
+            .group_by(Story.creator_id)
+            .subquery()
+        )
+
+        stmt = (
+            select(
+                User,
+                func.coalesce(char_sq.c.created_character_count, 0).label("created_character_count"),
+                func.coalesce(chat_sq.c.used_chat_count, 0).label("used_chat_count"),
+                chat_sq.c.last_login_at.label("last_login_at"),
+                func.coalesce(story_sq.c.used_view_count, 0).label("used_view_count"),
+            )
+            .outerjoin(char_sq, char_sq.c.user_id == User.id)
+            .outerjoin(chat_sq, chat_sq.c.user_id == User.id)
+            .outerjoin(story_sq, story_sq.c.user_id == User.id)
+            .order_by(User.created_at.desc(), User.id.desc())
+            .offset(int(skip))
+            .limit(int(limit))
+        )
+
+        res = await db.execute(stmt)
+        rows = res.all() or []
+
+        items: list[AdminUserListItem] = []
+        for (u, created_character_count, used_chat_count, last_login_at, used_view_count) in rows:
+            items.append(
+                AdminUserListItem(
+                    id=u.id,
+                    email=u.email,
+                    username=u.username,
+                    is_admin=bool(getattr(u, "is_admin", False)),
+                    created_at=u.created_at,
+                    last_login_at=last_login_at,
+                    created_character_count=int(created_character_count or 0),
+                    used_chat_count=int(used_chat_count or 0),
+                    used_view_count=int(used_view_count or 0),
+                )
+            )
+
+        return AdminUserListResponse(total=total, skip=int(skip), limit=int(limit), items=items)
+    except Exception as e:
+        try:
+            logger.exception(f"[admin_list_users] failed: {e}")
+        except Exception:
+            pass
+        raise
 
 
 async def get_recent_characters_for_user(db: AsyncSession, user_id: uuid.UUID, limit: int = 10, skip: int = 0) -> list[Character]:

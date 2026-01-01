@@ -24,9 +24,11 @@ import {
   CollapsibleTrigger,
 } from './ui/collapsible';
 
-const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, onModelChange, initialTab = 'model', characterName = '캐릭터', characterId, onUpdateChatSettings }) => {
+const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, onModelChange, initialTab = 'model', characterName = '캐릭터', characterId, onUpdateChatSettings, isOrigChat = false }) => {
   // temperature 기본값: 백엔드 ai_service의 기본 temperature(0.7)와 정합
   const DEFAULT_TEMPERATURE = 0.7;
+  // ✅ 채팅 화면에서는 아직 연동/지원하지 않는 모델(UX 혼란 방지용으로 비노출)
+  const HIDDEN_CHAT_MODEL_IDS = new Set(['deepseek', 'short', 'caveduck']);
   const [selectedModel, setSelectedModel] = useState(currentModel || 'gemini');
   const [selectedSubModel, setSelectedSubModel] = useState(currentSubModel || 'gemini-2.5-pro');
   const [activeTab, setActiveTab] = useState(initialTab);
@@ -51,7 +53,8 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
     userSpeech: '#111111',
     userNarration: '#333333'
   });
-  const [uiTheme, setUiTheme] = useState('system'); // system|dark|light
+  // ✅ 현재는 다크테마를 기본/고정으로 사용한다(시스템/라이트는 추후 디자인 작업 후 오픈).
+  const [uiTheme, setUiTheme] = useState('dark'); // dark (system/light 비활성화)
   const [typingSpeed, setTypingSpeed] = useState(40); // 10~80 cps
   const [temperatureSel, setTemperatureSel] = useState(DEFAULT_TEMPERATURE); // 0.0~1.0 (0.1 step)
   
@@ -83,10 +86,10 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
       cost: 10,
       subModels: [
         // ✅ 최신 Claude(4.0+) 모델명 기준으로 정리 (백엔드에서도 동일 문자열로 호출)
-        { id: 'claude-sonnet-4', name: 'Claude Sonnet 4', description: '빠르고 안정적인 올라운더', cost: 10, badge: '기본', badgeClass: 'bg-pink-600 text-white hover:bg-pink-600' },
-        { id: 'claude-opus-4-1', name: 'Claude Opus 4.1', description: '더 깊은 추론/품질을 지향하는 플래그십', cost: 20, badge: '신규', badgeClass: 'bg-pink-600 text-white hover:bg-pink-600' },
-        { id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5', description: '더 향상된 성능의 Sonnet 라인', cost: 12, badge: '인기', badgeClass: 'bg-pink-600 text-white hover:bg-pink-600' },
-        { id: 'claude-opus-4-5', name: 'Claude Opus 4.5', description: '최상위 품질의 Opus 라인', cost: 25, badge: '최고', badgeClass: 'bg-pink-600 text-white hover:bg-pink-600' },
+        { id: 'claude-sonnet-4-20250514', name: 'Claude Sonnet 4', description: '빠르고 안정적인 올라운더', cost: 10, badge: '기본', badgeClass: 'bg-pink-600 text-white hover:bg-pink-600' },
+        { id: 'claude-opus-4-1-20250805', name: 'Claude Opus 4.1', description: '더 깊은 추론/품질을 지향하는 플래그십', cost: 20, badge: '신규', badgeClass: 'bg-pink-600 text-white hover:bg-pink-600' },
+        { id: 'claude-sonnet-4-5-20250929', name: 'Claude Sonnet 4.5', description: '더 향상된 성능의 Sonnet 라인', cost: 12, badge: '인기', badgeClass: 'bg-pink-600 text-white hover:bg-pink-600' },
+        { id: 'claude-opus-4-5-20251101', name: 'Claude Opus 4.5', description: '최상위 품질의 Opus 라인', cost: 25, badge: '최고', badgeClass: 'bg-pink-600 text-white hover:bg-pink-600' },
       ]
     },
     gpt: {
@@ -126,8 +129,18 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
   // 현재 모델이 변경되면 선택된 모델 업데이트(방어적)
   useEffect(() => {
     try {
-      const safeModel = (currentModel && models[currentModel]) ? currentModel : 'gemini';
-      if (currentModel && !models[currentModel]) {
+      const rawModel = String(currentModel || '').trim();
+      const isHiddenModel = HIDDEN_CHAT_MODEL_IDS.has(rawModel);
+
+      // 일반 캐릭터챗: 숨김 모델이 저장돼있어도 UI에서는 gemini로 안전 폴백
+      const safeModel =
+        (!isOrigChat && isHiddenModel)
+          ? 'gemini'
+          : ((currentModel && models[currentModel]) ? currentModel : 'gemini');
+
+      if (!isOrigChat && isHiddenModel) {
+        console.warn('[ModelSelectionModal] hidden model is not exposed in chat UI, fallback to gemini:', rawModel);
+      } else if (currentModel && !models[currentModel]) {
         console.warn('[ModelSelectionModal] unsupported model, fallback to gemini:', currentModel);
       }
       setSelectedModel(safeModel);
@@ -142,7 +155,7 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
       setSelectedModel('gemini');
       setSelectedSubModel('gemini-2.5-pro');
     }
-  }, [currentModel, currentSubModel, isOpen]);
+  }, [currentModel, currentSubModel, isOpen, isOrigChat]);
 
   // initialTab이 변경되면 activeTab 업데이트
   useEffect(() => {
@@ -190,7 +203,11 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
             userSpeech: parsed.colors.userSpeech || '#111111',
             userNarration: parsed.colors.userNarration || '#333333'
           });
-          if (parsed.theme) setUiTheme(parsed.theme);
+          // ✅ 테마는 현재 다크로 고정(레거시 저장값: system/light → dark로 클램핑)
+          if (parsed.theme) {
+            const t = String(parsed.theme || '').trim().toLowerCase();
+            setUiTheme(t === 'dark' ? 'dark' : 'dark');
+          }
           if (typeof parsed.typingSpeed === 'number') setTypingSpeed(parsed.typingSpeed);
         }
       } catch (_) {}
@@ -374,44 +391,52 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto" aria-describedby="model-modal-desc">
+      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto p-4 sm:p-6" aria-describedby="model-modal-desc">
         <DialogHeader>
           <DialogTitle className="text-xl font-bold">설정</DialogTitle>
           {/* 현재 선택된 모델 표시 */}
           <div className="mt-2 p-3 bg-blue-50 rounded-lg border">
             <div className="text-sm text-gray-600">현재 선택된 모델</div>
             <div className="font-medium text-blue-800">
-              {models[selectedModel]?.name || selectedModel} - {models[selectedModel]?.subModels?.find(sub => sub.id === selectedSubModel)?.name || selectedSubModel}
+              {isOrigChat
+                ? '원작챗 모델 선택 준비중입니다'
+                : `${models[selectedModel]?.name || selectedModel} - ${models[selectedModel]?.subModels?.find(sub => sub.id === selectedSubModel)?.name || selectedSubModel}`}
             </div>
+            {isOrigChat && (
+              <div className="text-xs text-gray-500 mt-1">
+                현재 원작챗은 모델 선택 기능을 준비 중입니다.
+              </div>
+            )}
           </div>
         </DialogHeader>
         <div id="model-modal-desc" className="sr-only">모델 및 대화 설정을 구성하는 모달</div>
 
 
         {/* 탭 메뉴 */}
-        <div className="border-b mb-6">
-          <div className="flex space-x-6">
+        <div className="border-b mb-5">
+          {/* 모바일: 가로 스크롤 + 줄바꿈 방지로 가독성 개선 */}
+          <div className="flex gap-5 overflow-x-auto whitespace-nowrap pr-2 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             <button 
               onClick={() => setActiveTab('model')}
-              className={`pb-2 ${activeTab === 'model' ? 'border-b-2 border-purple-500 text-purple-600 font-medium' : 'text-gray-500 hover:text-gray-700'}`}
+              className={`pb-2 text-sm ${activeTab === 'model' ? 'border-b-2 border-purple-500 text-purple-600 font-semibold' : 'text-gray-500 hover:text-gray-700'}`}
             >
               모델 선택
             </button>
-                                    <button 
-                          onClick={() => setActiveTab('profile')}
-                          className={`pb-2 ${activeTab === 'profile' ? 'border-b-2 border-purple-500 text-purple-600 font-medium' : 'text-gray-500 hover:text-gray-700'}`}
-                        >
-                          유저 페르소나
-                        </button>
+            <button 
+              onClick={() => setActiveTab('profile')}
+              className={`pb-2 text-sm ${activeTab === 'profile' ? 'border-b-2 border-purple-500 text-purple-600 font-semibold' : 'text-gray-500 hover:text-gray-700'}`}
+            >
+              유저 페르소나
+            </button>
             <button 
               onClick={() => setActiveTab('notes')}
-              className={`pb-2 ${activeTab === 'notes' ? 'border-b-2 border-purple-500 text-purple-600 font-medium' : 'text-gray-500 hover:text-gray-700'}`}
+              className={`pb-2 text-sm ${activeTab === 'notes' ? 'border-b-2 border-purple-500 text-purple-600 font-semibold' : 'text-gray-500 hover:text-gray-700'}`}
             >
               기억노트
             </button>
             <button 
               onClick={() => setActiveTab('settings')}
-              className={`pb-2 ${activeTab === 'settings' ? 'border-b-2 border-purple-500 text-purple-600 font-medium' : 'text-gray-500 hover:text-gray-700'}`}
+              className={`pb-2 text-sm ${activeTab === 'settings' ? 'border-b-2 border-purple-500 text-purple-600 font-semibold' : 'text-gray-500 hover:text-gray-700'}`}
             >
               추가 설정
             </button>
@@ -428,59 +453,53 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
             </p>
           </div>
 
-          {/* ✅ 공통 Temperature 설정 (0~1, 0.1 step) */}
-          <div className="rounded-lg border border-gray-700 bg-gray-900 text-white p-4">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <div className="text-sm font-semibold">Temperature</div>
-                <div className="text-xs text-gray-300 mt-1">
-                  0에 가까울수록 안정적/일관적, 1에 가까울수록 창의적/다양해요.
-                </div>
-                <div className="text-[11px] text-gray-400 mt-1">
-                  기본값: {DEFAULT_TEMPERATURE.toFixed(1)}
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <div className="text-sm font-mono text-white/90">
-                  {Number(temperatureSel).toFixed(1)}
-                </div>
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="h-8 px-3 border-white/20 bg-white/5 text-white hover:bg-white/10"
-                  onClick={() => {
-                    const v = DEFAULT_TEMPERATURE;
-                    setTemperatureSel(v);
-                    try { onUpdateChatSettings && onUpdateChatSettings({ temperature: v }); } catch (_) {}
-                  }}
-                >
-                  기본값
-                </Button>
+          {/* ✅ 공통 대화 스타일(온도) 설정 (0~1, 0.1 step) */}
+          <div className="rounded-xl border border-gray-700 bg-gray-900 text-white p-4">
+            <div>
+              <div className="text-sm font-semibold">대화스타일(온도) 설정</div>
+              <div className="text-xs text-gray-300 mt-1">
+                대답이 더 창의적으로 나오거나, 설정/맥락에 더 충실하게 나오도록 조절해요.
               </div>
             </div>
             <div className="mt-3">
-              <Slider
-                value={[Number(temperatureSel) || DEFAULT_TEMPERATURE]}
-                min={0}
-                max={1}
-                step={0.1}
-                onValueChange={(vals) => {
-                  const raw = Array.isArray(vals) ? vals[0] : DEFAULT_TEMPERATURE;
-                  const clipped = Math.max(0, Math.min(1, Number(raw)));
-                  const v = Math.round(clipped * 10) / 10;
-                  setTemperatureSel(v);
-                  try { onUpdateChatSettings && onUpdateChatSettings({ temperature: v }); } catch (_) {}
-                }}
-              />
-              <div className="mt-2 flex justify-between text-[10px] text-gray-400">
-                <span>0.0</span>
-                <span>{DEFAULT_TEMPERATURE.toFixed(1)}</span>
-                <span>1.0</span>
-              </div>
+              {(() => {
+                // 0.0도 정상적으로 선택/표시되도록 (0은 falsy라서 || default 사용 금지)
+                const t = Number(temperatureSel);
+                const tSafe = Number.isFinite(t) ? Math.max(0, Math.min(1, t)) : DEFAULT_TEMPERATURE;
+                return (
+                  <>
+                    <Slider
+                      value={[tSafe]}
+                      min={0}
+                      max={1}
+                      step={0.1}
+                      onValueChange={(vals) => {
+                        const raw = Array.isArray(vals) ? vals[0] : DEFAULT_TEMPERATURE;
+                        const clipped = Math.max(0, Math.min(1, Number(raw)));
+                        const v = Math.round(clipped * 10) / 10;
+                        setTemperatureSel(v);
+                        try { onUpdateChatSettings && onUpdateChatSettings({ temperature: v }); } catch (_) {}
+                      }}
+                    />
+                    <div className="mt-2 flex items-center gap-2 text-[11px] text-gray-400">
+                      <span className="whitespace-nowrap">설정에 충실하게</span>
+                      <div className="flex-1 flex items-center gap-2">
+                        <div className="h-px flex-1 bg-white/10" />
+                        <span className="text-gray-500 whitespace-nowrap">기본값</span>
+                        <div className="h-px flex-1 bg-white/10" />
+                      </div>
+                      <span className="whitespace-nowrap">창의적으로</span>
+                    </div>
+                  </>
+                );
+              })()}
             </div>
           </div>
 
-          {Object.entries(models).map(([modelId, model]) => (
+          {Object.entries(models)
+            // ✅ 일반 캐릭터챗: 연동 준비중 모델(Deepseek/단문/케이브덕)은 비노출
+            .filter(([modelId]) => !['deepseek', 'short', 'caveduck'].includes(String(modelId || '')))
+            .map(([modelId, model]) => (
             <Collapsible 
               key={modelId}
               open={expandedSections[modelId]}
@@ -490,9 +509,6 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
                 <div className="w-full flex items-center justify-between p-3 bg-gray-800 text-white rounded-lg hover:bg-gray-700 transition-colors cursor-pointer">
                   <div className="flex items-center space-x-3">
                     <span className="font-medium">{model.name}</span>
-                    {model.isEvent && (
-                      <Badge className="bg-green-500 text-white text-xs">EVENT</Badge>
-                    )}
                     {selectedModel === modelId && (
                       <Check className="w-4 h-4 text-green-400" />
                     )}
@@ -505,23 +521,23 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
                 {model.subModels.map((subModel) => (
                   <div
                     key={subModel.id}
-                    className={`p-3 rounded-lg border cursor-pointer transition-colors ${
+                    className={`p-3 rounded-lg border transition-colors ${
                       isSelected(modelId, subModel.id)
                         ? 'border-purple-500 bg-purple-50'
-                        : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
-                    }`}
-                    onClick={() => handleModelSelect(modelId, subModel.id)}
+                        : (isOrigChat ? 'border-gray-200 bg-gray-50' : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50')
+                    } ${isOrigChat ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}
+                    aria-disabled={isOrigChat ? 'true' : undefined}
+                    onClick={() => {
+                      // ✅ 원작챗: 모델 선택 기능 준비중 → 클릭 비활성
+                      if (isOrigChat) return;
+                      handleModelSelect(modelId, subModel.id);
+                    }}
                   >
                     <div className="flex items-center justify-between">
                       <div className="flex items-center space-x-3">
                         <div>
                           <div className="flex items-center space-x-2">
                             <span className="font-medium">{subModel.name}</span>
-                            {subModel.badge && (
-                              <Badge className={`${subModel.badgeClass || 'bg-red-500 text-white'} text-xs`}>
-                                {subModel.badge}
-                              </Badge>
-                            )}
                             {isSelected(modelId, subModel.id) && (
                               <Check className="w-4 h-4 text-purple-600" />
                             )}
@@ -722,7 +738,7 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
         {activeTab === 'notes' && (
           <div className="space-y-4">
             <div>
-              <h3 className="font-semibold mb-2">로어북 추가 후 그동안의 스토리를 내용 안에 적으면 캐릭터가 잊지 않고 기억해요.</h3>
+              <h3 className="font-semibold mb-2">로어북 추가 후 그동안의 스토리를 내용 안에 적으면 다음 턴부터 캐릭터가 잊지 않고 기억해요.</h3>
             </div>
             
             {/* 새 로어북 추가 */}
@@ -877,13 +893,27 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
         {activeTab === 'settings' && (
           <div className="space-y-4">
             <h3 className="font-semibold mb-2">추가 설정</h3>
-            {/* 테마 */}
+            {/* 테마 (현재: 다크 고정 / 시스템·라이트 비활성화) */}
             <div className="mt-2 p-3 rounded-lg border">
               <div className="text-sm text-gray-700 mb-2">색상 테마</div>
               <div className="flex items-center gap-4">
                 {['system','dark','light'].map(t => (
-                  <label key={t} className="inline-flex items-center gap-2 cursor-pointer">
-                    <input type="radio" name="theme" className="accent-purple-600" checked={uiTheme===t} onChange={()=>setUiTheme(t)} />
+                  <label
+                    key={t}
+                    className={`inline-flex items-center gap-2 ${t === 'dark' ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}
+                    title={t === 'dark' ? undefined : '준비 중인 기능입니다'}
+                  >
+                    <input
+                      type="radio"
+                      name="theme"
+                      className="accent-purple-600"
+                      checked={uiTheme===t}
+                      disabled={t !== 'dark'}
+                      onChange={() => {
+                        if (t !== 'dark') return;
+                        setUiTheme('dark');
+                      }}
+                    />
                     <span className="text-sm">{t==='system'?'시스템':t==='dark'?'다크':'라이트'}</span>
                   </label>
                 ))}
@@ -915,37 +945,34 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
             </div>
 
             {/* 원작챗 추가 설정(즉시 저장) */}
-            <div className="mt-2 p-3 rounded-lg border">
-              <div className="text-sm text-gray-700 mb-2">보정 단계</div>
-              <div className="flex items-center gap-4">
-                {['always','first2','off'].map(v => (
-                  <label key={v} className="inline-flex items-center gap-2 cursor-pointer">
-                    <input type="radio" name="ppMode" className="accent-purple-600" checked={ppModeSel===v} onChange={()=>{ setPpModeSel(v); try { onUpdateChatSettings && onUpdateChatSettings({ postprocess_mode: v }); } catch(_) {} }} />
-                    <span className="text-sm">{v==='always'?'항상 ON': v==='first2'?'처음 2턴만 ON':'OFF'}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
-            <div className="mt-2 p-3 rounded-lg border">
-              <div className="text-sm text-gray-700 mb-2">자동 진행 길이</div>
-              <div className="flex items-center gap-4">
-                {[1,2].map(v => (
-                  <label key={v} className="inline-flex items-center gap-2 cursor-pointer">
-                    <input type="radio" name="nextLen" className="accent-purple-600" checked={nextLenSel===v} onChange={()=>{ setNextLenSel(v); try { onUpdateChatSettings && onUpdateChatSettings({ next_event_len: v }); } catch(_) {} }} />
-                    <span className="text-sm">{v}장면</span>
-                  </label>
-                ))}
-              </div>
-            </div>
-            <div className="mt-2 p-3 rounded-lg border">
-              <div className="text-sm text-gray-700 mb-2">프리워밍</div>
-              <div className="flex items-center gap-4">
-                <label className="inline-flex items-center gap-2 cursor-pointer">
-                  <input type="checkbox" className="accent-purple-600" checked={prewarmSel} onChange={(e)=>{ setPrewarmSel(!!e.target.checked); try { onUpdateChatSettings && onUpdateChatSettings({ prewarm_on_start: !!e.target.checked }); } catch(_) {} }} />
-                  <span className="text-sm">ON</span>
-                </label>
-              </div>
-            </div>
+            {isOrigChat && (
+              <>
+                <div className="mt-2 p-3 rounded-lg border">
+                  <div className="text-sm text-gray-700 mb-2">보정 단계</div>
+                  <div className="flex items-center gap-4">
+                    {['always','first2','off'].map(v => (
+                      <label key={v} className="inline-flex items-center gap-2 cursor-pointer">
+                        <input type="radio" name="ppMode" className="accent-purple-600" checked={ppModeSel===v} onChange={()=>{ setPpModeSel(v); try { onUpdateChatSettings && onUpdateChatSettings({ postprocess_mode: v }); } catch(_) {} }} />
+                        <span className="text-sm">{v==='always'?'항상 ON': v==='first2'?'처음 2턴만 ON':'OFF'}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+                <div className="mt-2 p-3 rounded-lg border">
+                  <div className="text-sm text-gray-700 mb-2">자동 진행 길이</div>
+                  <div className="flex items-center gap-4">
+                    {[1,2].map(v => (
+                      <label key={v} className="inline-flex items-center gap-2 cursor-pointer">
+                        <input type="radio" name="nextLen" className="accent-purple-600" checked={nextLenSel===v} onChange={()=>{ setNextLenSel(v); try { onUpdateChatSettings && onUpdateChatSettings({ next_event_len: v }); } catch(_) {} }} />
+                        <span className="text-sm">{v}장면</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 프리워밍: 현재 운영은 기본 ON으로만 사용(비노출) */}
+              </>
+            )}
 
             {/* 글자 크기 */}
             <div className="mt-2 p-3 rounded-lg border">

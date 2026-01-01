@@ -11,8 +11,10 @@ import { Label } from '../components/ui/label';
 import { Switch } from '../components/ui/switch';
 import { Badge } from '../components/ui/badge';
 import { Avatar, AvatarFallback, AvatarImage } from '../components/ui/avatar';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '../components/ui/dialog';
 import { useAuth } from '../contexts/AuthContext';
-import { charactersAPI } from '../lib/api';
+import { charactersAPI, storiesAPI, tagsAPI, usersAPI, metricsAPI } from '../lib/api';
 import {
   HOME_BANNERS_STORAGE_KEY,
   HOME_BANNERS_CHANGED_EVENT,
@@ -24,12 +26,11 @@ import {
 import {
   HOME_SLOTS_STORAGE_KEY,
   HOME_SLOTS_CHANGED_EVENT,
-  HOME_SLOTS_CURATED_CHARACTERS_SLOT_ID,
-  HOME_SLOTS_CURATED_CHARACTERS_MAX,
   DEFAULT_HOME_SLOTS,
   getHomeSlots,
   setHomeSlots,
   sanitizeHomeSlot,
+  isSystemHomeSlotId,
 } from '../lib/cmsSlots';
 
 /**
@@ -127,16 +128,40 @@ const CMSPage = () => {
   const { user } = useAuth();
   const isAdmin = !!user?.is_admin;
 
-  const [activeTab, setActiveTab] = React.useState('banners'); // banners | slots | aiModels
+  const [activeTab, setActiveTab] = React.useState('banners'); // users | banners | slots | aiModels
   const [banners, setBannersState] = React.useState(() => getHomeBanners());
   const [slots, setSlotsState] = React.useState(() => getHomeSlots());
   const [saving, setSaving] = React.useState(false);
 
-  // ===== 추천 캐릭터(초심자 온보딩) 선택 UI 상태 =====
-  // - "구좌명"과 달리 추천 캐릭터 목록은 입력 중 trim 이슈가 없도록 배열 자체를 편집한다.
-  const [curatedSearch, setCuratedSearch] = React.useState('');
-  const [curatedSearchResults, setCuratedSearchResults] = React.useState([]);
-  const [curatedSearching, setCuratedSearching] = React.useState(false);
+  // ===== 회원관리 탭 (관리자) =====
+  const USERS_PAGE_SIZE = 100;
+  const [usersPage, setUsersPage] = React.useState(1);
+  const [usersLoading, setUsersLoading] = React.useState(false);
+  const [usersTotal, setUsersTotal] = React.useState(0);
+  const [usersItems, setUsersItems] = React.useState([]);
+  const [usersReloadKey, setUsersReloadKey] = React.useState(0);
+  const [trafficLoading, setTrafficLoading] = React.useState(false);
+  const [trafficSummary, setTrafficSummary] = React.useState(null);
+
+  // ===== CMS 커스텀 구좌: 콘텐츠(캐릭터/웹소설) 선택 모달 상태 =====
+  // 요구사항(대표님):
+  // - 구좌 추가 → 새 구좌 박스에서 콘텐츠(캐릭터/원작챗/웹소설)를 다중 선택
+  // - 정렬 방식: 대화수(조회수) 순 | 랜덤(새로고침마다)
+  // - 태그 선택 + 검색어 검색 + 타입 필터(전체/캐릭터/원작챗/웹소설)
+  const [allTags, setAllTags] = React.useState([]); // [{ id?, slug, name }]
+  const [tagsLoading, setTagsLoading] = React.useState(false);
+
+  const [contentPickerOpen, setContentPickerOpen] = React.useState(false);
+  const [contentPickerSlotId, setContentPickerSlotId] = React.useState(null);
+  const [contentPickerType, setContentPickerType] = React.useState('all'); // all|character|origchat|webnovel
+  const [contentPickerQuery, setContentPickerQuery] = React.useState('');
+  const [contentPickerTagQuery, setContentPickerTagQuery] = React.useState('');
+  const [contentPickerTags, setContentPickerTags] = React.useState([]); // [slug]
+  const [contentPickerSortMode, setContentPickerSortMode] = React.useState('metric'); // metric|random
+  const [contentSearching, setContentSearching] = React.useState(false);
+  const [contentResults, setContentResults] = React.useState([]); // [{ key, type, item }]
+  const [contentSelectedKeys, setContentSelectedKeys] = React.useState([]); // selection order
+  const [contentSelectedByKey, setContentSelectedByKey] = React.useState({}); // key -> { type, item }
 
   // 배너 탭: 탭/창 동기화(방어적)
   // - focus 이벤트는 파일 업로드(File Picker)에서도 발생할 수 있어, "저장 전 편집 상태"를 로컬스토리지의 옛 값으로 덮어쓰는 버그를 만들 수 있다.
@@ -182,6 +207,101 @@ const CMSPage = () => {
       try { window.removeEventListener('storage', onStorage); } catch (_) {}
     };
   }, []);
+
+  // 태그 목록 로드(콘텐츠 선택 모달용) - 베스트 에포트
+  React.useEffect(() => {
+    if (!isAdmin) return;
+    let active = true;
+    const load = async () => {
+      setTagsLoading(true);
+      try {
+        const res = await tagsAPI.getTags();
+        const raw = res?.data;
+        const arr = Array.isArray(raw)
+          ? raw
+          : Array.isArray(raw?.tags)
+            ? raw.tags
+            : Array.isArray(raw?.items)
+              ? raw.items
+              : [];
+
+        const normalized = (arr || [])
+          .map((t) => ({
+            slug: String(t?.slug || t?.name || '').trim(),
+            name: String(t?.name || t?.slug || '').trim(),
+          }))
+          .filter((t) => !!t.slug);
+
+        if (!active) return;
+        setAllTags(normalized);
+      } catch (e) {
+        try { console.error('[CMSPage] tagsAPI.getTags failed:', e); } catch (_) {}
+        if (active) setAllTags([]);
+      } finally {
+        if (active) setTagsLoading(false);
+      }
+    };
+    load();
+    return () => { active = false; };
+  }, [isAdmin]);
+
+  // 회원 목록 로드(관리자) - activeTab/usersPage 변화에 따라
+  React.useEffect(() => {
+    if (!isAdmin) return;
+    if (activeTab !== 'users') return;
+
+    let active = true;
+    const loadUsers = async () => {
+      setUsersLoading(true);
+      try {
+        const page = Math.max(1, Number(usersPage || 1));
+        const skip = (page - 1) * USERS_PAGE_SIZE;
+        const res = await usersAPI.adminListUsers({ skip, limit: USERS_PAGE_SIZE });
+        const data = res?.data || {};
+        const total = Number(data?.total || 0) || 0;
+        const items = Array.isArray(data?.items) ? data.items : [];
+        if (!active) return;
+        setUsersTotal(total);
+        setUsersItems(items);
+      } catch (e) {
+        try { console.error('[CMSPage] adminListUsers failed:', e); } catch (_) {}
+        if (active) {
+          setUsersTotal(0);
+          setUsersItems([]);
+        }
+        toast.error('회원 목록을 불러오지 못했습니다.');
+      } finally {
+        if (active) setUsersLoading(false);
+      }
+    };
+
+    loadUsers();
+    return () => { active = false; };
+  }, [isAdmin, activeTab, usersPage, usersReloadKey]);
+
+  // 트래픽 요약(최소 구현: 채팅 기반 DAU/WAU/MAU)
+  React.useEffect(() => {
+    if (!isAdmin) return;
+    if (activeTab !== 'users') return;
+
+    let active = true;
+    const loadTraffic = async () => {
+      setTrafficLoading(true);
+      try {
+        const res = await metricsAPI.getTraffic();
+        if (!active) return;
+        setTrafficSummary(res?.data || null);
+      } catch (e) {
+        try { console.error('[CMSPage] metricsAPI.getTraffic failed:', e); } catch (_) {}
+        if (active) setTrafficSummary(null);
+      } finally {
+        if (active) setTrafficLoading(false);
+      }
+    };
+
+    loadTraffic();
+    return () => { active = false; };
+  }, [isAdmin, activeTab, usersReloadKey]);
 
   if (!isAdmin) {
     return (
@@ -406,55 +526,242 @@ const CMSPage = () => {
     toast.success('구좌가 추가되었습니다. 아래에서 내용을 수정한 뒤 저장하세요.');
   };
 
-  /**
-   * 추천 캐릭터 검색(관리자용)
-   *
-   * 의도:
-   * - 추천 캐릭터는 하드코딩하지 않고, 운영자가 CMS에서 선택한다.
-   * - 지금은 "간단 검색 + 최대 20개"만 제공해도 데모/운영에 충분하다.
-   *
-   * 방어적:
-   * - API 응답 포맷이 배열/객체로 달라져도 안전하게 처리한다.
-   */
-  const runCuratedCharacterSearch = React.useCallback(async () => {
-    const q = String(curatedSearch || '').trim();
-    if (!q) {
-      setCuratedSearchResults([]);
+  // ===== 커스텀 구좌: 콘텐츠 선택/정렬 =====
+  const MAX_CUSTOM_PICKS = 40; // 로컬 저장소/UX 보호
+
+  const _makePickKey = (type, id) => `${String(type || '').trim()}:${String(id || '').trim()}`;
+
+  const _normalizeCharacterPickItem = (c) => {
+    return {
+      id: String(c?.id || '').trim(),
+      name: String(c?.name || '').trim() || '캐릭터',
+      description: String(c?.description || '').trim(),
+      avatar_url: String(c?.avatar_url || c?.thumbnail_url || '').trim(),
+      thumbnail_url: String(c?.thumbnail_url || '').trim(),
+      origin_story_id: c?.origin_story_id ? String(c.origin_story_id) : null,
+      is_origchat: !!c?.origin_story_id || !!c?.is_origchat,
+      source_type: c?.source_type,
+      chat_count: Number(c?.chat_count ?? c?.chatCount ?? 0) || 0,
+      like_count: Number(c?.like_count ?? c?.likeCount ?? 0) || 0,
+      creator_id: c?.creator_id || null,
+      creator_username: String(c?.creator_username || '').trim(),
+      creator_avatar_url: String(c?.creator_avatar_url || '').trim(),
+    };
+  };
+
+  const _normalizeStoryPickItem = (s) => {
+    return {
+      id: String(s?.id || '').trim(),
+      title: String(s?.title || '').trim() || '제목 없음',
+      excerpt: String(s?.excerpt || '').trim(),
+      cover_url: String(s?.cover_url || s?.coverUrl || '').trim(),
+      is_webtoon: !!s?.is_webtoon,
+      is_origchat: !!s?.is_origchat,
+      view_count: Number(s?.view_count ?? s?.viewCount ?? 0) || 0,
+      like_count: Number(s?.like_count ?? s?.likeCount ?? 0) || 0,
+      tags: Array.isArray(s?.tags) ? s.tags.map((t) => String(t)).filter(Boolean) : [],
+      creator_id: s?.creator_id || null,
+      creator_username: String(s?.creator_username || '').trim(),
+      creator_avatar_url: String(s?.creator_avatar_url || '').trim(),
+    };
+  };
+
+  const openContentPickerForSlot = (slot) => {
+    const sid = String(slot?.id || '').trim();
+    if (!sid) return;
+
+    // 기존 선택 복원
+    const picks = Array.isArray(slot?.contentPicks) ? slot.contentPicks : [];
+    const nextByKey = {};
+    const nextKeys = [];
+    for (const p of picks) {
+      try {
+        const t = String(p?.type || '').trim().toLowerCase();
+        const type = (t === 'story' ? 'story' : (t === 'character' ? 'character' : ''));
+        const pid = String(p?.item?.id || '').trim();
+        if (!type || !pid) continue;
+        const key = _makePickKey(type, pid);
+        if (nextByKey[key]) continue;
+        nextByKey[key] = { type, item: p?.item };
+        nextKeys.push(key);
+      } catch (_) {}
+    }
+
+    setContentPickerSlotId(sid);
+    setContentSelectedByKey(nextByKey);
+    setContentSelectedKeys(nextKeys);
+    setContentPickerSortMode(String(slot?.contentSortMode || 'metric') === 'random' ? 'random' : 'metric');
+    setContentPickerOpen(true);
+  };
+
+  const closeContentPicker = () => {
+    setContentPickerOpen(false);
+    setContentPickerSlotId(null);
+    setContentResults([]);
+    // 선택/태그/검색어는 "다음 구좌에서도 재사용"이 편할 수 있어 유지한다.
+  };
+
+  const runContentSearch = async () => {
+    const q = String(contentPickerQuery || '').trim();
+    const tagsCsv = (contentPickerTags || []).map((t) => String(t || '').trim()).filter(Boolean).join(',');
+
+    if (!q && !tagsCsv) {
+      toast.error('검색어 또는 태그를 1개 이상 입력/선택해주세요.');
       return;
     }
 
-    setCuratedSearching(true);
+    setContentSearching(true);
     try {
-      const res = await charactersAPI.getCharacters({ search: q, limit: 20 });
-      const raw = res?.data;
-      const arr =
-        Array.isArray(raw)
+      const params = {
+        search: q || undefined,
+        tags: tagsCsv || undefined,
+        limit: 40,
+      };
+
+      const mode = String(contentPickerType || 'all').trim().toLowerCase();
+      const needChars = (mode === 'all' || mode === 'character' || mode === 'origchat');
+      const needStories = (mode === 'all' || mode === 'webnovel');
+
+      const [charsRes, storiesRes] = await Promise.all([
+        needChars ? charactersAPI.getCharacters(params) : Promise.resolve(null),
+        needStories ? storiesAPI.getStories(params) : Promise.resolve(null),
+      ]);
+
+      const merged = [];
+
+      // characters
+      try {
+        const raw = charsRes?.data;
+        const arr = Array.isArray(raw) ? raw : (Array.isArray(raw?.characters) ? raw.characters : []);
+        const normalized = (arr || [])
+          .map((c) => _normalizeCharacterPickItem(c))
+          .filter((c) => !!c.id);
+
+        const filtered = normalized.filter((c) => {
+          if (mode === 'character') {
+            // 일반 캐릭터: origin_story_id 없음 + IMPORTED 제외
+            return !c.origin_story_id && String(c.source_type || '').toUpperCase() !== 'IMPORTED';
+          }
+          if (mode === 'origchat') {
+            return !!c.origin_story_id;
+          }
+          return true;
+        });
+
+        for (const c of filtered) {
+          merged.push({ key: _makePickKey('character', c.id), type: 'character', item: c });
+        }
+      } catch (e) {
+        try { console.error('[CMSPage] character search normalize failed:', e); } catch (_) {}
+      }
+
+      // stories
+      try {
+        const raw = storiesRes?.data;
+        const arr = Array.isArray(raw)
           ? raw
-          : Array.isArray(raw?.characters)
-            ? raw.characters
-            : [];
+          : (Array.isArray(raw?.stories) ? raw.stories : (Array.isArray(raw?.items) ? raw.items : []));
+        const normalized = (arr || [])
+          .map((s) => _normalizeStoryPickItem(s))
+          .filter((s) => !!s.id);
 
-      // 최소 필드만 보장 (id/name/avatar_url)
-      const normalized = arr
-        .map((c) => ({
-          id: c?.id,
-          name: c?.name,
-          avatar_url: c?.avatar_url || c?.thumbnail_url || '',
-          source_type: c?.source_type,
-          is_origchat: c?.is_origchat,
-          origin_story_id: c?.origin_story_id,
-        }))
-        .filter((c) => !!c.id);
+        for (const s of normalized) {
+          merged.push({ key: _makePickKey('story', s.id), type: 'story', item: s });
+        }
+      } catch (e) {
+        try { console.error('[CMSPage] story search normalize failed:', e); } catch (_) {}
+      }
 
-      setCuratedSearchResults(normalized);
+      setContentResults(merged);
+      if (merged.length === 0) toast('검색 결과가 없습니다.');
     } catch (e) {
-      try { console.error('[CMSPage] curated character search failed:', e); } catch (_) {}
-      toast.error('캐릭터 검색에 실패했습니다.');
-      setCuratedSearchResults([]);
+      try { console.error('[CMSPage] runContentSearch failed:', e); } catch (_) {}
+      toast.error('검색에 실패했습니다.');
+      setContentResults([]);
     } finally {
-      setCuratedSearching(false);
+      setContentSearching(false);
     }
-  }, [curatedSearch]);
+  };
+
+  /**
+   * 콘텐츠 선택 모달: 태그 추가/제거
+   *
+   * 의도:
+   * - CMS에서 태그를 "선택"하여 검색 필터로 사용한다(콤마 구분 slug 전달).
+   * - 저장은 로컬스토리지이므로, 지나치게 큰 태그 배열/중복을 방지한다.
+   */
+  const addContentPickerTag = (slugLike) => {
+    const slug = String(slugLike || '').trim();
+    if (!slug) return;
+    setContentPickerTags((prev) => {
+      const arr = Array.isArray(prev) ? prev : [];
+      if (arr.includes(slug)) return arr;
+      return [...arr, slug].slice(0, 20);
+    });
+    setContentPickerTagQuery('');
+  };
+
+  const removeContentPickerTag = (slugLike) => {
+    const slug = String(slugLike || '').trim();
+    if (!slug) return;
+    setContentPickerTags((prev) => (Array.isArray(prev) ? prev.filter((t) => String(t) !== slug) : []));
+  };
+
+  const clearContentPickerSelection = () => {
+    setContentSelectedByKey({});
+    setContentSelectedKeys([]);
+  };
+
+  const toggleContentPick = (result) => {
+    const key = String(result?.key || '').trim();
+    const type = String(result?.type || '').trim();
+    const item = result?.item;
+    if (!key || !type || !item) return;
+
+    const exists = !!contentSelectedByKey[key];
+    if (exists) {
+      setContentSelectedByKey((prev) => {
+        const next = { ...(prev || {}) };
+        delete next[key];
+        return next;
+      });
+      setContentSelectedKeys((prev) => (Array.isArray(prev) ? prev.filter((k) => String(k) !== key) : []));
+      return;
+    }
+
+    // max guard
+    try {
+      const cur = Array.isArray(contentSelectedKeys) ? contentSelectedKeys.length : 0;
+      if (cur >= MAX_CUSTOM_PICKS) {
+        toast.error(`최대 ${MAX_CUSTOM_PICKS}개까지 선택할 수 있습니다.`);
+        return;
+      }
+    } catch (_) {}
+
+    setContentSelectedByKey((prev) => ({ ...(prev || {}), [key]: { type, item } }));
+    setContentSelectedKeys((prev) => [...(Array.isArray(prev) ? prev : []), key]);
+  };
+
+  const applyContentPickerToSlot = () => {
+    const sid = String(contentPickerSlotId || '').trim();
+    if (!sid) {
+      toast.error('구좌 정보를 찾을 수 없습니다.');
+      return;
+    }
+
+    const keys = Array.isArray(contentSelectedKeys) ? contentSelectedKeys : [];
+    const byKey = (contentSelectedByKey && typeof contentSelectedByKey === 'object') ? contentSelectedByKey : {};
+    const picks = keys.map((k) => byKey[k]).filter(Boolean);
+
+    updateSlot(sid, {
+      slotType: 'custom',
+      contentPicks: picks,
+      contentSortMode: (contentPickerSortMode === 'random' ? 'random' : 'metric'),
+    });
+
+    toast.success('콘텐츠가 설정되었습니다. 저장 버튼을 눌러 반영하세요.');
+    closeContentPicker();
+  };
 
   const moveSlot = (id, dir) => {
     setSlotsState((prev) => {
@@ -501,9 +808,15 @@ const CMSPage = () => {
     toast.success('기본값으로 초기화되었습니다. 저장 버튼을 눌러 반영하세요.');
   };
 
+  const refreshUsers = React.useCallback(() => {
+    // activeTab/usersPage useEffect가 실제 로드를 수행한다.
+    setUsersReloadKey((k) => (Number(k || 0) + 1));
+  }, []);
+
   const isBannersTab = activeTab === 'banners';
   const isSlotsTab = activeTab === 'slots';
   const isAiModelsTab = activeTab === 'aiModels';
+  const isUsersTab = activeTab === 'users';
 
   return (
     <AppLayout>
@@ -515,19 +828,22 @@ const CMSPage = () => {
               <div>
                 <div className="text-xl font-bold text-white">관리자 페이지</div>
                 <div className="text-sm text-gray-400">
-                  {isBannersTab ? '배너 조작' : isSlotsTab ? '구좌 조작' : 'AI모델 조작(준비중)'}
+                  {isUsersTab ? '회원 관리' : isBannersTab ? '배너 조작' : isSlotsTab ? '구좌 조작' : 'AI모델 조작(준비중)'}
                 </div>
               </div>
             </div>
             <div className="flex items-center gap-2">
-              {isAiModelsTab ? (
+              {(isAiModelsTab || isUsersTab) ? (
                 <Button
                   variant="outline"
                   className="bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
-                  disabled
-                  title="준비중"
+                  onClick={() => {
+                    if (isUsersTab) refreshUsers();
+                  }}
+                  disabled={isAiModelsTab}
+                  title={isAiModelsTab ? '준비중' : '새로고침'}
                 >
-                  준비중
+                  {isAiModelsTab ? '준비중' : '새로고침'}
                 </Button>
               ) : (
                 <>
@@ -555,6 +871,14 @@ const CMSPage = () => {
           <div className="flex items-center gap-2 flex-wrap">
             <Button
               variant="outline"
+              className={`h-9 px-3 ${isUsersTab ? 'bg-purple-600 border-purple-500 text-white hover:bg-purple-700' : 'bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700'}`}
+              onClick={() => { setActiveTab('users'); setUsersPage(1); }}
+              title="회원 관리"
+            >
+              회원 관리
+            </Button>
+            <Button
+              variant="outline"
               className={`h-9 px-3 ${isBannersTab ? 'bg-purple-600 border-purple-500 text-white hover:bg-purple-700' : 'bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700'}`}
               onClick={() => setActiveTab('banners')}
               title="배너 조작"
@@ -578,6 +902,159 @@ const CMSPage = () => {
               AI모델 조작
             </Button>
           </div>
+
+          {isUsersTab && (
+            <Card className="bg-gray-800 border-gray-700">
+              <CardHeader>
+                <CardTitle className="text-white">회원 목록</CardTitle>
+                <CardDescription className="text-gray-400">
+                  100명 단위 페이지네이션. 관리자 계정은 ADMIN으로 표시됩니다. (최근 로그인 날짜는 현재 “최근 채팅 활동 시간”으로 대체됩니다.)
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {/* 트래픽 요약(채팅 기반) */}
+                <div className="rounded-lg border border-gray-800 bg-gray-950/30 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-sm font-semibold text-white">트래픽 요약(채팅 기준)</div>
+                    <div className="text-xs text-gray-500">
+                      {trafficLoading ? '불러오는 중...' : (trafficSummary?.day ? `KST ${trafficSummary.day}` : '')}
+                    </div>
+                  </div>
+                  {trafficSummary ? (
+                    <div className="mt-3 grid grid-cols-2 sm:grid-cols-5 gap-3">
+                      <div className="rounded-md border border-gray-800 bg-gray-900/30 p-3">
+                        <div className="text-xs text-gray-500">DAU</div>
+                        <div className="text-lg font-bold text-white">{Number(trafficSummary?.dau_chat || 0).toLocaleString()}</div>
+                      </div>
+                      <div className="rounded-md border border-gray-800 bg-gray-900/30 p-3">
+                        <div className="text-xs text-gray-500">WAU(7d)</div>
+                        <div className="text-lg font-bold text-white">{Number(trafficSummary?.wau_chat || 0).toLocaleString()}</div>
+                      </div>
+                      <div className="rounded-md border border-gray-800 bg-gray-900/30 p-3">
+                        <div className="text-xs text-gray-500">MAU(30d)</div>
+                        <div className="text-lg font-bold text-white">{Number(trafficSummary?.mau_chat || 0).toLocaleString()}</div>
+                      </div>
+                      <div className="rounded-md border border-gray-800 bg-gray-900/30 p-3">
+                        <div className="text-xs text-gray-500">신규가입</div>
+                        <div className="text-lg font-bold text-white">{Number(trafficSummary?.new_users || 0).toLocaleString()}</div>
+                      </div>
+                      <div className="rounded-md border border-gray-800 bg-gray-900/30 p-3">
+                        <div className="text-xs text-gray-500">유저 대화수</div>
+                        <div className="text-lg font-bold text-white">{Number(trafficSummary?.user_messages || 0).toLocaleString()}</div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="mt-2 text-sm text-gray-400">
+                      트래픽 지표를 불러오지 못했습니다. (관리자 권한/서버 상태를 확인해주세요)
+                    </div>
+                  )}
+                  <div className="mt-2 text-xs text-gray-500">
+                    주의: 현재 DAU/WAU/MAU는 “유저 발화(sender_type=user)” 기준입니다. 스토리 열람 DAU는 per-user 로그가 없어 추후 이벤트 로그가 필요합니다.
+                  </div>
+                </div>
+
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                  <div className="text-sm text-gray-300">
+                    총 <span className="font-semibold text-white">{Number(usersTotal || 0).toLocaleString()}</span>명
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
+                      onClick={() => setUsersPage((p) => Math.max(1, Number(p || 1) - 1))}
+                      disabled={usersLoading || usersPage <= 1}
+                    >
+                      이전 100명
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
+                      onClick={() => {
+                        const totalPages = Math.max(1, Math.ceil((Number(usersTotal || 0) || 0) / USERS_PAGE_SIZE));
+                        setUsersPage((p) => Math.min(totalPages, Number(p || 1) + 1));
+                      }}
+                      disabled={usersLoading || (usersPage >= Math.max(1, Math.ceil((Number(usersTotal || 0) || 0) / USERS_PAGE_SIZE)))}
+                    >
+                      다음 100명
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="text-xs text-gray-500">
+                  페이지 {usersPage} / {Math.max(1, Math.ceil((Number(usersTotal || 0) || 0) / USERS_PAGE_SIZE))}
+                </div>
+
+                <Table className="text-gray-200">
+                  <TableHeader>
+                    <TableRow className="border-gray-700">
+                      <TableHead className="text-gray-200">no</TableHead>
+                      <TableHead className="text-gray-200">이메일</TableHead>
+                      <TableHead className="text-gray-200">닉네임</TableHead>
+                      <TableHead className="text-gray-200">가입일</TableHead>
+                      <TableHead className="text-gray-200">최근 로그인</TableHead>
+                      <TableHead className="text-gray-200 text-right">생성캐릭터수</TableHead>
+                      <TableHead className="text-gray-200 text-right">이용 대화수</TableHead>
+                      <TableHead className="text-gray-200 text-right">이용 조회수</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {usersLoading ? (
+                      <TableRow className="border-gray-800">
+                        <TableCell colSpan={8} className="text-center text-gray-400 py-8">
+                          불러오는 중...
+                        </TableCell>
+                      </TableRow>
+                    ) : (usersItems || []).length === 0 ? (
+                      <TableRow className="border-gray-800">
+                        <TableCell colSpan={8} className="text-center text-gray-400 py-8">
+                          표시할 회원이 없습니다.
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      (usersItems || []).map((u, idx) => {
+                        const no = (Math.max(1, Number(usersPage || 1)) - 1) * USERS_PAGE_SIZE + idx + 1;
+                        const email = String(u?.email || '').trim();
+                        const username = String(u?.username || '').trim();
+                        const isAdminUser = !!u?.is_admin;
+                        const createdAt = u?.created_at ? new Date(u.created_at) : null;
+                        const lastLoginAt = u?.last_login_at ? new Date(u.last_login_at) : null;
+                        const createdChars = Number(u?.created_character_count || 0) || 0;
+                        const usedChats = Number(u?.used_chat_count || 0) || 0;
+                        const usedViews = Number(u?.used_view_count || 0) || 0;
+                        return (
+                          <TableRow key={String(u?.id || no)} className={`border-gray-800 ${isAdminUser ? 'bg-orange-900/10' : ''}`}>
+                            <TableCell className="text-gray-400">{no}</TableCell>
+                            <TableCell className="max-w-[220px] truncate" title={email}>{email || '-'}</TableCell>
+                            <TableCell className="max-w-[220px]" title={username}>
+                              <div className="flex items-center gap-2 min-w-0">
+                                <span className="truncate">{username || '-'}</span>
+                                {isAdminUser ? (
+                                  <Badge className="bg-orange-500 text-black hover:bg-orange-500 text-[10px] px-2 py-0.5">
+                                    ADMIN
+                                  </Badge>
+                                ) : null}
+                              </div>
+                            </TableCell>
+                            <TableCell className="text-gray-300">
+                              {createdAt && !Number.isNaN(createdAt.getTime()) ? createdAt.toLocaleString('ko-KR') : '-'}
+                            </TableCell>
+                            <TableCell className="text-gray-300">
+                              {lastLoginAt && !Number.isNaN(lastLoginAt.getTime()) ? lastLoginAt.toLocaleString('ko-KR') : '-'}
+                            </TableCell>
+                            <TableCell className="text-right">{createdChars.toLocaleString()}</TableCell>
+                            <TableCell className="text-right">{usedChats.toLocaleString()}</TableCell>
+                            <TableCell className="text-right">{usedViews.toLocaleString()}</TableCell>
+                          </TableRow>
+                        );
+                      })
+                    )}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
+          )}
 
           {isBannersTab && (
           <Card className="bg-gray-800 border-gray-700">
@@ -919,8 +1396,10 @@ const CMSPage = () => {
                 ) : (
                   (slots || []).map((s, idx) => {
                     const status = computeStatus(s);
-                    const isCuratedPickSlot = String(s?.id || '') === HOME_SLOTS_CURATED_CHARACTERS_SLOT_ID;
-                    const curatedPicks = Array.isArray(s?.characterPicks) ? s.characterPicks : [];
+                    const slotType = String(s?.slotType || (isSystemHomeSlotId(s?.id) ? 'system' : 'custom')).trim().toLowerCase();
+                    const isCustomSlot = slotType === 'custom';
+                    const customPicks = Array.isArray(s?.contentPicks) ? s.contentPicks : [];
+                    const customSortMode = String(s?.contentSortMode || 'metric') === 'random' ? 'random' : 'metric';
                     return (
                       <div key={s.id} className="rounded-xl border border-gray-700 bg-gray-900/30 p-4">
                         <div className="flex items-start justify-between gap-3">
@@ -942,8 +1421,8 @@ const CMSPage = () => {
                               variant="outline"
                               className="h-9 px-3 bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
                               onClick={() => moveSlot(s.id, 'up')}
-                              disabled={isCuratedPickSlot || idx === 0}
-                              title={isCuratedPickSlot ? '상단 고정 구좌' : '위로'}
+                              disabled={idx === 0}
+                              title="위로"
                             >
                               <ArrowUp className="w-4 h-4" />
                             </Button>
@@ -951,8 +1430,8 @@ const CMSPage = () => {
                               variant="outline"
                               className="h-9 px-3 bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
                               onClick={() => moveSlot(s.id, 'down')}
-                              disabled={isCuratedPickSlot || idx === ((slots || []).length - 1)}
-                              title={isCuratedPickSlot ? '상단 고정 구좌' : '아래로'}
+                              disabled={idx === ((slots || []).length - 1)}
+                              title="아래로"
                             >
                               <ArrowDown className="w-4 h-4" />
                             </Button>
@@ -960,51 +1439,101 @@ const CMSPage = () => {
                         </div>
 
                         <div className="mt-4 space-y-4">
-                          {isCuratedPickSlot && (
-                            <div className="rounded-lg border border-purple-500/30 bg-purple-900/10 p-4">
+                          {isCustomSlot && (
+                            <div className="rounded-lg border border-gray-800 bg-gray-900/30 p-4">
                               <div className="flex items-start justify-between gap-3">
                                 <div className="min-w-0">
-                                  <div className="text-sm font-semibold text-white">추천 캐릭터(최대 {HOME_SLOTS_CURATED_CHARACTERS_MAX}명)</div>
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <div className="text-sm font-semibold text-white">구좌 콘텐츠</div>
+                                    <Badge className="bg-gray-700 text-gray-100 hover:bg-gray-700">
+                                      {customPicks.length}개
+                                    </Badge>
+                                    <Badge className="bg-gray-700 text-gray-100 hover:bg-gray-700">
+                                      {customSortMode === 'random' ? '랜덤' : '대화/조회순'}
+                                    </Badge>
+                                  </div>
                                   <div className="text-xs text-gray-400 mt-1">
-                                    메인 화면 상단에 고정 노출되는 초심자용 구좌입니다. (선택이 없으면 안내 문구만 보입니다)
+                                    캐릭터/원작챗/웹소설을 다중 선택하고, 정렬 방식을 설정하세요.
                                   </div>
                                 </div>
-                                <Badge className="bg-purple-700 text-white">
-                                  {Math.min(curatedPicks.length, HOME_SLOTS_CURATED_CHARACTERS_MAX)}/{HOME_SLOTS_CURATED_CHARACTERS_MAX}
-                                </Badge>
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  className="h-9 px-3 bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
+                                  onClick={() => openContentPickerForSlot(s)}
+                                >
+                                  선택/편집
+                                </Button>
                               </div>
 
-                              {/* 선택된 캐릭터 */}
-                              {curatedPicks.length === 0 ? (
+                              <div className="mt-3 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4">
+                                <label className="inline-flex items-center gap-2 cursor-pointer text-sm text-gray-200">
+                                  <input
+                                    type="radio"
+                                    name={`customSort-${s.id}`}
+                                    className="accent-purple-600"
+                                    checked={customSortMode === 'metric'}
+                                    onChange={() => updateSlot(s.id, { contentSortMode: 'metric' })}
+                                  />
+                                  <span className="text-sm">대화수(조회수) 순</span>
+                                </label>
+                                <label className="inline-flex items-center gap-2 cursor-pointer text-sm text-gray-200">
+                                  <input
+                                    type="radio"
+                                    name={`customSort-${s.id}`}
+                                    className="accent-purple-600"
+                                    checked={customSortMode === 'random'}
+                                    onChange={() => updateSlot(s.id, { contentSortMode: 'random' })}
+                                  />
+                                  <span className="text-sm">랜덤 정렬(새로고침마다 변경)</span>
+                                </label>
+                              </div>
+
+                              {customPicks.length === 0 ? (
                                 <div className="mt-3 text-sm text-gray-300">
-                                  아직 선택된 추천 캐릭터가 없습니다.
+                                  아직 선택된 콘텐츠가 없습니다. “선택/편집”에서 추가하세요.
                                 </div>
                               ) : (
                                 <div className="mt-3 flex flex-wrap gap-2">
-                                  {curatedPicks.slice(0, HOME_SLOTS_CURATED_CHARACTERS_MAX).map((p) => {
-                                    const pid = String(p?.id || '').trim();
-                                    const name = String(p?.name || '').trim() || `ID: ${pid}`;
-                                    const img = String(p?.avatar_url || '').trim();
+                                  {customPicks.map((p) => {
+                                    const type = String(p?.type || '').trim().toLowerCase();
+                                    const pid = String(p?.item?.id || '').trim();
+                                    const label = type === 'story'
+                                      ? String(p?.item?.title || '').trim()
+                                      : String(p?.item?.name || '').trim();
+                                    const img = type === 'story'
+                                      ? String(p?.item?.cover_url || '').trim()
+                                      : String(p?.item?.avatar_url || p?.item?.thumbnail_url || '').trim();
+                                    const k = `${type}:${pid}`;
+                                    const badge = type === 'story' ? '웹소설' : (p?.item?.origin_story_id ? '원작챗' : '캐릭터');
                                     return (
                                       <div
-                                        key={pid || name}
+                                        key={k}
                                         className="inline-flex items-center gap-2 rounded-full border border-gray-700 bg-gray-900/40 px-2.5 py-1"
+                                        title={label || k}
                                       >
                                         <Avatar className="h-6 w-6">
-                                          <AvatarImage src={img} alt={name} />
+                                          <AvatarImage src={img} alt={label || badge} />
                                           <AvatarFallback className="bg-gray-800 text-gray-200 text-xs">
-                                            {name?.charAt(0) || 'C'}
+                                            {(label || badge || 'C').charAt(0)}
                                           </AvatarFallback>
                                         </Avatar>
-                                        <span className="text-xs text-gray-200 max-w-[180px] truncate" title={name}>{name}</span>
+                                        <Badge className="bg-gray-700 text-gray-100 hover:bg-gray-700 text-[10px] px-2 py-0.5">
+                                          {badge}
+                                        </Badge>
+                                        <span className="text-xs text-gray-200 max-w-[220px] truncate">{label || k}</span>
                                         <button
                                           type="button"
                                           className="ml-1 inline-flex h-6 w-6 items-center justify-center rounded-full text-gray-300 hover:bg-gray-800 hover:text-white transition-colors"
                                           onClick={() => {
-                                            const next = curatedPicks.filter((x) => String(x?.id || '') !== pid);
-                                            updateSlot(s.id, { characterPicks: next });
+                                            const next = (customPicks || []).filter((x) => {
+                                              const t2 = String(x?.type || '').trim().toLowerCase();
+                                              const id2 = String(x?.item?.id || '').trim();
+                                              return `${t2}:${id2}` !== k;
+                                            });
+                                            updateSlot(s.id, { contentPicks: next });
                                           }}
-                                          aria-label="추천 캐릭터 제거"
+                                          aria-label="콘텐츠 제거"
                                           title="제거"
                                         >
                                           <X className="h-4 w-4" />
@@ -1012,84 +1541,6 @@ const CMSPage = () => {
                                       </div>
                                     );
                                   })}
-                                </div>
-                              )}
-
-                              {/* 검색/추가 */}
-                              <form
-                                className="mt-4 flex flex-col sm:flex-row gap-2"
-                                onSubmit={(e) => {
-                                  e.preventDefault();
-                                  runCuratedCharacterSearch();
-                                }}
-                              >
-                                <Input
-                                  value={curatedSearch}
-                                  onChange={(e) => setCuratedSearch(e.target.value)}
-                                  className="bg-gray-900 border-gray-700 text-white"
-                                  placeholder="캐릭터 이름으로 검색 (예: 여우, 기사, 학생...)"
-                                />
-                                <Button
-                                  type="submit"
-                                  variant="outline"
-                                  className="bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
-                                  disabled={curatedSearching}
-                                >
-                                  {curatedSearching ? '검색 중...' : '검색'}
-                                </Button>
-                              </form>
-
-                              {curatedSearchResults.length > 0 && (
-                                <div className="mt-3 rounded-lg border border-gray-800 bg-gray-950/30">
-                                  <div className="max-h-[260px] overflow-auto">
-                                    {curatedSearchResults.map((c) => {
-                                      const cid = String(c?.id || '').trim();
-                                      const name = String(c?.name || '').trim() || `ID: ${cid}`;
-                                      const img = String(c?.avatar_url || '').trim();
-                                      const already = curatedPicks.some((p) => String(p?.id || '') === cid);
-                                      const disabled = already || curatedPicks.length >= HOME_SLOTS_CURATED_CHARACTERS_MAX;
-                                      return (
-                                        <div
-                                          key={cid}
-                                          className="flex items-center justify-between gap-3 px-3 py-2 border-b border-gray-900 last:border-b-0"
-                                        >
-                                          <div className="flex items-center gap-3 min-w-0">
-                                            <Avatar className="h-8 w-8">
-                                              <AvatarImage src={img} alt={name} />
-                                              <AvatarFallback className="bg-gray-800 text-gray-200 text-xs">
-                                                {name?.charAt(0) || 'C'}
-                                              </AvatarFallback>
-                                            </Avatar>
-                                            <div className="min-w-0">
-                                              <div className="text-sm text-gray-100 truncate" title={name}>{name}</div>
-                                              <div className="text-xs text-gray-500 truncate">ID: {cid}</div>
-                                            </div>
-                                          </div>
-                                          <Button
-                                            type="button"
-                                            variant="outline"
-                                            className="h-9 px-3 bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700 disabled:opacity-50"
-                                            disabled={disabled}
-                                            onClick={() => {
-                                              if (!cid) return;
-                                              if (already) return;
-                                              if (curatedPicks.length >= HOME_SLOTS_CURATED_CHARACTERS_MAX) {
-                                                toast.error(`추천 캐릭터는 최대 ${HOME_SLOTS_CURATED_CHARACTERS_MAX}명까지 선택할 수 있습니다.`);
-                                                return;
-                                              }
-                                              const next = [
-                                                ...curatedPicks,
-                                                { id: cid, name, avatar_url: img },
-                                              ];
-                                              updateSlot(s.id, { characterPicks: next });
-                                            }}
-                                          >
-                                            {already ? '선택됨' : '추가'}
-                                          </Button>
-                                        </div>
-                                      );
-                                    })}
-                                  </div>
                                 </div>
                               )}
                             </div>
@@ -1173,6 +1624,331 @@ const CMSPage = () => {
               </CardContent>
             </Card>
           )}
+
+          {/* 커스텀 구좌: 콘텐츠 선택 모달 */}
+          <Dialog
+            open={contentPickerOpen}
+            onOpenChange={(v) => {
+              if (!v) closeContentPicker();
+            }}
+          >
+            <DialogContent className="bg-gray-900 border-gray-800 text-white">
+              <DialogHeader>
+                <DialogTitle className="text-white">구좌 콘텐츠 선택</DialogTitle>
+                <DialogDescription className="text-gray-400">
+                  캐릭터/원작챗/웹소설을 다중 선택하고 “적용”을 누르세요.
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="space-y-4">
+                {/* 검색/필터 */}
+                <div className="rounded-lg border border-gray-800 bg-gray-950/30 p-4 space-y-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <div className="space-y-1">
+                      <div className="text-xs text-gray-400">타입</div>
+                      <select
+                        value={contentPickerType}
+                        onChange={(e) => setContentPickerType(e.target.value)}
+                        className="w-full h-10 rounded-md bg-gray-900 border border-gray-700 text-gray-100 px-3"
+                      >
+                        <option value="all">전체</option>
+                        <option value="character">캐릭터</option>
+                        <option value="origchat">원작챗</option>
+                        <option value="webnovel">웹소설</option>
+                      </select>
+                    </div>
+                    <div className="sm:col-span-2 space-y-1">
+                      <div className="text-xs text-gray-400">검색어</div>
+                      <div className="flex gap-2">
+                        <Input
+                          value={contentPickerQuery}
+                          onChange={(e) => setContentPickerQuery(e.target.value)}
+                          className="bg-gray-900 border-gray-700 text-white"
+                          placeholder="이름/제목으로 검색"
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' && !e.shiftKey) {
+                              e.preventDefault();
+                              runContentSearch();
+                            }
+                          }}
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
+                          onClick={runContentSearch}
+                          disabled={contentSearching}
+                        >
+                          {contentSearching ? '검색 중...' : '검색'}
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* 태그 */}
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <div className="text-sm font-semibold text-white">태그</div>
+                      {tagsLoading && <div className="text-xs text-gray-500">태그 불러오는 중...</div>}
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
+                      {(contentPickerTags || []).length === 0 ? (
+                        <div className="text-xs text-gray-500">선택하지 않아도 됩니다. (태그 없이도 검색 가능)</div>
+                      ) : (
+                        (contentPickerTags || []).map((slug) => {
+                          const s = String(slug || '').trim();
+                          const t = (Array.isArray(allTags) ? allTags : []).find((x) => String(x?.slug || '') === s);
+                          const label = t?.name && t.name !== s ? `${s} · ${t.name}` : s;
+                          return (
+                            <Badge key={s} className="bg-gray-700 text-gray-100 hover:bg-gray-700 inline-flex items-center gap-2">
+                              <span className="truncate max-w-[240px]">#{label}</span>
+                              <button
+                                type="button"
+                                className="inline-flex h-5 w-5 items-center justify-center rounded-full hover:bg-gray-800"
+                                onClick={() => removeContentPickerTag(s)}
+                                aria-label="태그 제거"
+                                title="제거"
+                              >
+                                <X className="h-3.5 w-3.5" />
+                              </button>
+                            </Badge>
+                          );
+                        })
+                      )}
+                    </div>
+
+                    <Input
+                      value={contentPickerTagQuery}
+                      onChange={(e) => setContentPickerTagQuery(e.target.value)}
+                      className="bg-gray-900 border-gray-700 text-white"
+                      placeholder="태그 검색/추가 (예: 로맨스, 판타지...)"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault();
+                          addContentPickerTag(contentPickerTagQuery);
+                        }
+                      }}
+                    />
+
+                    {(() => {
+                      const q = String(contentPickerTagQuery || '').trim().toLowerCase();
+                      if (!q) return null;
+                      const taken = new Set((contentPickerTags || []).map((x) => String(x || '').trim()).filter(Boolean));
+                      const list = (Array.isArray(allTags) ? allTags : [])
+                        .filter((t) => {
+                          const slug = String(t?.slug || '').toLowerCase();
+                          const name = String(t?.name || '').toLowerCase();
+                          if (!slug) return false;
+                          if (taken.has(String(t?.slug || '').trim())) return false;
+                          return slug.includes(q) || name.includes(q);
+                        })
+                        .slice(0, 12);
+                      if (list.length === 0) return <div className="text-xs text-gray-500">추천 태그가 없습니다.</div>;
+                      return (
+                        <div className="max-h-32 overflow-auto rounded-md border border-gray-800 bg-gray-950/40">
+                          {list.map((t) => {
+                            const slug = String(t?.slug || '').trim();
+                            const name = String(t?.name || '').trim();
+                            return (
+                              <button
+                                key={slug}
+                                type="button"
+                                className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-gray-800/70"
+                                onClick={() => addContentPickerTag(slug)}
+                              >
+                                <span className="font-medium">#{slug}</span>
+                                {name && name !== slug ? <span className="text-gray-400"> {' '}· {name}</span> : null}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      );
+                    })()}
+                  </div>
+
+                  {/* 정렬 */}
+                  <div className="space-y-2">
+                    <div className="text-sm font-semibold text-white">정렬 방식</div>
+                    <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4">
+                      <label className="inline-flex items-center gap-2 cursor-pointer text-sm text-gray-200">
+                        <input
+                          type="radio"
+                          name="contentSortMode"
+                          className="accent-purple-600"
+                          checked={contentPickerSortMode === 'metric'}
+                          onChange={() => setContentPickerSortMode('metric')}
+                        />
+                        대화수(조회수) 순
+                      </label>
+                      <label className="inline-flex items-center gap-2 cursor-pointer text-sm text-gray-200">
+                        <input
+                          type="radio"
+                          name="contentSortMode"
+                          className="accent-purple-600"
+                          checked={contentPickerSortMode === 'random'}
+                          onChange={() => setContentPickerSortMode('random')}
+                        />
+                        랜덤(새로고침마다)
+                      </label>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 선택됨 */}
+                <div className="rounded-lg border border-gray-800 bg-gray-950/30 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-sm font-semibold text-white">선택됨</div>
+                    <div className="flex items-center gap-2">
+                      <div className="text-xs text-gray-400">
+                        {(contentSelectedKeys || []).length}/{MAX_CUSTOM_PICKS}
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="h-8 px-3 bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
+                        onClick={clearContentPickerSelection}
+                        disabled={(contentSelectedKeys || []).length === 0}
+                      >
+                        전체 해제
+                      </Button>
+                    </div>
+                  </div>
+
+                  {(contentSelectedKeys || []).length === 0 ? (
+                    <div className="mt-2 text-sm text-gray-400">아직 선택된 콘텐츠가 없습니다.</div>
+                  ) : (
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {(contentSelectedKeys || []).map((k) => {
+                        const pick = contentSelectedByKey?.[k];
+                        const type = String(pick?.type || '').trim().toLowerCase();
+                        const label = type === 'story'
+                          ? String(pick?.item?.title || '').trim()
+                          : String(pick?.item?.name || '').trim();
+                        const img = type === 'story'
+                          ? String(pick?.item?.cover_url || '').trim()
+                          : String(pick?.item?.avatar_url || pick?.item?.thumbnail_url || '').trim();
+                        const badge = type === 'story' ? '웹소설' : (pick?.item?.origin_story_id ? '원작챗' : '캐릭터');
+                        return (
+                          <div
+                            key={k}
+                            className="inline-flex items-center gap-2 rounded-full border border-gray-700 bg-gray-900/40 px-2.5 py-1"
+                            title={label || k}
+                          >
+                            <Avatar className="h-6 w-6">
+                              <AvatarImage src={img} alt={label || badge} />
+                              <AvatarFallback className="bg-gray-800 text-gray-200 text-xs">
+                                {(label || badge || 'C').charAt(0)}
+                              </AvatarFallback>
+                            </Avatar>
+                            <Badge className="bg-gray-700 text-gray-100 hover:bg-gray-700 text-[10px] px-2 py-0.5">
+                              {badge}
+                            </Badge>
+                            <span className="text-xs text-gray-200 max-w-[220px] truncate">{label || k}</span>
+                            <button
+                              type="button"
+                              className="ml-1 inline-flex h-6 w-6 items-center justify-center rounded-full text-gray-300 hover:bg-gray-800 hover:text-white transition-colors"
+                              onClick={() => {
+                                setContentSelectedByKey((prev) => {
+                                  const next = { ...(prev || {}) };
+                                  delete next[k];
+                                  return next;
+                                });
+                                setContentSelectedKeys((prev) => (Array.isArray(prev) ? prev.filter((x) => String(x) !== String(k)) : []));
+                              }}
+                              aria-label="선택 제거"
+                              title="제거"
+                            >
+                              <X className="h-4 w-4" />
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {/* 검색 결과 */}
+                <div className="rounded-lg border border-gray-800 bg-gray-950/30 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-sm font-semibold text-white">검색 결과</div>
+                    <div className="text-xs text-gray-400">{(contentResults || []).length}개</div>
+                  </div>
+
+                  {(contentResults || []).length === 0 ? (
+                    <div className="mt-2 text-sm text-gray-400">
+                      검색어/태그를 입력하고 “검색”을 눌러주세요.
+                    </div>
+                  ) : (
+                    <div className="mt-3 max-h-[360px] overflow-auto divide-y divide-gray-900">
+                      {(contentResults || []).map((r) => {
+                        const key = String(r?.key || '').trim();
+                        const selected = !!contentSelectedByKey?.[key];
+                        const type = String(r?.type || '').trim().toLowerCase();
+                        const label = type === 'story'
+                          ? String(r?.item?.title || '').trim()
+                          : String(r?.item?.name || '').trim();
+                        const img = type === 'story'
+                          ? String(r?.item?.cover_url || '').trim()
+                          : String(r?.item?.avatar_url || r?.item?.thumbnail_url || '').trim();
+                        const badge = type === 'story' ? '웹소설' : (r?.item?.origin_story_id ? '원작챗' : '캐릭터');
+                        const metric = type === 'story'
+                          ? `조회수 ${Number(r?.item?.view_count || 0).toLocaleString()}`
+                          : `대화수 ${Number(r?.item?.chat_count || 0).toLocaleString()}`;
+
+                        return (
+                          <div key={key} className="py-2 flex items-center justify-between gap-3">
+                            <div className="flex items-center gap-3 min-w-0">
+                              <input
+                                type="checkbox"
+                                className="accent-purple-600"
+                                checked={selected}
+                                onChange={() => toggleContentPick(r)}
+                              />
+                              <Avatar className="h-9 w-9 flex-shrink-0">
+                                <AvatarImage src={img} alt={label || badge} />
+                                <AvatarFallback className="bg-gray-800 text-gray-200 text-xs">
+                                  {(label || badge || 'C').charAt(0)}
+                                </AvatarFallback>
+                              </Avatar>
+                              <div className="min-w-0">
+                                <div className="text-sm text-gray-100 truncate" title={label || key}>
+                                  {label || key}
+                                </div>
+                                <div className="text-xs text-gray-500 truncate">{metric}</div>
+                              </div>
+                            </div>
+                            <Badge className={`${selected ? 'bg-purple-700' : 'bg-gray-700'} text-white hover:${selected ? 'bg-purple-700' : 'bg-gray-700'}`}>
+                              {badge}
+                            </Badge>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <DialogFooter>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
+                  onClick={closeContentPicker}
+                >
+                  취소
+                </Button>
+                <Button
+                  type="button"
+                  className="bg-purple-600 hover:bg-purple-700 text-white"
+                  onClick={applyContentPickerToSlot}
+                  disabled={!contentPickerSlotId}
+                >
+                  적용
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
         </div>
       </div>
     </AppLayout>

@@ -1591,7 +1591,7 @@ async def generate_origchat_intro(
             user_message=user,
             history=[],
             preferred_model="claude",
-            preferred_sub_model="claude-sonnet-4-0",
+            preferred_sub_model=CLAUDE_MODEL_PRIMARY,
             response_length_pref="long",
         )
         text = (raw or '').strip()
@@ -1637,7 +1637,7 @@ async def generate_character_chat_intro(character: Character, *, max_scene_chars
             user_message=user,
             history=[],
             preferred_model="claude",
-            preferred_sub_model="claude-sonnet-4-0",
+            preferred_sub_model=CLAUDE_MODEL_PRIMARY,
             response_length_pref="long",
         )
         text = (raw or '').strip()

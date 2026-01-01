@@ -275,8 +275,8 @@ const FAQPage = () => {
             <CardContent className="pt-6">
               <div className="flex items-start justify-between gap-3 mb-2">
                 <div className="flex items-center gap-3">
-                  <HelpCircle className="w-8 h-8 text-purple-500" />
-                  <h1 className="text-3xl font-bold text-white">자주 묻는 질문 (FAQ)</h1>
+                <HelpCircle className="w-8 h-8 text-purple-500" />
+                <h1 className="text-3xl font-bold text-white">자주 묻는 질문 (FAQ)</h1>
                 </div>
                 {isAdmin && (
                   <Button
@@ -369,7 +369,7 @@ const FAQPage = () => {
                 <CardContent className="pt-6">
                   <div className="flex items-start justify-between gap-3 mb-4">
                     <div className="flex items-start gap-2 min-w-0">
-                      <span className="text-2xl">{category.icon}</span>
+                    <span className="text-2xl">{category.icon}</span>
                       {isAdmin && editingCategoryId === category.id ? (
                         <div className="min-w-0">
                           <div className="flex flex-col sm:flex-row sm:items-center gap-2">
@@ -410,8 +410,8 @@ const FAQPage = () => {
                         </div>
                       ) : (
                         <h2 className="text-xl font-semibold text-white break-words">
-                          {category.title}
-                        </h2>
+                      {category.title}
+                    </h2>
                       )}
                     </div>
                     {isAdmin && editingCategoryId !== category.id && (
@@ -429,7 +429,7 @@ const FAQPage = () => {
                     <div className="flex items-center gap-2 text-gray-400">
                       <Loader2 className="w-4 h-4 animate-spin" />
                       불러오는 중...
-                    </div>
+                  </div>
                   ) : items.length === 0 ? (
                     <div className="text-sm text-gray-400">등록된 FAQ가 없습니다.</div>
                   ) : (

@@ -214,3 +214,4 @@
   - `/media/generate`는 provider가 `openai | gemini`로 분기(텍스트 LLM과 정책/키가 별도)
 
 
+

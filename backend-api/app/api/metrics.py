@@ -2,19 +2,47 @@
 간단 메트릭 조회 API (베스트-에포트)
 - 목적: 실시간 관측 필요 전 임시 지표 확인
 """
-from fastapi import APIRouter, Query, Depends
+from fastapi import APIRouter, Query, Depends, HTTPException
 from typing import Optional, Dict, Any, Tuple
 import time
 import json
 import logging
+import re
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, or_
 
 from app.core.database import get_db
+from app.core.security import get_current_user
+from app.models.user import User
+from app.models.chat import ChatRoom, ChatMessage
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def _ensure_admin(user: User) -> None:
+    """관리자 권한 방어 체크"""
+    if not getattr(user, "is_admin", False):
+        raise HTTPException(status_code=403, detail="관리자만 사용할 수 있습니다.")
+
+
+try:
+    # Python 3.9+
+    from zoneinfo import ZoneInfo  # type: ignore
+    _KST = ZoneInfo("Asia/Seoul")
+except Exception:
+    _KST = timezone(timedelta(hours=9))
+
+
+def _parse_day_yyyymmdd(day: str) -> str:
+    s = (day or "").strip()
+    if not s:
+        return ""
+    if not re.fullmatch(r"\d{8}", s):
+        return ""
+    return s
 
 
 async def _scan_keys(pattern: str):
@@ -227,6 +255,91 @@ async def get_content_counts(
                 pass
 
     return payload
+
+
+@router.get("/traffic")
+async def traffic_summary(
+    day: Optional[str] = Query(None, description="YYYYMMDD (KST 기준), 기본: 오늘"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """트래픽 지표(최소 구현) - 채팅 활동 기반
+
+    정의(현재 구현):
+    - dau_chat: 해당 일(KST) 유저 발화(sender_type='user')를 1회 이상 한 유니크 유저 수
+    - wau_chat: 해당 일 포함 최근 7일(KST) 유저 발화를 1회 이상 한 유니크 유저 수
+    - mau_chat: 해당 일 포함 최근 30일(KST) 유저 발화를 1회 이상 한 유니크 유저 수
+    - new_users: 해당 일(KST) 가입자 수(users.created_at)
+    - user_messages: 해당 일(KST) 유저 발화 총 개수
+
+    주의:
+    - "진짜 로그인 시각"을 저장하는 컬럼이 없으므로, DAU는 채팅 활동 기준이다.
+    - 스토리(웹소설/웹툰) 열람 DAU는 현재 per-user 로그가 없어 계산할 수 없다(추후 이벤트 로그 필요).
+    """
+    _ensure_admin(current_user)
+
+    now_kst = datetime.now(_KST)
+    d = _parse_day_yyyymmdd(day or "") or now_kst.strftime("%Y%m%d")
+
+    try:
+        y = int(d[0:4]); m = int(d[4:6]); dd = int(d[6:8])
+        start_kst = datetime(y, m, dd, 0, 0, 0, tzinfo=_KST)
+    except Exception:
+        # 방어: 파싱 실패 시 오늘
+        start_kst = datetime(now_kst.year, now_kst.month, now_kst.day, 0, 0, 0, tzinfo=_KST)
+        d = start_kst.strftime("%Y%m%d")
+
+    end_kst = start_kst + timedelta(days=1)
+
+    start_utc = start_kst.astimezone(timezone.utc)
+    end_utc = end_kst.astimezone(timezone.utc)
+
+    wau_start_utc = (start_kst - timedelta(days=6)).astimezone(timezone.utc)
+    mau_start_utc = (start_kst - timedelta(days=29)).astimezone(timezone.utc)
+
+    # DAU/WAU/MAU (chat)
+    def _active_users_stmt(start_dt, end_dt):
+        return (
+            select(func.count(func.distinct(ChatRoom.user_id)))
+            .select_from(ChatRoom)
+            .join(ChatMessage, ChatMessage.chat_room_id == ChatRoom.id)
+            .where(ChatMessage.sender_type == "user")
+            .where(ChatMessage.created_at >= start_dt)
+            .where(ChatMessage.created_at < end_dt)
+        )
+
+    dau_chat = int((await db.execute(_active_users_stmt(start_utc, end_utc))).scalar() or 0)
+    wau_chat = int((await db.execute(_active_users_stmt(wau_start_utc, end_utc))).scalar() or 0)
+    mau_chat = int((await db.execute(_active_users_stmt(mau_start_utc, end_utc))).scalar() or 0)
+
+    # user messages (today)
+    msg_stmt = (
+        select(func.count(ChatMessage.id))
+        .select_from(ChatRoom)
+        .join(ChatMessage, ChatMessage.chat_room_id == ChatRoom.id)
+        .where(ChatMessage.sender_type == "user")
+        .where(ChatMessage.created_at >= start_utc)
+        .where(ChatMessage.created_at < end_utc)
+    )
+    user_messages = int((await db.execute(msg_stmt)).scalar() or 0)
+
+    # new users (today)
+    new_users_stmt = (
+        select(func.count(User.id))
+        .where(User.created_at >= start_utc)
+        .where(User.created_at < end_utc)
+    )
+    new_users = int((await db.execute(new_users_stmt)).scalar() or 0)
+
+    return {
+        "day": d,
+        "timezone": "Asia/Seoul",
+        "dau_chat": dau_chat,
+        "wau_chat": wau_chat,
+        "mau_chat": mau_chat,
+        "new_users": new_users,
+        "user_messages": user_messages,
+    }
 
 
 

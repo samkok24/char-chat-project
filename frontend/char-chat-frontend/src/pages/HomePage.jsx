@@ -35,6 +35,8 @@ import {
   Gem,
   Bell,
   Settings,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 import {
   DropdownMenu,
@@ -58,17 +60,69 @@ import TopStories from '../components/TopStories';
 import TopOrigChat from '../components/TopOrigChat';
 import WebNovelSection from '../components/WebNovelSection';
 import QuickMeetCharacterModal from '../components/QuickMeetCharacterModal';
+import { useIsMobile } from '../hooks/use-mobile';
 import {
   HOME_SLOTS_STORAGE_KEY,
   HOME_SLOTS_CHANGED_EVENT,
-  HOME_SLOTS_CURATED_CHARACTERS_SLOT_ID,
   getHomeSlots,
   isHomeSlotActive,
 } from '../lib/cmsSlots';
 
 const CHARACTER_PAGE_SIZE = 40;
 
+// ===== CMS 커스텀 구좌(홈) 유틸 =====
+// 요구사항: "랜덤 정렬"은 새로고침(페이지 로드)할 때마다 순서가 바뀌되,
+// 같은 세션(리렌더) 중에는 순서가 흔들리지 않도록 "세션 시드" + "슬롯 ID" 기반으로 섞는다.
+const CMS_CUSTOM_SLOT_SESSION_SEED = Date.now();
+
+const _cmsHash32 = (str) => {
+  try {
+    const s = String(str || '');
+    let h = 2166136261;
+    for (let i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return h >>> 0;
+  } catch (_) {
+    return 0;
+  }
+};
+
+const _cmsShuffleWithSeed = (arr, seed) => {
+  const list = Array.isArray(arr) ? [...arr] : [];
+  let s = (Number(seed) >>> 0) || 0;
+  const nextRand = () => {
+    // LCG (fast + deterministic)
+    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+    return s / 4294967296;
+  };
+  for (let i = list.length - 1; i > 0; i--) {
+    const j = Math.floor(nextRand() * (i + 1));
+    const tmp = list[i];
+    list[i] = list[j];
+    list[j] = tmp;
+  }
+  return list;
+};
+
 const HomePage = () => {
+  const isMobile = useIsMobile();
+  const MOBILE_SLOT_STEP = 4;
+  // 모바일 "4개 격자 + <> 페이지"용: 구좌별 페이지 상태
+  const [slotPageById, setSlotPageById] = React.useState({});
+  const shiftSlotPage = React.useCallback((slotId, delta, pageCount) => {
+    try {
+      const sid = String(slotId || '').trim();
+      if (!sid) return;
+      const pc = Math.max(1, Number(pageCount || 1) || 1);
+      setSlotPageById((prev) => {
+        const cur = Number(prev?.[sid] || 0) || 0;
+        const next = ((cur + Number(delta || 0)) % pc + pc) % pc;
+        return { ...(prev || {}), [sid]: next };
+      });
+    } catch (_) {}
+  }, []);
   const queryClient = useQueryClient();
   // ✅ 검색바 비노출(요구사항): 현재 검색 기능이 정상 동작하지 않아 전 탭에서 숨긴다.
   // - 추후 검색 기능 복구 시 이 플래그만 true로 되돌리면 UI가 다시 노출된다.
@@ -328,13 +382,15 @@ const HomePage = () => {
     staleTime: 5 * 60 * 1000,
   });
 
-  // ✅ 홈(메인탭) 탐색영역: 무한스크롤 제거 → "더보기(12개)" 버튼으로 단계 로딩
+  // ✅ 홈(메인탭) 탐색영역: 무한스크롤 제거 → "더보기" 버튼으로 단계 로딩
   // - 격자(데스크탑 lg: 6열) 기준으로 12개 = 2줄 단위라 UX가 깔끔하다.
   // - 초기에는 12개만 노출해서 첫 로딩을 가볍게 한다.
-  // - 유저가 버튼을 누를 때마다 12개씩 추가로 보여준다.
+  // - 유저가 버튼을 누를 때마다:
+  //   - 모바일: 4개씩 추가(경쟁사처럼 '한 구좌당 4개' 흐름 유지)
+  //   - 데스크탑: 12개씩 추가(2줄 단위)
   const EXPLORE_PAGE_SIZE = 12;
   const LIMIT = EXPLORE_PAGE_SIZE;
-  const [exploreVisibleCount, setExploreVisibleCount] = useState(EXPLORE_PAGE_SIZE);
+  const [exploreVisibleCount, setExploreVisibleCount] = useState(isMobile ? MOBILE_SLOT_STEP : EXPLORE_PAGE_SIZE);
   const [selectedTags, setSelectedTags] = useState([]); // slug 배열
   const [showAllTags, setShowAllTags] = useState(false);
   const visibleTagLimit = 18;
@@ -786,8 +842,8 @@ const HomePage = () => {
    */
   useEffect(() => {
     if (isCharacterTab || isOrigSerialTab) return;
-    setExploreVisibleCount(EXPLORE_PAGE_SIZE);
-  }, [isCharacterTab, isOrigSerialTab, searchQuery, effectiveTagsKey, sourceFilter]);
+    setExploreVisibleCount(isMobile ? MOBILE_SLOT_STEP : EXPLORE_PAGE_SIZE);
+  }, [isCharacterTab, isOrigSerialTab, searchQuery, effectiveTagsKey, sourceFilter, isMobile, MOBILE_SLOT_STEP]);
 
   const visibleGridItems = React.useMemo(() => {
     if (isCharacterTab) return displayGridItems;
@@ -849,7 +905,7 @@ const HomePage = () => {
         to="/agent"
         className="px-3 py-1 rounded-full border border-purple-500/60 text-purple-300 bg-transparent hover:bg-purple-700/20 transition-colors whitespace-nowrap"
       >
-        스토리 에이전트
+        스토리 에이전트(Beta)
       </Link>
     </div>
   );
@@ -859,7 +915,8 @@ const HomePage = () => {
    * - visibleCount를 20개 증가시키고, 아직 로드된 아이템이 부족하면 다음 페이지를 추가 fetch 한다.
    */
   const handleExploreLoadMore = React.useCallback(async () => {
-    const nextCount = (Number.isFinite(exploreVisibleCount) ? exploreVisibleCount : EXPLORE_PAGE_SIZE) + EXPLORE_PAGE_SIZE;
+    const step = isMobile ? MOBILE_SLOT_STEP : EXPLORE_PAGE_SIZE;
+    const nextCount = (Number.isFinite(exploreVisibleCount) ? exploreVisibleCount : step) + step;
     setExploreVisibleCount(nextCount);
     // 이미 로드된 데이터로 충분하면 네트워크 요청은 생략(성능/UX)
     if (displayGridItems.length >= nextCount) return;
@@ -869,7 +926,7 @@ const HomePage = () => {
     } catch (e) {
       console.error('[홈] 탐색 더보기 실패:', e);
     }
-  }, [exploreVisibleCount, displayGridItems.length, hasNextPage, isFetchingNextPage, fetchNextPage]);
+  }, [exploreVisibleCount, displayGridItems.length, hasNextPage, isFetchingNextPage, fetchNextPage, isMobile, MOBILE_SLOT_STEP]);
 
   const paginationPages = React.useMemo(() => {
     if (!shouldShowPagination) return [];
@@ -906,8 +963,6 @@ const HomePage = () => {
     const arr = Array.isArray(homeSlots) ? homeSlots : [];
     return arr.filter((s) => {
       try {
-        // ✅ 초심자 추천 캐릭터 구좌는 홈 상단에서 별도로 고정 렌더링한다(중복/혼선 방지).
-        if (String(s?.id || '') === HOME_SLOTS_CURATED_CHARACTERS_SLOT_ID) return false;
         return isHomeSlotActive(s, now);
       } catch (_) {
         return false;
@@ -967,96 +1022,278 @@ const HomePage = () => {
       // 데이터가 없으면 원래도 비노출이므로, CMS가 켜져 있어도 그대로 유지(방어적)
       if (!dailyTagCharactersLoading && !(dailyTagCharacters || []).length) return null;
       const header = title || '일상을 캐릭터와 같이 공유해보세요';
+      const baseItems = (Array.isArray(dailyTagCharacters) ? dailyTagCharacters : []).slice(0, DAILY_CHARACTER_LIMIT);
+      const skeletonCount = isMobile ? 4 : DAILY_CHARACTER_LIMIT;
       return (
         <section className="mt-8">
           <h2 className="text-xl font-bold text-white mb-4">{header}</h2>
 
-          {dailyTagCharactersLoading ? (
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-              {Array.from({ length: DAILY_CHARACTER_LIMIT }).map((_, idx) => (
-                <div
-                  key={`daily-sk-${idx}`}
-                  className="bg-gray-800/40 rounded-lg p-3 border border-gray-700/50 animate-pulse"
-                >
-                  <div className="flex items-center gap-3 mb-2">
-                    <div className="w-10 h-10 rounded-full bg-gray-700 flex-shrink-0" />
-                    <div className="flex-1 min-w-0">
-                      <div className="h-3 w-20 bg-gray-700 rounded mb-2" />
-                      <div className="h-3 w-32 bg-gray-700 rounded" />
+          {/* ✅ 모바일: 최근대화처럼 1줄 스와이프 / 데스크탑: 기존 6개 격자 */}
+          {isMobile ? (
+            <div className="flex gap-3 overflow-x-auto pb-2 scrollbar-hide">
+              {dailyTagCharactersLoading ? (
+                Array.from({ length: skeletonCount }).map((_, idx) => (
+                  <div key={`daily-sk-${idx}`} className="flex-shrink-0 w-[220px]">
+                    <div className="bg-gray-800/40 rounded-lg p-3 border border-gray-700/50 animate-pulse">
+                      <div className="flex items-center gap-3 mb-2">
+                        <div className="w-10 h-10 rounded-full bg-gray-700 flex-shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <div className="h-3 w-20 bg-gray-700 rounded mb-2" />
+                          <div className="h-3 w-32 bg-gray-700 rounded" />
+                        </div>
+                      </div>
+                      <div className="h-4 w-full bg-gray-700 rounded" />
                     </div>
                   </div>
-                  <div className="h-4 w-full bg-gray-700 rounded" />
-                </div>
-              ))}
+                ))
+              ) : (
+                baseItems.map((char, idx) => {
+                  const id = char?.id;
+                  const key = id || `daily-${idx}`;
+                  const name = String(char?.name || '').trim() || '이름 없음';
+                  const title = String(char?.description || '').trim();
+                  const baseImg = char?.avatar_url || char?.thumbnail_url || '';
+                  const imgSrc =
+                    getThumbnailUrl(baseImg, 240) ||
+                    resolveImageUrl(baseImg) ||
+                    '';
+                  const clickable = !!id;
+
+                  return (
+                    <div key={key} className="flex-shrink-0 w-[220px]">
+                      <div
+                        className={[
+                          'bg-gray-800/40 rounded-lg p-3 transition-all border border-gray-700/50 hover:border-gray-600',
+                          clickable ? 'cursor-pointer hover:bg-gray-800/60' : 'cursor-default opacity-80'
+                        ].join(' ')}
+                        role={clickable ? 'button' : undefined}
+                        tabIndex={clickable ? 0 : undefined}
+                        onClick={() => {
+                          if (!id) return;
+                          navigate(`/ws/chat/${id}`);
+                        }}
+                        onKeyDown={(e) => {
+                          if (!clickable) return;
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            navigate(`/ws/chat/${id}`);
+                          }
+                        }}
+                        aria-label={clickable ? `${name} 캐릭터와 대화하기` : undefined}
+                      >
+                        <div className="flex items-center gap-3 mb-2">
+                          <div className="w-10 h-10 rounded-full bg-gray-700 flex items-center justify-center flex-shrink-0 overflow-hidden">
+                            {imgSrc ? (
+                              <img
+                                src={imgSrc}
+                                alt={name}
+                                className="w-full h-full object-cover object-top"
+                                onError={(e) => {
+                                  e.target.style.display = 'none';
+                                  const next = e.target.nextSibling;
+                                  if (next) next.style.display = 'flex';
+                                }}
+                              />
+                            ) : null}
+                            <span className={`text-lg ${imgSrc ? 'hidden' : ''}`}>{name.charAt(0)}</span>
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="text-xs text-gray-400 truncate">{name}</div>
+                          </div>
+                          <Badge className="bg-yellow-500/90 text-black hover:bg-yellow-500 text-[10px] px-2 py-0.5">
+                            일상
+                          </Badge>
+                        </div>
+                        <div className="text-sm text-gray-200 leading-snug line-clamp-2">
+                          {title || '지금 대화를 시작해보세요.'}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
             </div>
           ) : (
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-              {dailyTagCharacters.slice(0, DAILY_CHARACTER_LIMIT).map((char, idx) => {
-                const id = char?.id;
-                const key = id || `daily-${idx}`;
-                const name = String(char?.name || '').trim() || '이름 없음';
-                const title = String(char?.description || '').trim();
-                const baseImg = char?.avatar_url || char?.thumbnail_url || '';
-                const imgSrc =
-                  getThumbnailUrl(baseImg, 240) ||
-                  resolveImageUrl(baseImg) ||
-                  '';
-                const clickable = !!id;
-
-                return (
+              {dailyTagCharactersLoading ? (
+                Array.from({ length: skeletonCount }).map((_, idx) => (
                   <div
-                    key={key}
-                    className={[
-                      'bg-gray-800/40 rounded-lg p-3 transition-all border border-gray-700/50 hover:border-gray-600',
-                      clickable ? 'cursor-pointer hover:bg-gray-800/60' : 'cursor-default opacity-80'
-                    ].join(' ')}
-                    role={clickable ? 'button' : undefined}
-                    tabIndex={clickable ? 0 : undefined}
-                    onClick={() => {
-                      if (!id) return;
-                      navigate(`/ws/chat/${id}`);
-                    }}
-                    onKeyDown={(e) => {
-                      if (!clickable) return;
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault();
-                        navigate(`/ws/chat/${id}`);
-                      }
-                    }}
-                    aria-label={clickable ? `${name} 캐릭터와 대화하기` : undefined}
+                    key={`daily-sk-${idx}`}
+                    className="bg-gray-800/40 rounded-lg p-3 border border-gray-700/50 animate-pulse"
                   >
                     <div className="flex items-center gap-3 mb-2">
-                      <div className="w-10 h-10 rounded-full bg-gray-700 flex items-center justify-center flex-shrink-0 overflow-hidden">
-                        {imgSrc ? (
-                          <img
-                            src={imgSrc}
-                            alt={name}
-                            className="w-full h-full object-cover object-top"
-                            onError={(e) => {
-                              e.target.style.display = 'none';
-                              const next = e.target.nextSibling;
-                              if (next) next.style.display = 'flex';
-                            }}
-                          />
-                        ) : null}
-                        <span className={`text-lg ${imgSrc ? 'hidden' : ''}`}>{name.charAt(0)}</span>
-                      </div>
+                      <div className="w-10 h-10 rounded-full bg-gray-700 flex-shrink-0" />
                       <div className="flex-1 min-w-0">
-                        <div className="text-xs text-gray-400 truncate">{name}</div>
+                        <div className="h-3 w-20 bg-gray-700 rounded mb-2" />
+                        <div className="h-3 w-32 bg-gray-700 rounded" />
                       </div>
-                      <Badge className="bg-yellow-500/90 text-black hover:bg-yellow-500 text-[10px] px-2 py-0.5">
-                        일상
-                      </Badge>
                     </div>
-                    <div className="text-sm text-gray-200 leading-snug line-clamp-2">
-                      {title || '지금 대화를 시작해보세요.'}
-                    </div>
+                    <div className="h-4 w-full bg-gray-700 rounded" />
                   </div>
-                );
-              })}
+                ))
+              ) : (
+                baseItems.map((char, idx) => {
+                  const id = char?.id;
+                  const key = id || `daily-${idx}`;
+                  const name = String(char?.name || '').trim() || '이름 없음';
+                  const title = String(char?.description || '').trim();
+                  const baseImg = char?.avatar_url || char?.thumbnail_url || '';
+                  const imgSrc =
+                    getThumbnailUrl(baseImg, 240) ||
+                    resolveImageUrl(baseImg) ||
+                    '';
+                  const clickable = !!id;
+
+                  return (
+                    <div
+                      key={key}
+                      className={[
+                        'bg-gray-800/40 rounded-lg p-3 transition-all border border-gray-700/50 hover:border-gray-600',
+                        clickable ? 'cursor-pointer hover:bg-gray-800/60' : 'cursor-default opacity-80'
+                      ].join(' ')}
+                      role={clickable ? 'button' : undefined}
+                      tabIndex={clickable ? 0 : undefined}
+                      onClick={() => {
+                        if (!id) return;
+                        navigate(`/ws/chat/${id}`);
+                      }}
+                      onKeyDown={(e) => {
+                        if (!clickable) return;
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          navigate(`/ws/chat/${id}`);
+                        }
+                      }}
+                      aria-label={clickable ? `${name} 캐릭터와 대화하기` : undefined}
+                    >
+                      <div className="flex items-center gap-3 mb-2">
+                        <div className="w-10 h-10 rounded-full bg-gray-700 flex items-center justify-center flex-shrink-0 overflow-hidden">
+                          {imgSrc ? (
+                            <img
+                              src={imgSrc}
+                              alt={name}
+                              className="w-full h-full object-cover object-top"
+                              onError={(e) => {
+                                e.target.style.display = 'none';
+                                const next = e.target.nextSibling;
+                                if (next) next.style.display = 'flex';
+                              }}
+                            />
+                          ) : null}
+                          <span className={`text-lg ${imgSrc ? 'hidden' : ''}`}>{name.charAt(0)}</span>
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="text-xs text-gray-400 truncate">{name}</div>
+                        </div>
+                        <Badge className="bg-yellow-500/90 text-black hover:bg-yellow-500 text-[10px] px-2 py-0.5">
+                          일상
+                        </Badge>
+                      </div>
+                      <div className="text-sm text-gray-200 leading-snug line-clamp-2">
+                        {title || '지금 대화를 시작해보세요.'}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
             </div>
           )}
         </section>
+      );
+    }
+
+    // CMS 커스텀 구좌: 운영자가 선택한 캐릭터/웹소설(스토리)을 홈에 노출
+    // - 시스템 구좌와 달리, slot.id가 고정되어 있지 않다.
+    // - contentPicks + contentSortMode 기반으로 렌더링한다.
+    const slotType = String(slot?.slotType || '').trim().toLowerCase();
+    const rawPicks = Array.isArray(slot?.contentPicks) ? slot.contentPicks : [];
+    if (slotType === 'custom' || rawPicks.length > 0) {
+      const items = rawPicks
+        .map((p) => {
+          const t = String(p?.type || '').trim().toLowerCase();
+          const it = p?.item;
+          if (!it) return null;
+          if (t === 'character') return { type: 'character', item: it };
+          if (t === 'story') return { type: 'story', item: it };
+          return null;
+        })
+        .filter(Boolean);
+
+      // 비어있으면 홈에는 노출하지 않는다(요구사항/UX)
+      if (items.length === 0) return null;
+
+      const sortMode = String(slot?.contentSortMode || 'metric') === 'random' ? 'random' : 'metric';
+      const score = (x) => {
+        if (!x) return 0;
+        if (x.type === 'story') return Number(x?.item?.view_count || 0) || 0; // 조회수
+        return Number(x?.item?.chat_count || 0) || 0; // 대화수
+      };
+
+      let ordered = items;
+      if (sortMode === 'random') {
+        const seed = _cmsHash32(`${CMS_CUSTOM_SLOT_SESSION_SEED}:${id}`);
+        ordered = _cmsShuffleWithSeed(items, seed);
+      } else {
+        ordered = [...items].sort((a, b) => score(b) - score(a));
+      }
+
+      const header = title || '추천 콘텐츠';
+      const MAX_ITEMS = 24;
+      const slotId = id;
+      const capped = ordered.slice(0, MAX_ITEMS);
+      const pageSize = isMobile ? MOBILE_SLOT_STEP : capped.length;
+      const pageCount = Math.max(1, Math.ceil(capped.length / Math.max(1, pageSize)));
+      const page = Number(slotPageById?.[slotId] || 0) || 0;
+      const visible = isMobile
+        ? capped.slice(page * pageSize, page * pageSize + pageSize)
+        : capped;
+      const showMobileOverlayArrows = Boolean(isMobile && capped.length > pageSize);
+
+      return (
+        <ErrorBoundary>
+          <section className="mt-8">
+            <div className="flex items-end justify-between mb-4">
+              <h2 className="text-xl font-bold text-white">{header}</h2>
+              <div className="text-xs text-gray-400">
+                {sortMode === 'random' ? '랜덤' : '대화/조회순'}
+              </div>
+            </div>
+            <div className="relative">
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+                {visible.map((x, idx) => {
+                  const rid = String(x?.item?.id || '').trim();
+                  const key = rid ? `${x.type}:${rid}` : `${x.type}:${idx}`;
+                  if (x.type === 'story') {
+                    return <StoryExploreCard key={key} story={x.item} compact />;
+                  }
+                  return <CharacterCard key={key} character={x.item} showOriginBadge />;
+                })}
+              </div>
+
+              {/* 모바일: 4개씩 <> 페이지 이동 */}
+              {showMobileOverlayArrows && (
+                <>
+                  <button
+                    type="button"
+                    aria-label="이전"
+                    onClick={() => shiftSlotPage(slotId, -1, pageCount)}
+                    className="absolute -left-3 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-gray-800/90 hover:bg-gray-700 text-white border border-gray-700 shadow-lg backdrop-blur flex items-center justify-center"
+                  >
+                    <ChevronLeft className="w-5 h-5" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="다음"
+                    onClick={() => shiftSlotPage(slotId, 1, pageCount)}
+                    className="absolute -right-3 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-gray-800/90 hover:bg-gray-700 text-white border border-gray-700 shadow-lg backdrop-blur flex items-center justify-center"
+                  >
+                    <ChevronRight className="w-5 h-5" />
+                  </button>
+                </>
+              )}
+            </div>
+          </section>
+        </ErrorBoundary>
       );
     }
 

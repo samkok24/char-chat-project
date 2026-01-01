@@ -3,7 +3,7 @@
 """
 
 from pydantic import BaseModel, EmailStr, Field, ConfigDict
-from typing import Optional, Literal
+from typing import Optional, Literal, List
 from datetime import datetime
 import uuid
 
@@ -60,4 +60,30 @@ class UserProfile(UserResponse):
     """사용자 프로필 스키마 (추가 정보 포함)"""
     character_count: Optional[int] = 0
     story_count: Optional[int] = 0
+
+
+# ===== 관리자용: 회원 목록(페이지네이션) =====
+class AdminUserListItem(BaseModel):
+    """관리자 페이지에서 보여줄 회원 1명 요약"""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    email: EmailStr
+    username: str
+    is_admin: bool = False
+    created_at: datetime
+    # ⚠️ 엄밀한 로그인 기록 컬럼이 없어, 현재는 "최근 활동(채팅 기준)" 시간을 내려준다.
+    last_login_at: Optional[datetime] = None
+
+    # 누적 지표
+    created_character_count: int = 0
+    used_chat_count: int = 0
+    used_view_count: int = 0
+
+
+class AdminUserListResponse(BaseModel):
+    total: int = 0
+    skip: int = 0
+    limit: int = 100
+    items: List[AdminUserListItem] = []
 
