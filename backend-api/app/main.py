@@ -51,6 +51,7 @@ from app.api.agent_contents import router as agent_contents_router  # 내 서랍
 from app.api.notices import router as notices_router  # 📢 공지사항
 from app.api.faqs import router as faqs_router  # ❓ FAQ
 from app.api.faq_categories import router as faq_categories_router  # ❓ FAQ 카테고리
+from app.api.cms import router as cms_router  # 🧩 CMS(홈 배너/구좌 설정)
 from app.models.tag import Tag
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
@@ -93,6 +94,14 @@ async def lifespan(app: FastAPI):
             logger.info("❓ faq_categories 테이블 확인/생성 완료")
         except Exception as e:
             logger.warning(f"[warn] faq_categories 테이블 생성 실패(계속 진행): {e}")
+
+        # ✅ CMS 설정 테이블(홈 배너/구좌)은 운영에서 전 유저 공통 노출에 필요하므로 멱등 생성한다.
+        try:
+            from app.models.site_config import SiteConfig  # 로컬 import(순환 방지)
+            await conn.run_sync(lambda c: SiteConfig.__table__.create(c, checkfirst=True))
+            logger.info("🧩 site_configs 테이블 확인/생성 완료")
+        except Exception as e:
+            logger.warning(f"[warn] site_configs 테이블 생성 실패(계속 진행): {e}")
 
         # SQLite 사용 시 누락 컬럼 자동 보정 (idempotent)
         try:
@@ -287,6 +296,7 @@ app.include_router(metrics_router, prefix="/metrics", tags=["📈 메트릭 (임
 app.include_router(notices_router, prefix="/notices", tags=["📢 공지사항"])
 app.include_router(faqs_router, prefix="/faqs", tags=["❓ FAQ"])
 app.include_router(faq_categories_router, prefix="/faq-categories", tags=["❓ FAQ 카테고리"])
+app.include_router(cms_router, prefix="/cms", tags=["🧩 CMS 설정"])
 
 
 # ⏳ Phase 3: 콘텐츠 확장 API (향후 개발)

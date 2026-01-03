@@ -273,7 +273,7 @@ const Sidebar = () => {
   );
 
   return (
-    <aside className="w-64 bg-gray-800 border-r border-gray-700 flex flex-col">
+    <aside className="w-64 bg-gray-800 border-r border-gray-700 flex flex-col h-full min-h-0">
       {/* 로고 영역 */}
       <div className="p-4 flex items-center justify-center">
         <Link to="/" className="flex items-center justify-center w-full">
@@ -327,7 +327,7 @@ const Sidebar = () => {
       </div>
 
       {/* 메인 네비게이션 */}
-      <nav className="flex-1 space-y-1 overflow-y-auto">
+      <nav className="flex-1 min-h-0 space-y-1 overflow-y-auto overscroll-contain">
         <NavItem to="/dashboard" icon={Home}>홈</NavItem>
         
         {/* 로그인 시에만 표시되는 메뉴들 */}

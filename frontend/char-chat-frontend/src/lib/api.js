@@ -708,6 +708,18 @@ export const faqCategoriesAPI = {
   upsert: (id, data) => api.put(`/faq-categories/${id}`, data),
 };
 
+// 🧩 CMS(홈 배너/구좌 설정) API
+// - 운영 SSOT: 서버(DB)에 저장된 설정을 모든 유저가 공유한다.
+// - 관리자 페이지(CMSPage)에서 저장/수정하고, 홈(HomePage/HomeBannerCarousel)에서 조회해 렌더링한다.
+export const cmsAPI = {
+  // 공개 GET(유저/비로그인)
+  getHomeBanners: () => api.get('/cms/home/banners'),
+  getHomeSlots: () => api.get('/cms/home/slots'),
+  // 관리자 PUT(저장)
+  putHomeBanners: (data) => api.put('/cms/home/banners', data),
+  putHomeSlots: (data) => api.put('/cms/home/slots', data),
+};
+
 // 💎 포인트 관련 API
 export const pointAPI = {
   getBalance: () =>

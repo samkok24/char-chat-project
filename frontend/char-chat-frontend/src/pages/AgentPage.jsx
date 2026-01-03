@@ -51,6 +51,8 @@ const LS_CHARACTERS = (userId) => `agent:characters:${userId}`;
 const LS_RECOVERY_PREFIX = (userId) => `agent:recovery:${userId}:`;
 const LS_UI = (userId) => `agent:ui:${userId}`;
 const LS_INLINE_PREFIX = (userId) => `agent:inline:${userId}:`;
+// ✅ 연애 모드(❤️) - 기본 ON, 로컬스토리지로 유지(기기 단위)
+const LS_ROMANCE_MODE = 'agent:romanceMode:v1';
 // --- Generation States as per Spec ---
 const GEN_STATE = {
   IDLE: 'IDLE',
@@ -317,6 +319,64 @@ useEffect(() => {
 }, [contentCountsTotal, todayKey]);
 const { user } = useAuth();
 const isGuest = !user;
+
+/**
+ * ✅ 연애 모드(❤️) 토글 상태
+ *
+ * 의도:
+ * - 기본값은 ON
+ * - ON일 때는 "회원가입 성별(male/female)"에 따라 연애/데이트 톤을 강하게 유도한다.
+ * - OFF면 기본 톤(노말)
+ *
+ * 방어적:
+ * - localStorage 접근 실패(사파리 프라이빗 등)에도 기본 ON으로 동작하게 한다.
+ */
+const [romanceOn, setRomanceOn] = useState(() => {
+  try {
+    const raw = localStorage.getItem(LS_ROMANCE_MODE);
+    if (raw == null) return true;
+    const v = String(raw).trim().toLowerCase();
+    return !(v === '0' || v === 'false' || v === 'off');
+  } catch (_) {
+    return true;
+  }
+});
+useEffect(() => {
+  try { localStorage.setItem(LS_ROMANCE_MODE, romanceOn ? '1' : '0'); } catch (_) {}
+}, [romanceOn]);
+
+/**
+ * ✅ 모델용 스타일 지침(출력 금지)
+ *
+ * 주의:
+ * - 이 지침은 "유저 UI에 보여주는 텍스트"에 섞이지 않게, 백엔드로 보내는 staged에만 주입한다.
+ */
+const romanceDirective = useMemo(() => {
+  try {
+    if (!romanceOn) return '';
+    const g = String(user?.gender || '').trim().toLowerCase();
+    const base = '※ 내부 스타일 지침(출력 금지): 아래 스토리는 연애/데이트 분위기를 최우선으로, 설렘/플러팅/데이트 디테일을 최대한 풍부하게. 이 지침 문장은 절대 출력하지 마.';
+    if (g === 'male') {
+      return `${base} 사용자는 남성(male)이다. 가능하면 남성 주인공(‘나’) 관점으로, 상대는 매력적인 여성으로 설정해 로맨틱한 전개를 강화해.`;
+    }
+    if (g === 'female') {
+      return `${base} 사용자는 여성(female)이다. 가능하면 여성 주인공(‘나’) 관점으로, 상대는 매력적인 남성으로 설정해 로맨틱한 전개를 강화해.`;
+    }
+    return base;
+  } catch (_) {
+    return '';
+  }
+}, [romanceOn, user?.gender]);
+
+const buildStagedForModel = useCallback((staged) => {
+  try {
+    const base = Array.isArray(staged) ? staged : [];
+    if (!romanceDirective) return base;
+    return [{ type: 'text', body: romanceDirective }, ...base];
+  } catch (_) {
+    return Array.isArray(staged) ? staged : [];
+  }
+}, [romanceDirective]);
 const { sessions, createSession, updateSession, removeSession } = useAgentSessions(user?.id || 'guest', !isGuest === true, isGuest === true);
 const [activeSessionId, setActiveSessionId] = useState((!isGuest ? (sessions[0]?.id || null) : null));
 const { messages, setMessages } = useSessionMessages(activeSessionId || '', user?.id || 'guest', !isGuest === true, isGuest === true);
@@ -430,6 +490,29 @@ const suppressNextAutoScroll = useCallback((ms = 300) => {
   }, ms);
 }, []);
 const stableMessages = useMemo(() => messages, [messages]);
+
+/**
+ * ✅ 최신 dual_response만 선택 버튼을 노출한다.
+ *
+ * 배경/의도:
+ * - auto 모드에서 dual_response(일상/장르) 결과가 누적되면 과거 결과에도 선택 버튼이 남아 UX 혼란이 발생한다.
+ * - 따라서 가장 최신(=마지막) dual_response에만 선택 버튼을 보여준다.
+ *
+ * 방어적:
+ * - messages 구조가 비정상이어도 화면이 죽지 않도록 try/catch + null 반환.
+ */
+const latestDualResponseId = useMemo(() => {
+  try {
+    const arr = Array.isArray(stableMessages) ? stableMessages : [];
+    for (let i = arr.length - 1; i >= 0; i--) {
+      const m = arr[i];
+      if (m && m.type === 'dual_response' && m.id) return m.id;
+    }
+    return null;
+  } catch (_) {
+    return null;
+  }
+}, [stableMessages]);
 // 가상 스크롤러(최상단에서 훅 호출)
 const rowVirtualizer = useVirtualizer({
   count: stableMessages.length,
@@ -676,6 +759,7 @@ const toggleRemixTag = useCallback((msgId, tag) => {
 // 🆕 Dual response 선택 핸들러
 const handleSelectMode = useCallback((messageId, selectedMode) => {
   const currentSessionId = activeSessionId;
+  const storageUserId = user?.id || 'guest';
   
   // 메시지 찾기
   const msg = messages.find(m => m.id === messageId);
@@ -696,24 +780,29 @@ const handleSelectMode = useCallback((messageId, selectedMode) => {
     createdAt: msg.createdAt
   };
   
-  // UI 업데이트
-  setMessages(prev => prev.map(m => 
-    m.id === messageId ? convertedMessage : m
-  ));
-  
-  // 저장소 업데이트
-  const saved = loadJson(LS_MESSAGES_PREFIX(user?.id) + currentSessionId, []);
-  const updated = saved.map(m => 
-    m.id === messageId ? convertedMessage : m
-  );
-  saveJson(LS_MESSAGES_PREFIX(user?.id) + currentSessionId, updated);
-  
-  // 게스트일 경우 sessionStorage에도 저장
-  if (isGuest) {
-    try {
-      sessionLocalMessagesRef.current.set(currentSessionId, updated);
-      sessionStorage.setItem(LS_MESSAGES_PREFIX(user?.id) + currentSessionId, JSON.stringify(updated));
-    } catch {}
+  /**
+   * ✅ 선택 반영(SSOT: 현재 state 기반)
+   *
+   * 문제/의도:
+   * - 기존 구현은 localStorage를 즉시 읽어 업데이트했는데,
+   *   (1) guest일 때 user?.id가 undefined가 될 수 있고
+   *   (2) state→storage 동기화 타이밍 경합으로 최신 메시지가 누락될 수 있었다.
+   * - 따라서 "현재 화면(state)"를 SSOT로 보고, 그 결과를 storage에 덮어쓴다.
+   */
+  const baseList = Array.isArray(messages) ? messages : [];
+  const updated = baseList.map((m) => (m.id === messageId ? convertedMessage : m));
+  setMessages(updated);
+  try {
+    if (isGuest) {
+      // guest도 기존 코드 경로(loadJson)가 localStorage를 읽는 경우가 있어, localStorage에도 함께 저장한다(안전).
+      try { saveJson(LS_MESSAGES_PREFIX(storageUserId) + currentSessionId, updated); } catch (_) {}
+      try { sessionLocalMessagesRef.current.set(currentSessionId, updated); } catch (_) {}
+      try { sessionStorage.setItem(LS_MESSAGES_PREFIX(storageUserId) + currentSessionId, JSON.stringify(updated)); } catch (_) {}
+    } else {
+      saveJson(LS_MESSAGES_PREFIX(storageUserId) + currentSessionId, updated);
+    }
+  } catch (e) {
+    console.error('[AgentPage] handleSelectMode persist failed:', e);
   }
   
   // 🆕 선택 후 하이라이트/추천 생성
@@ -735,7 +824,17 @@ const handleSelectMode = useCallback((messageId, selectedMode) => {
       { id: crypto.randomUUID(), role: 'assistant', type: 'recommendation', storyMode: selectedMode, createdAt: nowIso() }
     ];
     
-    saveJson(LS_MESSAGES_PREFIX(user?.id) + currentSessionId, withExtras);
+    try {
+      if (isGuest) {
+        try { saveJson(LS_MESSAGES_PREFIX(storageUserId) + currentSessionId, withExtras); } catch (_) {}
+        try { sessionLocalMessagesRef.current.set(currentSessionId, withExtras); } catch (_) {}
+        try { sessionStorage.setItem(LS_MESSAGES_PREFIX(storageUserId) + currentSessionId, JSON.stringify(withExtras)); } catch (_) {}
+      } else {
+        saveJson(LS_MESSAGES_PREFIX(storageUserId) + currentSessionId, withExtras);
+      }
+    } catch (e) {
+      console.error('[AgentPage] handleSelectMode persist(withExtras) failed:', e);
+    }
     
     if (activeSessionIdRef.current === currentSessionId) {
       setMessages(withExtras);
@@ -744,7 +843,7 @@ const handleSelectMode = useCallback((messageId, selectedMode) => {
     // vision_tags 읽기
     let visionTags = null;
     try {
-      const stored = localStorage.getItem(`agent:vision:${currentSessionId}`);  // 또는 activeSessionId
+      const stored = localStorage.getItem(`agent:vision:${originalSessionId}`);  // 또는 activeSessionId
       if (stored) {
         const parsed = JSON.parse(stored);
         visionTags = parsed.tags;
@@ -763,18 +862,29 @@ const handleSelectMode = useCallback((messageId, selectedMode) => {
         });
         const scenes = hiRes.data?.story_highlights || [];
         
-        const currentMsgs = loadJson(LS_MESSAGES_PREFIX(user?.id) + currentSessionId, []);
-        const placeholder = currentMsgs.find(m => m.type === 'story_highlights_loading');
+        const currentMsgs = isGuest
+          ? (sessionLocalMessagesRef.current.get(currentSessionId) || [])
+          : loadJson(LS_MESSAGES_PREFIX(storageUserId) + currentSessionId, []);
+        const placeholder = currentMsgs.find(m => m.id === placeholderId);
         if (!placeholder) return;
         
-        const savedHL = loadJson(LS_MESSAGES_PREFIX(user?.id) + currentSessionId, []);
-        const updatedHL = savedHL.map(m =>
-          m.id === placeholder.id
+        const updatedHL = (Array.isArray(currentMsgs) ? currentMsgs : []).map(m =>
+          m.id === placeholderId
             ? { id: crypto.randomUUID(), type: 'story_highlights', scenes, createdAt: nowIso() }
             : m
         );
         
-        saveJson(LS_MESSAGES_PREFIX(user?.id) + currentSessionId, updatedHL);
+        try {
+          if (isGuest) {
+            try { saveJson(LS_MESSAGES_PREFIX(storageUserId) + currentSessionId, updatedHL); } catch (_) {}
+            try { sessionLocalMessagesRef.current.set(currentSessionId, updatedHL); } catch (_) {}
+            try { sessionStorage.setItem(LS_MESSAGES_PREFIX(storageUserId) + currentSessionId, JSON.stringify(updatedHL)); } catch (_) {}
+          } else {
+            saveJson(LS_MESSAGES_PREFIX(storageUserId) + currentSessionId, updatedHL);
+          }
+        } catch (e) {
+          console.error('[AgentPage] handleSelectMode persist(updatedHL) failed:', e);
+        }
         
         if (activeSessionIdRef.current === currentSessionId) {
           setMessages(updatedHL);
@@ -802,9 +912,21 @@ const handleSelectMode = useCallback((messageId, selectedMode) => {
       } catch (e) {
         console.error('Failed to generate highlights after selection:', e);
         // 실패 시 로딩 제거
-        const savedErr = loadJson(LS_MESSAGES_PREFIX(user?.id) + currentSessionId, []);
-        const filtered = savedErr.filter(m => m.type !== 'story_highlights_loading');
-        saveJson(LS_MESSAGES_PREFIX(user?.id) + currentSessionId, filtered);
+        const savedErr = isGuest
+          ? (sessionLocalMessagesRef.current.get(currentSessionId) || [])
+          : loadJson(LS_MESSAGES_PREFIX(storageUserId) + currentSessionId, []);
+        const filtered = (Array.isArray(savedErr) ? savedErr : []).filter(m => m.id !== placeholderId);
+        try {
+          if (isGuest) {
+            try { saveJson(LS_MESSAGES_PREFIX(storageUserId) + currentSessionId, filtered); } catch (_) {}
+            try { sessionLocalMessagesRef.current.set(currentSessionId, filtered); } catch (_) {}
+            try { sessionStorage.setItem(LS_MESSAGES_PREFIX(storageUserId) + currentSessionId, JSON.stringify(filtered)); } catch (_) {}
+          } else {
+            saveJson(LS_MESSAGES_PREFIX(storageUserId) + currentSessionId, filtered);
+          }
+        } catch (err) {
+          console.error('[AgentPage] handleSelectMode persist(filtered) failed:', err);
+        }
         
         if (activeSessionIdRef.current === currentSessionId) {
           setMessages(filtered);
@@ -812,7 +934,7 @@ const handleSelectMode = useCallback((messageId, selectedMode) => {
       }
     })();
   }
-}, [messages, activeSessionId, isGuest, activeSessionIdRef]);
+}, [messages, activeSessionId, isGuest, activeSessionIdRef, user?.id]);
 
 const handleRemixGenerate = useCallback(async (msg, assistantText) => {
   try {
@@ -2601,7 +2723,12 @@ return (
                               {m.type === 'image' ? (
                               <img src={m.url} alt="img" className={`block h-auto w-auto max-w-full md:max-w-[420px] rounded-2xl shadow-lg ${m.role === 'user' ? 'ml-auto' : 'mr-auto'}`} />
                               ) : m.type === 'dual_response' ? (
-                                <DualResponseBubble message={m} onSelect={(mode) => handleSelectMode(m.id, mode)} />
+                                <DualResponseBubble
+                                  message={m}
+                                  onSelect={(mode) => handleSelectMode(m.id, mode)}
+                                  // ✅ 최신 듀얼 결과만 선택 버튼 표시(중복 버튼 UX 방지)
+                                  canSelect={String(m?.id || '') === String(latestDualResponseId || '')}
+                                />
                               ) : m.type === 'story_highlights' ? (
                                 <StoryHighlights highlights={m.scenes || []} username={user?.username || '게스트'} />
                               ) : m.type === 'story_highlights_loading' ? (
@@ -3072,6 +3199,10 @@ return (
             <Composer 
                 key={activeSessionId || 'no-session'} // 세션별로 독립적인 Composer
                 hasMessages={(stableMessages || []).length > 0} // 메시지 존재 여부 전달
+                romanceOn={romanceOn}
+                onToggleRomance={(next) => {
+                  try { setRomanceOn(!!next); } catch (_) {}
+                }}
                 onSend={async (payload) => {
                   try {
                     // ✅ 세션이 없으면 먼저 생성
@@ -3171,8 +3302,31 @@ return (
                      thinking: true,
                      createdAt: nowIso()
                    };
-                   
-                   setMessages(curr => [...curr, ...userMessages, thinkingMsg]);
+
+                   /**
+                    * ✅ SSOT/안전: baseline 메시지 리스트를 먼저 확정하고(storage 포함) 이후 단계에서 참조한다.
+                    *
+                    * 배경:
+                    * - 아래 auto/타이핑 로직은 localStorage를 읽어 업데이트하는 경로가 있어,
+                    *   baseline이 storage에 반영되기 전이면 "빈 배열"을 기준으로 동작하며 UI가 멈춘 것처럼 보일 수 있다.
+                    * - 또한 세션 생성 직후(activeSessionId state 갱신 전)에는 activeSessionId를 직접 쓰면 경합이 발생한다.
+                    */
+                   const baseForSession = (String(activeSessionId || '') === String(ensuredSessionId || ''))
+                     ? (Array.isArray(stableMessages) ? stableMessages : [])
+                     : [];
+                   const baselineMessages = [...baseForSession, ...userMessages, thinkingMsg];
+                   setMessages(baselineMessages);
+                   try {
+                     const storageUserId = user?.id || 'guest';
+                     // 기존 코드가 localStorage(loadJson) 기반으로 움직이므로, guest도 localStorage에 baseline을 남긴다.
+                     try { saveJson(LS_MESSAGES_PREFIX(storageUserId) + ensuredSessionId, baselineMessages); } catch (_) {}
+                     if (isGuest) {
+                       try { sessionLocalMessagesRef.current.set(ensuredSessionId, baselineMessages); } catch (_) {}
+                       try { sessionStorage.setItem(LS_MESSAGES_PREFIX(storageUserId) + ensuredSessionId, JSON.stringify(baselineMessages)); } catch (_) {}
+                     }
+                   } catch (e) {
+                     console.error('[AgentPage] onSend persist baseline failed:', e);
+                   }
                   // ✅ 여기로 이동 (assistantId 선언 후)
                   const recoveryInfo = {
                     sessionId: ensuredSessionId,  // ✅ 세션 확보됨
@@ -3188,26 +3342,27 @@ return (
                   } catch {}
                    
                    // 3. 생성 상태 업데이트
-                   setGenState(activeSessionId, { status: GEN_STATE.PREVIEW_STREAMING });
+                   setGenState(ensuredSessionId, { status: GEN_STATE.PREVIEW_STREAMING });
                    
                    // 4. 세션 캡처 (타이핑 중 세션 전환 대응)
-                   const currentSessionId = activeSessionId;
+                   const currentSessionId = ensuredSessionId;
                    
                    // 5. 백엔드 호출 - auto 모드 분기
+                   const stagedForModel = buildStagedForModel(payload.staged);
                    if (payload.storyMode === 'auto') {
                      // === AUTO 모드: snap + genre 병렬 생성 ===
                      
                      // 병렬 API 호출
                      const [snapResponse, genreResponse] = await Promise.all([
                        chatAPI.agentSimulate({
-                         staged: payload.staged,
+                         staged: stagedForModel,
                          mode: payload.mode || 'micro',
                          storyMode: 'snap',
                          model: storyModel,
                          sub_model: storyModel
                        }),
                        chatAPI.agentSimulate({
-                         staged: payload.staged,
+                         staged: stagedForModel,
                          mode: payload.mode || 'micro',
                          storyMode: 'genre',
                          model: storyModel,
@@ -3308,13 +3463,13 @@ return (
                      sessionTypingTimersRef.current.set(currentSessionId, [...timers, snapTimer, genreTimer]);
                      
                      // 생성 완료 상태
-                     setGenState(activeSessionId, { status: GEN_STATE.IDLE });
+                     setGenState(currentSessionId, { status: GEN_STATE.IDLE });
                      
                    } else {
                      // === 기존 로직 (snap/genre 직접 선택 시) ===
                      
                      const response = await chatAPI.agentSimulate({
-                       staged: payload.staged,
+                       staged: stagedForModel,
                        mode: payload.mode || 'micro',
                        storyMode: payload.storyMode || 'auto',
                        model: storyModel,
@@ -3351,19 +3506,19 @@ return (
                       ));
                       
                       // ✅ 저장소에도 직접 저장
-                      const saved = loadJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + activeSessionId, []);
+                      const saved = loadJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + currentSessionId, []);
                       const updated = saved.map(m => 
                         (m.type === 'image' && m.url === imageUrl) 
                           ? { ...m, imageSummary } 
                           : m
                       );
-                      saveJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + activeSessionId, updated);
+                      saveJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + currentSessionId, updated);
                       
                       // ✅ 게스트일 경우 sessionStorage에도 저장
                       if (isGuest) {
                         try {
-                          sessionLocalMessagesRef.current.set(activeSessionId, updated);
-                          sessionStorage.setItem(LS_MESSAGES_PREFIX('guest') + activeSessionId, JSON.stringify(updated));
+                          sessionLocalMessagesRef.current.set(currentSessionId, updated);
+                          sessionStorage.setItem(LS_MESSAGES_PREFIX('guest') + currentSessionId, JSON.stringify(updated));
                         } catch {}
                       }
                     } catch {}
@@ -3381,7 +3536,7 @@ return (
                      const steps = 80;
                      const step = Math.max(2, Math.ceil(total / steps));
                      const intervalMs = 15;
-                     const currentSessionId = activeSessionId; // ✅ 시작 시점 세션 캡처
+                     const currentSessionId = ensuredSessionId; // ✅ 시작 시점 세션 캡처(세션 전환/생성 경합 방지)
 
 
                     const timer = setInterval(() => {
@@ -3501,7 +3656,7 @@ return (
                    }
                    
                    // 6. 생성 완료 상태
-                   setGenState(activeSessionId, { status: GEN_STATE.IDLE });
+                   setGenState(currentSessionId, { status: GEN_STATE.IDLE });
                    
                    } // else 블록 닫기 (snap/genre 직접 선택 시)
                    
@@ -3515,7 +3670,7 @@ return (
                        ? { ...msg, content: '응답 생성에 실패했습니다. 다시 시도해주세요.', thinking: false, error: true }
                        : msg
                    ));
-                   setGenState(activeSessionId, { status: GEN_STATE.IDLE });
+                  setGenState(currentSessionId, { status: GEN_STATE.IDLE });
                  }
                }}
                disabled={turnLimitReached || (activeSessionId && [GEN_STATE.PREVIEW_STREAMING, GEN_STATE.AWAITING_CANVAS, GEN_STATE.CANVAS_STREAMING].includes(getGenState(activeSessionId)?.status))}

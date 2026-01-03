@@ -2,10 +2,13 @@ import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { cn } from '../lib/utils';
 import { useAuth } from '../contexts/AuthContext';
+import { cmsAPI } from '../lib/api';
+import { resolveImageUrl } from '../lib/images';
 import {
   HOME_BANNERS_STORAGE_KEY,
   HOME_BANNERS_CHANGED_EVENT,
   getActiveHomeBanners,
+  setHomeBanners,
 } from '../lib/cmsBanners';
 import {
   Carousel,
@@ -84,6 +87,45 @@ const HomeBannerCarousel = ({ className = '' }) => {
       setBanners([]);
     }
   }, []);
+
+  /**
+   * ✅ 운영 SSOT: 서버(DB)의 배너 설정을 우선 사용한다.
+   *
+   * 동작:
+   * - 진입 시 서버에서 배너 목록을 가져와 로컬스토리지에 캐시한다.
+   * - 이후 렌더링/필터링(활성/기간)은 기존 로컬 유틸(getActiveHomeBanners)을 그대로 사용(최소 수정).
+   *
+   * 방어적:
+   * - 서버 호출 실패 시 기존 로컬값으로 표시(홈이 죽지 않게).
+   */
+  React.useEffect(() => {
+    let active = true;
+    const load = async () => {
+      try {
+        const res = await cmsAPI.getHomeBanners();
+        if (!active) return;
+        const arr = Array.isArray(res?.data) ? res.data : null;
+        if (arr) {
+          // ✅ 안전 전환: 배포 직후 서버 SSOT가 비어 기본값만 내려오는 경우,
+          // 관리자 로컬 설정이 있다면 덮어써서 사라지지 않도록 로컬을 우선 유지한다.
+          let skipApply = false;
+          try {
+            const hasLocal = !!localStorage.getItem(HOME_BANNERS_STORAGE_KEY);
+            const looksDefault = (arr.length === 1 && String(arr?.[0]?.id || '') === 'banner_notice');
+            if (hasLocal && looksDefault) skipApply = true;
+          } catch (_) {}
+          if (!skipApply) {
+            try { setHomeBanners(arr); } catch (_) {}
+          }
+          refresh();
+        }
+      } catch (e) {
+        try { console.warn('[HomeBannerCarousel] getHomeBanners failed(keep local):', e); } catch (_) {}
+      }
+    };
+    load();
+    return () => { active = false; };
+  }, [refresh]);
 
   // CMS 변경(같은 탭 이벤트) + storage(다른 탭) 구독
   React.useEffect(() => {
@@ -200,8 +242,9 @@ const HomeBannerCarousel = ({ className = '' }) => {
             const mobileImg = String(b.mobileImageUrl || '').trim();
             const href = String(b.linkUrl || '').trim();
             const versionKey = b.updatedAt || b.createdAt || '';
-            const imgSrc = withCacheBust(img, versionKey);
-            const mobileSrc = withCacheBust(mobileImg, versionKey);
+            // ✅ /static 상대경로는 환경(dev/prod)에 따라 base가 달라질 수 있으므로 resolveImageUrl로 정규화한다.
+            const imgSrc = withCacheBust(resolveImageUrl(img) || img, versionKey);
+            const mobileSrc = withCacheBust(resolveImageUrl(mobileImg) || mobileImg, versionKey);
             const openInNewTab = !!b.openInNewTab;
             const clickable = !!href;
             const external = clickable && isExternalUrl(href);

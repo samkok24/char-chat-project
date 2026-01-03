@@ -1,8 +1,15 @@
 import { useState, useRef } from "react";
-import { Upload, X, Camera, Send, Loader2, Check, Type, Filter } from "lucide-react";
+import { Upload, X, Camera, Send, Loader2, Check, Type, Filter, Heart } from "lucide-react";
 import { mediaAPI } from "../../lib/api";
 
-export default function Composer({ onSend, disabled = false, hasMessages = false }) {
+export default function Composer({
+  onSend,
+  disabled = false,
+  hasMessages = false,
+  // ✅ 연애 모드(❤️): 기본 ON
+  romanceOn = true,
+  onToggleRomance,
+}) {
   const [staged, setStaged] = useState([]);
   const [showStaging, setShowStaging] = useState(true); // 스테이징 UI 표시 여부
   const [showImageTray, setShowImageTray] = useState(false);
@@ -235,14 +242,14 @@ export default function Composer({ onSend, disabled = false, hasMessages = false
 
       {/* Action row - 4개 버튼 타원형 컨테이너 (텍스트 입력 시 확장) */}
       <div className="flex items-center justify-center -mt-2 h-[64px]">
-        <div className={`relative inline-flex items-center gap-4 px-6 py-3 rounded-full bg-gray-900/95 border border-purple-500/30 shadow-[0_0_25px_rgba(168,85,247,0.35)] hover:shadow-[0_0_35px_rgba(168,85,247,0.45)] transition-all duration-300 z-20 ${showTextInput ? 'w-[600px]' : ''}`}>
+        <div className={`relative inline-flex items-center gap-3 sm:gap-4 px-4 sm:px-6 py-3 rounded-full bg-gray-900/95 border border-purple-500/30 shadow-[0_0_25px_rgba(168,85,247,0.35)] hover:shadow-[0_0_35px_rgba(168,85,247,0.45)] transition-all duration-300 z-20 ${showTextInput ? 'w-[720px] max-w-[calc(100vw-24px)]' : ''}`}>
           
           {/* 이미지 버튼 */}
           <div className="relative">
             <button
               onClick={() => { setShowEmojiPicker(false); setShowModePicker(false); setShowImageTray(v => !v); }}
               disabled={disabled}
-              className="flex h-12 w-12 items-center justify-center rounded-full bg-gray-800/80 text-white hover:bg-gray-700 hover:scale-110 transition-all disabled:opacity-50"
+              className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-gray-800/80 text-white hover:bg-gray-700 hover:scale-110 transition-all disabled:opacity-50"
               aria-label="이미지 추가"
             >
               <Camera size={20} />
@@ -282,7 +289,7 @@ export default function Composer({ onSend, disabled = false, hasMessages = false
             <button
               onClick={toggleTextInput}
               disabled={disabled}
-              className={`flex h-12 w-12 items-center justify-center rounded-full transition-all disabled:opacity-50 ${
+              className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-full transition-all disabled:opacity-50 ${
                 showTextInput 
                   ? 'bg-purple-600 text-white scale-110' 
                   : 'bg-gray-800/80 text-white hover:bg-gray-700 hover:scale-110'
@@ -311,28 +318,53 @@ export default function Composer({ onSend, disabled = false, hasMessages = false
                 className="flex-1 h-10 px-4 bg-gray-800/60 rounded-full text-white placeholder-gray-400 outline-none focus:ring-2 focus:ring-purple-500/50 transition-all"
                 disabled={disabled}
               />
-              
-              {/* 이모지 버튼 - 텍스트 입력창 우측에 고정 */}
-              <div className="relative">
-                <button
-                  onClick={() => { setShowModePicker(false); setShowEmojiPicker((v) => !v); }}
-                  disabled={disabled}
-                  className="flex h-10 w-10 items-center justify-center rounded-full bg-gray-800/80 text-lg hover:bg-gray-700 hover:scale-110 transition-all disabled:opacity-50"
-                  aria-label="이모지"
-                >
-                  😊
-                </button>
-                {showEmojiPicker && (
-                  <EmojiPicker
-                    onClose={() => setShowEmojiPicker(false)}
-                    onSelect={(emoji) => {
-                      setTextInput(prev => prev + emoji);
-                      textInputRef.current?.focus();
-                    }}
-                  />
-                )}
-              </div>
             </>
+          )}
+
+          {/* ❤️ 연애 모드 토글 (기본 ON) - 이모지 버튼 왼쪽 */}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => {
+                try {
+                  if (typeof onToggleRomance === 'function') onToggleRomance(!romanceOn);
+                } catch (_) {}
+              }}
+              disabled={disabled}
+              aria-pressed={!!romanceOn}
+              aria-label="연애 모드"
+              title={romanceOn ? '연애 모드 ON (성별 기반 로맨틱/데이트 톤 강화)' : '연애 모드 OFF (기본 톤)'}
+              className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-full transition-all disabled:opacity-50 ${
+                romanceOn
+                  ? 'bg-pink-600 text-white shadow-[0_0_18px_rgba(236,72,153,0.45)] hover:scale-110'
+                  : 'bg-gray-800/80 text-white hover:bg-gray-700 hover:scale-110'
+              }`}
+            >
+              <Heart size={20} className={romanceOn ? 'text-white fill-white' : 'text-white'} />
+            </button>
+          </div>
+
+          {/* 이모지 버튼 - 텍스트 입력창이 열렸을 때만 표시 */}
+          {showTextInput && (
+            <div className="relative">
+              <button
+                onClick={() => { setShowModePicker(false); setShowEmojiPicker((v) => !v); }}
+                disabled={disabled}
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gray-800/80 text-lg hover:bg-gray-700 hover:scale-110 transition-all disabled:opacity-50"
+                aria-label="이모지"
+              >
+                😊
+              </button>
+              {showEmojiPicker && (
+                <EmojiPicker
+                  onClose={() => setShowEmojiPicker(false)}
+                  onSelect={(emoji) => {
+                    setTextInput(prev => prev + emoji);
+                    textInputRef.current?.focus();
+                  }}
+                />
+              )}
+            </div>
           )}
 
           {/* 모드/태그 선택 버튼 (깔대기 아이콘) - 전송 버튼 바로 왼쪽 */}
@@ -340,7 +372,7 @@ export default function Composer({ onSend, disabled = false, hasMessages = false
             <button
               onClick={() => { setShowImageTray(false); setShowEmojiPicker(false); setShowModePicker(v => !v); }}
               disabled={disabled}
-              className="flex h-12 w-12 items-center justify-center rounded-full bg-gray-800/80 text-white hover:bg-gray-700 hover:scale-110 transition-all disabled:opacity-50"
+              className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-gray-800/80 text-white hover:bg-gray-700 hover:scale-110 transition-all disabled:opacity-50"
               aria-label="모드/태그 선택"
             >
               <Filter size={20} />
@@ -365,7 +397,7 @@ export default function Composer({ onSend, disabled = false, hasMessages = false
           <button
             disabled={(!staged.length && !textInput.trim()) || disabled}
             onClick={handleSend}
-            className={`relative flex h-12 w-12 items-center justify-center rounded-full bg-gradient-to-r from-purple-600 to-purple-500 text-white hover:from-purple-700 hover:to-purple-600 hover:scale-110 transition-all disabled:opacity-40 shadow-[0_0_15px_rgba(168,85,247,0.5)] ${showTextInput ? '-mr-2' : ''}`}
+            className={`relative flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-gradient-to-r from-purple-600 to-purple-500 text-white hover:from-purple-700 hover:to-purple-600 hover:scale-110 transition-all disabled:opacity-40 shadow-[0_0_15px_rgba(168,85,247,0.5)] ${showTextInput ? '-mr-2' : ''}`}
             aria-label="전송"
           >
             {/* 모드 인디케이터 */}
