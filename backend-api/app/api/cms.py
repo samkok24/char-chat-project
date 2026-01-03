@@ -19,13 +19,15 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, text
 from typing import List
 import logging
 from datetime import datetime, timezone
 import uuid
+import json
 
 from app.core.database import get_db
+from app.core.config import settings
 from app.core.security import get_current_user
 from app.models.user import User
 from app.models.site_config import SiteConfig
@@ -52,6 +54,249 @@ def _now_iso() -> str:
         return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     except Exception:
         return ""
+
+
+def _safe_exc(e: Exception) -> str:
+    """예외 메시지를 방어적으로 문자열로 변환(민감정보 노출 최소화)."""
+    try:
+        s = str(e or "")
+    except Exception:
+        return ""
+    try:
+        s = s.replace("\n", " ").replace("\r", " ").strip()
+    except Exception:
+        pass
+    try:
+        if len(s) > 300:
+            s = s[:300] + "..."
+    except Exception:
+        pass
+    return s
+
+
+def _is_sqlite() -> bool:
+    try:
+        return bool(getattr(settings, "DATABASE_URL", "") or "").startswith("sqlite")
+    except Exception:
+        return False
+
+
+async def _ensure_site_configs_table_raw(db: AsyncSession) -> None:
+    """site_configs 테이블이 없거나 일부 컬럼이 달라도 저장/조회가 가능하도록 최소 스키마를 보장한다."""
+    try:
+        if _is_sqlite():
+            # SQLite: id(TEXT PK) + key(UNIQUE) + value(TEXT/JSON) + timestamps
+            await db.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS site_configs (
+                      id TEXT PRIMARY KEY,
+                      key TEXT NOT NULL UNIQUE,
+                      value TEXT NOT NULL,
+                      created_at TEXT DEFAULT (datetime('now')),
+                      updated_at TEXT DEFAULT (datetime('now'))
+                    )
+                    """
+                )
+            )
+        else:
+            # Postgres: 모델(SiteConfig) 스키마에 맞춘다.
+            # - id: UUID PK (앱에서 값 넣음)
+            # - key: UNIQUE (upsert 타겟)
+            await db.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS site_configs (
+                      id UUID PRIMARY KEY,
+                      key VARCHAR(100) NOT NULL UNIQUE,
+                      value JSONB NOT NULL,
+                      created_at TIMESTAMPTZ DEFAULT now(),
+                      updated_at TIMESTAMPTZ DEFAULT now()
+                    )
+                    """
+                )
+            )
+            # 기존 테이블이 다른 스키마로 생성된 경우(컬럼 누락 등) 최소한의 컬럼을 추가한다.
+            # - 이 ALTER들은 "이미 있으면" 무시된다.
+            try:
+                await db.execute(text("ALTER TABLE site_configs ADD COLUMN IF NOT EXISTS id UUID"))
+            except Exception:
+                pass
+            try:
+                await db.execute(text("ALTER TABLE site_configs ADD COLUMN IF NOT EXISTS key VARCHAR(100)"))
+            except Exception:
+                pass
+            try:
+                await db.execute(text("ALTER TABLE site_configs ADD COLUMN IF NOT EXISTS value JSONB"))
+            except Exception:
+                pass
+            try:
+                await db.execute(text("ALTER TABLE site_configs ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now()"))
+            except Exception:
+                pass
+            try:
+                await db.execute(text("ALTER TABLE site_configs ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now()"))
+            except Exception:
+                pass
+            # key upsert를 위해 key에 유니크 인덱스를 보장(이미 있으면 생성 안 함)
+            try:
+                await db.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_site_configs_key ON site_configs (key)"))
+            except Exception:
+                pass
+        await db.commit()
+    except Exception:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+
+
+async def _get_site_configs_column_types_pg(db: AsyncSession) -> dict:
+    """Postgres에서 site_configs 컬럼 타입을 조회한다."""
+    try:
+        res = await db.execute(
+            text(
+                """
+                SELECT column_name, data_type
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'site_configs'
+                """
+            )
+        )
+        rows = res.fetchall() if res else []
+        return {str(r[0]): str(r[1]) for r in (rows or []) if r and len(r) >= 2}
+    except Exception:
+        return {}
+
+
+async def _get_site_configs_columns_sqlite(db: AsyncSession) -> set:
+    """SQLite에서 site_configs 컬럼 목록을 조회한다."""
+    try:
+        res = await db.execute(text("PRAGMA table_info(site_configs)"))
+        rows = res.fetchall() if res else []
+        return {str(r[1]) for r in (rows or []) if r and len(r) >= 2}
+    except Exception:
+        return set()
+
+
+async def _get_site_configs_schema_info(db: AsyncSession) -> dict:
+    """DB별로 site_configs 컬럼 존재/타입 정보를 반환한다."""
+    if _is_sqlite():
+        cols = await _get_site_configs_columns_sqlite(db)
+        return {"cols": cols, "types": {}}
+    types = await _get_site_configs_column_types_pg(db)
+    return {"cols": set(types.keys()), "types": types}
+
+
+async def _get_config_value_raw(db: AsyncSession, key: str):
+    """ORM이 실패해도 동작하도록 raw SQL로 value를 읽는다."""
+    try:
+        if _is_sqlite():
+            res = await db.execute(text("SELECT value FROM site_configs WHERE key = :k LIMIT 1"), {"k": key})
+            row = res.first() if res else None
+            if not row:
+                return None
+            v = row[0]
+            if isinstance(v, (dict, list)):
+                return v
+            if isinstance(v, str) and v.strip():
+                try:
+                    return json.loads(v)
+                except Exception:
+                    return None
+            return None
+
+        # Postgres: value::text로 받아 JSON 파싱(스키마/ORM 불일치 대비)
+        res = await db.execute(text("SELECT value::text AS v FROM site_configs WHERE key = :k LIMIT 1"), {"k": key})
+        row = res.first() if res else None
+        if not row:
+            return None
+        v = row[0]
+        if isinstance(v, str) and v.strip():
+            try:
+                return json.loads(v)
+            except Exception:
+                return None
+        return None
+    except Exception:
+        return None
+
+
+async def _upsert_config_raw(db: AsyncSession, key: str, value_obj) -> None:
+    """ORM이 깨지는 배포 DB 스키마 차이에도 저장이 되도록 raw SQL로 upsert 한다."""
+    await _ensure_site_configs_table_raw(db)
+    info = await _get_site_configs_schema_info(db)
+    cols = info.get("cols") or set()
+    types = info.get("types") or {}
+
+    has_id = ("id" in cols)
+    id_type = str(types.get("id") or "").lower()
+
+    try:
+        val_json = json.dumps(value_obj, ensure_ascii=False)
+    except Exception:
+        val_json = "[]"
+
+    if _is_sqlite():
+        if has_id:
+            stmt = text(
+                """
+                INSERT INTO site_configs (id, key, value)
+                VALUES (:id, :k, :v)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """
+            )
+            params = {"id": str(uuid.uuid4()), "k": key, "v": val_json}
+        else:
+            stmt = text(
+                """
+                INSERT INTO site_configs (key, value)
+                VALUES (:k, :v)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """
+            )
+            params = {"k": key, "v": val_json}
+        await db.execute(stmt, params)
+        await db.commit()
+        return
+
+    # Postgres
+    value_type = str(types.get("value") or "").lower()
+    if not value_type:
+        value_type = "jsonb"
+    if value_type == "json":
+        value_expr = "CAST(:v AS JSON)"
+    elif value_type == "jsonb":
+        value_expr = "CAST(:v AS JSONB)"
+    else:
+        value_expr = ":v"
+
+    if has_id:
+        # id가 uuid면 캐스팅해서 삽입(기존 테이블 스키마 호환)
+        if id_type == "uuid":
+            id_expr = "CAST(:id AS UUID)"
+        else:
+            id_expr = ":id"
+        stmt = text(
+            f"""
+            INSERT INTO site_configs (id, key, value)
+            VALUES ({id_expr}, :k, {value_expr})
+            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+            """
+        )
+        params = {"id": str(uuid.uuid4()), "k": key, "v": val_json}
+    else:
+        stmt = text(
+            f"""
+            INSERT INTO site_configs (key, value)
+            VALUES (:k, {value_expr})
+            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+            """
+        )
+        params = {"k": key, "v": val_json}
+
+    await db.execute(stmt, params)
+    await db.commit()
 
 
 def _default_home_banners() -> List[dict]:
@@ -208,6 +453,14 @@ async def get_home_banners(db: AsyncSession = Depends(get_db)):
             return normalized
         return _default_home_banners()
     except Exception as e:
+        # ✅ 배포 DB 스키마 불일치 등으로 ORM이 깨지는 경우 raw SQL로 폴백
+        try:
+            raw = await _get_config_value_raw(db, CONFIG_KEY_HOME_BANNERS)
+            if isinstance(raw, list):
+                normalized = _normalize_banners([HomeBanner.model_validate(x) for x in raw])
+                return normalized
+        except Exception:
+            pass
         try:
             logger.exception(f"[cms] get_home_banners failed: {e}")
         except Exception:
@@ -227,6 +480,14 @@ async def get_home_slots(db: AsyncSession = Depends(get_db)):
             return normalized
         return _default_home_slots()
     except Exception as e:
+        # ✅ 배포 DB 스키마 불일치 등으로 ORM이 깨지는 경우 raw SQL로 폴백
+        try:
+            raw = await _get_config_value_raw(db, CONFIG_KEY_HOME_SLOTS)
+            if isinstance(raw, list):
+                normalized = _normalize_slots([HomeSlot.model_validate(x) for x in raw])
+                return normalized
+        except Exception:
+            pass
         try:
             logger.exception(f"[cms] get_home_slots failed: {e}")
         except Exception:
@@ -253,12 +514,28 @@ async def put_home_banners(
         await db.commit()
         return normalized
     except Exception as e:
-        await db.rollback()
+        try:
+            await db.rollback()
+        except Exception:
+            pass
         try:
             logger.exception(f"[cms] put_home_banners failed: {e}")
         except Exception:
             print(f"[cms] put_home_banners failed: {e}")
-        raise HTTPException(status_code=500, detail="홈 배너 저장에 실패했습니다.")
+        # ✅ 배포 DB 스키마/권한/컬럼 불일치로 ORM 저장이 실패할 수 있어 raw SQL 폴백을 1회 시도한다.
+        try:
+            normalized = _normalize_banners(payload)
+            await _upsert_config_raw(db, CONFIG_KEY_HOME_BANNERS, normalized)
+            return normalized
+        except Exception as e2:
+            try:
+                logger.exception(f"[cms] put_home_banners raw fallback failed: {e2}")
+            except Exception:
+                print(f"[cms] put_home_banners raw fallback failed: {e2}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"홈 배너 저장에 실패했습니다. ({_safe_exc(e2) or _safe_exc(e)})",
+            )
 
 
 @router.put("/home/slots", response_model=List[HomeSlot], summary="홈 구좌 설정 저장(관리자)")
@@ -280,11 +557,27 @@ async def put_home_slots(
         await db.commit()
         return normalized
     except Exception as e:
-        await db.rollback()
+        try:
+            await db.rollback()
+        except Exception:
+            pass
         try:
             logger.exception(f"[cms] put_home_slots failed: {e}")
         except Exception:
             print(f"[cms] put_home_slots failed: {e}")
-        raise HTTPException(status_code=500, detail="홈 구좌 저장에 실패했습니다.")
+        # ✅ 배포 DB 스키마/권한/컬럼 불일치로 ORM 저장이 실패할 수 있어 raw SQL 폴백을 1회 시도한다.
+        try:
+            normalized = _normalize_slots(payload)
+            await _upsert_config_raw(db, CONFIG_KEY_HOME_SLOTS, normalized)
+            return normalized
+        except Exception as e2:
+            try:
+                logger.exception(f"[cms] put_home_slots raw fallback failed: {e2}")
+            except Exception:
+                print(f"[cms] put_home_slots raw fallback failed: {e2}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"홈 구좌 저장에 실패했습니다. ({_safe_exc(e2) or _safe_exc(e)})",
+            )
 
 
