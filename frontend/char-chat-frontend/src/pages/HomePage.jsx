@@ -8,7 +8,7 @@ import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../contexts/AuthContext';
 import useRequireAuth from '../hooks/useRequireAuth';
-import { charactersAPI, usersAPI, tagsAPI, storiesAPI, storydiveAPI, noticesAPI } from '../lib/api';
+import { charactersAPI, usersAPI, tagsAPI, storiesAPI, storydiveAPI, noticesAPI, cmsAPI } from '../lib/api';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
@@ -65,6 +65,7 @@ import {
   HOME_SLOTS_STORAGE_KEY,
   HOME_SLOTS_CHANGED_EVENT,
   getHomeSlots,
+  setHomeSlots as persistHomeSlots,
   isHomeSlotActive,
 } from '../lib/cmsSlots';
 
@@ -159,6 +160,53 @@ const HomePage = () => {
       try { window.removeEventListener(HOME_SLOTS_CHANGED_EVENT, onCustom); } catch (_) {}
       try { window.removeEventListener('storage', onStorage); } catch (_) {}
     };
+  }, [refreshHomeSlots]);
+
+  /**
+   * ✅ 운영 SSOT: 서버(DB)의 구좌 설정을 우선 사용한다.
+   *
+   * 동작:
+   * - 홈 진입 시 서버에서 구좌 설정을 가져와 로컬스토리지에 캐시한다.
+   * - 이후 렌더링 규칙은 기존 로컬 유틸(getHomeSlots/isHomeSlotActive)을 그대로 사용(최소 수정).
+   *
+   * 방어적:
+   * - 서버 호출 실패 시 기존 로컬값으로 표시(홈이 죽지 않게).
+   */
+  useEffect(() => {
+    let active = true;
+    const load = async () => {
+      try {
+        const res = await cmsAPI.getHomeSlots();
+        if (!active) return;
+        const arr = Array.isArray(res?.data) ? res.data : null;
+        if (arr) {
+          // ✅ 안전 전환: 배포 직후 서버 SSOT가 비어 기본 구좌만 내려오는 경우,
+          // 로컬에 편집값이 있으면 덮어써서 사라지지 않도록 로컬을 우선 유지한다.
+          let skipApply = false;
+          try {
+            const hasLocal = !!localStorage.getItem(HOME_SLOTS_STORAGE_KEY);
+            const defaultIds = new Set([
+              'slot_top_origchat',
+              'slot_trending_characters',
+              'slot_top_stories',
+              'slot_recommended_characters',
+              'slot_daily_tag_characters',
+            ]);
+            const ids = new Set((arr || []).map((x) => String(x?.id || '').trim()).filter(Boolean));
+            const looksDefault = (arr.length === 5 && [...defaultIds].every((id) => ids.has(id)));
+            if (hasLocal && looksDefault) skipApply = true;
+          } catch (_) {}
+          if (!skipApply) {
+            try { persistHomeSlots(arr); } catch (_) {}
+          }
+          refreshHomeSlots();
+        }
+      } catch (e) {
+        try { console.warn('[HomePage] getHomeSlots(server) failed(keep local):', e); } catch (_) {}
+      }
+    };
+    load();
+    return () => { active = false; };
   }, [refreshHomeSlots]);
 
   // ===== 온보딩(메인 탭): 검색(성별+키워드) + 30초 생성 =====
@@ -1953,24 +2001,10 @@ const HomePage = () => {
                       return (
                         <div key={key} className="relative">
                           {/* NOTE: 캐릭터 카드는 내부에서 이미 원작/기본 배지를 표시하므로, '캐릭터챗' 배지는 중복/겹침 이슈로 제거 */}
-                          {isStory && (
-                            <div className="absolute left-2 top-2 z-10 pointer-events-none">
-                              <Badge className="bg-blue-600/80 hover:bg-blue-600 text-white text-[10px] px-2 py-0.5">
-                                웹소설
-                              </Badge>
-                            </div>
-                          )}
-
                           {isStory ? (
                             <StoryExploreCard story={item.data} />
                           ) : (
                             <CharacterCard character={item.data} showOriginBadge />
-                          )}
-
-                          {isStory && (
-                            <div className="mt-1 text-xs text-gray-400">
-                              클릭하면 작품 상세로 이동합니다
-                            </div>
                           )}
                         </div>
                       );

@@ -14,7 +14,8 @@ import { Avatar, AvatarFallback, AvatarImage } from '../components/ui/avatar';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '../components/ui/dialog';
 import { useAuth } from '../contexts/AuthContext';
-import { charactersAPI, storiesAPI, tagsAPI, usersAPI, metricsAPI } from '../lib/api';
+import { charactersAPI, storiesAPI, tagsAPI, usersAPI, metricsAPI, cmsAPI, filesAPI } from '../lib/api';
+import { resolveImageUrl } from '../lib/images';
 import {
   HOME_BANNERS_STORAGE_KEY,
   HOME_BANNERS_CHANGED_EVENT,
@@ -108,6 +109,61 @@ const withCacheBust = (url, versionKey) => {
   }
 };
 
+/**
+ * ✅ 구버전 CMS(로컬스토리지) 호환: data: 이미지 URL을 서버 업로드 URL로 변환한다.
+ *
+ * 왜 필요한가?
+ * - 과거에는 배너 이미지가 base64(data:)로 로컬스토리지에 저장되었고, 이 값은 매우 길다.
+ * - 운영 SSOT(DB) 저장 시에는 payload 검증(백엔드 schema max_length)에 의해 422가 발생할 수 있다.
+ * - 따라서 저장 직전에 data: 이미지를 /files/upload로 업로드해 URL(/static/...)로 치환한다.
+ *
+ * 방어적:
+ * - 파싱/디코딩 실패 시 null 반환(서버 저장을 막고 토스트로 안내)
+ * - image/* 타입만 처리
+ */
+const isDataImageUrl = (raw) => {
+  try {
+    const s = String(raw || '').trim();
+    return /^data:image\/[a-z0-9.+-]+;base64,/i.test(s);
+  } catch (_) {
+    return false;
+  }
+};
+
+const dataImageUrlToFile = (dataUrl, filenameBase) => {
+  try {
+    const raw = String(dataUrl || '').trim();
+    if (!isDataImageUrl(raw)) return null;
+
+    const commaIdx = raw.indexOf(',');
+    if (commaIdx < 0) return null;
+
+    const meta = raw.slice(0, commaIdx);
+    const b64 = raw.slice(commaIdx + 1);
+    const mimeMatch = meta.match(/^data:([^;]+);base64$/i);
+    const mime = (mimeMatch?.[1] || '').trim().toLowerCase();
+    if (!mime || !mime.startsWith('image/')) return null;
+
+    let ext = mime.split('/')[1] || 'png';
+    if (ext === 'jpeg') ext = 'jpg';
+    // svg+xml 같은 케이스 방어
+    ext = ext.replace(/[^a-z0-9]+/gi, '');
+    if (!ext) ext = 'png';
+
+    // base64 → Uint8Array
+    const bin = atob(String(b64 || '').trim());
+    const len = bin.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i);
+
+    const name = `${String(filenameBase || 'banner').trim() || 'banner'}.${ext}`;
+    return new File([bytes], name, { type: mime });
+  } catch (e) {
+    try { console.warn('[CMSPage] dataImageUrlToFile failed:', e); } catch (_) {}
+    return null;
+  }
+};
+
 const computeStatus = (b) => {
   try {
     const enabled = b.enabled !== false;
@@ -142,6 +198,92 @@ const CMSPage = () => {
   const [usersReloadKey, setUsersReloadKey] = React.useState(0);
   const [trafficLoading, setTrafficLoading] = React.useState(false);
   const [trafficSummary, setTrafficSummary] = React.useState(null);
+
+  /**
+   * ✅ 운영 SSOT: 서버(DB)에서 CMS 설정을 로드한다.
+   *
+   * 의도:
+   * - 기존 로컬스토리지 기반 CMS는 "해당 브라우저/기기"에만 반영되는 구조였다.
+   * - 운영에서는 유저 전원에게 동일 배너/구좌가 반영되어야 하므로, 서버에서 불러와 편집 UI에 반영한다.
+   *
+   * 방어적:
+   * - 서버 로드 실패 시 기존 로컬 값(getHomeBanners/getHomeSlots)로 유지한다.
+   * - 서버에서 내려온 값도 로컬스토리지에 캐시해, 기존 이벤트/미리보기 흐름을 깨지 않게 한다.
+   */
+  React.useEffect(() => {
+    if (!isAdmin) return;
+    let active = true;
+    const loadFromServer = async () => {
+      try {
+        const [bRes, sRes] = await Promise.all([
+          cmsAPI.getHomeBanners().catch((e) => ({ __err: e })),
+          cmsAPI.getHomeSlots().catch((e) => ({ __err: e })),
+        ]);
+        if (!active) return;
+
+        // 배너
+        try {
+          const serverBanners = Array.isArray(bRes?.data) ? bRes.data : null;
+          if (serverBanners) {
+            // ✅ 안전 전환: 기존 로컬스토리지 기반으로 편집해둔 값이 있다면, 서버가 "기본값(초기 상태)"일 때는 로컬을 우선 유지한다.
+            // - 배포 직후(서버 SSOT 비어있음) 관리자 로컬 설정이 덮어써져 사라지는 사고를 방지한다.
+            let skipApply = false;
+            try {
+              const hasLocal = !!localStorage.getItem(HOME_BANNERS_STORAGE_KEY);
+              const looksDefault = (serverBanners.length === 1 && String(serverBanners?.[0]?.id || '') === 'banner_notice');
+              if (hasLocal && looksDefault) {
+                // 로컬 우선(서버로 전파하려면 "저장" 버튼을 눌러 SSOT에 업로드하면 됨)
+                skipApply = true;
+              }
+            } catch (_) {}
+            if (!skipApply) {
+              const saved = setHomeBanners(serverBanners);
+              if (saved?.ok) setBannersState(saved.items);
+              else setBannersState((serverBanners || []).map(sanitizeHomeBanner));
+            }
+          }
+        } catch (e) {
+          try { console.warn('[CMSPage] apply server banners failed:', e); } catch (_) {}
+        }
+
+        // 구좌
+        try {
+          const serverSlots = Array.isArray(sRes?.data) ? sRes.data : null;
+          if (serverSlots) {
+            // ✅ 안전 전환: 서버가 기본 구좌(초기값)로만 내려오고, 로컬에 편집값이 있으면 로컬을 우선 유지한다.
+            let skipApply = false;
+            try {
+              const hasLocal = !!localStorage.getItem(HOME_SLOTS_STORAGE_KEY);
+              const defaultIds = new Set([
+                'slot_top_origchat',
+                'slot_trending_characters',
+                'slot_top_stories',
+                'slot_recommended_characters',
+                'slot_daily_tag_characters',
+              ]);
+              const ids = new Set((serverSlots || []).map((x) => String(x?.id || '').trim()).filter(Boolean));
+              const looksDefault = (serverSlots.length === 5 && [...defaultIds].every((id) => ids.has(id)));
+              if (hasLocal && looksDefault) {
+                skipApply = true;
+              }
+            } catch (_) {}
+            if (!skipApply) {
+              const saved = setHomeSlots(serverSlots);
+              if (saved?.ok) setSlotsState(saved.items);
+              else setSlotsState((serverSlots || []).map(sanitizeHomeSlot));
+            }
+          }
+        } catch (e) {
+          try { console.warn('[CMSPage] apply server slots failed:', e); } catch (_) {}
+        }
+      } catch (e) {
+        // 전체 실패는 로컬 폴백으로 유지 (운영 안정)
+        try { console.warn('[CMSPage] loadFromServer failed(keep local):', e); } catch (_) {}
+      }
+    };
+    loadFromServer();
+    return () => { active = false; };
+  }, [isAdmin]);
 
   // ===== CMS 커스텀 구좌: 콘텐츠(캐릭터/웹소설) 선택 모달 상태 =====
   // 요구사항(대표님):
@@ -397,27 +539,32 @@ const CMSPage = () => {
         toast.error('이미지 파일만 업로드할 수 있습니다.');
         return;
       }
-      // 로컬스토리지 용량 방어(대략적인 경고)
-      if (file.size > 2.5 * 1024 * 1024) {
-        toast.warning('이미지 용량이 큽니다. 저장 실패(용량 초과)가 날 수 있어요. 가능하면 더 작은 이미지로 교체하세요.');
+      // ✅ 운영 안정: base64(dataUrl)를 CMS 설정에 저장하면 요청 바디가 커져(413/Timeout) 배포 환경에서 실패하기 쉽다.
+      // - 따라서 파일은 서버(/files/upload)로 업로드하고, URL(/static/...)만 CMS 설정에 저장한다.
+      let url = '';
+      try {
+        const res = await filesAPI.uploadImages([file]);
+        const arr = res?.data;
+        url = Array.isArray(arr) ? String(arr[0] || '').trim() : '';
+      } catch (e) {
+        console.error('[CMSPage] image upload failed:', e);
+        toast.error('이미지 업로드에 실패했습니다.');
+        return;
       }
-
-      const dataUrl = await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result || ''));
-        reader.onerror = () => reject(new Error('파일을 읽지 못했습니다.'));
-        reader.readAsDataURL(file);
-      });
-      updateBanner(id, { imageUrl: dataUrl });
-      toast.success('이미지가 적용되었습니다. 저장 버튼을 눌러 반영하세요.');
+      if (!url) {
+        toast.error('이미지 업로드 결과가 비어있습니다.');
+        return;
+      }
+      updateBanner(id, { imageUrl: url });
+      toast.success('이미지가 업로드되었습니다. 저장 버튼을 눌러 전 유저에게 반영하세요.');
     } catch (e) {
-      console.error('[CMSPage] image read failed:', e);
+      console.error('[CMSPage] image pick failed:', e);
       toast.error('이미지 적용에 실패했습니다.');
     }
   };
 
   /**
-   * 모바일 배너 이미지 업로드(로컬 저장)
+   * 모바일 배너 이미지 업로드(서버 업로드)
    *
    * 의도/동작:
    * - PC 배너(`imageUrl`)과 별도로, 모바일 전용 배너(`mobileImageUrl`)를 설정한다.
@@ -430,21 +577,24 @@ const CMSPage = () => {
         toast.error('이미지 파일만 업로드할 수 있습니다.');
         return;
       }
-      // 로컬스토리지 용량 방어(대략적인 경고)
-      if (file.size > 2.5 * 1024 * 1024) {
-        toast.warning('이미지 용량이 큽니다. 저장 실패(용량 초과)가 날 수 있어요. 가능하면 더 작은 이미지로 교체하세요.');
+      let url = '';
+      try {
+        const res = await filesAPI.uploadImages([file]);
+        const arr = res?.data;
+        url = Array.isArray(arr) ? String(arr[0] || '').trim() : '';
+      } catch (e) {
+        console.error('[CMSPage] mobile image upload failed:', e);
+        toast.error('모바일 이미지 업로드에 실패했습니다.');
+        return;
       }
-
-      const dataUrl = await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result || ''));
-        reader.onerror = () => reject(new Error('파일을 읽지 못했습니다.'));
-        reader.readAsDataURL(file);
-      });
-      updateBanner(id, { mobileImageUrl: dataUrl });
-      toast.success('모바일 이미지가 적용되었습니다. 저장 버튼을 눌러 반영하세요.');
+      if (!url) {
+        toast.error('모바일 이미지 업로드 결과가 비어있습니다.');
+        return;
+      }
+      updateBanner(id, { mobileImageUrl: url });
+      toast.success('모바일 이미지가 업로드되었습니다. 저장 버튼을 눌러 전 유저에게 반영하세요.');
     } catch (e) {
-      console.error('[CMSPage] mobile image read failed:', e);
+      console.error('[CMSPage] mobile image pick failed:', e);
       toast.error('모바일 이미지 적용에 실패했습니다.');
     }
   };
@@ -463,12 +613,90 @@ const CMSPage = () => {
         }
       }
 
-      const res = setHomeBanners(banners);
+      /**
+       * ✅ 운영 SSOT 저장
+       *
+       * 우선순위:
+       * 1) 서버 저장(전 유저 반영)
+       * 2) 로컬스토리지 캐시(기존 미리보기/이벤트 흐름 유지)
+       *
+       * 방어적:
+       * - 서버 저장 실패 시에도 작업물을 잃지 않도록 로컬 저장은 시도한다.
+       * - 단, 유저 전원 반영은 서버 저장이 성공해야 한다는 점을 토스트로 알린다.
+       */
+      let savedToServer = false;
+      let serverItems = null;
+      let serverSaveError = null;
+      try {
+        // ✅ 서버 저장 전에 data: 이미지 URL(구버전 로컬 저장)을 서버 업로드 URL로 변환한다.
+        // - 변환 후에만 putHomeBanners를 호출해야 422(max_length)로 실패하지 않는다.
+        let payload = (Array.isArray(banners) ? banners : []).map(sanitizeHomeBanner);
+        let didMigrate = false;
+
+        for (let i = 0; i < payload.length; i++) {
+          const b = payload[i] || {};
+          const id = String(b.id || '').trim() || `banner_${i}`;
+          const title = String(b.title || '').trim() || '배너';
+          let next = { ...b };
+
+          // PC 이미지
+          if (isDataImageUrl(next.imageUrl)) {
+            didMigrate = true;
+            const file = dataImageUrlToFile(next.imageUrl, `banner_${id}_pc`);
+            if (!file) throw new Error(`"${title}" 배너의 PC 이미지 변환에 실패했습니다.`);
+            const up = await filesAPI.uploadImages([file]);
+            const url = Array.isArray(up?.data) ? String(up.data?.[0] || '').trim() : '';
+            if (!url) throw new Error(`"${title}" 배너의 PC 이미지 업로드에 실패했습니다.`);
+            next.imageUrl = url;
+          }
+
+          // 모바일 이미지(옵션)
+          if (isDataImageUrl(next.mobileImageUrl)) {
+            didMigrate = true;
+            const file = dataImageUrlToFile(next.mobileImageUrl, `banner_${id}_mobile`);
+            if (!file) throw new Error(`"${title}" 배너의 모바일 이미지 변환에 실패했습니다.`);
+            const up = await filesAPI.uploadImages([file]);
+            const url = Array.isArray(up?.data) ? String(up.data?.[0] || '').trim() : '';
+            if (!url) throw new Error(`"${title}" 배너의 모바일 이미지 업로드에 실패했습니다.`);
+            next.mobileImageUrl = url;
+          }
+
+          payload[i] = sanitizeHomeBanner(next);
+        }
+
+        // 변환이 있었다면 UI/로컬 상태도 URL 기반으로 맞춰준다(재저장/재시도 UX 안정화)
+        if (didMigrate) {
+          try { setBannersState(payload); } catch (_) {}
+        }
+
+        const resp = await cmsAPI.putHomeBanners(payload);
+        serverItems = Array.isArray(resp?.data) ? resp.data : null;
+        savedToServer = !!serverItems;
+      } catch (e) {
+        console.error('[CMSPage] putHomeBanners failed:', e);
+        serverSaveError = e;
+        savedToServer = false;
+      }
+
+      const toPersist = (Array.isArray(serverItems) && serverItems.length) ? serverItems : banners;
+      const res = setHomeBanners(toPersist);
       if (!res.ok) {
         toast.error('저장에 실패했습니다. (로컬 저장소 용량 초과 가능)');
         return;
       }
-      toast.success('저장 완료! 홈 배너에 반영되었습니다.');
+      if (savedToServer) toast.success('저장 완료! (전 유저에게 반영됩니다)');
+      else {
+        // ✅ 에러를 씹지 말고, 가능한 범위에서 원인을 사용자에게 알려준다.
+        let detail = '';
+        try {
+          const status = serverSaveError?.response?.status;
+          const serverDetail = serverSaveError?.response?.data?.detail;
+          const msg = serverDetail || serverSaveError?.message || '';
+          if (status) detail = ` (HTTP ${status}${msg ? `: ${msg}` : ''})`;
+          else if (msg) detail = ` (${msg})`;
+        } catch (_) {}
+        toast.error(`서버 저장에 실패했습니다. 현재는 로컬에만 저장되었습니다. (유저 전체 반영 안 됨)${detail}`);
+      }
     } finally {
       setSaving(false);
     }
@@ -791,12 +1019,36 @@ const CMSPage = () => {
         }
       }
 
-      const res = setHomeSlots(slots);
+      /**
+       * ✅ 운영 SSOT 저장(홈 구좌)
+       *
+       * 우선순위:
+       * 1) 서버 저장(전 유저 반영)
+       * 2) 로컬 캐시(기존 HomePage 로직/이벤트 유지)
+       */
+      let savedToServer = false;
+      let serverItems = null;
+      try {
+        const payload = (Array.isArray(slots) ? slots : []).map((x) => {
+          // 입력 중 title 트레일링 스페이스를 유지해두었으므로, 저장 시점에는 sanitize(trim)를 적용한다.
+          try { return sanitizeHomeSlot(x); } catch (_) { return x; }
+        });
+        const resp = await cmsAPI.putHomeSlots(payload);
+        serverItems = Array.isArray(resp?.data) ? resp.data : null;
+        savedToServer = !!serverItems;
+      } catch (e) {
+        console.error('[CMSPage] putHomeSlots failed:', e);
+        savedToServer = false;
+      }
+
+      const toPersist = (Array.isArray(serverItems) && serverItems.length) ? serverItems : slots;
+      const res = setHomeSlots(toPersist);
       if (!res.ok) {
         toast.error('저장에 실패했습니다. (로컬 저장소 용량 초과 가능)');
         return;
       }
-      toast.success('저장 완료! 구좌 설정이 저장되었습니다.');
+      if (savedToServer) toast.success('저장 완료! (전 유저에게 반영됩니다)');
+      else toast.error('서버 저장에 실패했습니다. 현재는 로컬에만 저장되었습니다. (유저 전체 반영 안 됨)');
     } finally {
       setSaving(false);
     }
@@ -1150,7 +1402,7 @@ const CMSPage = () => {
                               <div className="absolute inset-0 bg-gradient-to-r from-[#2a160c] via-[#15121a] to-[#0b1627]" />
                               {b.imageUrl ? (
                                 <img
-                                  src={withCacheBust(b.imageUrl, b.updatedAt || b.createdAt)}
+                                  src={withCacheBust(resolveImageUrl(b.imageUrl) || b.imageUrl, b.updatedAt || b.createdAt)}
                                   alt={b.title || '배너'}
                                   className="relative w-full h-[140px] object-cover"
                                   onLoad={(e) => { try { e.currentTarget.style.display = ''; } catch (_) {} }}
@@ -1177,7 +1429,7 @@ const CMSPage = () => {
                               <div className="absolute inset-0 bg-gradient-to-r from-[#2a160c] via-[#15121a] to-[#0b1627]" />
                               {(b.mobileImageUrl || b.imageUrl) ? (
                                 <img
-                                  src={withCacheBust((b.mobileImageUrl || b.imageUrl), b.updatedAt || b.createdAt)}
+                                  src={withCacheBust(resolveImageUrl((b.mobileImageUrl || b.imageUrl)) || (b.mobileImageUrl || b.imageUrl), b.updatedAt || b.createdAt)}
                                   alt={b.title || '배너'}
                                   className="relative w-full h-[140px] object-contain"
                                   onLoad={(e) => { try { e.currentTarget.style.display = ''; } catch (_) {} }}

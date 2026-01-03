@@ -7,8 +7,9 @@ import { Sparkles, ChevronDown, Copy as CopyIcon, RotateCcw } from 'lucide-react
  * DualResponseBubble - auto 모드에서 snap/genre 두 응답을 동시에 표시
  * @param {Object} message - dual_response 타입 메시지
  * @param {Function} onSelect - 선택 콜백 (mode: 'snap' | 'genre')
+ * @param {boolean} canSelect - 선택 버튼 노출 여부(최신 결과만 선택하도록 제한할 때 사용)
  */
-function DualResponseBubble({ message, onSelect }) {
+function DualResponseBubble({ message, onSelect, canSelect = true }) {
   const { responses } = message;
   
   const [snapExpanded, setSnapExpanded] = useState(false);
@@ -43,7 +44,7 @@ function DualResponseBubble({ message, onSelect }) {
     }
   }, [bothComplete, snapData.content, genreData.content]);
 
-  const ResponseBox = ({ mode, data, expanded, setExpanded, needsExpand, contentRef }) => {
+    const ResponseBox = ({ mode, data, expanded, setExpanded, needsExpand, contentRef }) => {
     const isSnap = mode === 'snap';
     const label = isSnap ? 'Assistant A' : 'Assistant B';
     const badgeText = isSnap ? '일상' : '장르';
@@ -69,7 +70,8 @@ function DualResponseBubble({ message, onSelect }) {
     };
     
     return (
-      <div className="flex flex-col">
+      // ✅ 그리드 셀 높이(가장 큰 박스)에 맞춰 이 컬럼도 stretch 되도록 h-full 적용
+      <div className="flex flex-col h-full">
         {/* 헤더 */}
         <div className="flex items-center gap-2 mb-3">
           <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 bg-gradient-to-br from-purple-600 to-fuchsia-700 text-white/90">
@@ -82,7 +84,8 @@ function DualResponseBubble({ message, onSelect }) {
         </div>
         
         {/* 텍스트 박스 */}
-        <div className="relative w-full bg-gray-900/30 border-2 border-gray-700/80 rounded-2xl px-4 py-3 shadow-lg">
+        {/* ✅ 박스 자체를 flex-1로 늘려 "한쪽만 펼쳤을 때 다른쪽 버튼이 아래로 밀리는" UX를 방지한다. */}
+        <div className="relative w-full flex-1 bg-gray-900/30 border-2 border-gray-700/80 rounded-2xl px-4 py-3 shadow-lg">
           <div 
             ref={contentRef}
             className={`prose prose-sm whitespace-pre-wrap text-gray-100 transition-all duration-300 ${
@@ -138,17 +141,6 @@ function DualResponseBubble({ message, onSelect }) {
           )}
         </div>
         
-        {/* 선택 버튼 (타이핑 완료 시에만 표시) */}
-        {bothComplete && (
-          <div className="mt-3 flex justify-center">
-            <Button
-              onClick={() => onSelect(mode)}
-              className={`px-6 py-2 bg-gradient-to-r ${buttonClass} text-white font-medium rounded-full shadow-lg shadow-purple-500/25 hover:shadow-xl hover:shadow-purple-500/40 transform hover:scale-105 transition-all duration-200`}
-            >
-              이 스토리 선택
-            </Button>
-          </div>
-        )}
       </div>
     );
   };
@@ -174,6 +166,32 @@ function DualResponseBubble({ message, onSelect }) {
           contentRef={genreRef}
         />
       </div>
+
+      {/* ✅ 선택 버튼: 듀얼 박스 "하단 푸터"에 고정 (최신 결과만 노출) */}
+      {bothComplete && canSelect && typeof onSelect === 'function' ? (
+        // ✅ 각 버튼을 "각 컬럼 기준"으로 가운데 정렬한다.
+        // - grid-cols-2로 분리하면, 버튼이 가운데로 몰려 보이는(치우쳐 보이는) UX를 방지할 수 있다.
+        <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <div className="flex justify-center">
+            <Button
+              type="button"
+              onClick={() => onSelect('snap')}
+              className="w-full sm:w-auto px-6 py-2 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white font-medium rounded-full shadow-lg shadow-purple-500/25 hover:shadow-xl hover:shadow-purple-500/40 transition-all duration-200"
+            >
+              일상으로 선택
+            </Button>
+          </div>
+          <div className="flex justify-center">
+            <Button
+              type="button"
+              onClick={() => onSelect('genre')}
+              className="w-full sm:w-auto px-6 py-2 bg-gradient-to-r from-purple-600 to-fuchsia-700 hover:from-purple-700 hover:to-fuchsia-800 text-white font-medium rounded-full shadow-lg shadow-purple-500/25 hover:shadow-xl hover:shadow-purple-500/40 transition-all duration-200"
+            >
+              장르로 선택
+            </Button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
