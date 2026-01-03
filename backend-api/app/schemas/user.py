@@ -87,3 +87,34 @@ class AdminUserListResponse(BaseModel):
     limit: int = 100
     items: List[AdminUserListItem] = []
 
+
+# ===== 관리자용: 테스트 계정 생성 =====
+class AdminCreateTestUserRequest(BaseModel):
+    """
+    관리자(CMS)에서 테스트 계정을 빠르게 생성하기 위한 요청 스키마.
+
+    의도/동작:
+    - 운영/개발 모두에서 "메일 인증 완료(is_verified=True)" 상태로 생성한다.
+    - 이메일/닉네임은 서버에서 유니크하게 자동 생성한다.
+    """
+
+    gender: Literal["male", "female"] = "male"
+    email_prefix: Optional[str] = "test"
+    username_prefix: Optional[str] = "테스트"
+
+
+class AdminCreateTestUserResponse(BaseModel):
+    """
+    관리자(CMS) 테스트 계정 생성 응답 스키마.
+
+    주의:
+    - password는 관리자에게만 반환되며(관리자 권한 API), 사용자 로그인 테스트를 위해 제공한다.
+    """
+
+    id: uuid.UUID
+    email: EmailStr
+    username: str
+    password: str
+    gender: Literal["male", "female"]
+    is_verified: bool = True
+

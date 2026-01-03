@@ -17,6 +17,22 @@ const parseJwtExpMs = (token) => {
   try { const payload = JSON.parse(atob(token.split('.')[1] || '')) || {}; const exp = Number(payload.exp || 0); return exp ? exp * 1000 : 0; } catch (_) { return 0; }
 };
 const isExpiringSoon = (token, thresholdSec = 300) => { const expMs = parseJwtExpMs(token); return expMs && (expMs - Date.now() <= thresholdSec * 1000); };
+const isNotAuthenticatedDetail = (detail) => {
+  /**
+   * ✅ FastAPI HTTPBearer 기본 동작 구분
+   *
+   * - 토큰이 "없는" 경우: 403 + { detail: "Not authenticated" } 가 떨어질 수 있다.
+   * - 권한이 "없는" 경우(예: 관리자 전용, 비공개 리소스): 403 + 한국어 메시지(detail)가 내려온다.
+   *
+   * 의도:
+   * - 403을 전부 "로그인 필요"로 처리하면, 로그인한 유저도 403(권한없음) 상황에서 토큰이 지워지고 로그인 모달 루프가 난다.
+   */
+  try {
+    return /not\s+authenticated/i.test(String(detail || ''));
+  } catch (_) {
+    return false;
+  }
+};
 let refreshInFlight = null;
 const runTokenRefresh = async (API_BASE_URL) => {
   if (refreshInFlight) return refreshInFlight;
@@ -166,6 +182,7 @@ api.interceptors.response.use(
     const originalRequest = error.config || {};
     const status = error.response?.status;
     const path = normalizePath(originalRequest.url || '');
+    const detail = error.response?.data?.detail;
     const isGet = (originalRequest.method || 'get').toLowerCase() === 'get';
     // 개별 리소스 조회는 비공개일 수 있으므로 공개 엔드포인트에서 제외
     const isIndividualResource = /^\/characters\/[0-9a-fA-F\-]+$/.test(path) || /^\/stories\/[0-9a-fA-F\-]+$/.test(path);
@@ -176,7 +193,11 @@ api.interceptors.response.use(
       path.startsWith('/tags')
     ) && !isIndividualResource;
 
-    const shouldHandleAuthError = (status === 401 || status === 403) && !isPublicEndpoint;
+    // ✅ 403 전체를 로그인 처리하지 않는다.
+    // - 403 중에서도 "Not authenticated"(토큰 없음)만 로그인/리프레시 대상으로 보고,
+    //   나머지 403(권한 없음)은 화면에서 권한 오류로만 처리되게 둔다.
+    const isNotAuthenticated = (status === 403) && isNotAuthenticatedDetail(detail);
+    const shouldHandleAuthError = (status === 401 || isNotAuthenticated) && !isPublicEndpoint;
 
     // 401 Unauthorized 또는 403 Forbidden에서 토큰 갱신 시도 (공개 GET 엔드포인트 제외)
     if (shouldHandleAuthError && !originalRequest._retry) {
@@ -193,7 +214,7 @@ api.interceptors.response.use(
       originalRequest._handledAuthFailure = true;
       clearStoredTokens();
       notifyAuthRequired({
-        reason: status === 401 ? 'unauthorized' : 'forbidden',
+        reason: status === 401 ? 'unauthorized' : 'not_authenticated',
         path,
       });
     }
@@ -303,6 +324,10 @@ export const usersAPI = {
   // ===== 관리자: 회원 목록 =====
   adminListUsers: (params = {}) =>
     api.get('/admin/users', { params }),
+
+  // ===== 관리자: 테스트 계정 생성(메일 인증 완료) =====
+  adminCreateTestUser: (data) =>
+    api.post('/admin/users/test', data),
 };
 
 // 🎭 캐릭터 관련 API

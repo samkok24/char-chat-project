@@ -1,7 +1,7 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-import { Plus, Save, Trash2, ArrowUp, ArrowDown, ExternalLink, Image as ImageIcon, Settings, X } from 'lucide-react';
+import { Plus, Save, Trash2, ArrowUp, ArrowDown, ExternalLink, Image as ImageIcon, Settings, X, UserPlus, Copy } from 'lucide-react';
 
 import AppLayout from '../components/layout/AppLayout';
 import { Button } from '../components/ui/button';
@@ -21,6 +21,7 @@ import {
   HOME_BANNERS_CHANGED_EVENT,
   DEFAULT_HOME_BANNERS,
   getHomeBanners,
+  isDefaultHomeBannersConfig,
   setHomeBanners,
   sanitizeHomeBanner,
 } from '../lib/cmsBanners';
@@ -29,6 +30,7 @@ import {
   HOME_SLOTS_CHANGED_EVENT,
   DEFAULT_HOME_SLOTS,
   getHomeSlots,
+  isDefaultHomeSlotsConfig,
   setHomeSlots,
   sanitizeHomeSlot,
   isSystemHomeSlotId,
@@ -199,6 +201,51 @@ const CMSPage = () => {
   const [trafficLoading, setTrafficLoading] = React.useState(false);
   const [trafficSummary, setTrafficSummary] = React.useState(null);
 
+  // ===== 테스트 계정 생성(관리자) =====
+  const [testUserOpen, setTestUserOpen] = React.useState(false);
+  const [testUserGender, setTestUserGender] = React.useState('male'); // male|female
+  const [testUserCreating, setTestUserCreating] = React.useState(false);
+  const [testUserResult, setTestUserResult] = React.useState(null); // { email, password, username, ... }
+
+  /**
+   * ✅ 테스트 계정 생성 (메일 인증 완료 상태)
+   *
+   * 의도:
+   * - 운영/개발에서 새 계정 테스트를 빠르게 하기 위해, 관리자 페이지에서 1클릭 생성.
+   * - 이메일 인증(is_verified)이 된 상태로 생성해서 바로 로그인 가능하게 한다.
+   *
+   * 방어적:
+   * - 실패 시 상세 원인(HTTP/status/detail)을 토스트로 노출한다(에러를 씹지 않기).
+   */
+  const createTestUser = React.useCallback(async () => {
+    if (testUserCreating) return;
+    setTestUserCreating(true);
+    try {
+      const payload = { gender: (testUserGender === 'female' ? 'female' : 'male') };
+      const res = await usersAPI.adminCreateTestUser(payload);
+      const data = res?.data || null;
+      if (!data || !data.email || !data.password) {
+        throw new Error('응답이 올바르지 않습니다.');
+      }
+      setTestUserResult(data);
+      toast.success('테스트 계정이 생성되었습니다.');
+      // 목록 갱신
+      try { setUsersReloadKey((k) => (Number(k || 0) + 1)); } catch (_) {}
+    } catch (e) {
+      let detail = '';
+      try {
+        const status = e?.response?.status;
+        const d = e?.response?.data?.detail;
+        const msg = d || e?.message || '';
+        if (status) detail = ` (HTTP ${status}${msg ? `: ${msg}` : ''})`;
+        else if (msg) detail = ` (${msg})`;
+      } catch (_) {}
+      toast.error(`테스트 계정 생성에 실패했습니다.${detail}`);
+    } finally {
+      setTestUserCreating(false);
+    }
+  }, [testUserCreating, testUserGender]);
+
   /**
    * ✅ 운영 SSOT: 서버(DB)에서 CMS 설정을 로드한다.
    *
@@ -230,7 +277,7 @@ const CMSPage = () => {
             let skipApply = false;
             try {
               const hasLocal = !!localStorage.getItem(HOME_BANNERS_STORAGE_KEY);
-              const looksDefault = (serverBanners.length === 1 && String(serverBanners?.[0]?.id || '') === 'banner_notice');
+              const looksDefault = isDefaultHomeBannersConfig(serverBanners);
               if (hasLocal && looksDefault) {
                 // 로컬 우선(서버로 전파하려면 "저장" 버튼을 눌러 SSOT에 업로드하면 됨)
                 skipApply = true;
@@ -254,15 +301,7 @@ const CMSPage = () => {
             let skipApply = false;
             try {
               const hasLocal = !!localStorage.getItem(HOME_SLOTS_STORAGE_KEY);
-              const defaultIds = new Set([
-                'slot_top_origchat',
-                'slot_trending_characters',
-                'slot_top_stories',
-                'slot_recommended_characters',
-                'slot_daily_tag_characters',
-              ]);
-              const ids = new Set((serverSlots || []).map((x) => String(x?.id || '').trim()).filter(Boolean));
-              const looksDefault = (serverSlots.length === 5 && [...defaultIds].every((id) => ids.has(id)));
+              const looksDefault = isDefaultHomeSlotsConfig(serverSlots);
               if (hasLocal && looksDefault) {
                 skipApply = true;
               }
@@ -1086,17 +1125,30 @@ const CMSPage = () => {
             </div>
             <div className="flex items-center gap-2">
               {(isAiModelsTab || isUsersTab) ? (
-                <Button
-                  variant="outline"
-                  className="bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
-                  onClick={() => {
-                    if (isUsersTab) refreshUsers();
-                  }}
-                  disabled={isAiModelsTab}
-                  title={isAiModelsTab ? '준비중' : '새로고침'}
-                >
-                  {isAiModelsTab ? '준비중' : '새로고침'}
-                </Button>
+                <>
+                  {isUsersTab && (
+                    <Button
+                      variant="outline"
+                      className="bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
+                      onClick={() => setTestUserOpen(true)}
+                      title="테스트 계정 생성(메일 인증 완료)"
+                    >
+                      <UserPlus className="w-4 h-4 mr-2" />
+                      테스트 계정 생성
+                    </Button>
+                  )}
+                  <Button
+                    variant="outline"
+                    className="bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
+                    onClick={() => {
+                      if (isUsersTab) refreshUsers();
+                    }}
+                    disabled={isAiModelsTab}
+                    title={isAiModelsTab ? '준비중' : '새로고침'}
+                  >
+                    {isAiModelsTab ? '준비중' : '새로고침'}
+                  </Button>
+                </>
               ) : (
                 <>
                   <Button
@@ -1307,6 +1359,137 @@ const CMSPage = () => {
               </CardContent>
             </Card>
           )}
+
+          {/* ===== 테스트 계정 생성 모달(회원관리 탭) ===== */}
+          <Dialog
+            open={testUserOpen}
+            onOpenChange={(v) => {
+              setTestUserOpen(!!v);
+            }}
+          >
+            <DialogContent className="bg-gray-900 border-gray-700 text-white">
+              <DialogHeader>
+                <DialogTitle className="text-white">테스트 계정 생성</DialogTitle>
+                <DialogDescription className="text-gray-400">
+                  생성된 계정은 <span className="text-gray-200 font-medium">메일 인증 완료</span> 상태로 만들어져 바로 로그인할 수 있습니다.
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <Label className="text-gray-300">성별</Label>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className={`h-9 px-4 border-gray-700 ${testUserGender === 'male' ? 'bg-purple-600/30 text-white' : 'bg-gray-800 text-gray-200 hover:bg-gray-700'}`}
+                      onClick={() => setTestUserGender('male')}
+                      disabled={testUserCreating}
+                    >
+                      남성
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className={`h-9 px-4 border-gray-700 ${testUserGender === 'female' ? 'bg-purple-600/30 text-white' : 'bg-gray-800 text-gray-200 hover:bg-gray-700'}`}
+                      onClick={() => setTestUserGender('female')}
+                      disabled={testUserCreating}
+                    >
+                      여성
+                    </Button>
+                  </div>
+                </div>
+
+                {testUserResult ? (
+                  <div className="rounded-xl border border-gray-800 bg-gray-950/30 p-4 space-y-3">
+                    <div className="text-sm font-semibold text-white">생성 결과</div>
+
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-xs text-gray-500">이메일</div>
+                        <div className="text-sm text-gray-100 break-all">{String(testUserResult.email || '')}</div>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="h-9 px-3 bg-gray-900 border-gray-700 text-gray-200 hover:bg-gray-800 shrink-0"
+                        onClick={() => {
+                          const v = String(testUserResult.email || '').trim();
+                          if (!v) return;
+                          try {
+                            Promise.resolve(navigator.clipboard.writeText(v))
+                              .then(() => toast.success('이메일 복사됨'))
+                              .catch(() => toast.error('복사에 실패했습니다'));
+                          } catch (_) {
+                            toast.error('복사에 실패했습니다');
+                          }
+                        }}
+                      >
+                        <Copy className="w-4 h-4 mr-2" />
+                        복사
+                      </Button>
+                    </div>
+
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-xs text-gray-500">비밀번호</div>
+                        <div className="text-sm text-gray-100 break-all">{String(testUserResult.password || '')}</div>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="h-9 px-3 bg-gray-900 border-gray-700 text-gray-200 hover:bg-gray-800 shrink-0"
+                        onClick={() => {
+                          const v = String(testUserResult.password || '').trim();
+                          if (!v) return;
+                          try {
+                            Promise.resolve(navigator.clipboard.writeText(v))
+                              .then(() => toast.success('비밀번호 복사됨'))
+                              .catch(() => toast.error('복사에 실패했습니다'));
+                          } catch (_) {
+                            toast.error('복사에 실패했습니다');
+                          }
+                        }}
+                      >
+                        <Copy className="w-4 h-4 mr-2" />
+                        복사
+                      </Button>
+                    </div>
+
+                    {testUserResult.username ? (
+                      <div className="text-xs text-gray-500">
+                        닉네임: <span className="text-gray-200">{String(testUserResult.username || '')}</span>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : (
+                  <div className="text-sm text-gray-400">
+                    “생성”을 누르면 테스트 계정을 만들고 이메일/비밀번호를 보여줍니다.
+                  </div>
+                )}
+              </div>
+
+              <DialogFooter>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
+                  onClick={() => setTestUserOpen(false)}
+                  disabled={testUserCreating}
+                >
+                  닫기
+                </Button>
+                <Button
+                  type="button"
+                  className="bg-purple-600 hover:bg-purple-700 text-white"
+                  onClick={createTestUser}
+                  disabled={testUserCreating}
+                >
+                  {testUserCreating ? '생성 중...' : '생성'}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
 
           {isBannersTab && (
           <Card className="bg-gray-800 border-gray-700">

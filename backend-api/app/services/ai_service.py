@@ -1265,6 +1265,31 @@ async def get_gemini_completion(prompt: str, temperature: float = 0.7, max_token
         AI 모델이 생성한 텍스트 응답.
     """
     try:
+        """
+        ✅ Gemini 2.5 Pro 특이 케이스 방어 (중요)
+
+        현상:
+        - gemini-2.5-pro에서 max_output_tokens(=max_tokens)가 일정 값 이하(대략 1600 미만)일 경우,
+          응답 candidate는 존재하지만(content.parts가 비어) response.text가 비어있는 형태로 돌아오는 케이스가 관측됨.
+          이때 finish_reason은 MAX_TOKENS로 찍히며, 결과적으로 "Gemini가 안 된다"처럼 보이고 폴백(OpenAI/Claude)로 넘어간다.
+
+        대응:
+        - gemini-2.5-pro에 한해 max_output_tokens가 너무 낮으면 최소값으로 클램핑하여 빈 응답을 방지한다.
+        - 출력 길이 제어는 프롬프트(응답 길이 지침)에서 우선하며, 토큰 상한은 안전한 범위로만 사용한다.
+        """
+        try:
+            model_norm = (model or "").strip()
+        except Exception:
+            model_norm = "gemini-2.5-pro"
+        # 경험적으로 1600 이상부터 텍스트 파트가 안정적으로 반환됨(환경/프롬프트에 따라 여유를 둔다).
+        if "gemini-2.5-pro" in model_norm:
+            try:
+                mt = int(max_tokens or 0)
+            except Exception:
+                mt = 0
+            if mt and mt < 1600:
+                max_tokens = 1600
+
         gemini_model = genai.GenerativeModel(model)
         
         # GenerationConfig를 사용하여 JSON 모드 등을 활성화할 수 있음 (향후 확장)
@@ -1303,8 +1328,117 @@ async def get_gemini_completion(prompt: str, temperature: float = 0.7, max_token
             # 파싱 실패 시 아래 폴백
             pass
 
-        # 안전 정책/기타 사유로 텍스트가 비어있을 때: 부드러운 재시도 또는 폴백
+        # 안전 정책/기타 사유로 텍스트가 비어있을 때: 재시도 또는 폴백
         try:
+            # ✅ 운영 디버깅용 최소 로그:
+            # - Gemini가 candidates는 있으나 content.parts가 비어 "빈 응답"이 되었을 때,
+            #   왜 GPT/Claude로 폴백되는지 현장에서 바로 원인을 추적할 수 있도록 핵심 지표만 남긴다.
+            try:
+                import logging
+                logger = logging.getLogger(__name__)
+                c0 = (getattr(response, "candidates", []) or [None])[0]
+                fr = getattr(c0, "finish_reason", None)
+                um = getattr(response, "usage_metadata", None)
+                usage = None
+                try:
+                    if isinstance(um, dict):
+                        usage = {
+                            "prompt": um.get("prompt_token_count"),
+                            "cand": um.get("candidates_token_count"),
+                            "total": um.get("total_token_count"),
+                        }
+                    elif um is not None:
+                        usage = {
+                            "prompt": getattr(um, "prompt_token_count", None),
+                            "cand": getattr(um, "candidates_token_count", None),
+                            "total": getattr(um, "total_token_count", None),
+                        }
+                except Exception:
+                    usage = None
+                try:
+                    prompt_len = len(prompt) if isinstance(prompt, str) else None
+                except Exception:
+                    prompt_len = None
+                logger.warning(
+                    f"[gemini] empty_text -> retry/fallback (model={model_norm}, max_output_tokens={max_tokens}, finish_reason={fr}, usage={usage}, prompt_len={prompt_len})"
+                )
+            except Exception:
+                pass
+
+            # ✅ MAX_TOKENS + 빈 응답(parts_len=0) 케이스 방어:
+            # - 특히 gemini-2.5-pro에서 종종 관측됨.
+            # - soft_prompt로 문구만 바꿔 재시도해도 토큰 상한이 동일하면 같은 현상이 반복될 수 있어,
+            #   "토큰 상한을 올려" 1회 재시도 후에만 폴백으로 넘어간다.
+            try:
+                fr_str = ""
+                try:
+                    fr_str = str(fr or "")
+                except Exception:
+                    fr_str = ""
+                is_max_tokens = False
+                try:
+                    if fr == 2:
+                        is_max_tokens = True
+                except Exception:
+                    pass
+                if (not is_max_tokens) and ("MAX_TOKENS" in fr_str):
+                    is_max_tokens = True
+
+                if is_max_tokens:
+                    try:
+                        mt = int(max_tokens or 0)
+                    except Exception:
+                        mt = 0
+                    # 1회만 상향 재시도: 너무 작게 잡힌 상한으로 인해 "텍스트 파트가 0"인 케이스를 구제한다.
+                    # 비용/지연을 감안해 상한은 4096~8192 범위로 제한한다.
+                    if mt and mt < 4096:
+                        retry_max_tokens = 4096
+                    elif mt and mt < 8192:
+                        retry_max_tokens = mt
+                    else:
+                        retry_max_tokens = None
+
+                    if retry_max_tokens and retry_max_tokens != mt:
+                        try:
+                            logger.warning(
+                                f"[gemini] retry_with_higher_max_output_tokens (model={model_norm}, from={mt}, to={retry_max_tokens})"
+                            )
+                        except Exception:
+                            pass
+                        try:
+                            generation_config_retry = genai.types.GenerationConfig(
+                                temperature=temperature,
+                                max_output_tokens=retry_max_tokens,
+                            )
+                            response_retry = await gemini_model.generate_content_async(
+                                prompt,
+                                generation_config=generation_config_retry,
+                            )
+                            try:
+                                if hasattr(response_retry, "text") and response_retry.text:
+                                    return response_retry.text
+                            except Exception:
+                                pass
+                            # 후보에서 텍스트 파츠를 수집
+                            try:
+                                candidates2 = getattr(response_retry, "candidates", []) or []
+                                for cand2 in candidates2:
+                                    content2 = getattr(cand2, "content", None)
+                                    if not content2:
+                                        continue
+                                    parts2 = getattr(content2, "parts", []) or []
+                                    text_parts2 = [getattr(p, "text", "") for p in parts2 if getattr(p, "text", "")]
+                                    joined2 = "".join(text_parts2).strip()
+                                    if joined2:
+                                        return joined2
+                            except Exception:
+                                pass
+                        except Exception:
+                            # 재시도 실패는 아래 soft_prompt/폴백 로직으로 계속 진행
+                            pass
+            except Exception:
+                pass
+
             # 빠른 재시도: 온건한 톤으로 완곡 재요청
             soft_prompt = (
                 "아래 지시를 더 온건한 어휘로 부드럽게 수행해 주세요. 안전 정책을 침해하지 않는 범위에서 창작하세요.\n\n" + prompt
@@ -2102,10 +2236,23 @@ async def get_ai_chat_response(
     full_prompt = f"{character_prompt}{history_block}{intent_block}{length_block}\n\n사용자 메시지: {user_message}\n\n위 설정에 맞게 자연스럽게 응답하세요 (대화만 출력, 라벨 없이):"
 
     # 응답 길이 선호도 → 최대 토큰 비율 조정 (중간 기준 1.0)
+    #
+    # ✅ Gemini(Pro 계열)만 예외 처리:
+    # - gemini-2.5-pro 계열은 max_output_tokens(=max_tokens)가 너무 낮으면 내부 추론/사고로 토큰을 소진한 뒤
+    #   최종 텍스트 파트(content.parts)가 비어(parts_len=0) "빈 응답"이 발생할 수 있다.
+    # - 그래서 "짧게" 모드에서도 Gemini는 너무 작은 상한을 주지 않고, 안정적인 상한(기본값 1800)을 유지한다.
+    #
+    # 참고: 실제 출력 길이(1~2문장/3~6문장/6~12문장)는 위 length_block 지침으로 제어하며,
+    #       여기 max_tokens는 '상한(ceiling)'이므로 값을 키워도 무조건 길어지지는 않는다.
     base_max_tokens = 1800
-    if response_length_pref == 'short':
-        max_tokens = int(base_max_tokens * 0.5)
-    elif response_length_pref == 'long':
+    try:
+        is_gemini = (preferred_model == 'gemini')
+    except Exception:
+        is_gemini = False
+
+    if rlp == 'short':
+        max_tokens = base_max_tokens if is_gemini else int(base_max_tokens * 0.5)
+    elif rlp == 'long':
         max_tokens = int(base_max_tokens * 1.5)
     else:
         max_tokens = base_max_tokens

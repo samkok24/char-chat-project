@@ -27,12 +27,40 @@ export const SocketProvider = ({ children }) => {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [hasMoreMessages, setHasMoreMessages] = useState(true);
   const [currentPage, setCurrentPage] = useState(1);
+  const [socketError, setSocketError] = useState('');
   const { user, isAuthenticated } = useAuth();
   const currentRoomRef = useRef(null);
   const userRef = useRef(user);
+  const historyTimeoutRef = useRef(null);
 
   useEffect(() => { currentRoomRef.current = currentRoom; }, [currentRoom]);
   useEffect(() => { userRef.current = user; }, [user]);
+
+  /**
+   * ✅ 히스토리 로딩 타임아웃 관리
+   *
+   * 문제:
+   * - 소켓 서버가 error를 emit하거나(권한/404/백엔드 오류), connect_error로 연결 자체가 실패하면
+   *   message_history 이벤트가 오지 않아 historyLoading이 영구 true가 될 수 있다.
+   *
+   * 해결(최소 수정/방어적):
+   * - 일정 시간 내 message_history가 오지 않으면 로딩을 해제하고 원인을 UI에 노출한다.
+   */
+  const clearHistoryTimeout = useCallback(() => {
+    try {
+      if (historyTimeoutRef.current) clearTimeout(historyTimeoutRef.current);
+    } catch (_) {}
+    historyTimeoutRef.current = null;
+  }, []);
+  const armHistoryTimeout = useCallback((message = '메시지 기록을 불러오지 못했습니다. 잠시 후 다시 시도해주세요.') => {
+    clearHistoryTimeout();
+    try {
+      historyTimeoutRef.current = setTimeout(() => {
+        setHistoryLoading(false);
+        setSocketError(message);
+      }, 8000);
+    } catch (_) {}
+  }, [clearHistoryTimeout]);
 
   // 스킵(continue) 지시문 메시지를 UI에서 숨기기 위한 필터
   const isSkipDirective = useCallback((m) => {
@@ -67,6 +95,7 @@ export const SocketProvider = ({ children }) => {
         newSocket.on('connect', () => {
           console.log('Socket 연결됨:', newSocket.id);
           setConnected(true);
+          setSocketError('');
           // 재연결 시 현재 방 자동 재-join 및 히스토리 복구
           const room = currentRoomRef.current;
           if (room && room.id) {
@@ -76,6 +105,7 @@ export const SocketProvider = ({ children }) => {
               setHistoryLoading(true);
               newSocket.emit('join_room', { roomId: room.id });
               newSocket.emit('get_message_history', { roomId: room.id, page: 1, limit: 50 });
+              armHistoryTimeout('메시지 기록 복구가 지연되고 있습니다. 잠시 후 다시 시도해주세요.');
             } catch (_) {}
           }
         });
@@ -85,6 +115,9 @@ export const SocketProvider = ({ children }) => {
             console.log('Socket 연결 해제:', reason);
           }
           setConnected(false);
+          // ✅ 로딩이 영구 유지되지 않도록 해제(재연결 시 다시 로드됨)
+          setHistoryLoading(false);
+          clearHistoryTimeout();
         });
 
         newSocket.on('connected', (data) => {
@@ -93,6 +126,29 @@ export const SocketProvider = ({ children }) => {
 
         newSocket.on('error', (error) => {
           console.error('Socket 오류:', error);
+          // ✅ 서버가 emit한 error는 message_history가 오지 않을 수 있으므로 로딩 해제 + 원인 노출
+          setHistoryLoading(false);
+          clearHistoryTimeout();
+          setAiTyping(false);
+          try {
+            const msg = (error && (error.message || error.details)) ? String(error.message || error.details) : '';
+            if (msg) setSocketError(msg);
+          } catch (_) {}
+        });
+
+        // ✅ 인증/미들웨어 거부 등 연결 단계 오류는 connect_error로 온다.
+        newSocket.on('connect_error', (err) => {
+          console.error('Socket connect_error:', err);
+          setConnected(false);
+          setHistoryLoading(false);
+          clearHistoryTimeout();
+          setAiTyping(false);
+          try {
+            const msg = err?.message ? String(err.message) : '채팅 서버 연결에 실패했습니다.';
+            setSocketError(msg);
+          } catch (_) {
+            setSocketError('채팅 서버 연결에 실패했습니다.');
+          }
         });
 
         // 채팅 이벤트 리스너
@@ -126,6 +182,7 @@ export const SocketProvider = ({ children }) => {
           setHasMoreMessages(data.hasMore);
           setCurrentPage(data.page);
           setHistoryLoading(false);
+          clearHistoryTimeout();
         });
 
         newSocket.on('user_typing_start', (data) => {
@@ -225,6 +282,7 @@ export const SocketProvider = ({ children }) => {
         return () => {
           window.removeEventListener('auth:tokenRefreshed', handleTokenRefreshed);
           window.removeEventListener('auth:loggedOut', handleLoggedOut);
+          clearHistoryTimeout();
           newSocket.close();
         };
       }
@@ -236,6 +294,9 @@ export const SocketProvider = ({ children }) => {
         setConnected(false);
         setCurrentRoom(null);
         setMessages([]);
+        setHistoryLoading(false);
+        setSocketError('');
+        clearHistoryTimeout();
       }
     }
   }, [isAuthenticated, user]);
@@ -243,11 +304,13 @@ export const SocketProvider = ({ children }) => {
   // 채팅방 입장
   const joinRoom = useCallback((roomId) => {
     if (socket && connected) {
+      setSocketError('');
       // 기존 메시지를 즉시 비우지 않고 히스토리만 새로 요청
       setHasMoreMessages(true);
       setCurrentPage(1);
       setHistoryLoading(true);
       socket.emit('join_room', { roomId });
+      armHistoryTimeout('채팅방 입장이 지연되고 있습니다. 잠시 후 다시 시도해주세요.');
     }
   }, [socket, connected]);
 
@@ -345,8 +408,10 @@ export const SocketProvider = ({ children }) => {
   // 메시지 기록 요청
   const getMessageHistory = useCallback((roomId, page = 1, limit = 50) => {
     if (socket && connected && !historyLoading) {
+      setSocketError('');
       setHistoryLoading(true);
       socket.emit('get_message_history', { roomId, page, limit });
+      armHistoryTimeout('메시지 기록을 불러오지 못했습니다. 잠시 후 다시 시도해주세요.');
     }
   }, [socket, connected, historyLoading]);
 
@@ -360,6 +425,7 @@ export const SocketProvider = ({ children }) => {
     historyLoading,
     hasMoreMessages,
     currentPage,
+    socketError,
     joinRoom,
     leaveRoom,
     sendMessage,
