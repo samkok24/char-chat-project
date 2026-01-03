@@ -3,18 +3,26 @@
 """
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Body
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 from typing import Optional, List
 import uuid
 import json
+import secrets
+import re
 
 from app.core.database import get_db
 from app.models.user import User
-from app.schemas.user import UserProfileResponse, AdminUserListResponse
+from app.schemas.user import (
+    UserProfileResponse,
+    AdminUserListResponse,
+    AdminCreateTestUserRequest,
+    AdminCreateTestUserResponse,
+)
 from app.schemas import StatsOverview, TimeSeriesResponse, TimeSeriesPoint, TopCharacterItem
 from app.schemas.character import RecentCharacterResponse, CharacterListResponse
 from app.schemas.comment import CommentResponse, CommentWithUser, StoryCommentResponse, StoryCommentWithUser
 from app.services import user_service
-from app.core.security import get_current_user
+from app.core.security import get_current_user, get_password_hash
 from app.services.comment_service import (
     get_character_comments_by_user,
     get_story_comments_by_user,
@@ -203,6 +211,118 @@ async def admin_list_users_endpoint(
 ):
     _ensure_admin(current_user)
     return await user_service.admin_list_users(db, skip=skip, limit=limit)
+
+
+@router.post(
+    "/admin/users/test",
+    response_model=AdminCreateTestUserResponse,
+    summary="관리자: 테스트 계정 생성(메일 인증 완료)",
+)
+async def admin_create_test_user_endpoint(
+    payload: AdminCreateTestUserRequest = Body(default=None),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    관리자(CMS)에서 테스트 계정을 빠르게 생성합니다.
+
+    의도/동작(중요):
+    - is_verified=True(메일 인증 완료) 상태로 생성하여, 로그인/채팅 테스트를 즉시 할 수 있게 한다.
+    - 이메일/닉네임은 유니크하게 자동 생성한다.
+
+    방어적:
+    - 중복 충돌 시 여러 번 재시도한다.
+    - 실패 원인은 서버 로그에 남기고, 클라이언트에는 안전한 메시지로 반환한다.
+    """
+    _ensure_admin(current_user)
+
+    req = payload or AdminCreateTestUserRequest()
+
+    # prefix 방어 정리(이메일 local-part 안전)
+    try:
+        raw_prefix = str(req.email_prefix or "test").strip().lower()
+        email_prefix = re.sub(r"[^a-z0-9]+", "", raw_prefix)[:20] or "test"
+    except Exception:
+        email_prefix = "test"
+
+    try:
+        raw_up = str(req.username_prefix or "테스트").strip()
+        username_prefix = raw_up[:12] or "테스트"
+    except Exception:
+        username_prefix = "테스트"
+
+    gender = req.gender if req.gender in ("male", "female") else "male"
+
+    # 유니크 충돌 방지: 여러 번 재시도
+    for _ in range(10):
+        suffix = secrets.token_hex(3)  # 6 chars
+        email = f"{email_prefix}{suffix}@example.com"
+        username = f"{username_prefix}{suffix}"
+        password = f"test{secrets.token_hex(4)}!"  # >= 8 chars
+
+        try:
+            existing = await user_service.get_user_by_email(db, email)
+            if existing is not None:
+                continue
+        except Exception:
+            # 조회 실패 시에도 충돌 가능성이 낮아 진행(최소 방어)
+            pass
+
+        try:
+            res = await db.execute(select(User).where(User.username == username))
+            if res.scalar_one_or_none() is not None:
+                continue
+        except Exception:
+            pass
+
+        try:
+            password_hash = get_password_hash(password)
+            user = await user_service.create_user(
+                db=db,
+                email=email,
+                username=username,
+                password_hash=password_hash,
+                gender=gender,
+            )
+        except Exception as e:
+            # 중복/제약/DB 오류 등: 다음 시도로
+            try:
+                # 서비스/DB 문제는 로그로 남긴다(씹지 않기).
+                import logging
+                logging.getLogger(__name__).warning("[admin_create_test_user] create_user failed: %s", e)
+            except Exception:
+                pass
+            continue
+
+        # ✅ 메일 인증 완료 상태로 강제
+        try:
+            await user_service.update_user_verification_status(db, user.id, True)
+        except Exception as e:
+            # 방어: 업데이트 실패 시 직접 반영 시도
+            try:
+                user.is_verified = True
+                db.add(user)
+                await db.commit()
+            except Exception:
+                await db.rollback()
+                raise HTTPException(status_code=500, detail="테스트 계정은 생성되었지만 인증 처리에 실패했습니다.")
+            finally:
+                try:
+                    import logging
+                    logging.getLogger(__name__).warning("[admin_create_test_user] verify update failed: %s", e)
+                except Exception:
+                    pass
+
+        return AdminCreateTestUserResponse(
+            id=user.id,
+            email=user.email,
+            username=user.username,
+            password=password,
+            gender=gender,
+            is_verified=True,
+        )
+
+    raise HTTPException(status_code=500, detail="테스트 계정 생성에 실패했습니다. 잠시 후 다시 시도해주세요.")
 
 
 @router.get(

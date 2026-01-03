@@ -15,6 +15,7 @@ from typing import List, Optional, Dict, Any
 import uuid
 import json
 import time
+import re
 from datetime import datetime
 from fastapi import BackgroundTasks
 from app.core.database import get_db, AsyncSessionLocal
@@ -248,6 +249,135 @@ def _render_prompt_tokens(text: Any, user_name: str, character_name: str) -> str
         )
     except Exception:
         return s
+
+
+"""
+✅ 붕괴/메타 멘트 방어 규칙 (맥락 기반)
+
+왜 분리하나?
+- "머리 아파" 같은 표현은 스토리/캐릭터 설정상 자연스러울 수 있어, 무조건 삭제하면 연기력이 떨어진다.
+- 반면 "여긴 어디야/무슨 상황이야/시스템 오류/AI" 같은 멘트는 캐릭터챗 UX를 깨뜨리므로 강하게 막는다.
+
+전략:
+- ALWAYS: 메타/시스템 발언 + '여긴 어디/무슨 상황' 계열은 항상 제거(유저 이탈 유발).
+- CONTEXTUAL: '혼란/정신없/두통' 같은 붕괴 톤은 "정체성/상황 질문" 맥락에서만 제거한다.
+"""
+
+# ✅ 항상 제거(메타/시스템 + 상황붕괴 핵심 워딩)
+_ALWAYS_REMOVE_RX_LIST = [
+    # 메타/시스템 발언(정치/사회 '정책' 같은 일반 대화는 과제거 위험이 있어 제외)
+    re.compile(r"(시스템\s*오류|서버\s*오류|오류\s*났|에러\s*났|버그)[^\n\r]*", re.IGNORECASE),
+    re.compile(r"(프롬프트|토큰|챗봇|인공지능|AI\b|모델\b)[^\n\r]*", re.IGNORECASE),
+
+    # '여긴 어디/무슨 상황' 계열(유저가 오류로 오해하는 대표 패턴)
+    re.compile(
+        r"(여긴|여기가|여기)\s*(대체\s*)?(어디|어딘지)\s*(야|지|냐|인가|일까|모르|모르겠|알아|알지)[^\n\r]*",
+        re.IGNORECASE,
+    ),
+    re.compile(r"(대체|도대체)\s*어디\s*(야|지|냐|인지|인가|일까)[^\n\r]*", re.IGNORECASE),
+    re.compile(r"(이게|여기|지금)\s*무슨\s*(상황|일)[^\n\r]*", re.IGNORECASE),
+    re.compile(r"무슨\s*(상황|일)\s*(인지|이야|이냐|인지)\s*(모르|모르겠|알아|알지)[^\n\r]*", re.IGNORECASE),
+]
+
+# ✅ 맥락에 따라 제거(정체성/상황 질문 맥락에서만 붕괴 톤을 제거)
+_CONTEXTUAL_REMOVE_RX_LIST = [
+    re.compile(r"머리\s*(가|는)\s*(울리|아프|지끈|띵|깨질|찢어질|터질|어지럽|멍하)[^\n\r]*", re.IGNORECASE),
+    re.compile(r"(두통|편두통|현기증|어지럽|속이\s*울렁|토할\s*것\s*같)[^\n\r]*", re.IGNORECASE),
+    re.compile(r"(정신\s*(이)?\s*(없|나가|혼미|아득)|정신없)[^\n\r]*", re.IGNORECASE),
+    re.compile(r"(혼란스럽|혼란스러|혼미하)[^\n\r]*", re.IGNORECASE),
+    re.compile(r"(머릿속(이)?\s*하얘|머리가\s*하얘)[^\n\r]*", re.IGNORECASE),
+    re.compile(r"(기억(이)?\s*(안|없|나지|못|가물|흐릿))[^\n\r]*", re.IGNORECASE),
+    re.compile(r"(꿈|환각|환상|게임)\s*(속)?\s*(인가|일까)[^\n\r]*", re.IGNORECASE),
+]
+
+# ✅ "정체성/상황 질문" 판단용(대화 맥락에서만 강한 필터 적용)
+_CTX_QUESTION_RX = re.compile(
+    r"(누구(야|세요)?|이름|정체|여긴|여기가|어디(야|지|냐)|무슨\s*(상황|일)|기억|꿈|게임)",
+    re.IGNORECASE,
+)
+
+
+def _sanitize_breakdown_phrases(text: Any, *, user_text: Any = None) -> str:
+    """캐릭터챗에서 붕괴/메타 멘트를 방어적으로 제거한다.
+
+    배경/의도:
+    - LLM은 프롬프트의 '금지'를 100% 준수하지 않을 수 있다.
+    - 특히 정체성/상황 질문에서 '머리가 깨질 것 같다/혼란스럽다/여기가 어딘지 모르겠다' 같은
+      붕괴 멘트가 나오면 유저가 시스템 오류로 오해하고 이탈한다.
+
+    동작:
+    - 최소한의 문자열 치환만 수행한다(모델 재호출/리라이트 없음).
+    - 결과가 비면 상위 로직에서 안전한 폴백 문장을 채울 수 있도록 빈 문자열을 반환할 수 있다.
+    """
+    try:
+        s = str(text or "")
+    except Exception:
+        return ""
+    if not s.strip():
+        return ""
+
+    # ✅ 맥락 기반 적용 여부
+    # - 유저가 정체/상황을 물었을 때(누구야/여긴어디야/무슨상황이야 등)에만 붕괴 톤(두통/혼란)을 강하게 제거
+    # - 메타/시스템 + '여긴 어디/무슨 상황' 계열은 항상 제거
+    try:
+        ut = str(user_text or "").strip()
+    except Exception:
+        ut = ""
+    apply_contextual = bool(ut and _CTX_QUESTION_RX.search(ut))
+
+    # 라인/문장 단위로 치환 적용(줄 전체 삭제가 아니라, "문구만" 제거 → 정상 문장 유지)
+    try:
+        normalized = s.replace("\r\n", "\n").replace("\r", "\n")
+    except Exception:
+        normalized = s
+
+    kept_lines: list[str] = []
+    try:
+        for line in normalized.split("\n"):
+            raw_line = str(line or "")
+            stripped = raw_line.strip()
+            if not stripped:
+                kept_lines.append("")
+                continue
+
+            out_line = raw_line
+            # 1) ALWAYS 제거(메타/시스템 + 상황붕괴 핵심)
+            for rx in _ALWAYS_REMOVE_RX_LIST:
+                try:
+                    out_line = rx.sub("", out_line)
+                except Exception:
+                    continue
+
+            # 2) CONTEXTUAL 제거(정체/상황 질문일 때만)
+            if apply_contextual:
+                for rx in _CONTEXTUAL_REMOVE_RX_LIST:
+                    try:
+                        out_line = rx.sub("", out_line)
+                    except Exception:
+                        continue
+
+            # 남은 라인이 의미 없는 경우 제거
+            try:
+                cleaned_line = str(out_line or "").strip()
+            except Exception:
+                cleaned_line = ""
+            # 구두점만 남는 경우 제거
+            if not cleaned_line or re.fullmatch(r"[\\s\\-—–_.,!?…·•]+", cleaned_line):
+                continue
+            kept_lines.append(out_line)
+        out = "\n".join(kept_lines)
+    except Exception:
+        # 정규식/라인 처리 실패는 원문 유지(서비스 중단 방지)
+        out = s
+
+    # 공백/개행 정리(가독성)
+    try:
+        out = re.sub(r"[ \t]{2,}", " ", out)
+        out = re.sub(r"\n{3,}", "\n\n", out)
+    except Exception:
+        pass
+
+    return (out or "").strip()
 
 
 def _pick_greeting_candidate(character: Any) -> str:
@@ -1662,9 +1792,27 @@ async def send_message(
     
     # 인사 반복 방지 가이드
     character_prompt += "\n\n위의 모든 설정에 맞게 캐릭터를 완벽하게 연기해주세요."
-    character_prompt += "\n새로운 인사말이나 자기소개는 금지합니다. 기존 맥락을 이어서 답변하세요."
+    # ✅ 정체성 질문(누구야/이름이 뭐야 등)에서는 예외적으로 "짧게" 정체를 밝히게 해,
+    # "여긴 어딘지 모르겠다" 같은 붕괴/메타 멘트로 흐르는 것을 방지한다.
+    character_prompt += "\n새로운 인사말이나 자기소개는 금지합니다. (단, 사용자가 '누구야/이름이 뭐야'처럼 정체를 직접 물으면 1문장으로 짧게 정체를 밝히세요) 기존 맥락을 이어서 답변하세요."
     character_prompt += "\n\n중요: 당신은 캐릭터 역할만 합니다. 사용자의 말을 대신하거나 인용하지 마세요."  # 이 줄 추가
-    character_prompt += "\n새로운 인사말이나 자기소개는 금지합니다. 기존 맥락을 이어서 답변하세요."
+    character_prompt += "\n새로운 인사말이나 자기소개는 금지합니다. (단, 사용자가 '누구야/이름이 뭐야'처럼 정체를 직접 물으면 1문장으로 짧게 정체를 밝히세요) 기존 맥락을 이어서 답변하세요."
+
+    """
+    ✅ 붕괴 멘트 방지 가이드(전체 캐릭터챗 공통)
+
+    문제:
+    - 사용자가 "누구야?", "여긴 어디야?" 등 정체성/상황을 물으면,
+      '자기소개 금지' 지시와 충돌하면서 캐릭터가 혼란/붕괴/메타 멘트로 빠지는 경우가 잦다.
+
+    해결(최소 수정):
+    - 정체성/상황 질문에서는 "짧게/명확하게" 답하도록 예외 규칙을 추가하고,
+      대표적인 붕괴 표현을 금지한다.
+    """
+    character_prompt += "\n\n[정체성/상황 질문 처리(최우선)]"
+    character_prompt += f"\n- 사용자가 '누구야/누구세요/이름이 뭐야/정체가 뭐야'처럼 정체를 묻는다면, 반드시 1문장으로 명확히 답하세요. (예: \"난 {char_name}이야.\")"
+    character_prompt += "\n- 사용자가 '여긴 어디야/무슨 상황이야/지금 뭐야'처럼 상황을 묻는다면, 위 [세계관]/[배경 스토리]/현재 대화 맥락을 근거로 차분히 설명하세요. 모르면 1개의 짧은 확인 질문만 하세요."
+    character_prompt += "\n- 절대 금지: '여기가 어딘지 모르겠다', '머리가 깨질 것 같다', '시스템 오류', 'AI/챗봇/모델' 같은 메타/붕괴 발언."
     character_prompt += "\n\n[대화 스타일 지침]"
     character_prompt += "\n- 실제 사람처럼 자연스럽고 인간적으로 대화하세요"
     character_prompt += "\n- ①②③ 같은 목록이나 번호 매기기 금지"
@@ -1733,6 +1881,18 @@ async def send_message(
             response_length_pref=response_length,
             temperature=temperature
         )
+
+        # ✅ 붕괴 멘트 방어(저장 직전 1회 필터링)
+        # - 프롬프트 금지에도 간헐적으로 출력될 수 있어 UX를 보호한다.
+        try:
+            cleaned = _sanitize_breakdown_phrases(ai_response_text, user_text=request.content)
+            if cleaned:
+                ai_response_text = cleaned
+            else:
+                # 너무 공격적으로 제거되어 비면, 최소 안전 응답으로 폴백
+                ai_response_text = f"난 {char_name}이야."
+        except Exception:
+            pass
 
         # 4. AI 응답 메시지 저장
         ai_message = await chat_service.save_message(

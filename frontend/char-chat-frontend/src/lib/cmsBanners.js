@@ -55,6 +55,49 @@ export const DEFAULT_HOME_BANNERS = [
   },
 ];
 
+/**
+ * 서버에서 내려온 배너 설정이 "초기 기본값(공지사항 1개 + 빈 이미지)"인지 판별한다.
+ *
+ * 왜 필요한가?
+ * - 배포 직후 서버 SSOT가 비어 기본값만 내려오는 순간, 관리자 로컬 편집본이 덮어써져 사라지는 사고를 막기 위함.
+ * - 단, 일반 유저는 로컬 캐시보다 서버 SSOT를 우선해야 하므로(운영 일관성),
+ *   이 판별은 "관리자 로컬 보호" 같은 예외 상황에서만 쓰는 게 안전하다.
+ */
+export function isDefaultHomeBannersConfig(items) {
+  try {
+    const arr = Array.isArray(items) ? items : [];
+    if (arr.length !== 1) return false;
+    const b = arr[0] || {};
+
+    const id = String(b.id || '').trim();
+    if (id !== 'banner_notice') return false;
+
+    const title = String(b.title || '').trim();
+    const imageUrl = String(b.imageUrl || '').trim();
+    const mobileImageUrl = String(b.mobileImageUrl || '').trim();
+    const linkUrl = String(b.linkUrl || '').trim();
+    const openInNewTab = !!b.openInNewTab;
+    const enabled = b.enabled !== false; // default true
+
+    // 기간은 null/빈값이어야 기본값으로 취급
+    const startAt = (b.startAt ? String(b.startAt).trim() : '');
+    const endAt = (b.endAt ? String(b.endAt).trim() : '');
+
+    return (
+      title === '공지사항' &&
+      imageUrl === '' &&
+      mobileImageUrl === '' &&
+      linkUrl === '/notices' &&
+      openInNewTab === false &&
+      enabled === true &&
+      !startAt &&
+      !endAt
+    );
+  } catch (_) {
+    return false;
+  }
+}
+
 export function sanitizeHomeBanner(raw) {
   const obj = (raw && typeof raw === 'object') ? raw : {};
 

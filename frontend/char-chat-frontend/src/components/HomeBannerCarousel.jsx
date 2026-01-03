@@ -8,6 +8,7 @@ import {
   HOME_BANNERS_STORAGE_KEY,
   HOME_BANNERS_CHANGED_EVENT,
   getActiveHomeBanners,
+  isDefaultHomeBannersConfig,
   setHomeBanners,
 } from '../lib/cmsBanners';
 import {
@@ -106,13 +107,15 @@ const HomeBannerCarousel = ({ className = '' }) => {
         if (!active) return;
         const arr = Array.isArray(res?.data) ? res.data : null;
         if (arr) {
-          // ✅ 안전 전환: 배포 직후 서버 SSOT가 비어 기본값만 내려오는 경우,
-          // 관리자 로컬 설정이 있다면 덮어써서 사라지지 않도록 로컬을 우선 유지한다.
+          // ✅ 운영 SSOT 우선(중요):
+          // - 일반 유저/다른 브라우저는 무조건 서버(DB) 값을 적용해야 "전 유저 반영"이 된다.
+          // - 단, 배포 직후 서버가 진짜 기본값(공지 1개 + 빈 이미지)일 때만
+          //   관리자(isAdmin)의 로컬 편집본이 사라지는 사고를 방지하기 위해 예외적으로 로컬을 유지한다.
           let skipApply = false;
           try {
             const hasLocal = !!localStorage.getItem(HOME_BANNERS_STORAGE_KEY);
-            const looksDefault = (arr.length === 1 && String(arr?.[0]?.id || '') === 'banner_notice');
-            if (hasLocal && looksDefault) skipApply = true;
+            const looksDefault = isDefaultHomeBannersConfig(arr);
+            if (isAdmin && hasLocal && looksDefault) skipApply = true;
           } catch (_) {}
           if (!skipApply) {
             try { setHomeBanners(arr); } catch (_) {}

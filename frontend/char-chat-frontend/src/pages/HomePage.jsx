@@ -67,6 +67,7 @@ import {
   getHomeSlots,
   setHomeSlots as persistHomeSlots,
   isHomeSlotActive,
+  isDefaultHomeSlotsConfig,
 } from '../lib/cmsSlots';
 
 const CHARACTER_PAGE_SIZE = 40;
@@ -130,6 +131,7 @@ const HomePage = () => {
   const SEARCH_UI_ENABLED = false;
   const [searchQuery, setSearchQuery] = useState('');
   const { user, isAuthenticated, logout } = useAuth();
+  const isAdmin = !!user?.is_admin;
   const requireAuth = useRequireAuth();
   const navigate = useNavigate();
   const location = useLocation();
@@ -185,16 +187,9 @@ const HomePage = () => {
           let skipApply = false;
           try {
             const hasLocal = !!localStorage.getItem(HOME_SLOTS_STORAGE_KEY);
-            const defaultIds = new Set([
-              'slot_top_origchat',
-              'slot_trending_characters',
-              'slot_top_stories',
-              'slot_recommended_characters',
-              'slot_daily_tag_characters',
-            ]);
-            const ids = new Set((arr || []).map((x) => String(x?.id || '').trim()).filter(Boolean));
-            const looksDefault = (arr.length === 5 && [...defaultIds].every((id) => ids.has(id)));
-            if (hasLocal && looksDefault) skipApply = true;
+            const looksDefault = isDefaultHomeSlotsConfig(arr);
+            // ✅ 운영 SSOT 우선(중요): 일반 유저는 무조건 서버값 적용
+            if (isAdmin && hasLocal && looksDefault) skipApply = true;
           } catch (_) {}
           if (!skipApply) {
             try { persistHomeSlots(arr); } catch (_) {}
@@ -207,7 +202,7 @@ const HomePage = () => {
     };
     load();
     return () => { active = false; };
-  }, [refreshHomeSlots]);
+  }, [refreshHomeSlots, isAdmin]);
 
   // ===== 온보딩(메인 탭): 검색(성별+키워드) + 30초 생성 =====
   // 요구사항:

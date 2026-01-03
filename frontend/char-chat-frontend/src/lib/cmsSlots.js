@@ -135,6 +135,60 @@ export const DEFAULT_HOME_SLOTS = [
   },
 ];
 
+/**
+ * 서버에서 내려온 구좌 설정이 "초기 기본값(시스템 5개 + 비활성/기간/커스텀픽 없음)"인지 판별한다.
+ *
+ * 왜 필요한가?
+ * - 배포 직후 서버 SSOT가 비어 기본값만 내려오는 순간, 관리자 로컬 편집본이 덮어써져 사라지는 사고를 막기 위함.
+ * - 단, 일반 유저는 로컬 캐시보다 서버 SSOT를 우선해야 하므로(운영 일관성),
+ *   이 판별은 "관리자 로컬 보호" 같은 예외 상황에서만 쓰는 게 안전하다.
+ */
+export function isDefaultHomeSlotsConfig(items) {
+  try {
+    const arr = Array.isArray(items) ? items : [];
+    if (arr.length !== HOME_SLOTS_SYSTEM_IDS.length) return false;
+
+    // id -> expected title(기본값)
+    const expectedTitleById = new Map((DEFAULT_HOME_SLOTS || []).map((s) => [String(s?.id || '').trim(), String(s?.title || '').trim()]));
+
+    for (const id of HOME_SLOTS_SYSTEM_IDS) {
+      const sid = String(id || '').trim();
+      const it = arr.find((x) => String(x?.id || '').trim() === sid);
+      if (!it) return false;
+
+      // 기본 타이틀이 아니면 서버가 이미 커스터마이즈된 상태이므로 기본값이 아님
+      const expectedTitle = expectedTitleById.get(sid) || '';
+      const title = String(it?.title || '').trim();
+      if (expectedTitle && title && title !== expectedTitle) return false;
+
+      // enabled 기본은 true
+      const enabled = it?.enabled !== false;
+      if (!enabled) return false;
+
+      // 기간은 비어있어야 기본값
+      const startAt = it?.startAt ? String(it.startAt).trim() : '';
+      const endAt = it?.endAt ? String(it.endAt).trim() : '';
+      if (startAt || endAt) return false;
+
+      // 커스텀 픽은 없어야 기본값
+      const picks = Array.isArray(it?.contentPicks) ? it.contentPicks : [];
+      if (picks.length > 0) return false;
+
+      // 정렬 기본은 metric
+      const sortMode = String(it?.contentSortMode || '').trim().toLowerCase();
+      if (sortMode && sortMode !== 'metric') return false;
+
+      // slotType이 내려오면 system이어야 기본값
+      const slotType = String(it?.slotType || '').trim().toLowerCase();
+      if (slotType && slotType !== 'system') return false;
+    }
+
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
 export function sanitizeHomeSlot(raw) {
   const obj = (raw && typeof raw === 'object') ? raw : {};
 

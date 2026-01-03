@@ -75,6 +75,7 @@ const ChatPage = () => {
     connected, 
     messages, 
     aiTyping,
+    socketError,
     joinRoom, 
     leaveRoom, 
     sendMessage: sendSocketMessage, 
@@ -245,6 +246,19 @@ const ChatPage = () => {
       setSocketSendDelayActive(false);
       return;
     }
+    /**
+     * ✅ 오해 방지: AI가 "입력 중"(ai_typing_start)인 동안에는 전송 지연 팝업을 띄우지 않는다.
+     *
+     * 이유:
+     * - 현재 채팅 서버는 ACK를 "전송 수신" 시점이 아니라 "AI 응답 생성 완료" 시점에 보낸다.
+     * - 그래서 정상적으로 답변을 생성 중인 경우에도 pending이 3초 이상 유지되어
+     *   '전송 지연' 팝업이 자주 뜨며, 유저가 오류로 오해해 새로고침/이탈할 수 있다.
+     * - aiTyping이 true면 정상 처리 중이므로, 팝업 대신 상단 '입력 중' UI만으로 충분하다.
+     */
+    if (aiTyping) {
+      setSocketSendDelayActive(false);
+      return;
+    }
     const hasPending = (() => {
       try {
         return Array.isArray(messages) && messages.some((m) => {
@@ -268,7 +282,7 @@ const ChatPage = () => {
       cancelled = true;
       try { clearTimeout(t); } catch (_) {}
     };
-  }, [isOrigChat, connected, messages]);
+  }, [isOrigChat, connected, messages, aiTyping]);
 
   const notifyCompletion = (meta) => {
     if (!chatRoomId) return;
@@ -1097,6 +1111,35 @@ const ChatPage = () => {
       }
     }
   }, [messages]);
+
+  useEffect(() => {
+    /**
+     * ✅ 타이핑(…) 표시/해제 시 스크롤 바닥 유지
+     *
+     * 문제:
+     * - `aiTypingEffective`(점 3개 말풍선)는 `messages` 배열 밖에서 렌더된다.
+     * - 그래서 기존 `useEffect([messages])` 자동 스크롤만으로는
+     *   "유저 메시지 전송 → 잠시 후 … 말풍선 등장" 구간에서 스크롤이 바닥을 놓칠 수 있다.
+     *
+     * 동작:
+     * - 사용자가 이미 바닥에 있던 상태(autoScrollRef.current=true)라면,
+     *   타이핑 UI가 나타나거나 사라질 때도 맨 아래로 유지한다.
+     * - 사용자가 위로 스크롤해 과거를 보고 있는 경우에는 강제 스크롤하지 않는다.
+     */
+    if (!autoScrollRef.current) return;
+    // DOM 업데이트 후 스크롤(레이아웃 반영 보장)
+    let raf = 0;
+    try {
+      raf = window.requestAnimationFrame(() => {
+        try { scrollToBottom(); } catch (_) {}
+      });
+    } catch (_) {
+      try { scrollToBottom(); } catch (_) {}
+    }
+    return () => {
+      try { if (raf) window.cancelAnimationFrame(raf); } catch (_) {}
+    };
+  }, [aiTyping, isOrigChat, origTurnLoading]);
   
   useEffect(() => {
     // 과거 메시지 로드 후 스크롤 위치 복원
@@ -1117,13 +1160,38 @@ const ChatPage = () => {
   }, [newMessage]);
 
   const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView(); // behavior: 'smooth' 제거하여 즉시 스크롤
+    /**
+     * ✅ 맨 아래 스크롤(즉시)
+     *
+     * - `scrollIntoView()`만 쓰면 브라우저/레이아웃에 따라 "정확히 바닥"까지 안 내려가는 케이스가 있다.
+     * - 우선 컨테이너 scrollTop을 직접 설정하고, 실패 시에만 scrollIntoView로 폴백한다.
+     */
+    const el = chatContainerRef.current;
+    if (el) {
+      try {
+        el.scrollTop = el.scrollHeight;
+        return;
+      } catch (_) {
+        try {
+          el.scrollTo({ top: el.scrollHeight, behavior: 'auto' });
+          return;
+        } catch (_) {}
+      }
+    }
+    try {
+      messagesEndRef.current?.scrollIntoView({ block: 'end' });
+    } catch (_) {
+      messagesEndRef.current?.scrollIntoView(); // 최후 폴백
+    }
   };
   
   const handleScroll = useCallback(() => {
     const el = chatContainerRef.current;
     if (!el) return;
-    const atBottom = el.scrollTop >= el.scrollHeight - el.clientHeight - 2;
+    // ✅ 바닥 판정에 여유를 둔다(모바일 키보드/이미지 로드/레이아웃 변동으로 수 px~수십 px 차이가 자주 발생)
+    const BOTTOM_THRESHOLD_PX = 80;
+    const distanceToBottom = el.scrollHeight - el.clientHeight - el.scrollTop;
+    const atBottom = distanceToBottom <= BOTTOM_THRESHOLD_PX;
     autoScrollRef.current = atBottom;
     // 맨 위 도달 시 과거 로드
     if (el.scrollTop <= 0 && hasMoreMessages && !historyLoading) {
@@ -1166,6 +1234,15 @@ const ChatPage = () => {
       created_at: new Date().toISOString()
     };
     setMessages(prev => [...prev, tempUserMessage]);
+    // ✅ 유저가 메시지를 보냈다면 기본적으로 "맨 아래 고정"이 자연스럽다.
+    try { autoScrollRef.current = true; } catch (_) {}
+    try {
+      window.requestAnimationFrame(() => {
+        try { scrollToBottom(); } catch (_) {}
+      });
+    } catch (_) {
+      try { scrollToBottom(); } catch (_) {}
+    }
       try {
         setOrigTurnLoading(true);
         const payload = { room_id: chatRoomId, user_text: messageContentRaw, idempotency_key: genIdemKey(), settings_patch: (settingsSyncedRef.current ? null : chatSettings) };
@@ -1247,6 +1324,15 @@ const ChatPage = () => {
         pending: true,
       };
       setMessages(prev => [...prev, tempUserMessage]);
+      // ✅ 유저가 보낸 시점에 바닥 고정(레이아웃 변동/타이핑 UI 등장에도 유지)
+      try { autoScrollRef.current = true; } catch (_) {}
+      try {
+        window.requestAnimationFrame(() => {
+          try { scrollToBottom(); } catch (_) {}
+        });
+      } catch (_) {
+        try { scrollToBottom(); } catch (_) {}
+      }
       setNewMessage('');
       if (inputRef.current) {
         inputRef.current.style.height = 'auto';
@@ -1769,11 +1855,23 @@ const ChatPage = () => {
 
         {/* 🎯 AI 말풍선 아래 트리거 이미지 */}
         {!isUser && triggerImageUrl && (
-          <div className="mt-2 max-w-full sm:max-w-[85%] rounded-xl overflow-hidden">
+          <div className="mt-2 max-w-full sm:max-w-[85%]">
             <img 
               src={triggerImageUrl} 
               alt="" 
-              className="w-full max-h-80 object-cover rounded-xl cursor-zoom-in"
+              // ✅ 크롭/레터박스 없이: 말풍선 너비에 맞추고(가로 100%), 세로는 원본 비율 그대로 표시
+              className="block w-full h-auto rounded-xl cursor-zoom-in"
+              onLoad={() => {
+                // ✅ 이미지가 늦게 로드되면 레이아웃이 아래로 밀려 "바닥 고정"이 풀릴 수 있어 보정한다.
+                if (!autoScrollRef.current) return;
+                try {
+                  window.requestAnimationFrame(() => {
+                    try { scrollToBottom(); } catch (_) {}
+                  });
+                } catch (_) {
+                  try { scrollToBottom(); } catch (_) {}
+                }
+              }}
               onClick={() => {
                 setImageViewerSrc(triggerImageUrl);
                 setImageViewerOpen(true);
@@ -1924,9 +2022,11 @@ const ChatPage = () => {
       return { kind: 'turn', title, body, slow };
     }
     if (isSocketSendDelayPopupActive) {
-      const title = '전송이 지연되고 있어요';
-      const body = '네트워크가 불안정할 수 있어요. 잠시 후에도 안 되면 다시 보내주세요.';
-      const slow = '지속되면 Wi‑Fi/데이터를 확인하거나 페이지를 새로고침 해주세요.';
+      // ✅ (오해 방지) 이 팝업은 aiTyping=false 인 상태에서만 켜지므로,
+      // "응답 생성 중"이 아니라 "전송 확인(ACK) 지연"에 가깝다.
+      const title = '전송 확인이 지연되고 있어요';
+      const body = '네트워크/서버 상황으로 전송 확인이 늦어질 수 있어요. 잠시만 기다려 주세요.';
+      const slow = '10초 이상 지속되면 Wi‑Fi/데이터를 확인하거나 페이지를 새로고침 해주세요.';
       return { kind: 'net', title, body, slow };
     }
     return null;
@@ -2330,6 +2430,12 @@ const ChatPage = () => {
             <div className="flex justify-center py-4">
               <Loader2 className="w-6 h-6 animate-spin text-gray-400" />
             </div>
+          )}
+          {socketError && (
+            <Alert variant="destructive" className="mb-4">
+              <AlertCircle className="h-4 w-4" />
+              <AlertDescription>{socketError}</AlertDescription>
+            </Alert>
           )}
           {error && (
             <Alert variant="destructive" className="mb-4">

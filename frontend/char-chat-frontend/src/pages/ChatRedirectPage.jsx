@@ -53,15 +53,43 @@ const ChatRedirectPage = () => {
           setLoading(false);
         }
       } catch (err) {
-        // 3. 실패하면 character_id라고 간주하고 바로 채팅 페이지로 이동
-        // (404 Not Found 에러가 여기에 해당)
-        try {
-          const usp = new URLSearchParams(location.search || '');
-          const qs = usp.toString();
-          navigate(`/ws/chat/${id}${qs ? `?${qs}` : ''}`, { replace: true });
-        } catch (_) {
-          navigate(`/ws/chat/${id}`, { replace: true });
+        /**
+         * ✅ 주의: /chat/rooms/:id 조회 실패를 무조건 "characterId"로 간주하면 안 된다.
+         *
+         * - 404: roomId가 아니라 characterId일 가능성이 높으므로 기존처럼 fallback OK
+         * - 401/403(Not authenticated): 로그인 필요 → fallback으로 protected route로 보내면 더 혼란스러울 수 있어 에러 표시
+         * - 403(권한 없음): 다른 유저의 roomId 등 → fallback 금지(오동작/엉뚱한 uuid로 이동)
+         */
+        const status = err?.response?.status;
+        const detail = err?.response?.data?.detail;
+        const isNotAuthenticated = (status === 403) && /not\s+authenticated/i.test(String(detail || ''));
+
+        if (status === 404 || !status) {
+          // 3. 실패하면 character_id라고 간주하고 바로 채팅 페이지로 이동(레거시 동작 유지)
+          try {
+            const usp = new URLSearchParams(location.search || '');
+            const qs = usp.toString();
+            navigate(`/ws/chat/${id}${qs ? `?${qs}` : ''}`, { replace: true });
+          } catch (_) {
+            navigate(`/ws/chat/${id}`, { replace: true });
+          }
+          return;
         }
+
+        if (status === 401 || isNotAuthenticated) {
+          setError('로그인이 필요합니다. 다시 로그인 후 시도해주세요.');
+          setLoading(false);
+          return;
+        }
+
+        if (status === 403) {
+          setError(typeof detail === 'string' && detail.trim() ? detail : '이 채팅방에 접근할 권한이 없습니다.');
+          setLoading(false);
+          return;
+        }
+
+        setError('채팅방으로 이동할 수 없습니다. 잠시 후 다시 시도해주세요.');
+        setLoading(false);
       }
     };
 

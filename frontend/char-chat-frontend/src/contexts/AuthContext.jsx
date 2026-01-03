@@ -40,8 +40,10 @@ export const AuthProvider = ({ children }) => {
     } catch (error) {
       console.error('인증 확인 실패:', error);
       const status = error?.response?.status;
+      const detail = error?.response?.data?.detail;
+      const isNotAuthenticated = (status === 403) && /not\s+authenticated/i.test(String(detail || ''));
       // 네트워크/서버 일시 오류(타임아웃, CORS 미적용, ERR_EMPTY_RESPONSE 등)에서는 토큰을 보존
-      if (status === 401 || status === 403) {
+      if (status === 401 || isNotAuthenticated) {
         localStorage.removeItem('access_token');
         localStorage.removeItem('refresh_token');
         setUser(null);
