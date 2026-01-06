@@ -62,7 +62,21 @@ class AuthMiddleware {
         next();
 
       } catch (apiError) {
-        logger.error('백엔드 API 사용자 확인 실패:', apiError.message);
+        // ✅ 운영 방어: 원인 파악을 위해 status/url/detail을 로그에 남긴다(토큰은 절대 로그 금지)
+        try {
+          const status = apiError?.response?.status;
+          const data = apiError?.response?.data;
+          const url = apiError?.config?.url;
+          const detail = (data && (data.detail || data.error)) ? String(data.detail || data.error) : '';
+          logger.error('백엔드 API 사용자 확인 실패:', {
+            status,
+            url,
+            detail: detail ? detail.slice(0, 300) : undefined,
+          });
+        } catch (_) {
+          logger.error('백엔드 API 사용자 확인 실패:', apiError.message);
+        }
+        // 사용자에게는 최소한의 안내만 노출
         return next(new Error('사용자 정보를 확인할 수 없습니다.'));
       }
 

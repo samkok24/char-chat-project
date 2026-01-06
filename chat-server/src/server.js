@@ -118,10 +118,47 @@ app.use((req, res) => {
 // 서버 시작
 const PORT = config.PORT || 3001;
 
+/**
+ * ✅ 운영 방어: 백엔드 내부 통신 사전 점검(부팅 시 1회)
+ *
+ * 의도:
+ * - 운영에서 TrustedHostMiddleware/네트워크 설정이 어긋나면 chat-server → backend `/auth/me` 호출이 400으로 실패하고,
+ *   그 결과 소켓 인증이 전부 실패하며(모바일/신규 계정) "사용자 정보를 확인할 수 없습니다" + 무한 로딩이 발생할 수 있다.
+ *
+ * 동작:
+ * - 토큰 없이 `/auth/me`를 호출하면 정상은 401/403(Not authenticated)이다.
+ * - 400이 나오면 Host/프록시/TrustedHost 문제 가능성이 매우 높으므로 로그로 즉시 드러나게 한다.
+ *
+ * 주의:
+ * - 토큰을 사용하지 않으며, 민감정보는 절대 로그로 남기지 않는다.
+ */
+const probeBackendOnce = async () => {
+  try {
+    const url = `${config.BACKEND_API_URL}/auth/me`;
+    const res = await axios.get(url, {
+      timeout: 5000,
+      validateStatus: () => true, // 4xx도 throw하지 않게
+    });
+    const status = res?.status;
+    const detail = res?.data?.detail || res?.data?.error;
+    logger.info('[startup] backend_probe', {
+      url,
+      status,
+      detail: detail ? String(detail).slice(0, 200) : undefined,
+    });
+  } catch (e) {
+    logger.error('[startup] backend_probe failed:', {
+      message: e?.message,
+    });
+  }
+};
+
 server.listen(PORT, '0.0.0.0', () => {
   logger.info(`🚀 채팅 서버가 포트 ${PORT}에서 실행 중입니다.`);
   logger.info(`환경: ${config.NODE_ENV}`);
   logger.info(`Redis URL: ${config.REDIS_URL}`);
+  // 부팅 직후 1회 점검
+  try { probeBackendOnce(); } catch (_) {}
 });
 
 // Graceful shutdown
