@@ -1939,7 +1939,9 @@ const ChatPage = () => {
     )
   );
   const isOrigTurnPopupActive = Boolean(isOrigChat && (turnStage === 'generating' || turnStage === 'polishing'));
-  const isSocketDisconnectedPopupActive = Boolean(!isOrigChat && chatRoomId && !connected);
+  // ✅ 소켓 연결 실패가 명확히 발생한 경우(예: connect_error), "연결 중" 오버레이만 계속 보여주면 UX가 매우 나빠진다.
+  // - socketError가 있으면 중앙 상태 팝업은 숨기고, 상단 에러(Alert) + 액션 버튼으로 유도한다.
+  const isSocketDisconnectedPopupActive = Boolean(!isOrigChat && chatRoomId && !connected && !socketError);
   const isSocketSendDelayPopupActive = Boolean(!isOrigChat && chatRoomId && connected && socketSendDelayActive);
   const isStatusPopupActive = Boolean(
     isInitOverlayActive ||
@@ -2434,7 +2436,37 @@ const ChatPage = () => {
           {socketError && (
             <Alert variant="destructive" className="mb-4">
               <AlertCircle className="h-4 w-4" />
-              <AlertDescription>{socketError}</AlertDescription>
+              <AlertDescription>
+                <div className="space-y-2">
+                  <div>{socketError}</div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="h-8 px-3 bg-white/5 border-white/20 text-white hover:bg-white/10"
+                      onClick={() => {
+                        try { window.location.reload(); } catch (_) {}
+                      }}
+                    >
+                      새로고침
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="h-8 px-3 bg-white/5 border-white/20 text-white hover:bg-white/10"
+                      onClick={() => {
+                        try {
+                          localStorage.removeItem('access_token');
+                          localStorage.removeItem('refresh_token');
+                        } catch (_) {}
+                        try { window.location.href = '/login'; } catch (_) {}
+                      }}
+                    >
+                      다시 로그인
+                    </Button>
+                  </div>
+                </div>
+              </AlertDescription>
             </Alert>
           )}
           {error && (

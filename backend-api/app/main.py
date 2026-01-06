@@ -269,6 +269,30 @@ if settings.ENVIRONMENT == "production":
                 allowed_hosts.append(f"www.{_u.hostname}")
     except Exception:
         pass
+    # ✅ 운영(Docker) 내부 통신 호스트도 허용 (채팅서버→백엔드 /auth/me 등)
+    # - chat-server는 docker 네트워크에서 BACKEND_API_URL=http://backend:8000 으로 호출하므로 Host=backend 로 들어온다.
+    # - TrustedHostMiddleware가 이를 막으면 소켓 인증이 실패하며, 모바일/신규 세션에서 "사용자 정보를 확인할 수 없습니다"로 무한 로딩이 발생할 수 있다.
+    # - 외부에 8000 포트를 공개하지 않는 구성(권장)에서는 보안 리스크가 크지 않다.
+    try:
+        internal_hosts = [
+            # docker compose service names
+            "backend",
+            "chat-server",
+            "frontend",
+            "nginx",
+            "redis",
+            # docker container_name aliases(설정에 따라 DNS로 잡히는 경우 대비)
+            "chapter8_backend",
+            "chapter8_socket",
+            "chapter8_frontend",
+            "chapter8_nginx",
+            "chapter8_redis",
+        ]
+        for h in internal_hosts:
+            if h and h not in allowed_hosts:
+                allowed_hosts.append(h)
+    except Exception:
+        pass
     _extra_hosts = os.getenv("TRUSTED_HOSTS")  # comma-separated
     if _extra_hosts:
         allowed_hosts.extend([h.strip() for h in _extra_hosts.split(",") if h.strip()])
