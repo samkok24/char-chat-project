@@ -269,6 +269,28 @@ class SocketController {
 
         safeAck({ ok: true });
 
+        // ✅ 멀티 디바이스(PC/모바일) 동기화:
+        // - 기존 구현은 AI 메시지만 브로드캐스트해서, 다른 기기에서는 "유저가 방금 보낸 메시지"가 보이지 않는 문제가 있었다.
+        // - 백엔드 응답에 user_message가 포함될 때, 같은 room에 접속한 다른 소켓들에게도 유저 메시지를 먼저 전파한다.
+        // - sender 본인은 프론트에서 낙관적 메시지를 이미 표시하므로(중복 방지) sender 제외(socket.to 사용).
+        try {
+          const savedUser = aiResponse?.data?.user_message;
+          if (savedUser && savedUser.id && typeof savedUser.content === 'string') {
+            const userMessageData = {
+              id: savedUser.id,
+              roomId,
+              senderType: 'user',
+              senderId: userId,
+              senderName: userInfo.username,
+              content: savedUser.content,
+              messageType,
+              timestamp: savedUser.created_at || new Date().toISOString(),
+              message_metadata: savedUser.message_metadata || undefined,
+            };
+            socket.to(roomId).emit('new_message', userMessageData);
+          }
+        } catch (_) {}
+
         // AI 응답 생성 완료 (AI 타이핑 중지)
         io.to(roomId).emit('ai_typing_stop', { roomId });
 
@@ -527,6 +549,28 @@ class SocketController {
         content: msg.content,
         timestamp: msg.created_at || msg.timestamp
       }));
+
+      // 클라이언트에 메시지 기록 전송
+      socket.emit('message_history', {
+        roomId,
+        messages: formattedMessages,
+        page,
+        limit,
+        hasMore: messages.length === limit
+      });
+
+    } catch (error) {
+      logger.error('메시지 기록 조회 오류:', error.response?.data || error.message);
+      socket.emit('error', { 
+        message: '메시지 기록을 불러오는 중 오류가 발생했습니다.',
+        details: error.response?.data?.detail || error.message
+      });
+    }
+  }
+}
+
+module.exports = new SocketController();
+
 
       // 클라이언트에 메시지 기록 전송
       socket.emit('message_history', {
