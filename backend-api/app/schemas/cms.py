@@ -43,6 +43,9 @@ class HomeBanner(BaseModel):
     linkUrl: str = Field("", max_length=2000)
     openInNewTab: bool = False
     enabled: bool = True
+    # ✅ 노출 대상: 전체/PC만/모바일만 (프론트 CMS에서 선택)
+    # - 방어적으로 문자열로 받고, 유효하지 않으면 all로 보정한다.
+    displayOn: str = Field("all", max_length=10)  # all|pc|mobile
 
     startAt: Optional[str] = None
     endAt: Optional[str] = None
@@ -61,6 +64,17 @@ class HomeBanner(BaseModel):
         }
         out = _sanitize_text(v, max_map.get(info.field_name))
         return out if out is not None else ""
+
+    @field_validator("displayOn", mode="before")
+    @classmethod
+    def sanitize_display_on(cls, v):
+        raw = _sanitize_text(v, 10)
+        key = (raw or "all").strip().lower()
+        if key in ("pc", "desktop"):
+            return "pc"
+        if key in ("mobile", "m", "phone"):
+            return "mobile"
+        return "all"
 
 
 class HomeSlotPick(BaseModel):

@@ -1497,7 +1497,7 @@ const CMSPage = () => {
               <div>
                 <CardTitle className="text-white">홈 배너</CardTitle>
                 <CardDescription className="text-gray-400">
-                  배너 이미지/링크/노출 기간을 설정할 수 있습니다. (현재는 로컬 저장소 기반)
+                  배너 이미지/링크/노출 기간을 설정할 수 있습니다. (서버 저장, 전 유저 반영)
                 </CardDescription>
               </div>
               <Button
@@ -1516,6 +1516,7 @@ const CMSPage = () => {
                   const status = computeStatus(b);
                   const href = String(b.linkUrl || '').trim();
                   const external = href && isExternalUrl(href);
+                  const displayOn = String(b.displayOn || 'all').trim().toLowerCase() || 'all';
                   return (
                     <div key={b.id} className="rounded-xl border border-gray-700 bg-gray-900/30 p-4">
                       <div className="flex items-start justify-between gap-3">
@@ -1525,6 +1526,11 @@ const CMSPage = () => {
                               #{idx + 1} {b.title || '배너'}
                             </div>
                             <Badge className={status.className}>{status.label}</Badge>
+                            {displayOn !== 'all' ? (
+                              <Badge className="bg-gray-700 text-gray-200">
+                                {displayOn === 'pc' ? 'PC만' : '모바일만'}
+                              </Badge>
+                            ) : null}
                             {external && (
                               <Badge className="bg-gray-700 text-gray-200">
                                 <ExternalLink className="w-3 h-3 mr-1" />
@@ -1581,18 +1587,18 @@ const CMSPage = () => {
                               <span className="font-semibold">PC 배너</span>
                               <span className="text-[11px] text-gray-500">imageUrl</span>
                             </div>
-                            <div className="relative">
+                            <div className="relative aspect-[2000/360]">
                               <div className="absolute inset-0 bg-gradient-to-r from-[#2a160c] via-[#15121a] to-[#0b1627]" />
                               {b.imageUrl ? (
                                 <img
                                   src={withCacheBust(resolveImageUrl(b.imageUrl) || b.imageUrl, b.updatedAt || b.createdAt)}
                                   alt={b.title || '배너'}
-                                  className="relative w-full h-[140px] object-cover"
+                                  className="absolute inset-0 w-full h-full object-cover"
                                   onLoad={(e) => { try { e.currentTarget.style.display = ''; } catch (_) {} }}
                                   onError={(e) => { try { e.currentTarget.style.display = 'none'; } catch (_) {} }}
                                 />
                               ) : (
-                                <div className="relative w-full h-[140px] flex items-center px-6">
+                                <div className="relative w-full h-full flex items-center px-6">
                                   <div className="text-white">
                                     <div className="text-lg font-bold">배너 이미지가 없습니다</div>
                                     <div className="text-sm text-white/80 mt-1">아래에서 이미지 URL 또는 파일 업로드로 등록하세요.</div>
@@ -1608,18 +1614,18 @@ const CMSPage = () => {
                               <span className="font-semibold">모바일 배너</span>
                               <span className="text-[11px] text-gray-500">mobileImageUrl</span>
                             </div>
-                            <div className="relative">
+                            <div className="relative aspect-[2000/360]">
                               <div className="absolute inset-0 bg-gradient-to-r from-[#2a160c] via-[#15121a] to-[#0b1627]" />
                               {(b.mobileImageUrl || b.imageUrl) ? (
                                 <img
                                   src={withCacheBust(resolveImageUrl((b.mobileImageUrl || b.imageUrl)) || (b.mobileImageUrl || b.imageUrl), b.updatedAt || b.createdAt)}
                                   alt={b.title || '배너'}
-                                  className="relative w-full h-[140px] object-contain"
+                                  className="absolute inset-0 w-full h-full object-cover"
                                   onLoad={(e) => { try { e.currentTarget.style.display = ''; } catch (_) {} }}
                                   onError={(e) => { try { e.currentTarget.style.display = 'none'; } catch (_) {} }}
                                 />
                               ) : (
-                                <div className="relative w-full h-[140px] flex items-center px-6">
+                                <div className="relative w-full h-full flex items-center px-6">
                                   <div className="text-white">
                                     <div className="text-lg font-bold">모바일 이미지가 없습니다</div>
                                     <div className="text-sm text-white/80 mt-1">없으면 PC 배너(imageUrl)를 사용합니다.</div>
@@ -1655,15 +1661,55 @@ const CMSPage = () => {
                           </div>
                         </div>
 
+                        {/* 노출 대상 */}
+                        <div className="rounded-xl border border-gray-800 bg-gray-900/30 p-4 space-y-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="text-sm font-semibold text-white">노출 대상</div>
+                              <div className="text-xs text-gray-500 leading-relaxed mt-1">
+                                배너를 <span className="text-gray-200 font-medium">전체/PC만/모바일만</span> 중 선택해 노출할 수 있습니다.
+                                <br />
+                                모바일만 노출 배너도 지원합니다. (모바일 전용 이미지는 <span className="text-gray-300">mobileImageUrl</span>에 업로드)
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2 flex-wrap justify-end">
+                              <Button
+                                type="button"
+                                variant="outline"
+                                className={`h-9 px-4 border-gray-700 ${displayOn === 'all' ? 'bg-purple-600/30 text-white' : 'bg-gray-800 text-gray-200 hover:bg-gray-700'}`}
+                                onClick={() => updateBanner(b.id, { displayOn: 'all' })}
+                              >
+                                전체
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                className={`h-9 px-4 border-gray-700 ${displayOn === 'pc' ? 'bg-purple-600/30 text-white' : 'bg-gray-800 text-gray-200 hover:bg-gray-700'}`}
+                                onClick={() => updateBanner(b.id, { displayOn: 'pc' })}
+                              >
+                                PC만
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                className={`h-9 px-4 border-gray-700 ${displayOn === 'mobile' ? 'bg-purple-600/30 text-white' : 'bg-gray-800 text-gray-200 hover:bg-gray-700'}`}
+                                onClick={() => updateBanner(b.id, { displayOn: 'mobile' })}
+                              >
+                                모바일만
+                              </Button>
+                            </div>
+                          </div>
+                        </div>
+
                         {/* PC 배너 설정 */}
                         <div className="rounded-xl border border-gray-800 bg-gray-900/30 p-4 space-y-3">
                           <div className="flex items-start justify-between gap-3">
                             <div className="min-w-0">
                               <div className="text-sm font-semibold text-white">PC 배너 이미지 설정</div>
                               <div className="text-xs text-gray-500 leading-relaxed mt-1">
-                                권장(PC): <span className="text-gray-300 font-medium">2400×420</span> (약 5.7:1)
+                                권장(PC): <span className="text-gray-300 font-medium">2000×360</span> (약 5.6:1)
                                 <br />
-                                참고: PC에서는 화면 폭에 따라 상/하가 약간 잘릴 수 있으니(cover) 중요한 텍스트는 중앙에 배치하세요.
+                                참고: 화면 폭에 따라 상/하가 약간 잘릴 수 있으니(cover) 중요한 텍스트는 중앙에 배치하세요.
                               </div>
                             </div>
                             <Button
@@ -1692,7 +1738,7 @@ const CMSPage = () => {
                             </div>
                           </div>
                           <div className="space-y-2">
-                            <Label className="text-gray-300">PC 이미지 파일 업로드(로컬 저장)</Label>
+                            <Label className="text-gray-300">PC 이미지 파일 업로드(서버 저장)</Label>
                             <Input
                               type="file"
                               accept="image/*"
@@ -1700,7 +1746,7 @@ const CMSPage = () => {
                               onChange={(e) => handlePickImage(b.id, e.target.files?.[0])}
                             />
                             <div className="text-xs text-gray-500">
-                              파일 업로드는 브라우저 로컬 저장소에 저장됩니다(용량 제한 있음).
+                              파일은 서버에 업로드되며, CMS 설정에는 URL(/static/...)만 저장됩니다.
                             </div>
                           </div>
                         </div>
@@ -1711,7 +1757,7 @@ const CMSPage = () => {
                             <div className="min-w-0">
                               <div className="text-sm font-semibold text-white">모바일 배너 이미지 설정</div>
                               <div className="text-xs text-gray-500 leading-relaxed mt-1">
-                                권장(모바일): <span className="text-gray-300 font-medium">1080×400</span> (약 2.7:1)
+                                권장(모바일): <span className="text-gray-300 font-medium">2000×360</span> (PC와 동일)
                                 <br />
                                 비워두면 PC 이미지(imageUrl)가 모바일에도 사용됩니다.
                               </div>
@@ -1740,7 +1786,7 @@ const CMSPage = () => {
                             </div>
                           </div>
                           <div className="space-y-2">
-                            <Label className="text-gray-300">모바일 이미지 파일 업로드(로컬 저장, 옵션)</Label>
+                            <Label className="text-gray-300">모바일 이미지 파일 업로드(서버 저장, 옵션)</Label>
                             <Input
                               type="file"
                               accept="image/*"

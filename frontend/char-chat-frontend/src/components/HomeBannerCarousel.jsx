@@ -74,20 +74,58 @@ const HomeBannerCarousel = ({ className = '' }) => {
   const { user } = useAuth();
   const isAdmin = !!user?.is_admin;
   const navigate = useNavigate();
+  const [isMobile, setIsMobile] = React.useState(() => {
+    try {
+      return !!window.matchMedia?.('(max-width: 639px)')?.matches;
+    } catch (_) {
+      return false;
+    }
+  });
+  const deviceKey = isMobile ? 'mobile' : 'pc';
   const [api, setApi] = React.useState(null);
   const [selected, setSelected] = React.useState(0);
   const [snapCount, setSnapCount] = React.useState(0);
   const [isHovering, setIsHovering] = React.useState(false);
-  const [banners, setBanners] = React.useState(() => getActiveHomeBanners(Date.now()));
+  const [banners, setBanners] = React.useState(() => getActiveHomeBanners(Date.now(), deviceKey));
 
   const refresh = React.useCallback(() => {
     try {
-      setBanners(getActiveHomeBanners(Date.now()));
+      setBanners(getActiveHomeBanners(Date.now(), deviceKey));
     } catch (e) {
       try { console.error('[HomeBannerCarousel] refresh failed:', e); } catch (_) {}
       setBanners([]);
     }
+  }, [deviceKey]);
+
+  // ✅ 모바일 판별(배너: sm 기준) - 노출 대상(all/pc/mobile) 필터링에 사용
+  React.useEffect(() => {
+    let mql = null;
+    const onChange = (e) => {
+      try {
+        const matches = !!(e?.matches ?? mql?.matches);
+        setIsMobile(matches);
+      } catch (_) {}
+    };
+    try {
+      mql = window.matchMedia?.('(max-width: 639px)') || null;
+      if (mql) {
+        try { mql.addEventListener('change', onChange); } catch (_) { try { mql.addListener(onChange); } catch (_) {} }
+        try { setIsMobile(!!mql.matches); } catch (_) {}
+      }
+    } catch (_) {}
+    return () => {
+      try {
+        if (mql) {
+          try { mql.removeEventListener('change', onChange); } catch (_) { try { mql.removeListener(onChange); } catch (_) {} }
+        }
+      } catch (_) {}
+    };
   }, []);
+
+  // 디바이스가 바뀌면(리사이즈 등) 배너 필터링을 다시 적용한다.
+  React.useEffect(() => {
+    refresh();
+  }, [refresh]);
 
   /**
    * ✅ 운영 SSOT: 서버(DB)의 배너 설정을 우선 사용한다.
@@ -255,7 +293,7 @@ const HomeBannerCarousel = ({ className = '' }) => {
             const content = (
               <div
                 className={cn(
-                  'relative overflow-hidden rounded-2xl border border-gray-800 shadow-xl',
+                  'relative w-full aspect-[2000/360] overflow-hidden rounded-2xl border border-gray-800 shadow-xl',
                   clickable ? 'cursor-pointer hover:border-gray-700' : ''
                 )}
               >
@@ -271,7 +309,7 @@ const HomeBannerCarousel = ({ className = '' }) => {
                     <img
                       src={imgSrc || mobileSrc}
                       alt={b.title || '배너'}
-                      className="relative w-full h-[140px] sm:h-[170px] lg:h-[190px] xl:h-[210px] 2xl:h-[230px] object-contain sm:object-cover"
+                      className="absolute inset-0 w-full h-full object-cover"
                       loading="lazy"
                       onLoad={(e) => {
                         // 방어: 이전 로드 실패로 display:none 이 남아있을 수 있으므로 복구
@@ -284,7 +322,7 @@ const HomeBannerCarousel = ({ className = '' }) => {
                     />
                   </picture>
                 ) : (
-                  <div className="relative w-full h-[140px] sm:h-[170px] lg:h-[190px] xl:h-[210px] 2xl:h-[230px] flex items-center px-6">
+                  <div className="relative w-full h-full flex items-center px-6">
                     <div className="text-white">
                       <div className="text-lg font-bold">배너 이미지가 없습니다</div>
                       <div className="text-sm text-white/80 mt-1">관리자 페이지(/cms)에서 이미지를 등록해주세요.</div>
