@@ -1398,7 +1398,7 @@ const HomePage = () => {
             <section className="mb-6">
               <div className="rounded-2xl border border-gray-800/80 bg-gradient-to-b from-gray-900/70 to-gray-900/30 p-5 sm:p-6 shadow-lg shadow-black/20">
                 <div className="text-xl sm:text-2xl font-semibold text-white">
-                  원하는 캐릭터와 즐겁게 대화해보세요.
+                  오리지널 또는 웹소설 캐릭터와 무한대로 대화할 수 있어요.
                 </div>
                 <div className="text-sm text-gray-300 mt-1 leading-relaxed">
                   검색으로 찾거나, 30초만에 새 캐릭터를 만들어 바로 대화할 수 있어요.

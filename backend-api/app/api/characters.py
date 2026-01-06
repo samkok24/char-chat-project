@@ -648,26 +648,54 @@ async def get_my_characters(
         include_private=True,
         only=only,
     )
-    return [
-        CharacterListResponse(
-            id=char.id,
-            creator_id=char.creator_id,
-            name=char.name,
-            description=char.description,
-            greeting=char.greeting,
-            avatar_url=char.avatar_url,
-            source_type=getattr(char, 'source_type', 'ORIGINAL'),
-            image_descriptions=getattr(char, 'image_descriptions', []),
-            origin_story_id=getattr(char, 'origin_story_id', None),
-            is_origchat=bool(getattr(char, 'origin_story_id', None)),
-            chat_count=char.chat_count,
-            like_count=char.like_count,
-            is_public=char.is_public,
-            created_at=char.created_at,
-            creator_username=char.creator.username if getattr(char, 'creator', None) else None,
-            creator_avatar_url=char.creator.avatar_url if getattr(char, 'creator', None) else None,
-        ) for char in characters
-    ]
+
+    # ✅ 운영 방어: legacy 데이터에서 image_descriptions가 str(JSON)로 저장된 경우가 있어
+    # 응답 스키마(List[dict]) 검증에서 500이 날 수 있다.
+    # - /me/characters/* 와 동일 규칙으로 안전하게 정규화한다.
+    items: List[CharacterListResponse] = []
+    for char in (characters or []):
+        try:
+            imgs = getattr(char, 'image_descriptions', None)
+            if isinstance(imgs, str):
+                try:
+                    imgs = json.loads(imgs)
+                except Exception:
+                    imgs = None
+            if imgs and isinstance(imgs, list):
+                imgs = [
+                    img
+                    for img in imgs
+                    if not (isinstance(img, dict) and str(img.get('url', '')).startswith('cover:'))
+                ]
+
+            items.append(
+                CharacterListResponse(
+                    id=char.id,
+                    creator_id=char.creator_id,
+                    name=char.name,
+                    description=getattr(char, 'description', None),
+                    greeting=getattr(char, 'greeting', None),
+                    avatar_url=getattr(char, 'avatar_url', None),
+                    source_type=getattr(char, 'source_type', 'ORIGINAL'),
+                    image_descriptions=imgs if isinstance(imgs, list) else None,
+                    origin_story_id=getattr(char, 'origin_story_id', None),
+                    is_origchat=bool(getattr(char, 'origin_story_id', None)),
+                    chat_count=int(getattr(char, 'chat_count', 0) or 0),
+                    like_count=int(getattr(char, 'like_count', 0) or 0),
+                    is_public=bool(getattr(char, 'is_public', True)),
+                    created_at=(getattr(char, 'created_at', None) or datetime.now(timezone.utc)),
+                    creator_username=char.creator.username if getattr(char, 'creator', None) else None,
+                    creator_avatar_url=char.creator.avatar_url if getattr(char, 'creator', None) else None,
+                )
+            )
+        except Exception as e:
+            try:
+                logger.warning(f"[characters] /my serialize skipped id={getattr(char,'id',None)}: {e}")
+            except Exception:
+                pass
+            continue
+
+    return items
 
 
 # @router.get("/{character_id}", response_model=CharacterWithCreator)

@@ -311,6 +311,7 @@ def _default_home_banners() -> List[dict]:
             "linkUrl": "/notices",
             "openInNewTab": False,
             "enabled": True,
+            "displayOn": "all",
             "startAt": None,
             "endAt": None,
             "createdAt": now,

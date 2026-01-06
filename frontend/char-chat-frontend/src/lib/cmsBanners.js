@@ -45,6 +45,8 @@ export const DEFAULT_HOME_BANNERS = [
     imageUrl: '',
     // 모바일 전용 배너(옵션). 없으면 imageUrl(PC/공통)을 사용한다.
     mobileImageUrl: '',
+    // ✅ 노출 대상: all|pc|mobile
+    displayOn: 'all',
     linkUrl: '/notices',
     openInNewTab: false,
     enabled: true,
@@ -78,6 +80,7 @@ export function isDefaultHomeBannersConfig(items) {
     const linkUrl = String(b.linkUrl || '').trim();
     const openInNewTab = !!b.openInNewTab;
     const enabled = b.enabled !== false; // default true
+    const displayOn = String(b.displayOn || 'all').trim().toLowerCase() || 'all';
 
     // 기간은 null/빈값이어야 기본값으로 취급
     const startAt = (b.startAt ? String(b.startAt).trim() : '');
@@ -90,6 +93,7 @@ export function isDefaultHomeBannersConfig(items) {
       linkUrl === '/notices' &&
       openInNewTab === false &&
       enabled === true &&
+      (displayOn === 'all' || displayOn === '') &&
       !startAt &&
       !endAt
     );
@@ -106,6 +110,12 @@ export function sanitizeHomeBanner(raw) {
   const imageUrl = String(obj.imageUrl || '').trim();
   const mobileImageUrl = String(obj.mobileImageUrl || '').trim();
   const linkUrl = String(obj.linkUrl || '').trim();
+  const displayOnRaw = String(obj.displayOn || '').trim().toLowerCase();
+  const displayOn = (displayOnRaw === 'pc' || displayOnRaw === 'desktop')
+    ? 'pc'
+    : (displayOnRaw === 'mobile' || displayOnRaw === 'm' || displayOnRaw === 'phone')
+      ? 'mobile'
+      : 'all';
 
   const enabled = obj.enabled !== false; // default true
   const openInNewTab = !!obj.openInNewTab;
@@ -121,6 +131,7 @@ export function sanitizeHomeBanner(raw) {
     title,
     imageUrl,
     mobileImageUrl,
+    displayOn,
     linkUrl,
     openInNewTab,
     enabled,
@@ -140,6 +151,22 @@ export function isHomeBannerActive(banner, atMs = Date.now()) {
 
   if (startMs !== null && atMs < startMs) return false;
   if (endMs !== null && atMs > endMs) return false;
+  return true;
+}
+
+export function isHomeBannerVisibleOnDevice(banner, device = 'pc') {
+  /**
+   * 배너 노출 대상 필터(모바일만/PC만).
+   *
+   * - displayOn === 'all'  : 모든 디바이스 노출
+   * - displayOn === 'pc'   : PC에서만 노출
+   * - displayOn === 'mobile': 모바일에서만 노출
+   */
+  const b = sanitizeHomeBanner(banner);
+  const d = String(b.displayOn || 'all').trim().toLowerCase() || 'all';
+  const dev = String(device || 'pc').trim().toLowerCase() || 'pc';
+  if (d === 'pc') return dev === 'pc';
+  if (d === 'mobile') return dev === 'mobile';
   return true;
 }
 
@@ -171,9 +198,9 @@ export function setHomeBanners(banners) {
   }
 }
 
-export function getActiveHomeBanners(atMs = Date.now()) {
+export function getActiveHomeBanners(atMs = Date.now(), device = 'pc') {
   const all = getHomeBanners();
-  return (all || []).filter((b) => isHomeBannerActive(b, atMs));
+  return (all || []).filter((b) => isHomeBannerActive(b, atMs) && isHomeBannerVisibleOnDevice(b, device));
 }
 
 
