@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { storydiveAPI } from '../lib/api';
@@ -18,8 +18,19 @@ const StoryDiveNovelPage = () => {
 
   const [paragraphs, setParagraphs] = useState([]);
   const [hoveredParagraph, setHoveredParagraph] = useState(null);
+  const [tapDiveIndex, setTapDiveIndex] = useState(null); // 모바일: 문단 탭 시 다이브 버튼 표시
   const [focusedParagraphs, setFocusedParagraphs] = useState(new Set([0, 1, 2, 3, 4]));
   const paragraphRefs = useRef([]);
+
+  // ✅ 모바일/터치 환경: hover가 없으므로 "탭으로 다이브 버튼 노출" 모드 사용
+  const useTapToRevealDive = useMemo(() => {
+    try {
+      if (typeof window === 'undefined' || !window.matchMedia) return false;
+      return window.matchMedia('(hover: none), (pointer: coarse)').matches;
+    } catch (_) {
+      return false;
+    }
+  }, []);
 
   // 다이브 상태
   const [isDived, setIsDived] = useState(false);
@@ -27,6 +38,13 @@ const StoryDiveNovelPage = () => {
   const [entryPoint, setEntryPoint] = useState(null);
   const [contextParagraphs, setContextParagraphs] = useState([]); // 마지막 5문장 (하이라이트)
   const [nextHistory, setNextHistory] = useState([]); // NEXT 버튼 히스토리
+
+  // 다이브 시작 후에는 모바일 탭 상태 정리
+  useEffect(() => {
+    if (isDived) {
+      try { setTapDiveIndex(null); } catch (_) {}
+    }
+  }, [isDived]);
 
   // localStorage 키 생성 (SSOT: novelId 기반) - useCallback으로 메모이제이션
   const getStorageKey = useCallback((novelId) => `storydive_session_${novelId}`, []);
@@ -377,6 +395,29 @@ const StoryDiveNovelPage = () => {
     turnMutation.mutate({ mode: 'continue', input: '', action: 'continue' });
   };
 
+  // ✅ 특수 버튼: 사건발생/연애감정 (5턴 쿨다운, 시작 직후 즉시 사용 가능)
+  const handleEventTrigger = () => {
+    if (isGenerating) return;
+    if (eventCooldownRemaining > 0) {
+      toast.info(`${eventCooldownRemaining}턴 후 사용할 수 있어요`);
+      return;
+    }
+    setIsGenerating(true);
+    setNextHistory([]); // 특수 턴도 NEXT 히스토리 초기화
+    turnMutation.mutate({ mode: 'event', input: '', action: 'event' });
+  };
+
+  const handleRomanceTrigger = () => {
+    if (isGenerating) return;
+    if (romanceCooldownRemaining > 0) {
+      toast.info(`${romanceCooldownRemaining}턴 후 사용할 수 있어요`);
+      return;
+    }
+    setIsGenerating(true);
+    setNextHistory([]); // 특수 턴도 NEXT 히스토리 초기화
+    turnMutation.mutate({ mode: 'romance', input: '', action: 'romance' });
+  };
+
   const handleRetry = () => {
     if (isGenerating) return;
     setIsGenerating(true);
@@ -454,6 +495,54 @@ const StoryDiveNovelPage = () => {
   // Active turns
   const activeTurns = session?.turns?.filter(turn => !turn.deleted) || [];
 
+  // ✅ 특수 버튼(사건발생/연애감정) 쿨다운(각각 독립)
+  // - 시작 직후: 즉시 사용 가능
+  // - 각 버튼은 사용 직후부터 5턴 동안 비활성 → -5, -4 ... 카운트다운 표시
+  const specialCooldown = useMemo(() => {
+    try {
+      const active = Array.isArray(activeTurns) ? activeTurns : [];
+      const remFor = (target) => {
+        const t = String(target || '').trim().toLowerCase();
+        if (!t) return 0;
+        let lastIdx = -1;
+        for (let i = active.length - 1; i >= 0; i -= 1) {
+          const m = String(active?.[i]?.mode || '').trim().toLowerCase();
+          if (m === t) {
+            lastIdx = i;
+            break;
+          }
+        }
+        if (lastIdx < 0) return 0;
+        const turnsAfter = (active.length - 1) - lastIdx;
+        const rem = 5 - Number(turnsAfter || 0);
+        return rem > 0 ? rem : 0;
+      };
+      return { event: remFor('event'), romance: remFor('romance') };
+    } catch (_) {
+      return { event: 0, romance: 0 };
+    }
+  }, [activeTurns]);
+  const eventCooldownRemaining = Number(specialCooldown?.event || 0) || 0;
+  const romanceCooldownRemaining = Number(specialCooldown?.romance || 0) || 0;
+  const eventCooldownLabel = eventCooldownRemaining > 0 ? `-${eventCooldownRemaining}턴` : '';
+  const romanceCooldownLabel = romanceCooldownRemaining > 0 ? `-${romanceCooldownRemaining}턴` : '';
+  const eventButtonDisabled = isGenerating || eventCooldownRemaining > 0;
+  const romanceButtonDisabled = isGenerating || romanceCooldownRemaining > 0;
+
+  const prettyModeLabel = useCallback((modeKey) => {
+    const k = String(modeKey || '').trim().toLowerCase();
+    const map = {
+      do: '행동',
+      say: '대사',
+      story: '전개',
+      see: '묘사',
+      continue: '단락',
+      event: '사건발생',
+      romance: '연애감정',
+    };
+    return map[k] || modeKey;
+  }, []);
+
   // 턴이 추가되면 원문 하이라이트 제거 (AI 텍스트에만 하이라이트)
   useEffect(() => {
     if (!isDived || !session?.turns) return;
@@ -505,6 +594,8 @@ const StoryDiveNovelPage = () => {
           <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
             <Button
               variant="ghost"
+              size="icon"
+              aria-label="뒤로가기"
               onClick={() => {
                 const returnTo = sp.get('returnTo');
                 if (returnTo) {
@@ -514,9 +605,9 @@ const StoryDiveNovelPage = () => {
                 navigate(-1);
               }}
               className="text-gray-300 hover:text-white hover:bg-gray-800/50"
+              title="뒤로가기"
             >
-              <ChevronLeft className="w-4 h-4 mr-2" />
-              뒤로가기
+              <ChevronLeft className="w-5 h-5" />
             </Button>
             
             <h1 className="text-lg font-bold text-white truncate max-w-md">
@@ -525,15 +616,23 @@ const StoryDiveNovelPage = () => {
 
             {isDived ? (
               <div className="flex items-center space-x-2">
+                {/* ✅ 현재 턴 수(최근 진행도) */}
+                <span
+                  className="text-[11px] px-2 py-1 rounded-full bg-gray-800 border border-gray-700 text-gray-200"
+                  title="현재까지 생성된 턴 수"
+                >
+                  턴 {activeTurns.length}
+                </span>
                 {/* 초기화 버튼 */}
                 <Button 
                   variant="ghost" 
-                  size="icon" 
                   onClick={handleReset}
                   className="text-gray-300 hover:text-white hover:bg-gray-800/50"
                   title="처음부터 다시 시작"
                 >
                   <RefreshCw className="w-5 h-5" />
+                  <span className="hidden sm:inline text-sm ml-2">모두 초기화</span>
+                  <span className="sm:hidden text-xs ml-2">초기화</span>
                 </Button>
               </div>
             ) : (
@@ -543,7 +642,15 @@ const StoryDiveNovelPage = () => {
         </div>
 
         {/* 메인 콘텐츠 - AI Dungeon 스타일 (버튼들이 문장 흐름 안에) */}
-        <div className="flex-1 overflow-y-auto">
+        <div
+          className="flex-1 overflow-y-auto"
+          // ✅ 모바일: 문단 외 다른 곳 탭 시 다이브 버튼 숨김
+          onClick={() => {
+            if (!useTapToRevealDive) return;
+            if (isDived) return;
+            setTapDiveIndex(null);
+          }}
+        >
           <div className="w-full px-4 sm:px-8 py-8 sm:py-12 max-w-5xl mx-auto min-h-screen">
             {/* 원문 + AI 생성 텍스트를 하나의 flow로 */}
             <div className="space-y-6">
@@ -552,8 +659,9 @@ const StoryDiveNovelPage = () => {
                 .filter((paragraph, idx) => !isDived || idx <= entryPoint)
                 .map((paragraph, idx) => {
                 const isFocused = focusedParagraphs.has(idx);
-                const isHovered = hoveredParagraph === idx && !isDived;
+                const isHovered = !useTapToRevealDive && hoveredParagraph === idx && !isDived;
                 const isContext = isDived && contextParagraphs.includes(idx); // 마지막 5문장 하이라이트
+                const showDiveButton = !isDived && (useTapToRevealDive ? tapDiveIndex === idx : isHovered);
 
                 return (
                   <div
@@ -563,8 +671,14 @@ const StoryDiveNovelPage = () => {
                     className={`relative group transition-all duration-500 ${
                       isDived && idx === entryPoint ? 'animate-in fade-in slide-in-from-top-2 duration-700' : ''
                     }`}
-                    onMouseEnter={() => !isDived && setHoveredParagraph(idx)}
-                    onMouseLeave={() => !isDived && setHoveredParagraph(null)}
+                    onMouseEnter={() => !isDived && !useTapToRevealDive && setHoveredParagraph(idx)}
+                    onMouseLeave={() => !isDived && !useTapToRevealDive && setHoveredParagraph(null)}
+                    onClick={(e) => {
+                      if (!useTapToRevealDive) return;
+                      if (isDived) return;
+                      e.stopPropagation();
+                      setTapDiveIndex((prev) => (prev === idx ? null : idx));
+                    }}
                   >
                     <p
                       className={`text-base sm:text-lg leading-7 sm:leading-relaxed break-words transition-all duration-300 ${
@@ -585,19 +699,37 @@ const StoryDiveNovelPage = () => {
                       {paragraph.text}
                     </p>
 
-                    {isHovered && (
-                      <Button
-                        onClick={() => handleDive(idx)}
-                        disabled={createSessionMutation.isLoading}
-                        className="absolute -right-28 top-1/2 -translate-y-1/2 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-white shadow-lg whitespace-nowrap"
-                      >
-                        {createSessionMutation.isLoading ? (
-                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                        ) : (
-                          <span className="mr-2">🏊</span>
-                        )}
-                        다이브
-                      </Button>
+                    {showDiveButton && (
+                      useTapToRevealDive ? (
+                        <div className="mt-2 flex justify-end">
+                          <Button
+                            onClick={(ev) => { ev.stopPropagation(); handleDive(idx); }}
+                            disabled={createSessionMutation.isLoading}
+                            size="sm"
+                            className="bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-white shadow-lg whitespace-nowrap"
+                          >
+                            {createSessionMutation.isLoading ? (
+                              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                            ) : (
+                              <span className="mr-2">🏊</span>
+                            )}
+                            다이브
+                          </Button>
+                        </div>
+                      ) : (
+                        <Button
+                          onClick={() => handleDive(idx)}
+                          disabled={createSessionMutation.isLoading}
+                          className="absolute -right-28 top-1/2 -translate-y-1/2 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-white shadow-lg whitespace-nowrap"
+                        >
+                          {createSessionMutation.isLoading ? (
+                            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                          ) : (
+                            <span className="mr-2">🏊</span>
+                          )}
+                          다이브
+                        </Button>
+                      )
                     )}
                   </div>
                 );
@@ -618,7 +750,7 @@ const StoryDiveNovelPage = () => {
                       {turn.user && (
                         <div className="bg-gray-800/50 rounded-lg px-4 py-2 border-l-4 border-purple-500">
                           <div className="text-xs text-purple-400 mb-1 uppercase font-semibold">
-                            {turn.mode}
+                            {prettyModeLabel(turn.mode)}
                           </div>
                           <p className="text-gray-300 italic">
                             {turn.mode === 'say' && '"'}
@@ -698,6 +830,26 @@ const StoryDiveNovelPage = () => {
                       className="bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-white px-6 py-3"
                     >
                       ✏️ 내 행동/대사 입력
+                    </Button>
+
+                    <Button
+                      onClick={handleEventTrigger}
+                      disabled={eventButtonDisabled}
+                      variant="outline"
+                      className={`border-none text-white px-6 py-3 ${eventButtonDisabled ? 'bg-gray-800 border-gray-700 text-gray-300' : 'bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-700 hover:to-orange-700'}`}
+                      title={eventCooldownRemaining > 0 ? `${eventCooldownLabel} 후 사용 가능` : '사건발생'}
+                    >
+                      💥 사건발생 {eventCooldownLabel ? `(${eventCooldownLabel})` : ''}
+                    </Button>
+
+                    <Button
+                      onClick={handleRomanceTrigger}
+                      disabled={romanceButtonDisabled}
+                      variant="outline"
+                      className={`border-none text-white px-6 py-3 ${romanceButtonDisabled ? 'bg-gray-800 border-gray-700 text-gray-300' : 'bg-gradient-to-r from-pink-600 to-rose-600 hover:from-pink-700 hover:to-rose-700'}`}
+                      title={romanceCooldownRemaining > 0 ? `${romanceCooldownLabel} 후 사용 가능` : '연애감정'}
+                    >
+                      💘 연애감정 {romanceCooldownLabel ? `(${romanceCooldownLabel})` : ''}
                     </Button>
                     
                     <Button

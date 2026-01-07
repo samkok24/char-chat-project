@@ -14,6 +14,7 @@ from app.models.chat import ChatRoom, ChatMessage
 from app.models.tag import Tag, CharacterTag
 from app.models.user import User
 from app.models.like import CharacterLike
+from app.models.story import Story
 from app.schemas import (
     CharacterCreate, 
     CharacterUpdate, 
@@ -416,7 +417,13 @@ async def get_public_characters(
     query = (
         select(Character)
         .options(joinedload(Character.creator))
+        .outerjoin(Story, Character.origin_story_id == Story.id)
         .where(and_(Character.is_public == True, Character.is_active == True))
+        # ✅ 안전/의도:
+        # - 원작챗 캐릭터(origin_story_id가 있는 캐릭터)는 "원작 스토리"가 공개일 때만 공개 목록에 노출한다.
+        # - 스토리가 비공개인데 캐릭터만 공개로 남아있으면 홈/랭킹/탐색에서 노출되어
+        #   "비공개가 안 되는 것처럼" 보일 수 있으므로, 공개 목록 단계에서 차단한다.
+        .where(or_(Character.origin_story_id.is_(None), Story.is_public == True))
     )
     
     if search:

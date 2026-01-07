@@ -39,10 +39,17 @@ async def build_daily_ranking(
     ]
 
     # origchat characters: origin_story_id not null, chat_count desc
+    # ✅ 안전: 원작 스토리가 비공개면 원작챗 캐릭터도 공개 랭킹에서 제외한다.
     orig_chars = (await db.execute(
         select(Character)
         .options(joinedload(Character.creator))
-        .where(Character.is_public == True, Character.is_active == True, Character.origin_story_id.isnot(None))
+        .join(Story, Character.origin_story_id == Story.id)
+        .where(
+            Character.is_public == True,
+            Character.is_active == True,
+            Character.origin_story_id.isnot(None),
+            Story.is_public == True,
+        )
         .order_by(Character.chat_count.desc(), Character.like_count.desc(), Character.created_at.desc())
         .limit(10)
     )).scalars().all()

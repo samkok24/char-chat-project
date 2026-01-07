@@ -18,7 +18,7 @@ from app.core.database import engine as _engine
 from app.models.character import Character
 from app.models.story import Story
 from app.models.story_chapter import StoryChapter
-from app.models.like import CharacterLike
+from app.models.like import CharacterLike, StoryLike
 from app.models.bookmark import CharacterBookmark
 from app.schemas.user import UserProfileResponse
 
@@ -455,6 +455,47 @@ async def get_liked_characters_for_user(
         .offset(skip)
     )
     return result.scalars().unique().all()
+
+
+async def get_liked_stories_for_user(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    limit: int = 20,
+    skip: int = 0
+) -> List[Story]:
+    """
+    사용자가 좋아요(=선호작)에 추가한 '웹소설' 목록을 반환합니다.
+
+    정책(요구사항 반영):
+    - 스토리가 비공개(Story.is_public=False)로 전환되면, 일반 유저는 '읽기' 영역에서 접근할 수 없으므로
+      선호작 목록에서도 제외합니다(SSOT 일관성).
+    - "웹소설"만 노출(웹툰 제외).
+    - 정렬: 좋아요 추가일 최신순.
+
+    방어적 설계:
+    - 쿼리 실패 시에도 500을 올리지 않고 빈 배열을 반환하여 UI가 깨지지 않게 합니다(로그 남김).
+    """
+    try:
+        result = await db.execute(
+            select(Story)
+            .join(
+                StoryLike,
+                and_(StoryLike.story_id == Story.id, StoryLike.user_id == user_id),
+            )
+            .where(Story.is_public == True)
+            .where(func.coalesce(Story.is_webtoon, False) == False)
+            .options(selectinload(Story.creator))
+            .order_by(StoryLike.created_at.desc().nullslast())
+            .limit(limit)
+            .offset(skip)
+        )
+        return result.scalars().unique().all()
+    except Exception as e:
+        try:
+            logger.warning("[user] get_liked_stories_for_user failed(return empty): %s", e)
+        except Exception:
+            pass
+        return []
 
 async def update_user_model_settings(
     db: AsyncSession, 

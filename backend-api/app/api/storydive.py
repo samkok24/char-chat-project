@@ -19,6 +19,7 @@ from app.models.storydive_session import StoryDiveSession
 from app.models.story import Story
 from app.models.story_chapter import StoryChapter
 from app.models.story_summary import StoryEpisodeSummary
+from app.models.story_extracted_character import StoryExtractedCharacter
 from app.services import novel_service, storydive_ai_service
 from app.services import ai_service
 from app.core.database import redis_client
@@ -28,6 +29,84 @@ logger = logging.getLogger(__name__)
 
 # StoryDive: story 기반 합본 Novel 메타를 저장하는 키(기존 story_cards와 충돌 방지용 프리픽스)
 STORYDIVE_META_KEY = "_storydive_meta"
+
+def _clip_text(v: object, max_len: int) -> str:
+    try:
+        s = str(v or "").strip()
+    except Exception:
+        s = ""
+    if not s:
+        return ""
+    try:
+        ml = int(max_len or 0)
+    except Exception:
+        ml = 0
+    if ml > 0 and len(s) > ml:
+        return s[:ml].rstrip()
+    return s
+
+
+async def _build_story_cards_from_story(
+    db: AsyncSession,
+    story: Story,
+    *,
+    max_characters: int = 12,
+) -> dict:
+    """스토리(연재) 기반 StoryDive용 story_cards를 구성한다(LLM 없이, DB 기반).
+
+    목표:
+    - StoryDive AI 프롬프트에 '플롯/세계관/등장인물'을 넣어 원문(회차 텍스트)만 들어가는 문제를 완화한다.
+    - 운영 비용/지연을 늘리지 않기 위해 동기 LLM 호출은 하지 않는다.
+    """
+    # plot/world: 스토리의 summary/content를 최대한 활용
+    summary = _clip_text(getattr(story, "summary", ""), 1200)
+    content = _clip_text(getattr(story, "content", ""), 2000)
+
+    plot = summary or content
+    world = content if content != plot else ""
+
+    # 장르/태그는 world 상단에 얹어준다(짧고 유용한 메타)
+    try:
+        genre = _clip_text(getattr(story, "genre", ""), 60)
+    except Exception:
+        genre = ""
+    if genre:
+        world = (f"장르: {genre}\n" + (world or "")).strip()
+
+    # characters: extracted_characters 테이블 우선(있으면)
+    characters: list[dict] = []
+    try:
+        rows = await db.execute(
+            select(StoryExtractedCharacter.name, StoryExtractedCharacter.description)
+            .where(StoryExtractedCharacter.story_id == story.id)
+            .order_by(StoryExtractedCharacter.order_index.asc(), StoryExtractedCharacter.created_at.asc())
+            .limit(int(max_characters or 12))
+        )
+        for n, d in (rows.all() or []):
+            name = _clip_text(n, 80)
+            if not name:
+                continue
+            desc = _clip_text(d, 220)
+            characters.append(
+                {
+                    "name": name,
+                    "description": desc,
+                    # storydive_ai_service는 personality를 괄호로 출력하므로 키는 유지하되 비워둔다.
+                    "personality": "",
+                }
+            )
+    except Exception:
+        characters = []
+
+    # locations: 현재 영속화 모델이 없어서 빈 배열 유지(추후 확장 가능)
+    locations: list[dict] = []
+
+    return {
+        "plot": plot,
+        "world": world,
+        "characters": characters,
+        "locations": locations,
+    }
 
 
 # ============= Response Schemas =============
@@ -301,8 +380,8 @@ async def get_recent_storydive_sessions(
     return out
 
 
-def _fallback_episode_lines(text: str, *, lines_per_episode: int = 5, max_line_len: int = 80) -> list[str]:
-    """LLM 요약 실패 시 사용할 방어적 5줄 요약 생성(휴리스틱).
+def _fallback_episode_lines(text: str, *, lines_per_episode: int = 8, max_line_len: int = 100) -> list[str]:
+    """LLM 요약 실패 시 사용할 방어적 회차 요약 생성(휴리스틱).
 
     - 너무 길면 잘라서 5줄로 맞춘다.
     - 의미 품질은 LLM보다 떨어지지만, 최소한 '맥락 덩어리'를 항상 제공해 UX를 깨지지 않게 한다.
@@ -341,12 +420,12 @@ async def _get_story_recap_text(
     story_id: uuid.UUID,
     end_no: int,
     recap_episodes: int = 10,
-    lines_per_episode: int = 5,
+    lines_per_episode: int = 8,
 ) -> str:
-    """이전 맥락(미래 회차 제외)을 회차당 5줄 요약으로 만든 텍스트를 반환한다.
+    """이전 맥락(미래 회차 제외)을 회차당 N줄 요약으로 만든 텍스트를 반환한다.
 
     의도/동작:
-    - 합본 창(from_no..to_no) 이전 회차(=end_no) 구간을 '회차당 5줄' 요약으로 제공해 LLM이 장기 맥락을 잡도록 한다.
+    - 합본 창(from_no..to_no) 이전 회차(=end_no) 구간을 '회차당 N줄' 요약으로 제공해 LLM이 장기 맥락을 잡도록 한다.
     - 요약은 Redis에 캐시하여 1회만 생성되게 한다(데모 안정성/지연 최소화).
     - LLM 실패/Redis 장애 시에도 항상 fallback 텍스트를 반환한다.
     """
@@ -354,7 +433,7 @@ async def _get_story_recap_text(
     if end_no < 1:
         return ""
     recap_episodes = int(recap_episodes or 10)
-    lines_per_episode = int(lines_per_episode or 5)
+    lines_per_episode = int(lines_per_episode or 8)
     if recap_episodes < 1 or lines_per_episode < 1:
         return ""
 
@@ -401,11 +480,11 @@ async def _get_story_recap_text(
 
     system = (
         "당신은 한국어 소설 편집자입니다.\n"
-        "아래는 각 회차의 요약/발췌입니다. 각 회차를 '정확히 5줄'로 요약하세요.\n"
+        f"아래는 각 회차의 요약/발췌입니다. 각 회차를 '정확히 {lines_per_episode}줄'로 요약하세요.\n"
         "출력 형식 규칙:\n"
         "1) 회차마다 첫 줄은 반드시 [N화] 형태로 출력\n"
-        "2) 그 다음 줄부터는 반드시 '- '로 시작하는 요약 5줄만 출력\n"
-        "3) 회차당 총 6줄([N화] + 5줄)만 출력\n"
+        f"2) 그 다음 줄부터는 반드시 '- '로 시작하는 요약 {lines_per_episode}줄만 출력\n"
+        f"3) 회차당 총 {lines_per_episode + 1}줄([N화] + {lines_per_episode}줄)만 출력\n"
         "4) 미래 회차/이후 사건/스포일러 언급 금지(제공된 회차 범위 내에서만)\n"
         "5) 고유명/관계/갈등의 핵심은 유지, 평가/해설 금지, 간결하게\n"
     )
@@ -423,14 +502,14 @@ async def _get_story_recap_text(
         )
         recap_text = (raw or "").strip()
         # 하드 방어: 너무 길면 잘라서 프롬프트 폭주 방지
-        if recap_text and len(recap_text) > 6000:
-            recap_text = recap_text[:6000].rstrip()
+        if recap_text and len(recap_text) > 10000:
+            recap_text = recap_text[:10000].rstrip()
     except Exception as e:
         logger.warning("storydive recap llm failed: %s", e)
         recap_text = ""
 
     if not recap_text:
-        # fallback: 회차당 5줄을 휴리스틱으로 생성
+        # fallback: 회차당 N줄을 휴리스틱으로 생성
         out: list[str] = []
         for no, short_brief, anchor_excerpt, content in items:
             base = (short_brief or "").strip() or (anchor_excerpt or "").strip() or (content or "").strip()
@@ -544,13 +623,20 @@ async def create_storydive_novel_from_story(
         "max_episodes": int(max_episodes),
     }
 
+    # ✅ story_cards 보강: 원문 + 요약/등장인물/세계관까지 포함(LLM 없이, DB 기반)
+    try:
+        base_cards = await _build_story_cards_from_story(db, story)
+    except Exception:
+        base_cards = {"plot": "", "world": "", "characters": [], "locations": []}
+    story_cards = {**(base_cards or {}), STORYDIVE_META_KEY: meta}
+
     novel = await db.get(Novel, novel_uuid)
     if novel:
         novel.title = getattr(story, "title", "Story")
         novel.author = None
         novel.full_text = full_text
         # DB에 메타도 함께 저장(=Redis 유실 대비)
-        novel.story_cards = {STORYDIVE_META_KEY: meta}
+        novel.story_cards = story_cards
         novel.is_active = True
     else:
         novel = Novel(
@@ -559,7 +645,7 @@ async def create_storydive_novel_from_story(
             author=None,
             full_text=full_text,
             # DB에 메타도 함께 저장(=Redis 유실 대비)
-            story_cards={STORYDIVE_META_KEY: meta},
+            story_cards=story_cards,
             is_active=True,
         )
         db.add(novel)
@@ -764,7 +850,7 @@ async def process_turn(
                     story_id=sid,
                     end_no=recap_end,
                     recap_episodes=10,
-                    lines_per_episode=5,
+                    lines_per_episode=8,
                 )
             except Exception:
                 recap_text = ""
@@ -829,6 +915,75 @@ async def process_turn(
             raise HTTPException(status_code=503, detail="AiUnavailable")
     
     # Action 처리
+
+    # --- 특수 버튼(사건발생/연애감정) 쿨다운 계산 ---
+    # 정책:
+    # - 스토리 다이브 시작 직후(특수 턴 없음)에는 즉시 사용 가능
+    # - 각 버튼은 "각각" 5턴 동안 비활성(사건/연애 별도 카운트)
+    # - "턴"은 deleted가 아닌 active_turns 기준으로 카운트(Erase/Retry와 정합)
+    def _cooldown_remaining_for(mode_key: str, active: list[dict], cooldown_turns: int = 5) -> int:
+        try:
+            target = str(mode_key or "").strip().lower()
+            if not target:
+                return 0
+            last_idx = None
+            for i in range(len(active) - 1, -1, -1):
+                m = str(active[i].get("mode", "") or "").strip().lower()
+                if m == target:
+                    last_idx = i
+                    break
+            if last_idx is None:
+                return 0
+            turns_after = (len(active) - 1) - int(last_idx)
+            rem = int(cooldown_turns) - int(turns_after)
+            return rem if rem > 0 else 0
+        except Exception:
+            return 0
+
+    if request.action in ("event", "romance"):
+        rem = _cooldown_remaining_for(request.action, active_turns, cooldown_turns=5)
+        if rem > 0:
+            name = "사건발생" if request.action == "event" else "연애감정"
+            raise HTTPException(status_code=429, detail=f"{name}은(는) 5턴마다 사용할 수 있습니다. {rem}턴 후 다시 시도하세요.")
+
+        # 특수 액션은 input 없이도 동작한다.
+        label = "사건발생" if request.action == "event" else "연애감정"
+        mode_label = request.action  # turn.mode 저장용(event|romance)
+
+        # AI 응답 생성
+        ai_kwargs = {
+            "story_cards": novel.story_cards or {},
+            "context_text": context_text,
+            "history": history,
+            "preferred_model": "claude",
+            "preferred_sub_model": getattr(ai_service, "CLAUDE_MODEL_PRIMARY", "claude-sonnet-4-20250514"),
+            "response_length_pref": getattr(current_user, "response_length_pref", "medium"),
+        }
+        if request.action == "event":
+            ai_response = await _call_storydive_ai(storydive_ai_service.get_event_trigger_response, ai_kwargs, "event")
+        else:
+            ai_response = await _call_storydive_ai(storydive_ai_service.get_romance_emotion_response, ai_kwargs, "romance")
+
+        # 새 턴 추가
+        new_turn = {
+            "mode": mode_label,
+            "user": label,
+            "ai": ai_response,
+            "deleted": False,
+            "created_at": datetime.utcnow().isoformat(),
+        }
+        turns.append(new_turn)
+
+        # DB 업데이트
+        await db.execute(
+            update(StoryDiveSession)
+            .where(StoryDiveSession.id == session_uuid)
+            .values(turns=turns, updated_at=datetime.utcnow())
+        )
+        await db.commit()
+
+        return TurnResponse(ai_response=ai_response, turn_index=len(turns) - 1)
+
     if request.action == "retry":
         # 마지막 AI 응답을 deleted로 마킹하고, 하이라이트된 부분(마지막 5문장)을 기준으로 다시 생성
         if not active_turns:

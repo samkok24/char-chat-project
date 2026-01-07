@@ -72,6 +72,30 @@ async def get_daily_rankings(
             c = by_id.get(str(i["id"]))
             if not c:
                 continue
+            # ✅ 방어적 2차 필터(중요):
+            # - 원작 스토리가 비공개면, 메인(랭킹)에서 원작챗 캐릭터가 노출되면 안 된다.
+            # - build_daily_ranking에서 1차로 Story.is_public 필터를 걸었더라도,
+            #   운영/마이그레이션/캐시 이슈로 누락될 수 있어 응답 단계에서 한 번 더 차단한다.
+            try:
+                if getattr(c, "origin_story_id", None):
+                    os = getattr(c, "origin_story", None)
+                    if os is not None:
+                        if getattr(os, "is_public", True) is not True:
+                            continue
+                    else:
+                        # origin_story가 로드되지 않았을 때는 DB에서 안전 확인(최대 10개 수준이라 부담 적음)
+                        try:
+                            row = (await db.execute(
+                                select(Story.is_public).where(Story.id == c.origin_story_id)
+                            )).first()
+                            is_pub = (row or [None])[0]
+                            if is_pub is not True:
+                                continue
+                        except Exception:
+                            # 확인 실패 시에도 노출을 막는 것이 안전(보수적)
+                            continue
+            except Exception:
+                continue
             result.append({
                 "id": c.id,
                 "name": c.name,

@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 # - Claude는 4.0+만 사용 (3.x 지원 종료 대응)
 # - Anthropic API의 model 값은 "별칭(예: claude-sonnet-4)"이 아니라 "스냅샷 모델명(날짜 포함)"이 안정적이다.
 #   (별칭은 계정/권한/버전에 따라 404(not_found)로 실패하는 사례가 있어 스냅샷을 SSOT로 사용한다.)
-CLAUDE_MODEL_PRIMARY = 'claude-sonnet-4-20250514'
+CLAUDE_MODEL_PRIMARY = 'claude-sonnet-4-5-20250929'
 CLAUDE_MODEL_LEGACY = 'claude-sonnet-4-20250514'  # 후방 호환/폴백(구버전 저장값 대응)
 
 GPT_MODEL_PRIMARY = 'gpt-5'
@@ -93,8 +93,8 @@ def _format_history_block(history: object, *, max_items: int = 20, max_chars: in
             if not txt:
                 continue
             # 지나치게 긴 개별 메시지는 잘라서 포함(토큰 폭주 방지)
-            if len(txt) > 800:
-                txt = txt[:800]
+            if len(txt) > 3000:
+                txt = txt[:3000]
 
             if role in ("user", "human"):
                 label = "사용자"
@@ -1502,13 +1502,22 @@ async def get_claude_completion(
     max_tokens: int = 1800,
     model: str = CLAUDE_MODEL_PRIMARY,
     image_base64: str | None = None,
-    image_mime: str | None = None
+    image_mime: str | None = None,
+    system_prompt: str | None = None,
 ) -> str:
     """
     주어진 프롬프트로 Anthropic Claude 모델을 호출하여 응답을 반환합니다.
     이미지가 있을 경우 Vision 기능을 사용합니다.
     """
     try:
+        # ✅ system prompt(우선순위 높음) 분리 지원
+        # - 기존 구현은 모든 지시/설정을 user prompt 한 덩어리로 보내 drift(규칙 이탈)가 발생할 수 있었다.
+        # - 최소 수정으로 system=... 을 사용하면 캐릭터/규칙 고정력이 강해진다.
+        try:
+            sys_text = (system_prompt or "").strip()
+        except Exception:
+            sys_text = ""
+
         # 메시지 콘텐츠 구성
         if image_base64:
             content = [
@@ -1527,13 +1536,17 @@ async def get_claude_completion(
             ]
         else:
             content = prompt
-            
-        message = await claude_client.messages.create(
-            model=model,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            messages=[{"role": "user", "content": content}],
-        )
+
+        kwargs = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": [{"role": "user", "content": content}],
+        }
+        if sys_text:
+            kwargs["system"] = sys_text
+
+        message = await claude_client.messages.create(**kwargs)
 
         # 1) SDK가 Message 객체를 돌려주는 일반적인 경우
         if hasattr(message, "content"):
@@ -1575,15 +1588,30 @@ async def get_claude_completion(
         print(f"Claude API 호출 중 오류 발생: {e}")
         raise ValueError(f"Claude API 호출에 실패했습니다: {e}")
 
-async def get_claude_completion_stream(prompt: str, temperature: float = 0.7, max_tokens: int = 1024, model: str = CLAUDE_MODEL_PRIMARY):
+async def get_claude_completion_stream(
+    prompt: str,
+    temperature: float = 0.7,
+    max_tokens: int = 1024,
+    model: str = CLAUDE_MODEL_PRIMARY,
+    system_prompt: str | None = None,
+):
     """Claude 모델의 스트리밍 응답을 비동기 제너레이터로 반환합니다."""
     try:
-        async with claude_client.messages.stream(
-            model=model,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            messages=[{"role": "user", "content": prompt}],
-        ) as stream:
+        try:
+            sys_text = (system_prompt or "").strip()
+        except Exception:
+            sys_text = ""
+
+        kwargs = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        if sys_text:
+            kwargs["system"] = sys_text
+
+        async with claude_client.messages.stream(**kwargs) as stream:
             async for text in stream.text_stream:
                 yield text
     except Exception as e:
@@ -1594,7 +1622,8 @@ async def get_openai_completion(
     prompt: str,
     temperature: float = 0.7,
     max_tokens: int = 1024,
-    model: str = "gpt-4o"
+    model: str = "gpt-4o",
+    system_prompt: str | None = None,
 ) -> str:
     """
     주어진 프롬프트로 OpenAI 모델을 호출하여 응답을 반환합니다.
@@ -1675,8 +1704,19 @@ async def get_openai_completion(
                 "- 공통 규칙: 설정/대화 맥락/캐릭터 성격을 임의로 변경하거나 새 설정을 단정해 추가하지 마세요."
             )
 
-        def _build_responses_input(user_prompt: str, *, style_instruction: str | None = None) -> list[dict]:
-            """Responses API의 input 포맷으로 변환한다."""
+        def _build_responses_input(
+            user_prompt: str,
+            *,
+            style_instruction: str | None = None,
+            system_prompt: str | None = None,
+        ) -> list[dict]:
+            """Responses API의 input 포맷으로 변환한다.
+
+            NOTE(중요):
+            - 기존 구현은 prompt 전체를 user 1개로 보내 drift(규칙 이탈)가 생길 수 있었다.
+            - GPT-5(Responses API)에서는 system/developer가 user보다 우선하므로,
+              character/system 프롬프트를 developer로 분리해 고정력을 높인다(최소 수정).
+            """
             try:
                 p = "" if user_prompt is None else str(user_prompt)
             except Exception:
@@ -1689,6 +1729,13 @@ async def get_openai_completion(
             if s:
                 # GPT-5 계열은 developer 지침으로 스타일을 간접 제어(temperature 미지원 대응)
                 items.append({"role": "developer", "content": s})
+            try:
+                sp = (system_prompt or "").strip()
+            except Exception:
+                sp = ""
+            if sp:
+                # ✅ 캐릭터/규칙 고정(우선순위↑): developer로 넣어 user 프롬프트보다 강하게 적용
+                items.append({"role": "developer", "content": sp})
             items.append({"role": "user", "content": p})
             return items
 
@@ -1736,6 +1783,7 @@ async def get_openai_completion(
             temp: float,
             max_out_tokens: int,
             reasoning_effort: str | None,
+            system_prompt: str | None = None,
         ) -> str:
             """SDK에 responses가 없을 때 OpenAI Responses REST API를 직접 호출해 텍스트를 반환한다."""
             import os
@@ -1751,7 +1799,11 @@ async def get_openai_completion(
 
             payload: dict = {
                 "model": model_name,
-                "input": _build_responses_input(user_prompt, style_instruction=_style_instruction_for_temperature(temp)),
+                "input": _build_responses_input(
+                    user_prompt,
+                    style_instruction=_style_instruction_for_temperature(temp),
+                    system_prompt=system_prompt,
+                ),
                 "max_output_tokens": int(max_out_tokens),
             }
             if reasoning_effort:
@@ -1836,9 +1888,17 @@ async def get_openai_completion(
         if _use_responses_api(model):
             effort = _reasoning_effort_for_model(model)
             if _supports_responses_api(client):
+                try:
+                    sp = (system_prompt or "").strip()
+                except Exception:
+                    sp = ""
                 kwargs = {
                     "model": model,
-                    "input": _build_responses_input(prompt, style_instruction=_style_instruction_for_temperature(temperature)),
+                    "input": _build_responses_input(
+                        prompt,
+                        style_instruction=_style_instruction_for_temperature(temperature),
+                        system_prompt=sp or None,
+                    ),
                     "max_output_tokens": max_tokens,
                 }
                 if effort:
@@ -1850,21 +1910,35 @@ async def get_openai_completion(
                 return "OpenAI 응답을 생성했지만 텍스트를 추출하지 못했습니다. 잠시 후 다시 시도해 주세요."
 
             # ✅ SDK 미지원 폴백: REST(/v1/responses)
+            try:
+                sp = (system_prompt or "").strip()
+            except Exception:
+                sp = ""
             extracted = await _responses_rest_create(
                 model_name=model,
                 user_prompt=prompt,
                 temp=temperature,
                 max_out_tokens=max_tokens,
                 reasoning_effort=effort,
+                system_prompt=sp or None,
             )
             if extracted:
                 return extracted
             return "OpenAI 응답을 생성했지만 텍스트를 추출하지 못했습니다. 잠시 후 다시 시도해 주세요."
 
         # GPT-4 계열(기존): Chat Completions 유지
+        try:
+            sp = (system_prompt or "").strip()
+        except Exception:
+            sp = ""
+        messages = [{"role": "user", "content": prompt}]
+        if sp:
+            # ✅ GPT-4 계열: system role 분리로 규칙/캐릭터 고정력 강화
+            messages = [{"role": "system", "content": sp}, {"role": "user", "content": prompt}]
+
         response = await client.chat.completions.create(
             model=model,
-            messages=[{"role": "user", "content": prompt}],
+            messages=messages,
             temperature=temperature,
             max_tokens=max_tokens
         )
@@ -1877,7 +1951,13 @@ async def get_openai_completion(
         print(f"OpenAI API 호출 중 오류 발생: {e}")
         raise ValueError(f"OpenAI API 호출에 실패했습니다: {e}")
 
-async def get_openai_completion_stream(prompt: str, temperature: float = 0.7, max_tokens: int = 1024, model: str = "gpt-4o"):
+async def get_openai_completion_stream(
+    prompt: str,
+    temperature: float = 0.7,
+    max_tokens: int = 1024,
+    model: str = "gpt-4o",
+    system_prompt: str | None = None,
+):
     """OpenAI 모델의 스트리밍 응답을 비동기 제너레이터로 반환합니다."""
     try:
         from openai import AsyncOpenAI
@@ -1937,8 +2017,17 @@ async def get_openai_completion_stream(prompt: str, temperature: float = 0.7, ma
                 "- 공통 규칙: 설정/대화 맥락/캐릭터 성격을 임의로 변경하거나 새 설정을 단정해 추가하지 마세요."
             )
 
-        def _build_responses_input(user_prompt: str, *, style_instruction: str | None = None) -> list[dict]:
-            """Responses API의 input 포맷으로 변환한다."""
+        def _build_responses_input(
+            user_prompt: str,
+            *,
+            style_instruction: str | None = None,
+            system_prompt: str | None = None,
+        ) -> list[dict]:
+            """Responses API의 input 포맷으로 변환한다.
+
+            NOTE:
+            - stream 경로에서도 character/system 프롬프트를 developer로 분리해 drift를 줄인다.
+            """
             try:
                 p = "" if user_prompt is None else str(user_prompt)
             except Exception:
@@ -1950,6 +2039,12 @@ async def get_openai_completion_stream(prompt: str, temperature: float = 0.7, ma
                 s = ""
             if s:
                 items.append({"role": "developer", "content": s})
+            try:
+                sp = (system_prompt or "").strip()
+            except Exception:
+                sp = ""
+            if sp:
+                items.append({"role": "developer", "content": sp})
             items.append({"role": "user", "content": p})
             return items
 
@@ -1960,6 +2055,7 @@ async def get_openai_completion_stream(prompt: str, temperature: float = 0.7, ma
             temp: float,
             max_out_tokens: int,
             reasoning_effort: str | None,
+            system_prompt: str | None = None,
         ):
             """SDK에 responses가 없을 때 OpenAI Responses REST 스트리밍을 SSE로 파싱해 delta를 yield한다."""
             import os
@@ -1976,7 +2072,11 @@ async def get_openai_completion_stream(prompt: str, temperature: float = 0.7, ma
 
             payload: dict = {
                 "model": model_name,
-                "input": _build_responses_input(user_prompt, style_instruction=_style_instruction_for_temperature(temp)),
+                "input": _build_responses_input(
+                    user_prompt,
+                    style_instruction=_style_instruction_for_temperature(temp),
+                    system_prompt=system_prompt,
+                ),
                 "max_output_tokens": int(max_out_tokens),
                 "stream": True,
             }
@@ -2044,9 +2144,17 @@ async def get_openai_completion_stream(prompt: str, temperature: float = 0.7, ma
         if _use_responses_api(model):
             effort = _reasoning_effort_for_model(model)
             if _supports_responses_api(client):
+                try:
+                    sp = (system_prompt or "").strip()
+                except Exception:
+                    sp = ""
                 kwargs = {
                     "model": model,
-                    "input": _build_responses_input(prompt, style_instruction=_style_instruction_for_temperature(temperature)),
+                    "input": _build_responses_input(
+                        prompt,
+                        style_instruction=_style_instruction_for_temperature(temperature),
+                        system_prompt=sp or None,
+                    ),
                     "max_output_tokens": max_tokens,
                     "stream": True,
                 }
@@ -2071,20 +2179,32 @@ async def get_openai_completion_stream(prompt: str, temperature: float = 0.7, ma
                 return
 
             # ✅ SDK 미지원 폴백: REST(/v1/responses) SSE 스트리밍
+            try:
+                sp = (system_prompt or "").strip()
+            except Exception:
+                sp = ""
             async for delta in _responses_rest_stream(
                 model_name=model,
                 user_prompt=prompt,
                 temp=temperature,
                 max_out_tokens=max_tokens,
                 reasoning_effort=effort,
+                system_prompt=sp or None,
             ):
                 yield delta
             return
 
         # GPT-4 계열(기존): Chat Completions 스트리밍 유지
+        try:
+            sp = (system_prompt or "").strip()
+        except Exception:
+            sp = ""
+        messages = [{"role": "user", "content": prompt}]
+        if sp:
+            messages = [{"role": "system", "content": sp}, {"role": "user", "content": prompt}]
         stream = await client.chat.completions.create(
             model=model,
-            messages=[{"role": "user", "content": prompt}],
+            messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
             stream=True
@@ -2135,7 +2255,7 @@ async def get_ai_completion_stream(
 ) -> AsyncGenerator[str, None]:
     """지정된 AI 모델의 스트리밍 응답을 반환하는 통합 함수입니다."""
     if model == "gemini":
-        model_name = sub_model or 'gemini-1.5-pro'
+        model_name = sub_model or 'gemini-2.5-pro'
         async for chunk in get_gemini_completion_stream(prompt, temperature, max_tokens, model=model_name):
             yield chunk
     elif model == "claude":
@@ -2198,9 +2318,9 @@ async def get_ai_chat_response(
 
     # ✅ 최근 대화 히스토리 반영(방어적)
     # - 원작챗/일반챗 등에서 history를 넘겨도 무시되면 '망각/설정 붕괴'가 발생한다.
-    # ✅ history 최대 개수는 50까지 허용하되, max_chars(4000)로 토큰 폭주를 1차 방어한다.
-    # - 일반챗은 최근 50개 윈도우 슬라이싱을 의도하고 있어 max_items도 50으로 정합을 맞춘다.
-    history_block = _format_history_block(history, max_items=50, max_chars=4000)
+    # ✅ history 최대 개수는 100까지 허용하되, max_chars(12000)로 토큰 폭주를 1차 방어한다.
+    # - 원작챗은 최신 맥락이 중요해 히스토리 fetch limit를 80으로 올려둔 상태라, max_items도 80으로 정합을 맞춘다.
+    history_block = _format_history_block(history, max_items=100, max_chars=12000)
 
     # ✅ 응답 길이 선호도 프롬프트 지침(체감 강화)
     # - 기존에는 max_tokens(상한)만 조정되어 "길게" 체감이 약할 수 있다.
@@ -2232,8 +2352,11 @@ async def get_ai_chat_response(
             "- 출력은 자연스러운 대화만(불릿/라벨/번호/헤더 금지).\n"
         )
 
-    # 프롬프트와 사용자 메시지 결합(+히스토리 + 의도 블록)
-    full_prompt = f"{character_prompt}{history_block}{intent_block}{length_block}\n\n사용자 메시지: {user_message}\n\n위 설정에 맞게 자연스럽게 응답하세요 (대화만 출력, 라벨 없이):"
+    # ✅ 프롬프트 구성(중요)
+    # - Gemini는 단일 prompt 문자열로 호출하므로 기존처럼 합친 full_prompt를 유지한다.
+    # - Claude/GPT는 system(developer)/user 역할 분리로 "캐릭터/규칙" 우선순위를 높인다.
+    user_prompt = f"{history_block}{intent_block}{length_block}\n\n사용자 메시지: {user_message}\n\n위 설정에 맞게 자연스럽게 응답하세요 (대화만 출력, 라벨 없이):"
+    full_prompt = f"{character_prompt}{user_prompt}"
 
     # 응답 길이 선호도 → 최대 토큰 비율 조정 (중간 기준 1.0)
     #
@@ -2311,7 +2434,13 @@ async def get_ai_chat_response(
         except Exception:
             sub = ""
         model_name = claude_mapping.get(sub, claude_default)
-        return await get_claude_completion(full_prompt, temperature=t, model=model_name, max_tokens=max_tokens)
+        return await get_claude_completion(
+            user_prompt,
+            temperature=t,
+            model=model_name,
+            max_tokens=max_tokens,
+            system_prompt=character_prompt,
+        )
         
     elif preferred_model == 'gpt':
         # NOTE:
@@ -2329,7 +2458,13 @@ async def get_ai_chat_response(
         else:
             # 알 수 없는 값은 기존 안정 기본값으로 폴백
             model_name = 'gpt-4o'
-        return await get_openai_completion(full_prompt, temperature=t, model=model_name, max_tokens=max_tokens)
+        return await get_openai_completion(
+            user_prompt,
+            temperature=t,
+            model=model_name,
+            max_tokens=max_tokens,
+            system_prompt=character_prompt,
+        )
         
     else:  # argo (기본값)
         # ARGO 모델은 향후 커스텀 API 구현 예정, 현재는 Gemini로 대체

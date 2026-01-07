@@ -1,7 +1,7 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-import { Plus, Save, Trash2, ArrowUp, ArrowDown, ExternalLink, Image as ImageIcon, Settings, X, UserPlus, Copy } from 'lucide-react';
+import { Plus, Save, Trash2, ArrowUp, ArrowDown, ExternalLink, Image as ImageIcon, Settings, X, UserPlus, Copy, GripVertical, ListOrdered } from 'lucide-react';
 
 import AppLayout from '../components/layout/AppLayout';
 import { Button } from '../components/ui/button';
@@ -13,6 +13,7 @@ import { Badge } from '../components/ui/badge';
 import { Avatar, AvatarFallback, AvatarImage } from '../components/ui/avatar';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '../components/ui/dialog';
+import { Textarea } from '../components/ui/textarea';
 import { useAuth } from '../contexts/AuthContext';
 import { charactersAPI, storiesAPI, tagsAPI, usersAPI, metricsAPI, cmsAPI, filesAPI } from '../lib/api';
 import { resolveImageUrl } from '../lib/images';
@@ -35,6 +36,15 @@ import {
   sanitizeHomeSlot,
   isSystemHomeSlotId,
 } from '../lib/cmsSlots';
+import {
+  CHARACTER_TAG_DISPLAY_STORAGE_KEY,
+  CHARACTER_TAG_DISPLAY_CHANGED_EVENT,
+  DEFAULT_CHARACTER_TAG_DISPLAY,
+  getCharacterTagDisplay,
+  isDefaultCharacterTagDisplayConfig,
+  sanitizeCharacterTagDisplay,
+  setCharacterTagDisplay,
+} from '../lib/cmsTagDisplay';
 
 /**
  * /cms 관리자 페이지 (UI만)
@@ -186,10 +196,24 @@ const CMSPage = () => {
   const { user } = useAuth();
   const isAdmin = !!user?.is_admin;
 
-  const [activeTab, setActiveTab] = React.useState('banners'); // users | banners | slots | aiModels
+  const [activeTab, setActiveTab] = React.useState('banners'); // users | banners | slots | tags | aiModels
   const [banners, setBannersState] = React.useState(() => getHomeBanners());
   const [slots, setSlotsState] = React.useState(() => getHomeSlots());
+  const [tagDisplay, setTagDisplayState] = React.useState(() => getCharacterTagDisplay());
   const [saving, setSaving] = React.useState(false);
+
+  // ===== 태그 관리 탭(관리자) =====
+  const [tagListQuery, setTagListQuery] = React.useState('');
+  const [newTagName, setNewTagName] = React.useState('');
+  const [newTagSlug, setNewTagSlug] = React.useState('');
+  const [creatingTag, setCreatingTag] = React.useState(false);
+  const [deletingTagId, setDeletingTagId] = React.useState(null);
+  // ✅ 태그 순서 편집 모달(ISBN 입력 느낌)
+  const [tagOrderModalOpen, setTagOrderModalOpen] = React.useState(false);
+  const [tagOrderMode, setTagOrderMode] = React.useState('text'); // text | drag
+  const [tagOrderText, setTagOrderText] = React.useState('');
+  const [tagOrderErrors, setTagOrderErrors] = React.useState([]); // [{ line, value, message }]
+  const tagOrderDragFromRef = React.useRef(null);
 
   // ===== 회원관리 탭 (관리자) =====
   const USERS_PAGE_SIZE = 100;
@@ -262,9 +286,10 @@ const CMSPage = () => {
     let active = true;
     const loadFromServer = async () => {
       try {
-        const [bRes, sRes] = await Promise.all([
+        const [bRes, sRes, tRes] = await Promise.all([
           cmsAPI.getHomeBanners().catch((e) => ({ __err: e })),
           cmsAPI.getHomeSlots().catch((e) => ({ __err: e })),
+          cmsAPI.getCharacterTagDisplay().catch((e) => ({ __err: e })),
         ]);
         if (!active) return;
 
@@ -314,6 +339,27 @@ const CMSPage = () => {
           }
         } catch (e) {
           try { console.warn('[CMSPage] apply server slots failed:', e); } catch (_) {}
+        }
+
+        // 태그 노출/순서(CMS)
+        try {
+          const serverTagDisplay = (tRes && tRes.data && typeof tRes.data === 'object') ? tRes.data : null;
+          if (serverTagDisplay) {
+            // ✅ 안전 전환: 서버가 "미설정 기본값"이고 로컬에 값이 있으면, 관리자 로컬을 우선 유지한다.
+            let skipApply = false;
+            try {
+              const hasLocal = !!localStorage.getItem(CHARACTER_TAG_DISPLAY_STORAGE_KEY);
+              const looksDefault = isDefaultCharacterTagDisplayConfig(serverTagDisplay);
+              if (hasLocal && looksDefault) skipApply = true;
+            } catch (_) {}
+            if (!skipApply) {
+              const saved = setCharacterTagDisplay(serverTagDisplay);
+              if (saved?.ok) setTagDisplayState(saved.item);
+              else setTagDisplayState(sanitizeCharacterTagDisplay(serverTagDisplay));
+            }
+          }
+        } catch (e) {
+          try { console.warn('[CMSPage] apply server tag display failed:', e); } catch (_) {}
         }
       } catch (e) {
         // 전체 실패는 로컬 폴백으로 유지 (운영 안정)
@@ -389,6 +435,50 @@ const CMSPage = () => {
     };
   }, []);
 
+  // 태그 관리 탭: 탭/창 동기화(방어적)
+  React.useEffect(() => {
+    const refreshTagDisplay = () => {
+      try { setTagDisplayState(getCharacterTagDisplay()); } catch (_) {}
+    };
+    const onCustom = () => refreshTagDisplay();
+    const onStorage = (e) => {
+      try {
+        if (!e) return;
+        if (e.key === CHARACTER_TAG_DISPLAY_STORAGE_KEY) refreshTagDisplay();
+      } catch (_) {}
+    };
+    try { window.addEventListener(CHARACTER_TAG_DISPLAY_CHANGED_EVENT, onCustom); } catch (_) {}
+    try { window.addEventListener('storage', onStorage); } catch (_) {}
+    return () => {
+      try { window.removeEventListener(CHARACTER_TAG_DISPLAY_CHANGED_EVENT, onCustom); } catch (_) {}
+      try { window.removeEventListener('storage', onStorage); } catch (_) {}
+    };
+  }, []);
+
+  /**
+   * 태그 목록 조회(공통).
+   * - 콘텐츠 선택 모달 / 태그 관리 탭에서 공용으로 사용한다(SSOT/DRY).
+   */
+  const fetchTagsForCMS = React.useCallback(async () => {
+    const res = await tagsAPI.getTags();
+    const raw = res?.data;
+    const arr = Array.isArray(raw)
+      ? raw
+      : Array.isArray(raw?.tags)
+        ? raw.tags
+        : Array.isArray(raw?.items)
+          ? raw.items
+          : [];
+
+    return (arr || [])
+      .map((t) => ({
+        id: t?.id,
+        slug: String(t?.slug || t?.name || '').trim(),
+        name: String(t?.name || t?.slug || '').trim(),
+      }))
+      .filter((t) => !!t.slug);
+  }, []);
+
   // 태그 목록 로드(콘텐츠 선택 모달용) - 베스트 에포트
   React.useEffect(() => {
     if (!isAdmin) return;
@@ -396,25 +486,9 @@ const CMSPage = () => {
     const load = async () => {
       setTagsLoading(true);
       try {
-        const res = await tagsAPI.getTags();
-        const raw = res?.data;
-        const arr = Array.isArray(raw)
-          ? raw
-          : Array.isArray(raw?.tags)
-            ? raw.tags
-            : Array.isArray(raw?.items)
-              ? raw.items
-              : [];
-
-        const normalized = (arr || [])
-          .map((t) => ({
-            slug: String(t?.slug || t?.name || '').trim(),
-            name: String(t?.name || t?.slug || '').trim(),
-          }))
-          .filter((t) => !!t.slug);
-
+        const normalized = await fetchTagsForCMS();
         if (!active) return;
-        setAllTags(normalized);
+        setAllTags(normalized || []);
       } catch (e) {
         try { console.error('[CMSPage] tagsAPI.getTags failed:', e); } catch (_) {}
         if (active) setAllTags([]);
@@ -424,7 +498,7 @@ const CMSPage = () => {
     };
     load();
     return () => { active = false; };
-  }, [isAdmin]);
+  }, [isAdmin, fetchTagsForCMS]);
 
   // 회원 목록 로드(관리자) - activeTab/usersPage 변화에 따라
   React.useEffect(() => {
@@ -1099,6 +1173,376 @@ const CMSPage = () => {
     toast.success('기본값으로 초기화되었습니다. 저장 버튼을 눌러 반영하세요.');
   };
 
+  // ===== 태그 관리(노출/순서 + CRUD) =====
+  const _safeSlug = (v) => {
+    try { return String(v || '').trim(); } catch (_) { return ''; }
+  };
+  const _splitLines = (text) => {
+    try {
+      return String(text || '')
+        .split(/\r?\n/)
+        .map((s) => String(s || '').trim())
+        .filter(Boolean);
+    } catch (_) {
+      return [];
+    }
+  };
+
+  /**
+   * 태그 이름 조회용 Map (slug -> name)
+   * - 태그 순서 편집(오타 검증) / UI 표시에서 공통으로 사용한다.
+   */
+  const tagNameBySlug = React.useMemo(() => {
+    const m = new Map();
+    try {
+      (Array.isArray(allTags) ? allTags : []).forEach((t) => {
+        const slug = String(t?.slug || '').trim();
+        if (!slug) return;
+        const name = String(t?.name || t?.slug || '').trim();
+        m.set(slug, name || slug);
+      });
+    } catch (_) {}
+    return m;
+  }, [allTags]);
+
+  const addPrioritySlug = (slugLike) => {
+    const slug = _safeSlug(slugLike);
+    if (!slug) return;
+    setTagDisplayState((prev) => {
+      const cur = sanitizeCharacterTagDisplay(prev);
+      const seed = (Array.isArray(cur.prioritySlugs) && cur.prioritySlugs.length)
+        ? cur.prioritySlugs
+        : (Array.isArray(DEFAULT_CHARACTER_TAG_DISPLAY?.prioritySlugs) ? DEFAULT_CHARACTER_TAG_DISPLAY.prioritySlugs : []);
+      const nextPriority = [...(seed || []).filter((s) => _safeSlug(s) !== slug), slug];
+      const nextHidden = (cur.hiddenSlugs || []).filter((s) => _safeSlug(s) !== slug);
+      return sanitizeCharacterTagDisplay({ ...cur, prioritySlugs: nextPriority, hiddenSlugs: nextHidden });
+    });
+  };
+
+  const removePrioritySlug = (slugLike) => {
+    const slug = _safeSlug(slugLike);
+    if (!slug) return;
+    setTagDisplayState((prev) => {
+      const cur = sanitizeCharacterTagDisplay(prev);
+      const seed = (Array.isArray(cur.prioritySlugs) && cur.prioritySlugs.length)
+        ? cur.prioritySlugs
+        : (Array.isArray(DEFAULT_CHARACTER_TAG_DISPLAY?.prioritySlugs) ? DEFAULT_CHARACTER_TAG_DISPLAY.prioritySlugs : []);
+      const nextPriority = (seed || []).filter((s) => _safeSlug(s) !== slug);
+      return sanitizeCharacterTagDisplay({ ...cur, prioritySlugs: nextPriority });
+    });
+  };
+
+  const movePrioritySlug = (slugLike, dir) => {
+    const slug = _safeSlug(slugLike);
+    if (!slug) return;
+    setTagDisplayState((prev) => {
+      const cur = sanitizeCharacterTagDisplay(prev);
+      const seed = (Array.isArray(cur.prioritySlugs) && cur.prioritySlugs.length)
+        ? cur.prioritySlugs
+        : (Array.isArray(DEFAULT_CHARACTER_TAG_DISPLAY?.prioritySlugs) ? DEFAULT_CHARACTER_TAG_DISPLAY.prioritySlugs : []);
+      const arr = Array.isArray(seed) ? [...seed] : [];
+      const idx = arr.findIndex((s) => _safeSlug(s) === slug);
+      if (idx < 0) return cur;
+      const nextIdx = dir === 'up' ? idx - 1 : idx + 1;
+      if (nextIdx < 0 || nextIdx >= arr.length) return cur;
+      const tmp = arr[idx];
+      arr[idx] = arr[nextIdx];
+      arr[nextIdx] = tmp;
+      return sanitizeCharacterTagDisplay({ ...cur, prioritySlugs: arr });
+    });
+  };
+
+  // 태그 순서 편집 모달(멀티라인 텍스트 + 드래그)에서 현재 노출 순서를 만든다.
+  const buildEffectiveVisibleTagOrder = React.useCallback(() => {
+    const cur = sanitizeCharacterTagDisplay(tagDisplay);
+    const hiddenSet = new Set((cur.hiddenSlugs || []).map(_safeSlug).filter(Boolean));
+
+    // 1) 우선순위(없으면 기본값)
+    const seed = (Array.isArray(cur.prioritySlugs) && cur.prioritySlugs.length)
+      ? cur.prioritySlugs
+      : (Array.isArray(DEFAULT_CHARACTER_TAG_DISPLAY?.prioritySlugs) ? DEFAULT_CHARACTER_TAG_DISPLAY.prioritySlugs : []);
+
+    const out = [];
+    const seen = new Set();
+
+    const push = (slugLike) => {
+      const s = _safeSlug(slugLike);
+      if (!s) return;
+      if (s.startsWith('cover:')) return;
+      if (hiddenSet.has(s)) return;
+      if (!tagNameBySlug.has(s)) return; // 존재하는 태그만
+      if (seen.has(s)) return;
+      seen.add(s);
+      out.push(s);
+    };
+
+    // 우선순위 먼저
+    (seed || []).forEach(push);
+    // 그 다음 전체 태그(기본은 가나다로 내려옴)
+    (Array.isArray(allTags) ? allTags : []).forEach((t) => push(t?.slug));
+
+    return out;
+  }, [tagDisplay, allTags, tagNameBySlug]);
+
+  const tagSlugByLower = React.useMemo(() => {
+    const m = new Map();
+    try {
+      (Array.isArray(allTags) ? allTags : []).forEach((t) => {
+        const slug = _safeSlug(t?.slug);
+        if (!slug) return;
+        if (slug.startsWith('cover:')) return;
+        m.set(slug.toLowerCase(), slug);
+      });
+    } catch (_) {}
+    return m;
+  }, [allTags]);
+
+  /**
+   * 태그 순서 텍스트 입력 유효성 검증(오타 방지).
+   *
+   * 규칙:
+   * - 한 줄 = 태그 slug
+   * - 존재하지 않는 태그/중복/cover:* 는 오류
+   * - 대소문자만 다른 경우(SF/sf)는 자동으로 서버 slug로 정규화
+   */
+  const validateTagOrderText = React.useCallback((text) => {
+    const lines = String(text || '').split(/\r?\n/);
+    const errors = [];
+    const slugs = [];
+    const seen = new Set();
+
+    for (let i = 0; i < lines.length; i += 1) {
+      const raw = String(lines[i] || '').trim();
+      if (!raw) continue;
+      if (raw.startsWith('cover:')) {
+        errors.push({ line: i + 1, value: raw, message: 'cover: 태그는 사용할 수 없습니다.' });
+        continue;
+      }
+      const canonical = tagSlugByLower.get(raw.toLowerCase()) || null;
+      if (!canonical) {
+        errors.push({ line: i + 1, value: raw, message: '존재하지 않는 태그입니다.' });
+        continue;
+      }
+      if (seen.has(canonical)) {
+        errors.push({ line: i + 1, value: raw, message: `중복 태그입니다. (${canonical})` });
+        continue;
+      }
+      seen.add(canonical);
+      slugs.push(canonical);
+    }
+
+    return { slugs, errors };
+  }, [tagSlugByLower]);
+
+  React.useEffect(() => {
+    if (!tagOrderModalOpen) return;
+    try {
+      const v = validateTagOrderText(tagOrderText);
+      setTagOrderErrors(v.errors || []);
+    } catch (_) {
+      setTagOrderErrors([]);
+    }
+  }, [tagOrderModalOpen, tagOrderText, validateTagOrderText]);
+
+  const openTagOrderModal = () => {
+    // 태그 목록이 없으면(로드 지연) 먼저 불러오게 유도
+    if (!Array.isArray(allTags) || allTags.length === 0) {
+      toast.error('태그 목록을 불러오는 중입니다. 잠시 후 다시 시도해주세요.');
+      return;
+    }
+    const initial = buildEffectiveVisibleTagOrder();
+    setTagOrderMode('text');
+    setTagOrderText(initial.join('\n'));
+    setTagOrderModalOpen(true);
+  };
+
+  const applyTagOrderModal = () => {
+    const { slugs, errors } = validateTagOrderText(tagOrderText);
+    if ((errors || []).length > 0) {
+      toast.error(`태그 순서에 오류가 있습니다. (${errors.length}개)`);
+      return;
+    }
+
+    // 숨김과 충돌 방지: priority에 있으면 hidden에서 제거(기존 UX와 동일)
+    const slugSet = new Set((slugs || []).map(_safeSlug).filter(Boolean));
+    setTagDisplayState((prev) => {
+      const cur = sanitizeCharacterTagDisplay(prev);
+      const nextHidden = (cur.hiddenSlugs || []).filter((s) => !slugSet.has(_safeSlug(s)));
+      return sanitizeCharacterTagDisplay({ ...cur, prioritySlugs: slugs, hiddenSlugs: nextHidden });
+    });
+
+    toast.success('순서가 적용되었습니다. 상단 “저장”을 누르면 전 유저에게 반영됩니다.');
+    setTagOrderModalOpen(false);
+  };
+
+  const addHiddenSlug = (slugLike) => {
+    const slug = _safeSlug(slugLike);
+    if (!slug) return;
+    setTagDisplayState((prev) => {
+      const cur = sanitizeCharacterTagDisplay(prev);
+      const nextHidden = [...(cur.hiddenSlugs || []).filter((s) => _safeSlug(s) !== slug), slug];
+      const nextPriority = (cur.prioritySlugs || []).filter((s) => _safeSlug(s) !== slug);
+      return sanitizeCharacterTagDisplay({ ...cur, hiddenSlugs: nextHidden, prioritySlugs: nextPriority });
+    });
+  };
+
+  const removeHiddenSlug = (slugLike) => {
+    const slug = _safeSlug(slugLike);
+    if (!slug) return;
+    setTagDisplayState((prev) => {
+      const cur = sanitizeCharacterTagDisplay(prev);
+      const nextHidden = (cur.hiddenSlugs || []).filter((s) => _safeSlug(s) !== slug);
+      return sanitizeCharacterTagDisplay({ ...cur, hiddenSlugs: nextHidden });
+    });
+  };
+
+  const resetTagDisplayToDefault = () => {
+    if (!window.confirm('기본값으로 초기화하시겠습니까? (현재 설정이 사라집니다)')) return;
+    setTagDisplayState(sanitizeCharacterTagDisplay(DEFAULT_CHARACTER_TAG_DISPLAY));
+    toast.success('기본값으로 초기화되었습니다. 저장 버튼을 눌러 반영하세요.');
+  };
+
+  const saveTagDisplayAll = async () => {
+    if (saving) return;
+    setSaving(true);
+    try {
+      const payload = sanitizeCharacterTagDisplay(tagDisplay);
+      const toSend = {
+        prioritySlugs: Array.isArray(payload?.prioritySlugs) ? payload.prioritySlugs : [],
+        hiddenSlugs: Array.isArray(payload?.hiddenSlugs) ? payload.hiddenSlugs : [],
+      };
+
+      let savedToServer = false;
+      let serverItem = null;
+      let serverSaveError = null;
+      try {
+        const resp = await cmsAPI.putCharacterTagDisplay(toSend);
+        serverItem = (resp && resp.data && typeof resp.data === 'object') ? resp.data : null;
+        savedToServer = !!serverItem;
+      } catch (e) {
+        console.error('[CMSPage] putCharacterTagDisplay failed:', e);
+        serverSaveError = e;
+        savedToServer = false;
+      }
+
+      // 서버 저장이 실패해도, 로컬 캐시는 시도(작업물 보호)
+      const toPersist = serverItem || toSend;
+      const saved = setCharacterTagDisplay(toPersist);
+      if (saved?.ok) setTagDisplayState(saved.item);
+
+      if (savedToServer) toast.success('저장 완료! (전 유저에게 반영됩니다)');
+      else {
+        let detail = '';
+        try {
+          const status = serverSaveError?.response?.status;
+          const serverDetail = serverSaveError?.response?.data?.detail;
+          const msg = serverDetail || serverSaveError?.message || '';
+          if (status) detail = ` (HTTP ${status}${msg ? `: ${msg}` : ''})`;
+          else if (msg) detail = ` (${msg})`;
+        } catch (_) {}
+        toast.error(`서버 저장에 실패했습니다. 현재는 로컬에만 저장되었습니다. (유저 전체 반영 안 됨)${detail}`);
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleCreateTag = async () => {
+    if (creatingTag) return;
+    const name = String(newTagName || '').trim();
+    const slug = String(newTagSlug || '').trim() || name;
+    if (!name) {
+      toast.error('태그명을 입력하세요.');
+      return;
+    }
+    if (!slug) {
+      toast.error('태그 슬러그를 입력하세요.');
+      return;
+    }
+    if (slug.startsWith('cover:')) {
+      toast.error('cover: 로 시작하는 태그는 사용할 수 없습니다.');
+      return;
+    }
+
+    setCreatingTag(true);
+    try {
+      await tagsAPI.createTag({ name, slug });
+      toast.success('태그가 추가되었습니다.');
+      setNewTagName('');
+      setNewTagSlug('');
+      try {
+        const normalized = await fetchTagsForCMS();
+        setAllTags(normalized || []);
+      } catch (e) {
+        try { console.error('[CMSPage] reload tags after create failed:', e); } catch (_) {}
+      }
+    } catch (e) {
+      let detail = '';
+      try {
+        const status = e?.response?.status;
+        const serverDetail = e?.response?.data?.detail;
+        const msg = serverDetail || e?.message || '';
+        if (status) detail = ` (HTTP ${status}${msg ? `: ${msg}` : ''})`;
+        else if (msg) detail = ` (${msg})`;
+      } catch (_) {}
+      toast.error(`태그 추가에 실패했습니다.${detail}`);
+    } finally {
+      setCreatingTag(false);
+    }
+  };
+
+  const handleDeleteTag = async (t) => {
+    const id = t?.id;
+    const slug = String(t?.slug || '').trim();
+    const name = String(t?.name || '').trim() || slug;
+    if (!id) {
+      toast.error('태그 ID가 없어 삭제할 수 없습니다.');
+      return;
+    }
+    if (!window.confirm(`"${name}" 태그를 삭제하시겠습니까?\n\n주의: 사용 중인 태그/기본 태그는 삭제할 수 없습니다.`)) return;
+    if (deletingTagId) return;
+
+    setDeletingTagId(String(id));
+    try {
+      await tagsAPI.deleteTag(id);
+      toast.success('태그가 삭제되었습니다.');
+
+      // 표시 설정에서도 제거(참조 정리)
+      try {
+        if (slug) {
+          setTagDisplayState((prev) => {
+            const cur = sanitizeCharacterTagDisplay(prev);
+            return sanitizeCharacterTagDisplay({
+              ...cur,
+              prioritySlugs: (cur.prioritySlugs || []).filter((s) => _safeSlug(s) !== slug),
+              hiddenSlugs: (cur.hiddenSlugs || []).filter((s) => _safeSlug(s) !== slug),
+            });
+          });
+        }
+      } catch (_) {}
+
+      // 목록 갱신
+      try {
+        const normalized = await fetchTagsForCMS();
+        setAllTags(normalized || []);
+      } catch (e) {
+        try { console.error('[CMSPage] reload tags after delete failed:', e); } catch (_) {}
+      }
+    } catch (e) {
+      let detail = '';
+      try {
+        const status = e?.response?.status;
+        const serverDetail = e?.response?.data?.detail;
+        const msg = serverDetail || e?.message || '';
+        if (status) detail = ` (HTTP ${status}${msg ? `: ${msg}` : ''})`;
+        else if (msg) detail = ` (${msg})`;
+      } catch (_) {}
+      toast.error(`태그 삭제에 실패했습니다.${detail}`);
+    } finally {
+      setDeletingTagId(null);
+    }
+  };
+
   const refreshUsers = React.useCallback(() => {
     // activeTab/usersPage useEffect가 실제 로드를 수행한다.
     setUsersReloadKey((k) => (Number(k || 0) + 1));
@@ -1106,8 +1550,45 @@ const CMSPage = () => {
 
   const isBannersTab = activeTab === 'banners';
   const isSlotsTab = activeTab === 'slots';
+  const isTagsTab = activeTab === 'tags';
   const isAiModelsTab = activeTab === 'aiModels';
   const isUsersTab = activeTab === 'users';
+
+  const filteredTagsForManage = React.useMemo(() => {
+    const q = String(tagListQuery || '').trim().toLowerCase();
+    const arr = Array.isArray(allTags) ? allTags : [];
+    if (!q) return arr;
+    return arr.filter((t) => {
+      const slug = String(t?.slug || '').toLowerCase();
+      const name = String(t?.name || '').toLowerCase();
+      return slug.includes(q) || name.includes(q);
+    });
+  }, [allTags, tagListQuery]);
+
+  const effectivePrioritySlugsForDisplay = React.useMemo(() => {
+    try {
+      const cur = sanitizeCharacterTagDisplay(tagDisplay);
+      const hiddenSet = new Set((cur.hiddenSlugs || []).map((s) => _safeSlug(s)).filter(Boolean));
+      const seed = (Array.isArray(cur.prioritySlugs) && cur.prioritySlugs.length)
+        ? cur.prioritySlugs
+        : (Array.isArray(DEFAULT_CHARACTER_TAG_DISPLAY?.prioritySlugs) ? DEFAULT_CHARACTER_TAG_DISPLAY.prioritySlugs : []);
+      const out = [];
+      const seen = new Set();
+      for (const it of (seed || [])) {
+        const slug = _safeSlug(it);
+        if (!slug) continue;
+        if (slug.startsWith('cover:')) continue;
+        if (hiddenSet.has(slug)) continue;
+        if (!tagNameBySlug.has(slug)) continue;
+        if (seen.has(slug)) continue;
+        seen.add(slug);
+        out.push(slug);
+      }
+      return out;
+    } catch (_) {
+      return [];
+    }
+  }, [tagDisplay, tagNameBySlug]);
 
   return (
     <AppLayout>
@@ -1119,7 +1600,7 @@ const CMSPage = () => {
               <div>
                 <div className="text-xl font-bold text-white">관리자 페이지</div>
                 <div className="text-sm text-gray-400">
-                  {isUsersTab ? '회원 관리' : isBannersTab ? '배너 조작' : isSlotsTab ? '구좌 조작' : 'AI모델 조작(준비중)'}
+                  {isUsersTab ? '회원 관리' : isBannersTab ? '배너 조작' : isSlotsTab ? '구좌 조작' : isTagsTab ? '태그 관리' : 'AI모델 조작(준비중)'}
                 </div>
               </div>
             </div>
@@ -1154,13 +1635,13 @@ const CMSPage = () => {
                   <Button
                     variant="outline"
                     className="bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
-                    onClick={isBannersTab ? resetToDefault : resetSlotsToDefault}
+                    onClick={isBannersTab ? resetToDefault : isSlotsTab ? resetSlotsToDefault : resetTagDisplayToDefault}
                   >
                     초기화
                   </Button>
                   <Button
                     className="bg-purple-600 hover:bg-purple-700 text-white"
-                    onClick={isBannersTab ? saveAll : saveSlotsAll}
+                    onClick={isBannersTab ? saveAll : isSlotsTab ? saveSlotsAll : saveTagDisplayAll}
                     disabled={saving}
                   >
                     <Save className="w-4 h-4 mr-2" />
@@ -1196,6 +1677,14 @@ const CMSPage = () => {
               title="구좌 조작"
             >
               구좌 조작
+            </Button>
+            <Button
+              variant="outline"
+              className={`h-9 px-3 ${isTagsTab ? 'bg-purple-600 border-purple-500 text-white hover:bg-purple-700' : 'bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700'}`}
+              onClick={() => setActiveTab('tags')}
+              title="태그 관리"
+            >
+              태그 관리
             </Button>
             <Button
               variant="outline"
@@ -2088,6 +2577,418 @@ const CMSPage = () => {
                     );
                   })
                 )}
+              </CardContent>
+            </Card>
+          )}
+
+          {isTagsTab && (
+            <Card className="bg-gray-800 border-gray-700">
+              <CardHeader>
+                <CardTitle className="text-white">태그 관리</CardTitle>
+                <CardDescription className="text-gray-400">
+                  캐릭터 탭 / 태그 선택 모달의 노출 순서/숨김 + 태그 추가/삭제를 관리합니다. (저장 시 전 유저 반영)
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                {/* 태그 추가 */}
+                <div className="rounded-lg border border-gray-800 bg-gray-900/30 p-4 space-y-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-sm font-semibold text-white">태그 추가</div>
+                    {creatingTag && <div className="text-xs text-gray-500">추가 중...</div>}
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div className="space-y-1">
+                      <Label className="text-gray-300">태그명</Label>
+                      <Input
+                        value={newTagName}
+                        onChange={(e) => setNewTagName(e.target.value)}
+                        className="bg-gray-900 border-gray-700 text-white"
+                        placeholder="예) 스트리머"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-gray-300">슬러그(선택)</Label>
+                      <Input
+                        value={newTagSlug}
+                        onChange={(e) => setNewTagSlug(e.target.value)}
+                        className="bg-gray-900 border-gray-700 text-white"
+                        placeholder="비우면 태그명과 동일"
+                      />
+                    </div>
+                    <div className="flex items-end">
+                      <Button
+                        type="button"
+                        className="w-full bg-pink-600 hover:bg-pink-700 text-white"
+                        onClick={handleCreateTag}
+                        disabled={creatingTag}
+                      >
+                        <Plus className="w-4 h-4 mr-2" />
+                        {creatingTag ? '추가 중...' : '추가'}
+                      </Button>
+                    </div>
+                  </div>
+                  <div className="text-xs text-gray-500">
+                    삭제 정책: 기본 태그/사용 중 태그는 삭제할 수 없습니다. (숨김 기능을 사용하세요)
+                  </div>
+                </div>
+
+                {/* 노출 순서/숨김 */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  <div className="rounded-lg border border-gray-800 bg-gray-900/30 p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-2">
+                        <div className="text-sm font-semibold text-white">상단 우선 노출(순서)</div>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="h-8 px-2 bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
+                          onClick={openTagOrderModal}
+                          title="멀티라인 텍스트/드래그로 순서 편집"
+                        >
+                          <ListOrdered className="w-4 h-4 mr-1" />
+                          순서 편집
+                        </Button>
+                      </div>
+                      <Badge className="bg-gray-700 text-gray-100 hover:bg-gray-700">
+                        {effectivePrioritySlugsForDisplay.length}개
+                      </Badge>
+                    </div>
+                    <div className="mt-3 space-y-2">
+                      {effectivePrioritySlugsForDisplay.length === 0 ? (
+                        <div className="text-xs text-gray-500">
+                          현재는 기본 우선순위(예: 판타지/SF/던전)가 적용됩니다. “순서 편집”에서 원하는 순서로 직접 지정하세요.
+                        </div>
+                      ) : (
+                        (effectivePrioritySlugsForDisplay || []).map((slug, idx) => {
+                          const label = tagNameBySlug.get(String(slug || '').trim()) || String(slug || '').trim();
+                          const isFirst = idx === 0;
+                          const isLast = idx === ((effectivePrioritySlugsForDisplay || []).length - 1);
+                          return (
+                            <div key={String(slug)} className="flex items-center justify-between gap-3 rounded-md border border-gray-800 bg-gray-950/20 px-3 py-2">
+                              <div className="min-w-0">
+                                <div className="text-sm text-white truncate">{label}</div>
+                                <div className="text-xs text-gray-500 truncate">{String(slug || '').trim()}</div>
+                              </div>
+                              <div className="flex items-center gap-2 flex-shrink-0">
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  className="h-9 px-3 bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
+                                  onClick={() => movePrioritySlug(slug, 'up')}
+                                  disabled={isFirst}
+                                  title="위로"
+                                >
+                                  <ArrowUp className="w-4 h-4" />
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  className="h-9 px-3 bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
+                                  onClick={() => movePrioritySlug(slug, 'down')}
+                                  disabled={isLast}
+                                  title="아래로"
+                                >
+                                  <ArrowDown className="w-4 h-4" />
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  className="h-9 px-3 bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
+                                  onClick={() => removePrioritySlug(slug)}
+                                  title="목록에서 제거"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </Button>
+                              </div>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                    <div className="mt-3 text-xs text-gray-500">
+                      팁: 아래 “전체 태그”에서 태그를 선택해 우선 노출 목록에 추가할 수 있습니다.
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-gray-800 bg-gray-900/30 p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="text-sm font-semibold text-white">숨김 태그</div>
+                      <Badge className="bg-gray-700 text-gray-100 hover:bg-gray-700">
+                        {(Array.isArray(tagDisplay?.hiddenSlugs) ? tagDisplay.hiddenSlugs.length : 0)}개
+                      </Badge>
+                    </div>
+                    <div className="mt-3 space-y-2">
+                      {(Array.isArray(tagDisplay?.hiddenSlugs) ? tagDisplay.hiddenSlugs : []).length === 0 ? (
+                        <div className="text-xs text-gray-500">숨김 처리된 태그가 없습니다.</div>
+                      ) : (
+                        (tagDisplay.hiddenSlugs || []).map((slug) => {
+                          const label = tagNameBySlug.get(String(slug || '').trim()) || String(slug || '').trim();
+                          return (
+                            <div key={String(slug)} className="flex items-center justify-between gap-3 rounded-md border border-gray-800 bg-gray-950/20 px-3 py-2">
+                              <div className="min-w-0">
+                                <div className="text-sm text-white truncate">{label}</div>
+                                <div className="text-xs text-gray-500 truncate">{String(slug || '').trim()}</div>
+                              </div>
+                              <div className="flex items-center gap-2 flex-shrink-0">
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  className="h-9 px-3 bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
+                                  onClick={() => removeHiddenSlug(slug)}
+                                  title="숨김 해제"
+                                >
+                                  <X className="w-4 h-4" />
+                                </Button>
+                              </div>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                    <div className="mt-3 text-xs text-gray-500">
+                      숨김은 “삭제”가 아닙니다. 캐릭터 탭/선택 모달에서만 안 보이게 합니다.
+                    </div>
+                  </div>
+                </div>
+
+                {/* 전체 태그 */}
+                <div className="rounded-lg border border-gray-800 bg-gray-900/30 p-4 space-y-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-sm font-semibold text-white">전체 태그</div>
+                    {tagsLoading && <div className="text-xs text-gray-500">불러오는 중...</div>}
+                  </div>
+                  <div className="flex gap-2">
+                    <Input
+                      value={tagListQuery}
+                      onChange={(e) => setTagListQuery(e.target.value)}
+                      className="bg-gray-900 border-gray-700 text-white"
+                      placeholder="태그 검색 (이름/슬러그)"
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
+                      onClick={() => setTagListQuery('')}
+                    >
+                      지우기
+                    </Button>
+                  </div>
+
+                  <div className="max-h-80 overflow-auto rounded-lg border border-gray-800 bg-gray-950/20">
+                    {(filteredTagsForManage || []).length === 0 ? (
+                      <div className="p-3 text-sm text-gray-400">태그가 없습니다.</div>
+                    ) : (
+                      (filteredTagsForManage || []).map((t) => {
+                        const slug = String(t?.slug || '').trim();
+                        const name = String(t?.name || t?.slug || '').trim();
+                        const isPriority = (tagDisplay?.prioritySlugs || []).includes(slug);
+                        const isHidden = (tagDisplay?.hiddenSlugs || []).includes(slug);
+                        const deleting = deletingTagId && String(deletingTagId) === String(t?.id);
+                        return (
+                          <div key={String(t?.id || slug)} className="flex items-center justify-between gap-3 px-3 py-2 border-b border-gray-800 last:border-b-0 hover:bg-gray-800/40">
+                            <div className="min-w-0">
+                              <div className="text-sm text-white truncate">{name || slug}</div>
+                              <div className="text-xs text-gray-500 truncate">{slug}</div>
+                            </div>
+                            <div className="flex items-center gap-2 flex-shrink-0">
+                              <Button
+                                type="button"
+                                variant="outline"
+                                className="h-9 px-3 bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
+                                onClick={() => (isPriority ? removePrioritySlug(slug) : addPrioritySlug(slug))}
+                                title={isPriority ? '우선 노출 해제' : '우선 노출에 추가'}
+                              >
+                                {isPriority ? '상단해제' : '상단추가'}
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                className="h-9 px-3 bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
+                                onClick={() => (isHidden ? removeHiddenSlug(slug) : addHiddenSlug(slug))}
+                                title={isHidden ? '숨김 해제' : '숨김 처리'}
+                              >
+                                {isHidden ? '숨김해제' : '숨김'}
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                className="h-9 px-3 bg-red-900/40 border-red-800 text-red-100 hover:bg-red-900/60"
+                                onClick={() => handleDeleteTag(t)}
+                                disabled={!!deletingTagId || deleting}
+                                title="삭제"
+                              >
+                                {deleting ? '삭제 중...' : '삭제'}
+                              </Button>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+
+                  <div className="text-xs text-gray-500">
+                    노출 순서/숨김 변경은 상단 “저장” 버튼을 눌러야 전 유저에게 반영됩니다.
+                  </div>
+                </div>
+
+                {/* ✅ 태그 순서 편집 모달 (ISBN 입력 UX) */}
+                <Dialog
+                  open={tagOrderModalOpen}
+                  onOpenChange={(v) => {
+                    if (!v) setTagOrderModalOpen(false);
+                  }}
+                >
+                  <DialogContent className="bg-gray-900 border-gray-800 text-white max-w-3xl">
+                    <DialogHeader>
+                      <DialogTitle className="text-white">태그 순서 편집</DialogTitle>
+                      <DialogDescription className="text-gray-400">
+                        한 줄에 하나씩 입력하세요. 드래그로도 순서를 바꿀 수 있습니다. (오타/중복/없는 태그는 오류)
+                      </DialogDescription>
+                    </DialogHeader>
+
+                    <div className="space-y-3">
+                      {/* 모드 토글 */}
+                      <div className="flex items-center gap-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className={`h-9 px-3 ${tagOrderMode === 'text' ? 'bg-purple-600 border-purple-500 text-white hover:bg-purple-700' : 'bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700'}`}
+                          onClick={() => setTagOrderMode('text')}
+                        >
+                          텍스트 편집
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className={`h-9 px-3 ${tagOrderMode === 'drag' ? 'bg-purple-600 border-purple-500 text-white hover:bg-purple-700' : 'bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700'}`}
+                          onClick={() => setTagOrderMode('drag')}
+                        >
+                          드래그 정렬
+                        </Button>
+                        <div className="text-xs text-gray-500 ml-2">
+                          현재 노출 순서를 기반으로 편집합니다. (숨김 태그는 제외)
+                        </div>
+                      </div>
+
+                      {tagOrderMode === 'text' ? (
+                        <div className="space-y-2">
+                          <Textarea
+                            value={tagOrderText}
+                            onChange={(e) => setTagOrderText(e.target.value)}
+                            className="min-h-[320px] bg-gray-950/30 border-gray-700 text-white"
+                            placeholder={'예)\n판타지\nSF\n던전'}
+                          />
+                          <div className="text-xs text-gray-500">
+                            팁: 대소문자만 다른 입력(SF/sf)은 자동으로 정규화됩니다.
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="rounded-lg border border-gray-800 bg-gray-950/20 p-2 max-h-[420px] overflow-auto">
+                          {(() => {
+                            const lines = _splitLines(tagOrderText);
+                            const errByLine = new Map((tagOrderErrors || []).map((e) => [Number(e?.line || 0), e]));
+                            if (!lines.length) {
+                              return <div className="p-3 text-sm text-gray-400">표시할 태그가 없습니다. (텍스트 편집에서 입력하세요)</div>;
+                            }
+
+                            const moveLine = (fromIdx, toIdx) => {
+                              try {
+                                setTagOrderText((prev) => {
+                                  const arr = _splitLines(prev);
+                                  const f = Number(fromIdx);
+                                  const t = Number(toIdx);
+                                  if (!Number.isInteger(f) || !Number.isInteger(t)) return prev;
+                                  if (f < 0 || t < 0 || f >= arr.length || t >= arr.length) return prev;
+                                  const next = [...arr];
+                                  const [it] = next.splice(f, 1);
+                                  next.splice(t, 0, it);
+                                  return next.join('\n');
+                                });
+                              } catch (_) {}
+                            };
+
+                            return lines.map((raw, idx) => {
+                              const lineNo = idx + 1;
+                              const err = errByLine.get(lineNo) || null;
+                              const slug = _safeSlug(raw);
+                              const label = tagNameBySlug.get(slug) || slug;
+                              return (
+                                <div
+                                  key={`${lineNo}:${slug}`}
+                                  className={`flex items-center gap-2 px-3 py-2 rounded-md border ${err ? 'border-red-700 bg-red-900/10' : 'border-gray-800 bg-gray-950/20'} mb-2 last:mb-0`}
+                                  onDragOver={(e) => { try { e.preventDefault(); } catch (_) {} }}
+                                  onDrop={(e) => {
+                                    try { e.preventDefault(); } catch (_) {}
+                                    const from = tagOrderDragFromRef.current;
+                                    tagOrderDragFromRef.current = null;
+                                    if (from === null || from === undefined) return;
+                                    if (Number(from) === Number(idx)) return;
+                                    moveLine(Number(from), Number(idx));
+                                  }}
+                                >
+                                  <div
+                                    className="flex items-center gap-2 cursor-grab active:cursor-grabbing text-gray-400"
+                                    draggable
+                                    onDragStart={() => { tagOrderDragFromRef.current = idx; }}
+                                    onDragEnd={() => { tagOrderDragFromRef.current = null; }}
+                                    title="드래그로 순서 변경"
+                                  >
+                                    <GripVertical className="w-4 h-4" />
+                                    <span className="text-xs w-8 text-gray-500">{lineNo}</span>
+                                  </div>
+                                  <div className="min-w-0 flex-1">
+                                    <div className="text-sm text-white truncate">{label}</div>
+                                    <div className="text-xs text-gray-500 truncate">{slug}</div>
+                                    {err ? (
+                                      <div className="text-xs text-red-300 mt-1">
+                                        {err.message} ({err.value})
+                                      </div>
+                                    ) : null}
+                                  </div>
+                                </div>
+                              );
+                            });
+                          })()}
+                        </div>
+                      )}
+
+                      {/* 오류 요약 */}
+                      {(tagOrderErrors || []).length > 0 ? (
+                        <div className="rounded-lg border border-red-900/60 bg-red-900/10 p-3 text-sm text-red-200">
+                          <div className="font-semibold">유효성 오류</div>
+                          <div className="mt-1 text-xs text-red-200/90">
+                            {tagOrderErrors.slice(0, 6).map((e, i) => (
+                              <div key={`${e.line}-${i}`}>
+                                - {e.line}행: {e.message} ({e.value})
+                              </div>
+                            ))}
+                            {tagOrderErrors.length > 6 ? (
+                              <div className="mt-1 text-xs text-red-200/70">... 외 {tagOrderErrors.length - 6}개</div>
+                            ) : null}
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+
+                    <DialogFooter>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
+                        onClick={() => setTagOrderModalOpen(false)}
+                      >
+                        취소
+                      </Button>
+                      <Button
+                        type="button"
+                        className="bg-purple-600 hover:bg-purple-700 text-white"
+                        onClick={applyTagOrderModal}
+                      >
+                        적용
+                      </Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
               </CardContent>
             </Card>
           )}

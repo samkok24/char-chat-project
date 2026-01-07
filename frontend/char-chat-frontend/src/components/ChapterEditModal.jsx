@@ -162,7 +162,7 @@ const ChapterEditModal = ({ open, onClose, chapter, onAfterSave }) => {
 
           <div>
             <label className="block text-sm text-gray-300 mb-2">
-              웹툰 이미지 (선택사항) - 여러 컷 업로드 가능
+              이미지 삽입 (선택사항) - 여러 장 업로드 가능
             </label>
             
             {/* 기존 이미지들 */}
@@ -231,7 +231,7 @@ const ChapterEditModal = ({ open, onClose, chapter, onAfterSave }) => {
             </label>
             
             <div className="mt-2 text-xs text-gray-400">
-              여러 컷을 업로드하면 세로로 이어져서 웹툰처럼 표시됩니다.
+              여러 장을 업로드하면 세로로 이어져서 이미지 회차처럼 표시됩니다.
             </div>
           </div>
         </div>

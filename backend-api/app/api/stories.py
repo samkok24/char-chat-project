@@ -859,7 +859,13 @@ async def get_stories(
                         else ec.avatar_url
                     )
                 }
+                # ✅ 안전: 연결된 원작챗 캐릭터가 비공개면 공개 목록에서는 숨김
                 for ec in (getattr(s, "extracted_characters", []) or [])
+                if not (
+                    getattr(ec, "character_id", None)
+                    and str(ec.character_id) in char_map
+                    and getattr(char_map.get(str(ec.character_id)), "is_public", True) == False
+                )
             ]
         ))
 
@@ -1234,23 +1240,81 @@ async def get_extracted_characters_endpoint(
     except Exception:
         char_map = {}
 
-    def _with_cache_bust(url: Optional[str]) -> Optional[str]:
+    # ✅ 안전: 연결된 원작챗 캐릭터가 비공개면(원작챗만 비공개 케이스) 일반 유저에게는 숨김
+    # - 스토리 자체가 비공개면 위에서 이미 403 처리됨
+    # - 작성자/관리자는 전체를 볼 수 있어야 관리가 가능
+    try:
+        is_owner_or_admin = bool(
+            current_user
+            and (story.creator_id == current_user.id or getattr(current_user, "is_admin", False))
+        )
+    except Exception:
+        is_owner_or_admin = False
+
+    if not is_owner_or_admin:
+        try:
+            filtered_items = []
+            for r in (items or []):
+                cid = getattr(r, "character_id", None)
+                if not cid:
+                    filtered_items.append(r)
+                    continue
+                ch = char_map.get(str(cid))
+                # 캐릭터가 비공개면 숨김(연결이 끊긴/조회 실패한 경우도 안전하게 숨김)
+                if not ch or (getattr(ch, "is_public", True) == False):
+                    continue
+                filtered_items.append(r)
+            items = filtered_items
+        except Exception:
+            pass
+
+    def _with_cache_bust(url: Optional[str], ver: Optional[str] = None) -> Optional[str]:
+        """
+        이미지 URL 캐시 버스터(안정 버전키)
+
+        의도/동작:
+        - 기존 구현은 `time()` 기반으로 매 요청마다 `?v=`가 바뀌어 브라우저 캐시가 무력화되어
+          스토리/원작챗 상세에서 아바타 이미지가 매번 재다운로드되는 문제가 있었다.
+        - 이 함수는 "변경 시점" 기반(업데이트 타임스탬프)의 안정적인 버전키만 붙여 캐시 효율을 살린다.
+
+        방어적 처리:
+        - `data:` URL에는 쿼리를 붙이지 않는다.
+        - 이미 `v=`가 포함된 경우 중복 추가하지 않는다.
+        """
         try:
             if not url:
                 return url
-            # 간단 캐시 버스트 파라미터 추가
-            return f"{url}{'&' if '?' in url else '?'}v={int(__import__('time').time())}"
+            s = str(url)
+            if s.startswith("data:"):
+                return s
+            # 이미 버전 파라미터가 있으면 그대로 사용(중복 방지)
+            if "v=" in s:
+                return s
+            if not ver:
+                return s
+            return f"{s}{'&' if '?' in s else '?'}v={ver}"
         except Exception:
             return url
 
     def to_dict(rec: StoryExtractedCharacter):
         # 레코드 자체에 avatar_url이 없으면 연결된 캐릭터의 avatar_url로 보강
         avatar = rec.avatar_url
+        ver_dt = getattr(rec, "updated_at", None) or getattr(rec, "created_at", None)
         if not avatar and getattr(rec, "character_id", None):
             ch = char_map.get(str(rec.character_id))
             if ch and getattr(ch, "avatar_url", None):
                 avatar = ch.avatar_url
-        avatar = _with_cache_bust(avatar)
+                # 연결된 Character의 업데이트 시점을 버전키로 사용(캐릭터 아바타 변경 반영)
+                ver_dt = getattr(ch, "updated_at", None) or getattr(ch, "created_at", None) or ver_dt
+
+        ver = None
+        try:
+            if ver_dt:
+                ver = str(int(ver_dt.timestamp()))
+        except Exception:
+            ver = None
+
+        avatar = _with_cache_bust(avatar, ver)
         return {
             "id": str(rec.id),
             "name": rec.name,

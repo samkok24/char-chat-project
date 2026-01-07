@@ -7,7 +7,7 @@ import { storiesAPI, chaptersAPI, origChatAPI, mediaAPI, charactersAPI } from '.
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
 import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogCancel, AlertDialogAction } from '../components/ui/alert-dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
-import { Heart, ArrowLeft, AlertCircle, MoreVertical, Copy, Trash2, Edit, MessageCircle, Eye, Image as ImageIcon } from 'lucide-react';
+import { Heart, ArrowLeft, AlertCircle, MoreVertical, Copy, Trash2, Edit, MessageCircle, Eye, Image as ImageIcon, Check } from 'lucide-react';
 import { Avatar, AvatarFallback, AvatarImage } from '../components/ui/avatar';
 import { Badge } from '../components/ui/badge';
 import { Alert, AlertDescription } from '../components/ui/alert';
@@ -325,6 +325,21 @@ const StoryDetailPage = () => {
       const payload = { is_public: next };
       console.log('[StoryDetailPage] Toggling visibility:', { storyId, payload });
       await storiesAPI.updateStory(storyId, payload);
+      /**
+       * ✅ 중요(비공개 누출 잔상 방지):
+       * - 작품 공개/비공개 변경 후에는 홈/원작연재/탐색/랭킹 캐시가 즉시 갱신되지 않으면
+       *   "비공개했는데도 캐릭터가 떠요"처럼 보일 수 있다.
+       * - React Query 캐시를 넓게 무효화하여 다음 렌더에서 최신 상태를 재조회하도록 한다.
+       */
+      try {
+        queryClient.invalidateQueries({ queryKey: ['characters'] });
+        queryClient.invalidateQueries({ queryKey: ['top-origchat-daily'] });
+        queryClient.invalidateQueries({ queryKey: ['trending-characters-daily'] });
+        queryClient.invalidateQueries({ queryKey: ['serial-stories'] });
+        queryClient.invalidateQueries({ queryKey: ['explore-stories'] });
+      } catch (e) {
+        console.warn('[StoryDetailPage] cache invalidation failed:', e);
+      }
       setPageToast({ 
         show: true, 
         type: 'success', 
@@ -460,7 +475,7 @@ const StoryDetailPage = () => {
           const s = st?.data || {};
           if (s.status === 'done') {
             await fetchExtracted();
-            setPageToast({ show: true, type: 'success', message: '전체 재생성 완료' });
+            setPageToast({ show: true, type: 'success', message: '원작챗 일괄 생성 완료' });
             break;
           }
           if (s.status === 'error') {
@@ -475,16 +490,16 @@ const StoryDetailPage = () => {
       } else {
         await storiesAPI.rebuildExtractedCharacters(storyId);
         await fetchExtracted();
-        setPageToast({ show: true, type: 'success', message: '전체 재생성 완료' });
+        setPageToast({ show: true, type: 'success', message: '원작챗 일괄 생성 완료' });
       }
     } catch (e) {
       console.error('재생성 실패', e);
       try {
         const ok = await pollExtractedUntil();
-        if (ok) setPageToast({ show: true, type: 'success', message: '전체 재생성 완료' });
-        else setPageToast({ show: true, type: 'error', message: '전체 재생성 실패' });
+        if (ok) setPageToast({ show: true, type: 'success', message: '원작챗 일괄 생성 완료' });
+        else setPageToast({ show: true, type: 'error', message: '원작챗 일괄 생성 실패' });
       } catch (_) {
-        setPageToast({ show: true, type: 'error', message: '전체 재생성 실패' });
+        setPageToast({ show: true, type: 'error', message: '원작챗 일괄 생성 실패' });
       }
     } finally {
       setCharactersLoading(false);
@@ -583,7 +598,13 @@ const StoryDetailPage = () => {
                   <div className="flex items-center gap-2 mt-2">
                     <button type="button" onClick={() => navigate(`/users/${story.creator_id}`)} className="flex items-center gap-2 hover:opacity-90">
                       <Avatar className="w-6 h-6">
-                        <AvatarImage src={story.creator_avatar_url ? `${story.creator_avatar_url}${story.creator_avatar_url.includes('?') ? '&' : '?'}v=${profileVersion}` : ''} />
+                        <AvatarImage
+                          src={resolveImageUrl(
+                            story.creator_avatar_url
+                              ? `${story.creator_avatar_url}${story.creator_avatar_url.includes('?') ? '&' : '?'}v=${profileVersion}`
+                              : ''
+                          )}
+                        />
                         <AvatarFallback>{(story.creator_username || 'U').charAt(0).toUpperCase()}</AvatarFallback>
                       </Avatar>
                       <span className="text-sm text-gray-300">{story.creator_username || '작성자'}</span>
@@ -698,7 +719,7 @@ const StoryDetailPage = () => {
                         variant="outline"
                         className="h-8 px-3 bg-white text-black border-gray-300 hover:bg-gray-100"
                         onClick={()=> setConfirmRebuildOpen(true)}
-                      >전체 재생성</Button>
+                      >원작챗 일괄 생성</Button>
                     </div>
                   )}
                 </div>
@@ -784,21 +805,21 @@ const StoryDetailPage = () => {
                               setCharactersLoading(true);
                               await storiesAPI.rebuildExtractedCharacters(storyId);
                               await fetchExtracted();
-                              setPageToast({ show: true, type: 'success', message: '전체 재생성 완료' });
+                              setPageToast({ show: true, type: 'success', message: '원작챗 일괄 생성 완료' });
                             } catch (e) {
                               console.error('재생성 실패', e);
                               try {
                                 const ok = await pollExtractedUntil();
-                                if (ok) setPageToast({ show: true, type: 'success', message: '전체 재생성 완료' });
-                                else setPageToast({ show: true, type: 'error', message: '전체 재생성 실패' });
+                                if (ok) setPageToast({ show: true, type: 'success', message: '원작챗 일괄 생성 완료' });
+                                else setPageToast({ show: true, type: 'error', message: '원작챗 일괄 생성 실패' });
                               } catch(_) {
-                                setPageToast({ show: true, type: 'error', message: '전체 재생성 실패' });
+                                setPageToast({ show: true, type: 'error', message: '원작챗 일괄 생성 실패' });
                               }
                             } finally {
                               setCharactersLoading(false);
                             }
                           }}
-                        >전체 재생성</Button>
+                        >원작챗 일괄 생성</Button>
                       )}
                     </div>
                   )
@@ -846,10 +867,11 @@ const StoryDetailPage = () => {
                       const thumbnailUrl = getThumbnailUrl(ch.image_url);
                       const hasImage = !!thumbnailUrl;
                       
+                      const isLastRead = Number(ch.no) === Number(progressChapterNo);
                       return (
                       <li
                         key={ch.id ? `id:${ch.id}` : `no:${ch.no ?? 'NA'}|title:${(ch.title || '').slice(0,50)}|i:${idx}`}
-                        className={`flex items-center justify-between bg-gray-800/30 px-3 py-2 cursor-pointer hover:bg-gray-700/40 ${Number(ch.no) === Number(progressChapterNo) ? 'ring-1 ring-purple-500/40 bg-gray-800/50' : ''}`}
+                        className={`flex items-center justify-between bg-gray-800/30 px-3 py-2 cursor-pointer hover:bg-gray-700/40 ${isLastRead ? 'ring-1 ring-purple-500/40 bg-gray-800/50' : ''}`}
                         onClick={() => navigate(`/stories/${storyId}/chapters/${ch.no || (idx + 1)}`)}
                         role="button"
                         tabIndex={0}
@@ -865,14 +887,34 @@ const StoryDetailPage = () => {
                                 className="w-full h-full object-cover object-top"
                               />
                         </div>
-                            <div className="text-sm text-gray-200 truncate max-w-[60vw] lg:max-w-[40vw]">
-                              {ch.title || '제목 없음'}
+                            <div className="flex items-center gap-2 min-w-0 text-sm text-gray-200 max-w-[60vw] lg:max-w-[40vw]">
+                              {isLastRead && (
+                                <span
+                                  className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-400/30 flex-shrink-0"
+                                  title="마지막으로 본 회차"
+                                >
+                                  <Check className="w-3.5 h-3.5" />
+                                </span>
+                              )}
+                              <span className="truncate">
+                                {ch.title || '제목 없음'}
+                              </span>
                             </div>
                           </div>
                         )}
                         {!hasImage && (
-                          <div className="text-sm text-gray-200 truncate max-w-[60vw] lg:max-w-[40vw]">
-                            {ch.title || '제목 없음'}
+                          <div className="flex items-center gap-2 min-w-0 text-sm text-gray-200 max-w-[60vw] lg:max-w-[40vw]">
+                            {isLastRead && (
+                              <span
+                                className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-400/30 flex-shrink-0"
+                                title="마지막으로 본 회차"
+                              >
+                                <Check className="w-3.5 h-3.5" />
+                              </span>
+                            )}
+                            <span className="truncate">
+                              {ch.title || '제목 없음'}
+                            </span>
                           </div>
                         )}
                         <div className="flex items-center gap-3 flex-shrink-0">
@@ -1041,18 +1083,18 @@ const StoryDetailPage = () => {
           </div>
         </AlertDialogContent>
       </AlertDialog>
-      {/* 전체 재생성 확인 모달 */}
+      {/* 원작챗 일괄 생성 확인 모달 */}
       <AlertDialog open={confirmRebuildOpen} onOpenChange={setConfirmRebuildOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>전체 재생성</AlertDialogTitle>
+            <AlertDialogTitle>원작챗 일괄 생성</AlertDialogTitle>
             <AlertDialogDescription>
-              모든 회차 텍스트를 바탕으로 등장인물을 다시 추출합니다. 시간이 걸릴 수 있습니다.
+              모든 회차 텍스트를 바탕으로 원작챗에 사용할 등장인물을 다시 추출합니다. 시간이 걸릴 수 있습니다.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <div className="flex items-center justify-end gap-2">
             <AlertDialogCancel>취소</AlertDialogCancel>
-            <AlertDialogAction onClick={handleRebuildAll}>재생성</AlertDialogAction>
+            <AlertDialogAction onClick={handleRebuildAll}>일괄 생성</AlertDialogAction>
           </div>
         </AlertDialogContent>
       </AlertDialog>
@@ -1093,7 +1135,8 @@ const ExtractedCharactersGrid = ({ storyId, itemsOverride = null, onStart, maxNo
                     try {
                       const resolved = resolveImageUrl(c.avatar_url) || c.avatar_url;
                       if (!resolved) return '';
-                      return `${resolved}${resolved.includes('?') ? '&' : '?'}v=${Date.now()}`;
+                      // ✅ 캐시 버스터(Date.now()) 제거: 백엔드가 안정 버전키(v=업데이트시점)를 부여함
+                      return resolved;
                     } catch (_) { return c.avatar_url; }
                   })()}
                   alt={c.name}

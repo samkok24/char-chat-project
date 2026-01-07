@@ -122,12 +122,11 @@ export const RecentCharactersList = ({ limit = 4 }) => {
   return (
     <div className="flex overflow-x-auto gap-3 pb-2 scrollbar-hide">
       {characters.map((char, idx) => {
-        // 원작챗이면 모드 접미사 표시. 모드 정보가 없으면 과거 생성분 기본값으로 (일대일)
+        // 원작챗이면 모드 접미사 표시(평행세계/원작대로). plain(기본)에는 표시하지 않는다.
         const isOrig = !!(char?.origin_story_id || char?.is_origchat || char?.source === 'origchat');
         const mode = char?.last_chat_mode || (isOrig ? 'plain' : null);
         const modeLabel = (mode === 'parallel') ? ' (평행세계)'
           : (mode === 'canon') ? ' (원작대로)'
-          : (mode === 'plain') ? ' (일대일)'
           : '';
         const title = isOrig ? `${char.name}${modeLabel}` : char.name;
         return (

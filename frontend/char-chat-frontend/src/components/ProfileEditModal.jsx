@@ -32,6 +32,10 @@ const ProfileEditModal = ({ isOpen, onClose, profile }) => {
   const [newPw, setNewPw] = useState('');
   const [newPw2, setNewPw2] = useState('');
   const [pwLoading, setPwLoading] = useState(false);
+  const [pwErrors, setPwErrors] = useState({ currPw: '', newPw: '', newPw2: '' });
+  const currPwRef = useRef(null);
+  const newPwRef = useRef(null);
+  const newPw2Ref = useRef(null);
 
   useEffect(() => {
     if (isOpen) {
@@ -41,6 +45,7 @@ const ProfileEditModal = ({ isOpen, onClose, profile }) => {
       setUsernameCheck({ checked: true, available: true, message: '' });
       setError(''); setSuccess('');
       setCurrPw(''); setNewPw(''); setNewPw2('');
+      setPwErrors({ currPw: '', newPw: '', newPw2: '' });
     }
   }, [isOpen, profile]);
 
@@ -99,24 +104,90 @@ const ProfileEditModal = ({ isOpen, onClose, profile }) => {
   };
 
   const changePassword = async () => {
+    /**
+     * 비밀번호 변경 프론트 1차 검증(방어적 UX)
+     *
+     * 의도/동작:
+     * - 서버 요청 전에 누락/불일치/정책 위반을 즉시 안내하여 실패/혼란을 줄인다.
+     * - 첫 번째 오류 필드로 자동 포커스를 이동해 수정 흐름을 빠르게 만든다.
+     *
+     * 주의:
+     * - 최종 검증은 서버에서도 수행한다(현재 비밀번호 검증 등).
+     */
+    const validate = () => {
+      const errs = { currPw: '', newPw: '', newPw2: '' };
+      let first = null;
+
+      const cp = String(currPw || '');
+      const np = String(newPw || '');
+      const np2 = String(newPw2 || '');
+
+      if (!cp) {
+        errs.currPw = '현재 비밀번호를 입력해주세요.';
+        first = first || 'currPw';
+      }
+      if (!np) {
+        errs.newPw = '새 비밀번호를 입력해주세요.';
+        first = first || 'newPw';
+      }
+      if (!np2) {
+        errs.newPw2 = '비밀번호 확인을 입력해주세요.';
+        first = first || 'newPw2';
+      }
+      if (np) {
+        const policyOk = np.length >= 8 && /[A-Za-z]/.test(np) && /\d/.test(np);
+        if (!policyOk) {
+          errs.newPw = '새 비밀번호는 영문/숫자 포함 8자 이상이어야 합니다.';
+          first = first || 'newPw';
+        }
+      }
+      if (np && cp && np === cp) {
+        errs.newPw = '새 비밀번호는 현재 비밀번호와 달라야 합니다.';
+        first = first || 'newPw';
+      }
+      if (np && np2 && np !== np2) {
+        errs.newPw2 = '비밀번호 확인이 일치하지 않습니다.';
+        first = first || 'newPw2';
+      }
+
+      return { ok: !errs.currPw && !errs.newPw && !errs.newPw2, errs, first };
+    };
+
     setPwLoading(true); setError(''); setSuccess('');
     try {
-      if (newPw.length < 8 || !(/[A-Za-z]/.test(newPw) && /\d/.test(newPw))) {
-        setError('새 비밀번호는 영문/숫자 포함 8자 이상이어야 합니다.');
+      setPwErrors({ currPw: '', newPw: '', newPw2: '' });
+      const v = validate();
+      if (!v.ok) {
+        setPwErrors(v.errs);
+        // 상단에도 동일한 요약 메시지를 노출(스크린샷처럼 모달 상단 Alert로 즉시 인지)
+        setError(v.errs.currPw || v.errs.newPw || v.errs.newPw2 || '비밀번호 입력을 확인해주세요.');
+        try {
+          if (v.first === 'currPw') currPwRef.current?.focus?.();
+          else if (v.first === 'newPw') newPwRef.current?.focus?.();
+          else if (v.first === 'newPw2') newPw2Ref.current?.focus?.();
+        } catch (_) {}
         return;
       }
-      if (newPw !== newPw2) { setError('비밀번호 확인이 일치하지 않습니다.'); return; }
+
       await authAPI.updatePassword(currPw, newPw);
       setSuccess('비밀번호가 변경되었습니다.');
       setCurrPw(''); setNewPw(''); setNewPw2('');
+      setPwErrors({ currPw: '', newPw: '', newPw2: '' });
     } catch (e) {
+      console.error('비밀번호 변경 실패:', e);
       setError(e?.response?.data?.detail || '비밀번호 변경에 실패했습니다.');
     } finally { setPwLoading(false); }
   };
 
   return (
     <Dialog open={isOpen} onOpenChange={(v)=>{ if(!v) onClose?.(); }}>
-      <DialogContent className="sm:max-w-[640px]">
+      {/* ✅ 다크 테마 강제 적용(가독성 개선)
+       * - 현재 앱은 다크 UX를 기본으로 사용하지만, DialogContent는 `bg-background` 토큰을 사용한다.
+       * - 루트에 `.dark`가 적용되지 않은 상태(또는 일부 페이지/상태)에서는 배경이 흰색으로 렌더링되어
+       *   본 컴포넌트의 `text-gray-200` 라벨/설명들이 거의 보이지 않는 문제가 발생한다.
+       * - 모달 내부에서만 `.dark`를 강제하여, 토큰/컴포넌트(Input, Alert 등) 스타일이 일관되게 다크로 동작하게 한다.
+       */}
+      <DialogContent className="sm:max-w-[640px] dark bg-gray-950 text-gray-100 border-gray-800">
         <DialogHeader>
           <DialogTitle>프로필 수정</DialogTitle>
         </DialogHeader>
@@ -216,15 +287,47 @@ const ProfileEditModal = ({ isOpen, onClose, profile }) => {
           <div className="space-y-2">
             <div>
               <Label htmlFor="curr-pw" className="text-gray-200">현재 비밀번호</Label>
-              <Input id="curr-pw" type="password" value={currPw} onChange={(e)=>setCurrPw(e.target.value)} className="text-gray-900 dark:text-gray-100" />
+              <Input
+                ref={currPwRef}
+                id="curr-pw"
+                type="password"
+                value={currPw}
+                onChange={(e)=>{ setCurrPw(e.target.value); setPwErrors(prev => ({ ...prev, currPw: '' })); }}
+                className="text-gray-900 dark:text-gray-100"
+              />
+              {pwErrors.currPw && (
+                <div className="mt-1 text-xs font-semibold text-red-400">{pwErrors.currPw}</div>
+              )}
             </div>
             <div>
               <Label htmlFor="new-pw" className="text-gray-200">새 비밀번호</Label>
-              <Input id="new-pw" type="password" value={newPw} onChange={(e)=>setNewPw(e.target.value)} placeholder="영문/숫자 조합 8자 이상" pattern="(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d]{8,}" className="text-gray-900 dark:text-gray-100" />
+              <Input
+                ref={newPwRef}
+                id="new-pw"
+                type="password"
+                value={newPw}
+                onChange={(e)=>{ setNewPw(e.target.value); setPwErrors(prev => ({ ...prev, newPw: '' })); }}
+                placeholder="영문/숫자 조합 8자 이상"
+                pattern="(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d]{8,}"
+                className="text-gray-900 dark:text-gray-100"
+              />
+              {pwErrors.newPw && (
+                <div className="mt-1 text-xs font-semibold text-red-400">{pwErrors.newPw}</div>
+              )}
             </div>
             <div>
               <Label htmlFor="new-pw2" className="text-gray-200">비밀번호 확인</Label>
-              <Input id="new-pw2" type="password" value={newPw2} onChange={(e)=>setNewPw2(e.target.value)} className="text-gray-900 dark:text-gray-100" />
+              <Input
+                ref={newPw2Ref}
+                id="new-pw2"
+                type="password"
+                value={newPw2}
+                onChange={(e)=>{ setNewPw2(e.target.value); setPwErrors(prev => ({ ...prev, newPw2: '' })); }}
+                className="text-gray-900 dark:text-gray-100"
+              />
+              {pwErrors.newPw2 && (
+                <div className="mt-1 text-xs font-semibold text-red-400">{pwErrors.newPw2}</div>
+              )}
             </div>
             <Button 
               type="button" 

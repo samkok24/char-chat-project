@@ -301,6 +301,9 @@ export const usersAPI = {
   // 내가 좋아요한 캐릭터 목록
   getLikedCharacters: (params = {}) =>
     api.get('/me/characters/liked', { params }),
+  // 내가 선호작(좋아요)한 웹소설 목록
+  getLikedStories: (params = {}) =>
+    api.get('/me/stories/liked', { params }),
     
   // 모델 설정 관련
   getModelSettings: () =>
@@ -427,6 +430,7 @@ export const tagsAPI = {
   getTags: () => api.get('/tags/'),
   getUsedTags: () => api.get('/tags/used'),
   createTag: (data) => api.post('/tags', data),
+  deleteTag: (tagId) => api.delete(`/tags/${tagId}`),
 };
 
 // 💬 채팅 관련 API
@@ -519,8 +523,8 @@ export const origChatAPI = {
     api.get(`/stories/${storyId}/context-pack`, { params: { anchor, characterId, mode, rangeFrom, rangeTo, sceneId } }),
 
   // 세션 시작(기존 채팅방 구조 재사용)
-  start: ({ story_id, character_id, mode = 'canon', start = null, focus_character_id = null, range_from = null, range_to = null, narrator_mode = null, pov = null }) =>
-    api.post('/chat/origchat/start', { story_id, character_id, mode, start, focus_character_id, range_from, range_to, narrator_mode, pov }),
+  start: ({ story_id, character_id, mode = 'canon', start = null, focus_character_id = null, range_from = null, range_to = null, narrator_mode = null, pov = null, force_new = null }) =>
+    api.post('/chat/origchat/start', { story_id, character_id, mode, start, focus_character_id, range_from, range_to, narrator_mode, pov, force_new }),
 
   // 턴 진행(스텁 응답)
   turn: ({ room_id, user_text = null, choice_id = null, trigger = null, situation_text = null, idempotency_key = null, settings_patch = null }) =>
@@ -740,9 +744,11 @@ export const cmsAPI = {
   // 공개 GET(유저/비로그인)
   getHomeBanners: () => api.get('/cms/home/banners'),
   getHomeSlots: () => api.get('/cms/home/slots'),
+  getCharacterTagDisplay: () => api.get('/cms/tags/character'),
   // 관리자 PUT(저장)
   putHomeBanners: (data) => api.put('/cms/home/banners', data),
   putHomeSlots: (data) => api.put('/cms/home/slots', data),
+  putCharacterTagDisplay: (data) => api.put('/cms/tags/character', data),
 };
 
 // 💎 포인트 관련 API
@@ -812,6 +818,18 @@ export const mediaAPI = {
     files.forEach((f) => form.append('files', f));
     return api.post(`/media/upload`, form, { headers: { 'Content-Type': 'multipart/form-data' } });
   },
+  /**
+   * 이미지 크롭(서버 사이드)
+   *
+   * 의도/동작:
+   * - 일부 운영 환경에서는 스토리지(CDN/R2 등)에서 CORS 헤더가 없어 `canvas.toBlob()` 기반 크롭이 실패할 수 있다.
+   * - 이 경우 백엔드가 원본(MediaAsset.url)을 내려받아 PIL로 크롭한 뒤 새 MediaAsset을 생성해 반환한다.
+   *
+   * 주의:
+   * - assetId는 반드시 서버에 저장된 MediaAsset id여야 한다(로컬/레거시 url 아이템은 불가).
+   */
+  cropAsset: (assetId, { sx, sy, sw, sh }) =>
+    api.post(`/media/assets/${assetId}/crop`, { sx, sy, sw, sh }),
   attach: ({ entityType, entityId, assetIds, asPrimary = false }) =>
     api.post(`/media/assets/attach`, null, {
       params: { entity_type: entityType, entity_id: entityId, asset_ids: assetIds, as_primary: asPrimary },

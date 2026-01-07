@@ -29,3 +29,10 @@ class MediaAssetListResponse(BaseModel):
     items: List[MediaAssetResponse] = Field(default_factory=list)
 
 
+class MediaAssetCropRequest(BaseModel):
+    """미디어 자산(이미지) 크롭 요청 스키마"""
+    sx: int = Field(..., ge=0, description="crop start x (px)")
+    sy: int = Field(..., ge=0, description="crop start y (px)")
+    sw: int = Field(..., ge=1, description="crop width (px)")
+    sh: int = Field(..., ge=1, description="crop height (px)")
+

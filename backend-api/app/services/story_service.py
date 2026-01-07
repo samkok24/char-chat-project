@@ -512,7 +512,40 @@ async def get_public_stories(
     elif order in ['likes', 'like', '좋아요']:
         query = query.order_by(Story.like_count.desc(), Story.created_at.desc())
     elif order in ['recent', 'latest', 'created_at', '최신']:
-        query = query.order_by(Story.created_at.desc())
+        """
+        ✅ 최근 업데이트순(원작소설 탭 기대값)
+
+        의도:
+        - "최근"은 스토리 생성일이 아니라 "최근 회차 업로드"를 의미해야 UX가 자연스럽다.
+        - 기존 구현(Story.created_at desc)은 신규 회차가 올라와도 목록 순서가 바뀌지 않는 문제가 있다.
+
+        구현:
+        - StoryChapter.created_at의 MAX(최신 회차 업로드 시각)를 서브쿼리로 구해 outer join 후 정렬한다.
+        - 회차가 없는 스토리는 Story.updated_at/created_at로 폴백한다.
+
+        방어:
+        - DB/쿼리 환경 이슈가 있으면 기존(created_at desc)으로 폴백한다.
+        """
+        try:
+            latest_chapter_subq = (
+                select(
+                    StoryChapter.story_id.label("story_id"),
+                    func.max(StoryChapter.created_at).label("latest_chapter_created_at"),
+                )
+                .group_by(StoryChapter.story_id)
+                .subquery()
+            )
+            query = query.outerjoin(latest_chapter_subq, latest_chapter_subq.c.story_id == Story.id)
+            query = query.order_by(
+                func.coalesce(
+                    latest_chapter_subq.c.latest_chapter_created_at,
+                    Story.updated_at,
+                    Story.created_at,
+                ).desc(),
+                Story.created_at.desc(),
+            )
+        except Exception:
+            query = query.order_by(Story.created_at.desc())
     else:
         query = query.order_by(Story.like_count.desc(), Story.created_at.desc())
 

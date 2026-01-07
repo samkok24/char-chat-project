@@ -135,7 +135,62 @@ class HomeSlot(BaseModel):
 
 
 
+class TagDisplayConfig(BaseModel):
+    """
+    태그 노출/순서 설정(캐릭터 탭/태그 선택 모달 공통).
 
+    의도:
+    - 운영/데모에서 "태그 노출 순서"를 코드 배포 없이 즉시 바꾸기 위해 CMS에서 관리한다.
+    - 태그 자체(tags 테이블)는 그대로 두고, 노출 정책만 site_configs에 저장한다(최소 수정).
+
+    필드:
+    - prioritySlugs: 상단 우선 노출(고정)할 태그 slug 목록(순서가 의미 있음)
+    - hiddenSlugs: 유저에게 숨길 태그 slug 목록(노출/선택 UI에서 제외)
+    - updatedAt: 서버 저장 시각(UTC ISO 문자열, 캐시 무효화/동기화 참고용)
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    prioritySlugs: List[str] = Field(default_factory=list)
+    hiddenSlugs: List[str] = Field(default_factory=list)
+    updatedAt: Optional[str] = None
+
+    @field_validator("prioritySlugs", "hiddenSlugs", mode="before")
+    @classmethod
+    def sanitize_slug_list(cls, v):
+        # 방어: None/이상 타입 처리 + 문자열 trim + 중복 제거
+        if v is None:
+            return []
+        if isinstance(v, str):
+            arr = [v]
+        elif isinstance(v, list):
+            arr = v
+        else:
+            return []
+
+        out: List[str] = []
+        seen = set()
+        for item in (arr or []):
+            try:
+                s = _sanitize_text(item, 50) or ""
+            except Exception:
+                s = str(item or "").strip()
+                if len(s) > 50:
+                    s = s[:50]
+            s = s.strip()
+            if not s:
+                continue
+            # cover: 메타 태그는 UI 노출 금지(방어)
+            if s.startswith("cover:"):
+                continue
+            if s in seen:
+                continue
+            seen.add(s)
+            out.append(s)
+        return out
+
+
+"""
 의도:
 - 프론트에서 관리자가 편집하는 "홈 배너/구좌" 설정을 서버(DB)에 저장/조회한다.
 - 운영에서 모든 유저에게 동일하게 반영되도록 SSOT를 서버로 옮긴다.
