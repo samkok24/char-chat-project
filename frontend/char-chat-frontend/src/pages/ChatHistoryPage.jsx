@@ -95,6 +95,21 @@ const ChatHistoryPage = () => {
     fetchChatHistory(1);
   }, [fetchChatHistory]);
 
+  // ✅ 채팅방 생성/삭제/메시지 전송 등으로 목록이 바뀌면 1페이지부터 새로고침
+  useEffect(() => {
+    const onRoomsChanged = () => {
+      try {
+        setPage(1);
+        setHasMore(true);
+        fetchChatHistory(1);
+      } catch (_) {}
+    };
+    try { window.addEventListener('chat:roomsChanged', onRoomsChanged); } catch (_) {}
+    return () => {
+      try { window.removeEventListener('chat:roomsChanged', onRoomsChanged); } catch (_) {}
+    };
+  }, [fetchChatHistory]);
+
   // 무한 스크롤 설정
   useEffect(() => {
     if (loadingMore || !hasMore) return;
@@ -254,7 +269,9 @@ const ChatHistoryPage = () => {
             <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 lg:gap-6 mt-7">
               {characters.map((character, index) => (
                 <div
-                  key={character.id}
+                  // ✅ 같은 캐릭터라도 "새로대화"로 생성된 방은 여러 개가 병존해야 한다.
+                  // 따라서 key는 character.id가 아니라 chat_room_id(=room 단위)로 둔다.
+                  key={String(character.chat_room_id || `${character.id}-${index}`)}
                   ref={index === characters.length - 1 ? lastCharacterRef : null}
                 >
                   <HistoryChatCard 

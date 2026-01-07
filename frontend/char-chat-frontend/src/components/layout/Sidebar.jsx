@@ -360,22 +360,19 @@ const Sidebar = () => {
               ))
             ) : (
               (() => {
-                // 캐릭터별로 가장 최근 채팅방만 선택
-                const roomsByCharacter = new Map();
-                (chatRooms || []).forEach((room) => {
-                  const charId = room?.character?.id;
-                  if (!charId) return;
-                  
-                  const existing = roomsByCharacter.get(charId);
-                  const roomTime = new Date(room.last_message_time || room.updated_at || room.created_at || 0).getTime();
-                  const existingTime = existing ? new Date(existing.last_message_time || existing.updated_at || existing.created_at || 0).getTime() : 0;
-                  
-                  if (!existing || roomTime > existingTime) {
-                    roomsByCharacter.set(charId, room);
-                  }
-                });
-
-                const chatItems = Array.from(roomsByCharacter.values()).map((room) => {
+                /**
+                 * ✅ 히스토리는 "캐릭터 단위"가 아니라 "채팅방(룸) 단위"로 보여야 한다.
+                 *
+                 * 요구사항:
+                 * - 같은 캐릭터와 밥 대화/술 대화처럼 '새로대화'로 생성된 방이 여러 개면
+                 *   히스토리/최근대화/대화내역에서 모두 병존해야 한다.
+                 *
+                 * 기존 문제:
+                 * - 캐릭터별로 최신 룸 1개로 dedupe 하면서, 새로대화 룸이 사라져 보였다.
+                 */
+                const chatItems = (chatRooms || [])
+                  .filter((room) => Boolean(room?.id) && Boolean(room?.character?.id))
+                  .map((room) => {
                   const meta = roomMetaById[String(room.id)] || {};
                   const isOrig = !!(room?.character?.origin_story_id);
                   const rawMode = String(meta.mode || '').toLowerCase();

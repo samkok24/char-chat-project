@@ -357,10 +357,17 @@ async def admin_list_users(
         raise
 
 
-async def get_recent_characters_for_user(db: AsyncSession, user_id: uuid.UUID, limit: int = 10, skip: int = 0) -> list[Character]:
+async def get_recent_characters_for_user(db: AsyncSession, user_id: uuid.UUID, limit: int = 10, skip: int = 0):
     """
-    사용자가 최근에 대화한 캐릭터 목록을 반환합니다.
-    creator 정보를 함께 로드하고, last_message_snippet을 포함합니다.
+    사용자가 최근에 대화한 '채팅방(룸)' 목록을 반환합니다.
+
+    ⚠️ 중요(버그 방지):
+    - 동일 캐릭터와의 채팅방이 여러 개 존재할 수 있다(새로대화/기존대화 병존 요구사항).
+    - ORM Character 객체를 row마다 재사용(Identity Map)하면,
+      chat_room_id/last_chat_time 같은 "룸 단위 메타"가 마지막 값으로 덮여써져
+      프론트에서 '두 방이 같은 방처럼 보이거나' 목록이 꼬일 수 있다.
+    - 그래서 여기서는 Character 객체에 임시 속성을 주입하지 않고,
+      (Character, chat_room_id, last_chat_time, last_message_snippet, origin_story_title) 튜플 목록을 그대로 반환한다.
     """
     if limit > 50:  # 최대 limit 제한으로 보안 강화
         limit = 50
@@ -398,21 +405,7 @@ async def get_recent_characters_for_user(db: AsyncSession, user_id: uuid.UUID, l
         .limit(limit)
         .offset(skip)
     )
-    rows = result.all()
-    characters = []
-    for char, chat_room_id, last_chat_time, last_message_snippet, origin_story_title in rows:
-        # 연관된 정보를 Character 모델 객체의 임시 속성으로 추가
-        char.chat_room_id = chat_room_id
-        char.last_chat_time = last_chat_time
-        char.last_message_snippet = last_message_snippet
-        # 원작 웹소설 제목 보강(있을 때)
-        try:
-            if getattr(char, 'origin_story_id', None) and origin_story_title:
-                char.origin_story_title = origin_story_title
-        except Exception:
-            pass
-        characters.append(char)
-    return characters    
+    return result.all() or []
     # 동일 캐릭터가 여러 방으로 중복될 수 있으므로 character_id 기준 dedupe (가장 최신만 유지)
     # seen = set()
     # deduped: list[Character] = []

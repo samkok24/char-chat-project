@@ -7,7 +7,7 @@ import { storiesAPI, chaptersAPI, origChatAPI, mediaAPI, charactersAPI } from '.
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
 import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogCancel, AlertDialogAction } from '../components/ui/alert-dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
-import { Heart, ArrowLeft, AlertCircle, MoreVertical, Copy, Trash2, Edit, MessageCircle, Eye, Image as ImageIcon, Check } from 'lucide-react';
+import { Heart, ArrowLeft, AlertCircle, MoreVertical, Copy, Trash2, Edit, MessageCircle, Eye, Image as ImageIcon, Check, Lock, Unlock } from 'lucide-react';
 import { Avatar, AvatarFallback, AvatarImage } from '../components/ui/avatar';
 import { Badge } from '../components/ui/badge';
 import { Alert, AlertDescription } from '../components/ui/alert';
@@ -41,7 +41,7 @@ const StoryDetailPage = () => {
   const [preselectedCharacterId, setPreselectedCharacterId] = useState(null);
   const [editingChapter, setEditingChapter] = useState(null);
 
-  const { data, isLoading, isError } = useQuery({
+  const { data, isLoading, isError, error: storyLoadError } = useQuery({
     queryKey: ['story', storyId],
     queryFn: async () => {
       const res = await storiesAPI.getStory(storyId);
@@ -52,6 +52,9 @@ const StoryDetailPage = () => {
   });
 
   const story = data || {};
+  const storyLoadStatus = storyLoadError?.response?.status;
+  const isStoryAccessDenied = storyLoadStatus === 403;
+  const storyAccessDeniedMsg = String(storyLoadError?.response?.data?.detail || '').trim();
 
   const coverUrl = useMemo(() => {
     if (story.cover_url) return story.cover_url;
@@ -64,6 +67,8 @@ const StoryDetailPage = () => {
   const [pageToast, setPageToast] = useState({ show: false, type: 'success', message: '' });
   const [isLiked, setIsLiked] = useState(false);
   const [error, setError] = useState('');
+  // ✅ 비공개/접근 불가 경고 모달
+  const [accessDeniedModal, setAccessDeniedModal] = useState({ open: false, message: '' });
   const [comments, setComments] = useState([]);
   const [commentText, setCommentText] = useState('');
   const [submittingComment, setSubmittingComment] = useState(false);
@@ -75,6 +80,13 @@ const StoryDetailPage = () => {
   useEffect(() => {
     setLikeCount(story.like_count || 0);
   }, [story.like_count]);
+
+  // ✅ 비공개 작품 접근 시: 경고 모달 노출(요구사항 반영)
+  useEffect(() => {
+    if (!isStoryAccessDenied) return;
+    const msg = storyAccessDeniedMsg || '접근할 수 없습니다.';
+    setAccessDeniedModal({ open: true, message: msg });
+  }, [isStoryAccessDenied, storyAccessDeniedMsg]);
 
   useEffect(() => {
     const loadSocial = async () => {
@@ -397,6 +409,14 @@ const StoryDetailPage = () => {
   const [charactersLoading, setCharactersLoading] = useState(true);
   const [extractedItems, setExtractedItems] = useState([]);
   const [extractionStatus, setExtractionStatus] = useState(null); // 추출 진행 상태
+  const [extractionError, setExtractionError] = useState(''); // 추출 실패 사유(UX)
+  // ✅ 수동 추출 Job(중지/완료 즉시 반영)
+  const [extractJobId, setExtractJobId] = useState(null);
+  const [extractJobInfo, setExtractJobInfo] = useState(null); // { status, stage, error_message, created ... }
+  const [extractCancelling, setExtractCancelling] = useState(false);
+  const extractedPollTimerRef = useRef(null);
+  const extractJobStorageKey = useMemo(() => `cc:extractJob:${storyId || 'none'}`, [storyId]);
+  const extractErrorStorageKey = useMemo(() => `cc:extractError:${storyId || 'none'}`, [storyId]);
   const fetchExtracted = async () => {
     try {
       setCharactersLoading(true);
@@ -406,10 +426,18 @@ const StoryDetailPage = () => {
       
       setExtractedItems(items);
       setExtractionStatus(status);
+      // 실패 상태면(서버는 status만 주므로) 로컬에 남아있는 실패 사유를 유지한다.
+      if (status !== 'failed' && status !== 'error') {
+        try { setExtractionError(''); } catch (_) {}
+        try { localStorage.removeItem(extractErrorStorageKey); } catch (_) {}
+      }
       
       // 진행 중이고 아이템이 없으면 3초 후 재시도
       if (status === 'in_progress' && items.length === 0) {
-        setTimeout(() => {
+        try {
+          if (extractedPollTimerRef.current) clearTimeout(extractedPollTimerRef.current);
+        } catch (_) {}
+        extractedPollTimerRef.current = setTimeout(() => {
           fetchExtracted();
         }, 3000);
       }
@@ -439,6 +467,175 @@ const StoryDetailPage = () => {
   useEffect(() => {
     fetchExtracted();
   }, [storyId]);
+  useEffect(() => {
+    return () => {
+      try {
+        if (extractedPollTimerRef.current) clearTimeout(extractedPollTimerRef.current);
+      } catch (_) {}
+      extractedPollTimerRef.current = null;
+    };
+  }, []);
+  // ✅ 새로고침/탭 이동 후에도 "중지"가 가능하도록 jobId를 로컬에 보관(베스트 에포트)
+  useEffect(() => {
+    if (!storyId) return;
+    if (extractJobId) return;
+    try {
+      const saved = localStorage.getItem(extractJobStorageKey);
+      if (saved) setExtractJobId(saved);
+    } catch (_) {}
+  }, [storyId, extractJobId, extractJobStorageKey]);
+  useEffect(() => {
+    if (!storyId) return;
+    const cur = String(extractionError || '').trim();
+    if (cur) return;
+    try {
+      const saved = localStorage.getItem(extractErrorStorageKey);
+      if (saved) setExtractionError(String(saved || ''));
+    } catch (_) {}
+  }, [storyId, extractionError, extractErrorStorageKey]);
+
+  /**
+   * ✅ 원작챗 캐릭터 "수동 추출" 시작
+   * - 자동 추출은 제거되었으므로(백엔드), 버튼을 눌렀을 때만 job을 시작한다.
+   * - jobId를 저장하고, job 상태를 폴링하여 완료/취소 시 즉시 그리드를 갱신한다.
+   */
+  const startExtractJob = async () => {
+    try {
+      if (!isOwner) return;
+      if (extractJobId) return; // 중복 시작 방지
+      setCharactersLoading(true);
+      setExtractCancelling(false);
+      setExtractJobInfo(null);
+      try { setExtractionError(''); } catch (_) {}
+      try { localStorage.removeItem(extractErrorStorageKey); } catch (_) {}
+      try { setExtractionStatus('in_progress'); } catch (_) {}
+
+      const resp = await storiesAPI.rebuildExtractedCharactersAsync(storyId);
+      const jobId = resp?.data?.job_id;
+      if (!jobId) throw new Error('작업 ID를 받지 못했습니다.');
+      setExtractJobId(jobId);
+      try { localStorage.setItem(extractJobStorageKey, String(jobId)); } catch (_) {}
+      setPageToast({ show: true, type: 'success', message: '등장인물 자동추출을 시작합니다.' });
+
+      // UI가 즉시 "in_progress"를 인식하도록 1회 조회(베스트 에포트)
+      try { await fetchExtracted(); } catch (_) {}
+    } catch (e) {
+      console.error('추출 시작 실패', e);
+      setPageToast({ show: true, type: 'error', message: '등장인물 추출 시작 실패' });
+      setCharactersLoading(false);
+    } finally {
+      setConfirmRebuildOpen(false);
+    }
+  };
+
+  /**
+   * ✅ 원작챗 캐릭터 "중지" (취소)
+   * - job cancel 요청 → 백엔드에서 취소 플래그를 반영하고, worker가 다음 체크 포인트에서 즉시 종료/정리한다.
+   */
+  const cancelExtractJob = async () => {
+    try {
+      if (!isOwner) return;
+      if (!extractJobId) return;
+      if (extractCancelling) return;
+      setExtractCancelling(true);
+      await storiesAPI.cancelExtractJob(extractJobId);
+      setPageToast({ show: true, type: 'success', message: '중지 요청을 보냈습니다.' });
+    } catch (e) {
+      console.error('추출 중지 실패', e);
+      setPageToast({ show: true, type: 'error', message: '중지 요청 실패' });
+    } finally {
+      setExtractCancelling(false);
+    }
+  };
+
+  // ✅ Job 상태 폴링: done/cancelled/error 시 즉시 그리드 반영 + 홈 캐시 무효화
+  useEffect(() => {
+    if (!extractJobId) return;
+    let alive = true;
+    let timer = null;
+
+    const tick = async () => {
+      try {
+        const st = await storiesAPI.getExtractJobStatus(extractJobId);
+        const s = st?.data || {};
+        if (!alive) return;
+        setExtractJobInfo(s);
+
+        const status = String(s?.status || '').toLowerCase();
+        if (!status) return;
+        if (status === 'done') {
+          setExtractJobId(null);
+          setExtractJobInfo(null);
+          setCharactersLoading(false);
+          try { localStorage.removeItem(extractJobStorageKey); } catch (_) {}
+          // ✅ 방어: done인데 결과가 0이면 실패로 취급(서버/모델 이슈)
+          try {
+            const r = await storiesAPI.getExtractedCharacters(storyId);
+            const items = Array.isArray(r.data?.items) ? r.data.items : [];
+            const status2 = r.data?.extraction_status || null;
+            setExtractedItems(items);
+            setExtractionStatus(status2);
+            if (!items.length) {
+              const msg = '등장인물 추출에 실패했습니다. (API 키/크레딧을 확인해주세요)';
+              setExtractionError(msg);
+              try { localStorage.setItem(extractErrorStorageKey, msg); } catch (_) {}
+              setPageToast({ show: true, type: 'error', message: msg });
+            } else {
+              setPageToast({ show: true, type: 'success', message: '등장인물 추출 완료' });
+            }
+          } catch (_) {
+            await fetchExtracted();
+            setPageToast({ show: true, type: 'success', message: '등장인물 추출 완료' });
+          }
+          try { queryClient.invalidateQueries({ queryKey: ['characters'] }); } catch (_) {}
+          return;
+        }
+        if (status === 'cancelled') {
+          setExtractJobId(null);
+          setExtractJobInfo(null);
+          setCharactersLoading(false);
+          try { localStorage.removeItem(extractJobStorageKey); } catch (_) {}
+          await fetchExtracted();
+          setPageToast({ show: true, type: 'error', message: '추출 작업이 취소되었습니다' });
+          try { queryClient.invalidateQueries({ queryKey: ['characters'] }); } catch (_) {}
+          return;
+        }
+        if (status === 'error') {
+          const msg = String(s?.error_message || '').trim() || '추출 작업 실패';
+          setExtractJobId(null);
+          setExtractJobInfo(null);
+          setCharactersLoading(false);
+          try { localStorage.removeItem(extractJobStorageKey); } catch (_) {}
+          try { setExtractionError(msg); } catch (_) {}
+          try { localStorage.setItem(extractErrorStorageKey, msg); } catch (_) {}
+          await fetchExtracted();
+          setPageToast({ show: true, type: 'error', message: msg });
+          try { queryClient.invalidateQueries({ queryKey: ['characters'] }); } catch (_) {}
+          return;
+        }
+      } catch (e) {
+        // job이 만료/삭제되어 404가 난 경우: 로컬 상태 정리
+        try {
+          const status = e?.response?.status;
+          if (status === 404) {
+            setExtractJobId(null);
+            setExtractJobInfo(null);
+            setCharactersLoading(false);
+            try { localStorage.removeItem(extractJobStorageKey); } catch (_) {}
+          }
+        } catch (_) {}
+      }
+    };
+
+    tick();
+    timer = setInterval(tick, 1500);
+
+    return () => {
+      alive = false;
+      try { if (timer) clearInterval(timer); } catch (_) {}
+      timer = null;
+    };
+  }, [extractJobId, storyId, queryClient, extractJobStorageKey]);
   const episodesSorted = Array.isArray(chaptersResp) ? chaptersResp : [];
   const firstChapterNo = episodesSorted.length > 0 ? (episodesSorted[0]?.no || 1) : 1;
   const showContinue = Number(progressChapterNo) > 0;
@@ -446,10 +643,20 @@ const StoryDetailPage = () => {
 
   const handleDeleteAll = async () => {
     try {
+      // 진행 중인 추출 job이 있으면 먼저 멈추는 것이 안전하지만,
+      // UI에서 버튼을 비활성화하므로 여기서는 방어적으로 상태만 초기화한다.
+      try {
+        setExtractJobId(null);
+        setExtractJobInfo(null);
+        setExtractCancelling(false);
+        try { localStorage.removeItem(extractJobStorageKey); } catch (_) {}
+      } catch (_) {}
       setCharactersLoading(true);
       await storiesAPI.deleteExtractedCharacters(storyId);
       await fetchExtracted();
       setPageToast({ show: true, type: 'success', message: '전체 삭제 완료' });
+      // 홈/탐색 원작챗 그리드 즉시 반영(캐시 무효화)
+      try { queryClient.invalidateQueries({ queryKey: ['characters'] }); } catch (_) {}
     } catch (e) {
       console.error('전체 삭제 실패', e);
       setPageToast({ show: true, type: 'error', message: '전체 삭제 실패' });
@@ -460,57 +667,45 @@ const StoryDetailPage = () => {
   };
 
   const handleRebuildAll = async () => {
-    try {
-      setCharactersLoading(true);
-      const useAsync = (import.meta.env?.VITE_EXTRACT_ASYNC ?? '0') === '1';
-      if (useAsync) {
-        // 비동기 잡 시작 → 폴링으로 완료 대기
-        const resp = await storiesAPI.rebuildExtractedCharactersAsync(storyId);
-        const jobId = resp?.data?.job_id;
-        if (!jobId) throw new Error('작업 ID를 받지 못했습니다.');
-        const start = Date.now();
-        const timeoutMs = 600000; // 10m
-        while (Date.now() - start < timeoutMs) {
-          const st = await storiesAPI.getExtractJobStatus(jobId);
-          const s = st?.data || {};
-          if (s.status === 'done') {
-            await fetchExtracted();
-            setPageToast({ show: true, type: 'success', message: '원작챗 일괄 생성 완료' });
-            break;
-          }
-          if (s.status === 'error') {
-            throw new Error(s.error_message || '추출 작업 실패');
-          }
-          if (s.status === 'cancelled') {
-            setPageToast({ show: true, type: 'error', message: '작업이 취소되었습니다' });
-            break;
-          }
-          await new Promise(r => setTimeout(r, 1500));
-        }
-      } else {
-        await storiesAPI.rebuildExtractedCharacters(storyId);
-        await fetchExtracted();
-        setPageToast({ show: true, type: 'success', message: '원작챗 일괄 생성 완료' });
-      }
-    } catch (e) {
-      console.error('재생성 실패', e);
-      try {
-        const ok = await pollExtractedUntil();
-        if (ok) setPageToast({ show: true, type: 'success', message: '원작챗 일괄 생성 완료' });
-        else setPageToast({ show: true, type: 'error', message: '원작챗 일괄 생성 실패' });
-      } catch (_) {
-        setPageToast({ show: true, type: 'error', message: '원작챗 일괄 생성 실패' });
-      }
-    } finally {
-      setCharactersLoading(false);
-      setConfirmRebuildOpen(false);
-    }
+    // ✅ 추출은 "버튼으로만" 실행(비동기 Job 고정)
+    await startExtractJob();
   };
 
   return (
     <AppLayout>
       <div className="bg-gray-900 text-white min-h-screen p-4 sm:p-6 lg:p-8">
         <div className="max-w-7xl mx-auto">
+          {/* ✅ 접근 불가(비공개) 경고 모달 */}
+          <AlertDialog
+            open={!!accessDeniedModal.open}
+            onOpenChange={(open) => {
+              setAccessDeniedModal((prev) => ({ ...(prev || {}), open: !!open }));
+              if (!open) {
+                try { navigate('/dashboard'); } catch (_) {}
+              }
+            }}
+          >
+            <AlertDialogContent className="bg-gray-900 border border-gray-700 text-white">
+              <AlertDialogHeader>
+                <AlertDialogTitle className="text-white">접근 불가</AlertDialogTitle>
+                <AlertDialogDescription className="text-gray-300">
+                  {accessDeniedModal.message || '비공개된 작품입니다.'}
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <div className="flex justify-end gap-2 mt-4">
+                <AlertDialogAction
+                  className="bg-purple-600 hover:bg-purple-700 text-white"
+                  onClick={() => {
+                    setAccessDeniedModal({ open: false, message: '' });
+                    try { navigate('/dashboard'); } catch (_) {}
+                  }}
+                >
+                  확인
+                </AlertDialogAction>
+              </div>
+            </AlertDialogContent>
+          </AlertDialog>
+
           <header className="mb-6">
             <Button variant="ghost" onClick={() => { navigate('/dashboard'); }} className="mb-2">
               <ArrowLeft className="w-5 h-5 mr-2" /> 뒤로 가기
@@ -529,7 +724,9 @@ const StoryDetailPage = () => {
             <div className="flex items-center justify-center py-16 text-gray-300">
               <div className="text-center">
                 <AlertCircle className="w-12 h-12 text-red-500 mx-auto mb-4" />
-                <p className="text-gray-400">존재하지 않는 작품입니다.</p>
+                <p className="text-gray-400">
+                  {isStoryAccessDenied ? '접근할 수 없는 작품입니다.' : '존재하지 않는 작품입니다.'}
+                </p>
                 <Button onClick={() => navigate('/dashboard')} variant="outline" className="mt-4 bg-white text-black hover:bg-gray-100">홈으로 돌아가기</Button>
               </div>
             </div>
@@ -710,20 +907,97 @@ const StoryDetailPage = () => {
                   <h2 className="text-lg font-semibold">이 작품의 등장인물</h2>
                   {isOwner && (
                     <div className="flex items-center gap-2">
+                      {/* ✅ 추출 진행률/중지 버튼(요구: 전체 삭제 옆 배치) */}
+                      {(extractionStatus === 'in_progress') && (
+                        <div className="hidden sm:flex items-center gap-2 mr-1 text-xs text-blue-200">
+                          <svg className="animate-spin h-3.5 w-3.5 text-blue-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
+                          </svg>
+                          {(() => {
+                            try {
+                              const p = Number(extractJobInfo?.processed_windows || 0);
+                              const t = Number(extractJobInfo?.total_windows || 0);
+                              if (t > 0) return `추출중 ${p}/${t}`;
+                              return '추출중...';
+                            } catch (_) { return '추출중...'; }
+                          })()}
+                        </div>
+                      )}
                       <Button
                         variant="destructive"
                         className="h-8 px-3"
+                        disabled={charactersLoading || extractionStatus === 'in_progress' || !!extractJobId}
                         onClick={()=> setConfirmDeleteOpen(true)}
                       >전체 삭제</Button>
                       <Button
                         variant="outline"
                         className="h-8 px-3 bg-white text-black border-gray-300 hover:bg-gray-100"
+                        disabled={charactersLoading || extractionStatus === 'in_progress' || !!extractJobId}
                         onClick={()=> setConfirmRebuildOpen(true)}
                       >원작챗 일괄 생성</Button>
+                      <Button
+                        variant="outline"
+                        className={`h-8 px-3 ${extractionStatus === 'in_progress' ? 'bg-red-600 text-white border-red-500 hover:bg-red-700 hover:border-red-600' : 'bg-white text-black border-gray-300 hover:bg-gray-100'}`}
+                        disabled={extractionStatus !== 'in_progress' || extractCancelling || !extractJobId}
+                        onClick={cancelExtractJob}
+                        title={extractionStatus !== 'in_progress' ? '추출 중일 때만 중지할 수 있습니다.' : '추출 중지'}
+                      >
+                        {extractCancelling ? '중지중...' : '중지'}
+                      </Button>
                     </div>
                   )}
                 </div>
-                {charactersLoading && (
+                {/* ✅ 추출 진행 중: 로딩 스켈레톤 대신 진행 카드(중지 버튼) 노출 */}
+                {extractedItems.length === 0 && extractionStatus === 'in_progress' && (
+                  <div className="flex items-center gap-3 bg-gray-800/40 border border-gray-700 rounded-md p-3">
+                    <div>
+                      <div className="text-sm text-gray-300 flex items-center gap-2">
+                        <svg className="animate-spin h-4 w-4 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        {isOwner ? '텍스트에서 원작캐릭터를 자동추출중입니다. 중지하려면 중지버튼을 눌러주세요.' : '현재 원작챗을 할 캐릭터를 크리에이터가 추출하고 있습니다.'}
+                      </div>
+                      <div className="text-xs text-gray-500 mt-1">
+                        {(() => {
+                          try {
+                            const st = String(extractJobInfo?.stage || '').trim().toLowerCase();
+                            if (st === 'clearing') return '이전 데이터 정리 중...';
+                            if (st === 'extracting') return '등장인물 추출 중...';
+                            if (st === 'starting') return '작업 시작 중...';
+                            return '잠시만 기다려주세요.';
+                          } catch (_) {
+                            return '잠시만 기다려주세요.';
+                          }
+                        })()}
+                      </div>
+                      {/* 진행률 바(윈도우 기준, 없으면 애니메이션만) */}
+                      <div className="mt-2 h-1.5 w-full bg-gray-700 rounded overflow-hidden">
+                        <div
+                          className="h-full bg-blue-500/80 transition-all"
+                          style={{
+                            width: (() => {
+                              try {
+                                const p = Number(extractJobInfo?.processed_windows || 0);
+                                const t = Number(extractJobInfo?.total_windows || 0);
+                                if (t > 0) {
+                                  const pct = Math.max(2, Math.min(100, Math.round((p / t) * 100)));
+                                  return `${pct}%`;
+                                }
+                                return '33%';
+                              } catch (_) {
+                                return '33%';
+                              }
+                            })(),
+                          }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {charactersLoading && !(extractedItems.length === 0 && extractionStatus === 'in_progress') && (
                   <div className="space-y-3">
                     <div className="h-1.5 w-full bg-gray-700 rounded overflow-hidden">
                       <div className="h-full w-1/3 bg-blue-500/70 animate-pulse" />
@@ -743,7 +1017,7 @@ const StoryDetailPage = () => {
                     </div>
                   </div>
                 )}
-                {!charactersLoading && extractedItems.length === 0 && (
+                {!charactersLoading && extractedItems.length === 0 && extractionStatus !== 'in_progress' && (
                   episodesSorted.length === 0 ? (
                     <div className="flex items-center justify-between bg-gray-800/40 border border-gray-700 rounded-md p-3">
                       <span className="text-sm text-gray-400">회차 등록을 먼저 해주세요.</span>
@@ -751,73 +1025,67 @@ const StoryDetailPage = () => {
                         <Button variant="outline" className="h-8 px-3 bg-white text-black border-gray-300 hover:bg-gray-100" onClick={() => setChapterModalOpen(true)}>회차등록</Button>
                       )}
                     </div>
-                  ) : extractionStatus === 'in_progress' ? (
-                    <div className="flex items-center justify-between bg-gray-800/40 border border-gray-700 rounded-md p-3">
-                      <div>
-                        <div className="text-sm text-gray-300 flex items-center gap-2">
-                          <svg className="animate-spin h-4 w-4 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                          </svg>
-                          {isOwner ? '등장인물을 생성하고 있습니다...' : '현재 원작챗을 할 캐릭터를 크리에이터가 추출하고 있습니다.'}
-                        </div>
-                        <div className="text-xs text-gray-500 mt-1">최대 2분이 소요될 수 있습니다. 잠시만 기다려주세요.</div>
-                      </div>
-                      {isOwner && (
-                        <Button variant="outline" className="h-8 px-3 bg-white text-black border-gray-300 hover:bg-gray-100" onClick={fetchExtracted}>새로고침</Button>
-                      )}
-                    </div>
                   ) : extractionStatus === 'failed' ? (
                     <div className="flex items-center justify-between bg-red-900/20 border border-red-700 rounded-md p-3">
                       <div>
                         <div className="text-sm text-red-300">등장인물 추출에 실패했습니다</div>
-                        <div className="text-xs text-gray-400 mt-1">AI가 등장인물을 인식하지 못했습니다. 회차를 더 추가하거나 재생성해주세요.</div>
+                        <div className="text-xs text-gray-400 mt-1">
+                          {String(extractionError || '').trim() || 'AI가 등장인물을 인식하지 못했습니다. 회차를 더 추가하거나 재생성해주세요.'}
+                        </div>
                       </div>
                       {isOwner && (
                         <Button
                           variant="outline"
                           className="h-8 px-3 bg-red-600 text-white border-red-500 hover:bg-red-700"
                           onClick={async()=>{
-                            try {
-                              setCharactersLoading(true);
-                              await storiesAPI.rebuildExtractedCharacters(storyId);
-                              await fetchExtracted();
-                              setPageToast({ show: true, type: 'success', message: '재생성 완료' });
-                            } catch (e) {
-                              setPageToast({ show: true, type: 'error', message: '재생성 실패' });
-                            } finally {
-                              setCharactersLoading(false);
-                            }
+                            await startExtractJob();
                           }}
                         >재생성</Button>
+                      )}
+                    </div>
+                  ) : extractionStatus === 'cancelled' ? (
+                    <div className="flex items-center justify-between bg-yellow-900/20 border border-yellow-700 rounded-md p-3">
+                      <div>
+                        <div className="text-sm text-yellow-200">추출이 중지되었습니다</div>
+                        <div className="text-xs text-gray-400 mt-1">원하시면 다시 “원작챗 일괄 생성”을 눌러 재시도할 수 있습니다.</div>
+                      </div>
+                      {isOwner && (
+                        <Button
+                          variant="outline"
+                          className="h-8 px-3 bg-white text-black border-gray-300 hover:bg-gray-100"
+                          onClick={async()=>{ await startExtractJob(); }}
+                        >재시도</Button>
+                      )}
+                    </div>
+                  ) : extractionStatus === 'error' ? (
+                    <div className="flex items-center justify-between bg-red-900/20 border border-red-700 rounded-md p-3">
+                      <div>
+                        <div className="text-sm text-red-300">추출 중 오류가 발생했습니다</div>
+                        <div className="text-xs text-gray-400 mt-1">
+                          {String(extractionError || '').trim() || '잠시 후 다시 시도해주세요.'}
+                        </div>
+                      </div>
+                      {isOwner && (
+                        <Button
+                          variant="outline"
+                          className="h-8 px-3 bg-red-600 text-white border-red-500 hover:bg-red-700"
+                          onClick={async()=>{ await startExtractJob(); }}
+                        >재시도</Button>
                       )}
                     </div>
                   ) : (
                     /* 추출 전 상태 (회차는 있지만 아직 추출되지 않음) */
                     <div className="flex items-center justify-between bg-gray-800/40 border border-gray-700 rounded-md p-3">
-                      <span className="text-sm text-gray-400">원작챗을 할 캐릭터가 추출되지 않았습니다.</span>
+                      <div>
+                        <div className="text-sm text-gray-300">원작챗을 할 캐릭터가 없습니다.</div>
+                        <div className="text-xs text-gray-500 mt-1">자동 생성은 하지 않습니다. 아래 버튼을 눌러 추출을 시작해주세요.</div>
+                      </div>
                       {isOwner && (
                         <Button
                           variant="outline"
                           className="h-8 px-3 bg-white text-black border-gray-300 hover:bg-gray-100"
                           onClick={async()=>{
-                            try {
-                              setCharactersLoading(true);
-                              await storiesAPI.rebuildExtractedCharacters(storyId);
-                              await fetchExtracted();
-                              setPageToast({ show: true, type: 'success', message: '원작챗 일괄 생성 완료' });
-                            } catch (e) {
-                              console.error('재생성 실패', e);
-                              try {
-                                const ok = await pollExtractedUntil();
-                                if (ok) setPageToast({ show: true, type: 'success', message: '원작챗 일괄 생성 완료' });
-                                else setPageToast({ show: true, type: 'error', message: '원작챗 일괄 생성 실패' });
-                              } catch(_) {
-                                setPageToast({ show: true, type: 'error', message: '원작챗 일괄 생성 실패' });
-                              }
-                            } finally {
-                              setCharactersLoading(false);
-                            }
+                            await startExtractJob();
                           }}
                         >원작챗 일괄 생성</Button>
                       )}
@@ -1105,8 +1373,12 @@ const StoryDetailPage = () => {
 const ExtractedCharactersGrid = ({ storyId, itemsOverride = null, onStart, maxNo = 1, isOwner = false, onCharacterClick = null }) => {
   const [items, setItems] = useState(itemsOverride || []);
   const [busyId, setBusyId] = useState(null);
+  const [visibilityBusyId, setVisibilityBusyId] = useState(null); // character_id
   const [toast, setToast] = useState({ show: false, type: 'success', message: '' });
   const [imgModalFor, setImgModalFor] = useState(null); // { entityType, entityId }
+  // ✅ (방어) 기존 코드에서 setPreviewMap 참조가 있어 런타임 ReferenceError를 막기 위해 최소 상태만 둔다.
+  const [previewMap, setPreviewMap] = useState({});
+  const queryClient = useQueryClient();
   const maxOptions = Math.max(1, Number(maxNo)||1);
   const lastReadNo = Number(getReadingProgress(storyId) || 0);
 
@@ -1128,6 +1400,74 @@ const ExtractedCharactersGrid = ({ storyId, itemsOverride = null, onStart, maxNo
               }
             }}
           >
+            {/* ✅ 공개/비공개 상태 아이콘 (크리에이터는 클릭해서 토글 가능) */}
+            <div className="absolute top-2 left-2 z-10">
+              {(() => {
+                const cid = String(c?.character_id || '').trim();
+                const isPublic = c?.is_public !== false; // undefined는 공개로 취급
+                const busy = visibilityBusyId === cid;
+                const canToggle = isOwner && !!cid;
+                const title = canToggle
+                  ? (isPublic ? '공개(클릭하면 비공개)' : '비공개(클릭하면 공개)')
+                  : (isPublic ? '공개' : '비공개');
+                return (
+                  <button
+                    type="button"
+                    title={title}
+                    className={[
+                      'w-7 h-7 rounded text-white flex items-center justify-center',
+                      isPublic ? 'bg-green-600/80 hover:bg-green-700' : 'bg-red-600/80 hover:bg-red-700',
+                      'border border-black/20 shadow-sm transition-colors',
+                      busy ? 'opacity-60 cursor-not-allowed' : '',
+                      canToggle ? '' : 'cursor-default',
+                    ].join(' ')}
+                    onClick={async (e) => {
+                      e.stopPropagation();
+                      if (!canToggle) return;
+                      if (busy) return;
+                      try {
+                        setVisibilityBusyId(cid);
+                        const resp = await charactersAPI.toggleCharacterPublic(cid);
+                        const nextPublic = resp?.data?.is_public !== false;
+                        setItems((prev) => {
+                          try {
+                            return (Array.isArray(prev) ? prev : []).map((it) =>
+                              String(it?.character_id || '') === cid ? { ...it, is_public: nextPublic } : it
+                            );
+                          } catch (_) {
+                            return prev;
+                          }
+                        });
+                        setToast({
+                          show: true,
+                          type: 'success',
+                          message: `${c?.name || '캐릭터'} ${nextPublic ? '공개' : '비공개'}로 변경`,
+                        });
+                        // 홈/탐색 원작챗 그리드 즉시 반영
+                        try { queryClient.invalidateQueries({ queryKey: ['characters'] }); } catch (_) {}
+                      } catch (err) {
+                        console.error('공개/비공개 변경 실패', err);
+                        setToast({ show: true, type: 'error', message: '공개/비공개 변경 실패' });
+                      } finally {
+                        setVisibilityBusyId(null);
+                      }
+                    }}
+                    aria-label={title}
+                  >
+                    {busy ? (
+                      <svg className="animate-spin w-3.5 h-3.5" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
+                      </svg>
+                    ) : isPublic ? (
+                      <Unlock className="w-3.5 h-3.5" />
+                    ) : (
+                      <Lock className="w-3.5 h-3.5" />
+                    )}
+                  </button>
+                );
+              })()}
+            </div>
             <div className="flex items-center gap-3">
               {c.avatar_url ? (
                 <img

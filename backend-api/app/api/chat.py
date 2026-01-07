@@ -67,6 +67,59 @@ async def _get_room_meta(room_id: uuid.UUID | str) -> Dict[str, Any]:
     return {}
 
 
+async def _ensure_character_story_accessible(db: AsyncSession, current_user: User, character: Character):
+    """
+    비공개 콘텐츠 접근 가드(채팅 공통).
+
+    요구사항(변경 반영):
+    - 비공개된 웹소설/캐릭터챗/원작챗은 모두 "접근 불가" 처리한다.
+    - 작성자/관리자는 예외적으로 접근 가능(관리/운영 목적).
+
+    동작:
+    - 캐릭터가 비공개면(creator/admin 제외) 403
+    - 캐릭터가 원작(스토리)에 연결(origin_story_id)되어 있고, 스토리가 비공개면(creator/admin 제외) 403
+    - 연결된 스토리가 삭제되었으면 410
+    """
+    # 방어: is_admin 속성이 없을 수 있음
+    try:
+        is_admin = bool(getattr(current_user, "is_admin", False))
+    except Exception:
+        is_admin = False
+
+    # 1) 캐릭터 비공개 차단
+    try:
+        c_is_public = bool(getattr(character, "is_public", True))
+        c_creator_id = getattr(character, "creator_id", None)
+    except Exception:
+        c_is_public = True
+        c_creator_id = None
+
+    if (not c_is_public) and (c_creator_id != current_user.id) and (not is_admin):
+        raise HTTPException(status_code=403, detail="비공개된 캐릭터입니다.")
+
+    # 2) 원작 연결 캐릭터라면 스토리 공개 여부도 검사
+    sid = getattr(character, "origin_story_id", None)
+    if sid:
+        try:
+            srow = (await db.execute(
+                select(Story.id, Story.creator_id, Story.is_public).where(Story.id == sid)
+            )).first()
+        except Exception as e:
+            try:
+                logger.warning(f"[chat] story access check failed: {e}")
+            except Exception:
+                pass
+            raise HTTPException(status_code=500, detail="작품 접근 확인에 실패했습니다.")
+
+        if not srow:
+            raise HTTPException(status_code=410, detail="삭제된 작품입니다.")
+
+        s_creator_id = getattr(srow, "creator_id", None)
+        s_is_public = bool(getattr(srow, "is_public", True))
+        if (not s_is_public) and (s_creator_id != current_user.id) and (not is_admin):
+            raise HTTPException(status_code=403, detail="비공개된 작품입니다.")
+
+
 def _merge_character_tokens(character, user):
     try:
         username = getattr(user, 'username', None) or getattr(user, 'email', '').split('@')[0] or '사용자'
@@ -1244,6 +1297,20 @@ async def start_chat(
     db: AsyncSession = Depends(get_db),
 ):
     """채팅 시작 - CAVEDUCK 스타일 간단한 채팅 시작"""
+    # ✅ 비공개 접근 차단(요구사항 변경 반영)
+    try:
+        ch = (await db.execute(select(Character).where(Character.id == request.character_id))).scalars().first()
+        if not ch:
+            raise HTTPException(status_code=404, detail="캐릭터를 찾을 수 없습니다.")
+        await _ensure_character_story_accessible(db, current_user, ch)
+    except HTTPException:
+        raise
+    except Exception as e:
+        try:
+            logger.warning(f"[chat] start privacy check failed: {e}")
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail="접근 권한 확인에 실패했습니다.")
     # 채팅방 가져오기 또는 생성
     chat_room = await chat_service.get_or_create_chat_room(
         db, user_id=current_user.id, character_id=request.character_id
@@ -1283,6 +1350,20 @@ async def start_new_chat(
     db: AsyncSession = Depends(get_db),
 ):
     """새 채팅 시작 - 무조건 새로운 채팅방 생성"""
+    # ✅ 비공개 접근 차단(요구사항 변경 반영)
+    try:
+        ch = (await db.execute(select(Character).where(Character.id == request.character_id))).scalars().first()
+        if not ch:
+            raise HTTPException(status_code=404, detail="캐릭터를 찾을 수 없습니다.")
+        await _ensure_character_story_accessible(db, current_user, ch)
+    except HTTPException:
+        raise
+    except Exception as e:
+        try:
+            logger.warning(f"[chat] start-new privacy check failed: {e}")
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail="접근 권한 확인에 실패했습니다.")
     # 무조건 새 채팅방 생성 (기존 방과 분리)
     chat_room = await chat_service.create_chat_room(
         db, user_id=current_user.id, character_id=request.character_id
@@ -1612,6 +1693,9 @@ async def send_message(
         if not room:
             raise HTTPException(status_code=404, detail="채팅방을 찾을 수 없습니다.")
         character = room.character
+
+    # ✅ 비공개 접근 차단(요구사항 변경 반영)
+    await _ensure_character_story_accessible(db, current_user, character)
 
     # ✅ 토큰 치환용 사용자명: 페르소나(활성+scope) 우선, 없으면 닉네임 폴백
     # - DB에는 토큰 원문을 보존하고, "프롬프트/첫 인사" 생성 시점에만 렌더링한다(SSOT).
@@ -1976,6 +2060,8 @@ async def get_chat_history(
         raise HTTPException(status_code=404, detail="채팅방을 찾을 수 없습니다.")
     if room.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="이 채팅방에 접근할 권한이 없습니다.")
+    # ✅ 비공개 접근 차단(요구사항 변경 반영)
+    await _ensure_character_story_accessible(db, current_user, room.character)
     messages = await chat_service.get_messages_by_room_id(db, session_id, skip, limit)
     return messages
 
@@ -2023,6 +2109,9 @@ async def get_chat_room(
     # 권한 확인
     if room.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="이 채팅방에 접근할 권한이 없습니다.")
+
+    # ✅ 비공개 접근 차단(요구사항 변경 반영)
+    await _ensure_character_story_accessible(db, current_user, room.character)
     
     return room
 
@@ -2039,6 +2128,9 @@ async def get_chat_room_meta(
         raise HTTPException(status_code=404, detail="채팅방을 찾을 수 없습니다.")
     if room.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="이 채팅방에 접근할 권한이 없습니다.")
+
+    # ✅ 비공개 접근 차단(요구사항 변경 반영)
+    await _ensure_character_story_accessible(db, current_user, room.character)
     meta = await _get_room_meta(room_id)
     # 필요한 키만 노출(안전)
     allowed = {
@@ -2125,6 +2217,35 @@ async def origchat_start(
     try:
         if not settings.ORIGCHAT_V2:
             raise HTTPException(status_code=404, detail="origchat v2 비활성화")
+
+        # ✅ 삭제된 작품(스토리) 가드
+        #
+        # 요구사항:
+        # - 작품(원작)이 삭제된 경우, 원작챗 진입 시 "삭제된 작품입니다"를 노출하고 진입을 막는다.
+        #
+        # 구현:
+        # - 프론트는 story_id를 함께 보내므로, story_id가 있고 스토리가 없으면 즉시 410(Gone)으로 차단한다.
+        # - 이후 character.origin_story_id로도 동일하게 방어(레거시/호환).
+        story_id_from_payload = payload.get("story_id")
+        if story_id_from_payload:
+            try:
+                if not isinstance(story_id_from_payload, uuid.UUID):
+                    story_id_from_payload = uuid.UUID(str(story_id_from_payload))
+            except Exception:
+                story_id_from_payload = None
+        if story_id_from_payload:
+            try:
+                s_exists = (await db.execute(select(Story.id).where(Story.id == story_id_from_payload))).first()
+                if not s_exists:
+                    raise HTTPException(status_code=410, detail="삭제된 작품입니다")
+            except HTTPException:
+                raise
+            except Exception as e:
+                # DB 오류는 조용히 삼키지 않는다(로그 남김)
+                try:
+                    logger.warning(f"[origchat_start] story deleted check failed: {e}")
+                except Exception:
+                    pass
         character_id = payload.get("character_id")
         if not character_id:
             raise HTTPException(status_code=400, detail="character_id가 필요합니다")
@@ -2157,9 +2278,8 @@ async def origchat_start(
         except Exception:
             force_new = False
 
-        # ✅ 비공개 정책(요구사항 정리):
-        # - 스토리/캐릭터가 비공개가 되더라도 "기존에 이용하던 유저"는 계속 이용(기존 room 재사용) 가능
-        # - 다만, 새로 대화(force_new 포함) 또는 기존 room이 없는 상태의 "신규 시작"은 차단한다.
+        # ✅ 비공개 정책(요구사항 변경 반영):
+        # - 비공개된 웹소설/캐릭터/원작챗은 모두 접근 불가(creator/admin 제외)
         #
         # 방어적 처리:
         # - 스토리 비공개(Story.is_public=False)라면 작성자/관리자 외 신규 시작 금지
@@ -2186,6 +2306,9 @@ async def origchat_start(
                 srow = (await db.execute(
                     select(Story.id, Story.creator_id, Story.is_public).where(Story.id == story_id)
                 )).first()
+                # ✅ 삭제된 작품이면 신규/기존 상관없이 차단
+                if not srow:
+                    raise HTTPException(status_code=410, detail="삭제된 작품입니다")
                 if srow:
                     s_is_public = bool(getattr(srow, "is_public", True))
                     s_creator_id = getattr(srow, "creator_id", None)
@@ -2203,9 +2326,9 @@ async def origchat_start(
             logger.warning(f"[origchat_start] privacy check 실패(continue): {e}")
             restrict_new_room = False
 
-        # 새로 대화(강제 신규 생성)는 비공개 대상이면 차단
-        if restrict_new_room and force_new:
-            raise HTTPException(status_code=403, detail="비공개된 원작/캐릭터는 새로 대화를 시작할 수 없습니다.")
+        # ✅ 비공개 대상이면 접근 자체를 차단(새로 대화/기존 대화 구분 없음)
+        if restrict_new_room:
+            raise HTTPException(status_code=403, detail="비공개된 작품/캐릭터는 접근할 수 없습니다.")
         
         # ✅ plain 모드인 경우 기존 room 재사용 시도
         room = None
@@ -2314,6 +2437,12 @@ async def origchat_start(
                     logger.warning(f"[origchat_start] origchat starts incr 실패: {e}")
                 await db.execute(update(Story).where(Story.id == story_id).values(is_origchat=True))
                 await db.commit()
+        except HTTPException:
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+            raise
         except Exception:
             await db.rollback()
 
@@ -2774,14 +2903,29 @@ async def origchat_turn(
             raise HTTPException(status_code=404, detail="채팅방을 찾을 수 없습니다")
         if room.user_id != current_user.id:
             raise HTTPException(status_code=403, detail="권한이 없습니다")
-        # 안전망: 캐릭터에 연결된 원작 스토리가 있으면 플래그 지정
+        # ✅ 비공개/삭제 가드(요구사항 변경 반영)
+        # - 비공개된 작품/캐릭터: 403
+        # - 삭제된 작품(연결 깨짐 포함): 410
         sid = None  # 명시적 초기화
         try:
-            crow = await db.execute(select(Character.origin_story_id).where(Character.id == room.character_id))
-            sid = (crow.first() or [None])[0]
-            if sid:
-                await db.execute(update(Story).where(Story.id == sid).values(is_origchat=True))
-                await db.commit()
+            char = getattr(room, "character", None)
+            if not char:
+                char = (await db.execute(select(Character).where(Character.id == room.character_id))).scalars().first()
+            if not char:
+                raise HTTPException(status_code=404, detail="캐릭터를 찾을 수 없습니다.")
+            sid = getattr(char, "origin_story_id", None)
+            if not sid:
+                raise HTTPException(status_code=410, detail="삭제된 작품입니다.")
+            await _ensure_character_story_accessible(db, current_user, char)
+            # 안전망: 캐릭터에 연결된 원작 스토리가 있으면 플래그 지정(베스트 에포트)
+            await db.execute(update(Story).where(Story.id == sid).values(is_origchat=True))
+            await db.commit()
+        except HTTPException:
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+            raise
         except Exception:
             await db.rollback()
         user_text = (payload.get("user_text") or "").strip()
@@ -2980,6 +3124,19 @@ async def origchat_turn(
             "[일관성 규칙] 세계관/인물/설정의 내적 일관성을 유지하라. 원작과 모순되는 사실/타작품 요소 도입 금지.",
             "[반복 금지] 이전 대사/서술을 재탕하거나 공회전하는 전개 금지. 매 턴 새로운 상황/감정/행동/갈등을 진행.",
         ]
+        # ✅ [P0] 사용자 대사/행동 '대신 생성' 방지(원작챗 전 모드 공통)
+        #
+        # 문제:
+        # - 모델이 '상대(사용자/페르소나)의 대사/행동'까지 서술/창작해버리면
+        #   유저가 "내가 한 말을 네가 정해버렸다"라고 강한 거부감을 느낀다(치명 UX).
+        #
+        # 정책:
+        # - 사용자의 말/행동/내적(생각/감정)은 "사용자가 입력한 내용"을 넘어서 확정/창작하지 않는다.
+        # - 필요하면 질문으로 확인하거나, 선택지(제안) 형태로 제시한다.
+        # - 사용자를 3인칭 서술(예: 'OO이 말했다/했다')로 쓰지 않는다.
+        rule_lines.append("[대화 원칙] ⛔ 사용자의 대사/행동/생각을 대신 쓰거나 확정하지 마세요. 사용자가 입력한 것만 사실로 취급하세요.")
+        rule_lines.append("[대화 원칙] ⛔ 사용자를 3인칭으로 서술하지 마세요. (예: '상대가 말했다/OO이 했다' 금지)")
+        rule_lines.append("[대화 원칙] ✅ 상대의 행동이 필요하면 질문하거나 선택지를 제안하세요. 당신은 캐릭터의 말/행동만 작성하세요.")
         if mode == "plain":
             # ✅ [P0] plain 모드 규칙 완화(정체성 회복)
             # - 기존 문구는 모델이 "원작 사건/줄거리 언급 자체"를 회피(=모른다/말 못한다)로 오해할 수 있다.
@@ -3290,6 +3447,10 @@ async def origchat_turn(
                 partner_block.append(f"- 이름을 모르는 척 하지 마세요")
                 partner_block.append(f"- 다른 호칭 금지")
                 partner_block.append(f"- 자연스럽게 '{pn}'의 이름을 언급하세요")
+                # ✅ 사용자(페르소나) 대사/행동 대신 생성 방지(가장 강한 위치=상단)
+                partner_block.append(f"- ⛔ '{pn}'의 대사/행동/생각을 당신이 대신 작성하거나 확정하지 마세요.")
+                partner_block.append(f"- ⛔ '\"...\" {pn}이 말했다/했다' 같은 3인칭 서술 금지. '{pn}, ...'처럼 직접 호칭은 허용.")
+                partner_block.append(f"- ✅ 필요한 경우 질문으로 확인하거나 선택지를 제안하세요.")
                 parts.insert(0, "\n".join(partner_block))
                 if ctx_block:
                     # ✅ [P0] 작품/정체성 블록을 상단에서 밀어내지 않도록 ctx 삽입 위치를 조정한다.

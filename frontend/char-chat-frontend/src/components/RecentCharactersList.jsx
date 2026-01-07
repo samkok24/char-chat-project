@@ -41,11 +41,15 @@ export const RecentCharactersList = ({ limit = 4 }) => {
     const onVisibility = () => {
       if (document.visibilityState === 'visible') refetch();
     };
+    // ✅ 채팅방 생성/삭제/메시지 전송 등으로 목록이 바뀌면 즉시 갱신
+    const onRoomsChanged = () => refetch();
     window.addEventListener('auth:tokenRefreshed', onTokenRefreshed);
     document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('chat:roomsChanged', onRoomsChanged);
     return () => {
       window.removeEventListener('auth:tokenRefreshed', onTokenRefreshed);
       document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('chat:roomsChanged', onRoomsChanged);
     };
   }, [refetch]);
 

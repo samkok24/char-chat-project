@@ -90,71 +90,6 @@ const ChatPage = () => {
   const [character, setCharacter] = useState(null);
   const [chatRoomId, setChatRoomId] = useState(null);
   const [aiThinking, setAiThinking] = useState(false);
-
-  /**
-   * ✅ 원작챗 페르소나 적용 여부 안내(1회)
-   *
-   * 문제:
-   * - 유저가 페르소나를 "만들기만" 하고 활성화를 안 했거나,
-   * - 적용 범위를 "일반 캐릭터챗만"으로 둔 채 원작챗을 하면,
-   *   캐릭터가 유저 이름을 모르는 것처럼 보여 혼란이 생긴다.
-   *
-   * 해결(UX/방어):
-   * - 원작챗 진입 시 활성 페르소나를 조회해, 적용 중인지/미적용인지 토스트로 1회 알려준다.
-   */
-  useEffect(() => {
-    if (!isOrigChat || !chatRoomId) return;
-
-    const SCOPE_LABEL = {
-      all: '모두 적용',
-      character: '일반 캐릭터챗만',
-      origchat: '원작챗만',
-    };
-
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await userPersonasAPI.getCurrentActivePersona();
-        if (cancelled) return;
-
-        const persona = res?.data || null;
-        const name = String(persona?.name || '').trim();
-        const scope = String(persona?.apply_scope || persona?.applyScope || 'all').toLowerCase();
-
-        if (!name) return;
-
-        if (scope === 'all' || scope === 'origchat') {
-          showToastOnce({
-            key: `origchat-persona-ok:${chatRoomId}`,
-            type: 'info',
-            message: `원작챗 페르소나 적용 중: ${name}`,
-          });
-        } else {
-          const label = SCOPE_LABEL[scope] || scope;
-          showToastOnce({
-            key: `origchat-persona-scope:${chatRoomId}:${scope}`,
-            type: 'warning',
-            message: `현재 활성 페르소나 적용 범위(${label})라 원작챗에는 적용되지 않습니다.`,
-          });
-        }
-      } catch (e) {
-        const status = e?.response?.status;
-        if (status === 404) {
-          showToastOnce({
-            key: `origchat-persona-none:${chatRoomId}`,
-            type: 'info',
-            message: '원작챗에서 이름을 반영하려면 유저 페르소나를 활성화하세요.',
-          });
-          return;
-        }
-        console.error('[ChatPage] active persona check failed:', e);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [isOrigChat, chatRoomId]);
   
   // 채팅방 입장 시 읽음 처리
   useEffect(() => {
@@ -166,6 +101,8 @@ const ChatPage = () => {
   }, [chatRoomId]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  // ✅ 접근 불가(비공개) 경고 모달
+  const [accessDeniedModal, setAccessDeniedModal] = useState({ open: false, message: '' });
   const [showModelModal, setShowModelModal] = useState(false);
   const [modalInitialTab, setModalInitialTab] = useState('model');
   const [currentModel, setCurrentModel] = useState('gemini');
@@ -231,6 +168,86 @@ const ChatPage = () => {
   const origSyncHintTimerRef = useRef(null);
   // 새로운 선택지가 도착하면 다시 활성화
   useEffect(() => { setChoiceLocked(false); }, [pendingChoices]);
+
+  // ✅ 소켓 기반(일반 캐릭터챗)에서 비공개로 인해 서버가 거부한 경우에도 "접근 불가" 모달로 통일한다.
+  useEffect(() => {
+    try {
+      const msg = String(socketError || '').trim();
+      if (!msg) return;
+      if (!msg.includes('비공개')) return;
+      setAccessDeniedModal({ open: true, message: msg });
+      try { setError(msg); } catch (_) {}
+    } catch (_) {}
+  }, [socketError]);
+
+  /**
+   * ✅ 원작챗 페르소나 적용 여부 안내(1회)
+   *
+   * ⚠️ 중요(버그 방지):
+   * - `isOrigChat` 상태 선언(useState)보다 먼저 참조하면 TDZ(ReferenceError)가 발생할 수 있어,
+   *   원작챗 상태 선언 이후에 배치한다.
+   *
+   * 문제:
+   * - 유저가 페르소나를 "만들기만" 하고 활성화를 안 했거나,
+   * - 적용 범위를 "일반 캐릭터챗만"으로 둔 채 원작챗을 하면,
+   *   캐릭터가 유저 이름을 모르는 것처럼 보여 혼란이 생긴다.
+   *
+   * 해결(UX/방어):
+   * - 원작챗 진입 시 활성 페르소나를 조회해, 적용 중인지/미적용인지 토스트로 1회 알려준다.
+   */
+  useEffect(() => {
+    if (!isOrigChat || !chatRoomId) return;
+
+    const SCOPE_LABEL = {
+      all: '모두 적용',
+      character: '일반 캐릭터챗만',
+      origchat: '원작챗만',
+    };
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await userPersonasAPI.getCurrentActivePersona();
+        if (cancelled) return;
+
+        const persona = res?.data || null;
+        const name = String(persona?.name || '').trim();
+        const scope = String(persona?.apply_scope || persona?.applyScope || 'all').toLowerCase();
+
+        if (!name) return;
+
+        if (scope === 'all' || scope === 'origchat') {
+          showToastOnce({
+            key: `origchat-persona-ok:${chatRoomId}`,
+            type: 'info',
+            message: `원작챗 페르소나 적용 중: ${name}`,
+          });
+        } else {
+          const label = SCOPE_LABEL[scope] || scope;
+          showToastOnce({
+            key: `origchat-persona-scope:${chatRoomId}:${scope}`,
+            type: 'warning',
+            message: `현재 활성 페르소나 적용 범위(${label})라 원작챗에는 적용되지 않습니다.`,
+          });
+        }
+      } catch (e) {
+        const status = e?.response?.status;
+        if (status === 404) {
+          showToastOnce({
+            key: `origchat-persona-none:${chatRoomId}`,
+            type: 'info',
+            message: '원작챗에서 이름을 반영하려면 유저 페르소나를 활성화하세요.',
+          });
+          return;
+        }
+        console.error('[ChatPage] active persona check failed:', e);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isOrigChat, chatRoomId]);
   const [rangeWarning, setRangeWarning] = useState('');
   // 원작챗 메타(진행도/완료/모드)
   const [origMeta, setOrigMeta] = useState({ turnCount: null, maxTurns: null, completed: false, mode: null, init_stage: null, intro_ready: null });
@@ -276,6 +293,102 @@ const ChatPage = () => {
   const genIdemKey = useCallback(() => {
     try { return `${chatRoomId || 'room'}:${Date.now()}:${Math.random().toString(36).slice(2,8)}`; } catch (_) { return `${Date.now()}`; }
   }, [chatRoomId]);
+
+  /**
+   * ✅ 원작챗: 삭제된 작품(원작) 처리
+   *
+   * 요구사항:
+   * - 작품(스토리)이 삭제되면,
+   *   - 접근 시: "삭제된 작품입니다" 안내
+   *   - 채팅 중(턴 요청 시): "삭제된 작품입니다" 안내 후 강제 종료
+   *
+   * 동작:
+   * - 백엔드가 410(Gone) 또는 "삭제된 작품" 문구(detail)를 반환하면 삭제 케이스로 간주한다.
+   * - UX: 토스트 안내 + (옵션) 홈으로 이동(강제 종료)
+   * - 방어: 로컬 최근방 캐시를 제거해 재진입 루프를 막는다.
+   *
+   * @returns {boolean} true면 "삭제된 작품" 케이스로 처리 완료(호출부는 재시도/추가처리 금지)
+   */
+  const handleOrigchatDeleted = useCallback((err, opts = { navigateAway: true }) => {
+    try {
+      const rid = chatRoomIdRef.current || null;
+      const status = err?.response?.status;
+      const detail = String(err?.response?.data?.detail || err?.message || '').trim();
+      // ✅ 410(Gone)은 명시적으로 "삭제" 의미.
+      // ✅ 일부 케이스(스토리/캐릭터/룸이 DB에서 사라져 404가 나는 경우)도 원작챗 컨텍스트에서는 삭제로 간주한다.
+      let src = '';
+      let sid = '';
+      try {
+        const params = new URLSearchParams(location.search || '');
+        src = String(params.get('source') || '');
+        sid = String(params.get('storyId') || '');
+      } catch (_) {}
+      const inOrigchat = String(src).toLowerCase() === 'origchat';
+      const isDeleted = (
+        status === 410 ||
+        detail.includes('삭제된 작품') ||
+        (
+          inOrigchat &&
+          status === 404 &&
+          (
+            detail.includes('스토리를 찾을 수 없습니다') ||
+            detail.includes('채팅방을 찾을 수 없습니다') ||
+            detail.includes('캐릭터를 찾을 수 없습니다')
+          )
+        )
+      );
+      if (!isDeleted) return false;
+
+      const msg = '삭제된 작품입니다';
+      showToastOnce({
+        key: `origchat-deleted:${rid || 'unknown'}`,
+        type: 'error',
+        message: msg,
+      });
+
+      // 로컬 최근 방 캐시 제거(재진입 루프 방지)
+      try {
+        if (src === 'origchat' && sid) {
+          const k = `cc:lastRoom:${user?.id || 'anon'}:${characterId || 'none'}:${sid || 'none'}:origchat`;
+          localStorage.removeItem(k);
+        }
+      } catch (_) {}
+
+      if (opts?.navigateAway) {
+        try { if (rid) leaveRoom?.(rid); } catch (_) {}
+        try { navigate('/', { replace: true }); } catch (_) {}
+      }
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }, [leaveRoom, navigate, location.search, user?.id, characterId]);
+
+  /**
+   * ✅ 비공개(접근 불가) 처리: 경고 모달
+   *
+   * 요구사항(최신):
+   * - 비공개된 웹소설/캐릭터챗/원작챗은 모두 접근 불가 → 경고 모달을 띄운다.
+   *
+   * @returns {boolean} true면 접근 불가로 처리 완료(호출부는 추가 처리/재시도 금지)
+   */
+  const handleAccessDenied = useCallback((err) => {
+    try {
+      const status = err?.response?.status;
+      if (status !== 403) return false;
+
+      const detailRaw = err?.response?.data?.detail || err?.message || '';
+      const detail = String(detailRaw || '').trim();
+      const msg = detail || '접근할 수 없습니다.';
+
+      // ✅ 모달을 띄우고, 화면이 하얗게 깨지지 않도록 error도 안전 메시지로 세팅한다.
+      setAccessDeniedModal({ open: true, message: msg });
+      try { setError(msg); } catch (_) {}
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }, []);
 
   /**
    * ✅ 원작챗 수동 동기화:
@@ -325,7 +438,11 @@ const ChatPage = () => {
               if (Array.isArray(choiceMeta.choices) && choiceMeta.choices.length > 0) {
                 setPendingChoices(choiceMeta.choices);
               }
-            } catch (_) {}
+            } catch (e) {
+              // 삭제된 작품이면 강제 종료
+              if (handleOrigchatDeleted(e)) return;
+              if (handleAccessDenied(e)) return;
+            }
           } else if (Array.isArray(meta.initial_choices) && meta.initial_choices.length > 0 && serverMessages.length <= 1) {
             setPendingChoices(meta.initial_choices);
           }
@@ -344,11 +461,13 @@ const ChatPage = () => {
       try { setShowOrigSyncHint(false); } catch (_) {}
     } catch (e) {
       console.error('[ChatPage] origchat sync failed:', e);
+      if (handleOrigchatDeleted(e)) return;
+      if (handleAccessDenied(e)) return;
       showToastOnce({ key: `origchat-sync-fail:${chatRoomId}`, type: 'error', message: '동기화에 실패했습니다. 잠시 후 다시 시도해주세요.' });
     } finally {
       setOrigSyncLoading(false);
     }
-  }, [chatRoomId, isOrigChat, origTurnLoading, origSyncLoading, setMessages]);
+  }, [chatRoomId, isOrigChat, origTurnLoading, origSyncLoading, setMessages, handleOrigchatDeleted, handleAccessDenied]);
 
   // ✅ 원작챗 "수동 동기화" 힌트: 각 브라우저에서 첫 1회만 짧게 노출(모바일/PC 모두 동일)
   useEffect(() => {
@@ -567,7 +686,9 @@ const ChatPage = () => {
             })));
           }
         } catch (_) {
-          showToastOnce({ key: `ctx-warm-fail:${storyIdParam}`, type: 'warning', message: '컨텍스트 준비가 지연되고 있습니다.' });
+          // ✅ 방어: storyIdParam은 아래에서 선언되므로(Temporal Dead Zone) 여기서 참조하면 런타임 에러가 날 수 있다.
+          // 컨텍스트 워밍 실패는 키를 고정해도 충분(중복 토스트 방지 목적).
+          showToastOnce({ key: 'ctx-warm-fail', type: 'warning', message: '컨텍스트 준비가 지연되고 있습니다.' });
         }
 
         // mediaAPI 자산과 병합
@@ -756,8 +877,8 @@ const ChatPage = () => {
                 return startRes.data?.id || startRes.data?.room_id || startRes.data?.room?.id || null;
               };
               roomId = await startChatWithRetry(startFn, 'origchat');
-              // 새 방을 만든 직후에는 최근 세션 리스트가 중복갱신되지 않도록 이벤트 브로드캐스트 지연/스킵
-              try { window.dispatchEvent(new CustomEvent('chat:roomsChanged:suppressOnce')); } catch (_) {}
+              // ✅ 새 방 생성(새로대화) 직후: 사이드바 히스토리/최근대화/대화내역이 즉시 갱신되어야 한다.
+              try { window.dispatchEvent(new Event('chat:roomsChanged')); } catch (_) {}
               if (!roomId) {
                 // 최후 폴백: 일반 시작
                 const roomResponse = await startChatWithRetry(() => chatAPI.startChat(characterId), 'chat');
@@ -910,6 +1031,15 @@ const ChatPage = () => {
 
       } catch (err) {
         console.error('채팅 초기화 실패:', err);
+        // ✅ 원작챗: 삭제된 작품이면 전용 메시지
+        if (handleOrigchatDeleted(err, { navigateAway: false })) {
+          setError('삭제된 작품입니다');
+          return;
+        }
+        // ✅ 비공개/접근 불가(403): 경고 모달
+        if (handleAccessDenied(err)) {
+          return;
+        }
         setError('채팅방을 불러올 수 없습니다. 페이지를 새로고침 해주세요.');
       } finally {
         setLoading(false);
@@ -1280,11 +1410,13 @@ const ChatPage = () => {
       
     } catch (error) {
       console.error('원작챗 상태 로드 실패:', error);
+      if (handleOrigchatDeleted(error)) return;
+      if (handleAccessDenied(error)) return;
     }
   };
   
   loadOrigChatMessages();
-}, [chatRoomId]); // ✅ isOrigChat 의존성 제거
+}, [chatRoomId, handleOrigchatDeleted, handleAccessDenied]); // ✅ isOrigChat 의존성 제거
   // 서버에서 인사말을 저장하므로, 클라이언트에서 별도 주입하지 않습니다.
 
   // ✅ 원작챗을 room 기반으로 복원 진입한 경우(= URL에 storyId/source가 없을 수 있음) storyId를 가능한 범위에서 보강한다.
@@ -1550,13 +1682,15 @@ const ChatPage = () => {
       setShowSituation(false);
     } catch (e) {
       console.error('상황 적용 실패', e);
+      if (handleOrigchatDeleted(e)) return;
+      if (handleAccessDenied(e)) return;
       // 실패 시 시스템 말풍선 롤백(유저 혼란 방지)
       try { setMessages(prev => prev.filter(m => m.id !== sysId)); } catch (_) {}
       showToastOnce({ key: `orig-sit-fail:${chatRoomId}`, type: 'error', message: '상황 적용에 실패했습니다. 잠시 후 다시 시도해주세요.' });
     } finally {
       setOrigTurnLoading(false);
     }
-  }, [isOrigChat, chatRoomId, origTurnLoading, situationText, genIdemKey, removeSituationHintBubble, setMessages]);
+  }, [isOrigChat, chatRoomId, origTurnLoading, situationText, genIdemKey, removeSituationHintBubble, setMessages, handleOrigchatDeleted, handleAccessDenied]);
 
   // ✅ 상황 입력 토글이 열릴 때: 안내 말풍선을 잠깐 보여준다(모바일/PC 공통)
   useEffect(() => {
@@ -1666,8 +1800,19 @@ const ChatPage = () => {
         // 경고 문구 처리
         const warn = meta.warning;
         setRangeWarning(typeof warn === 'string' ? warn : '');
+
+        // ✅ 최근대화/대화내역 갱신(룸의 last_chat_time/snippet이 바뀜)
+        try { window.dispatchEvent(new Event('chat:roomsChanged')); } catch (_) {}
       } catch (err) {
         console.error('원작챗 턴 실패', err);
+        if (handleOrigchatDeleted(err)) {
+          try { setNewMessage(''); } catch (_) {}
+          return;
+        }
+        if (handleAccessDenied(err)) {
+          try { setNewMessage(''); } catch (_) {}
+          return;
+        }
         showToastOnce({ key: `turn-fail:${chatRoomId}`, type: 'error', message: '응답 생성에 실패했습니다.' });
         try {
           const retry = window.confirm('응답 생성에 실패했습니다. 다시 시도할까요?');
@@ -1687,7 +1832,10 @@ const ChatPage = () => {
             const warn = meta.warning;
             setRangeWarning(typeof warn === 'string' ? warn : '');
           }
-        } catch(_) {}
+        } catch(e2) {
+          if (handleOrigchatDeleted(e2)) return;
+          if (handleAccessDenied(e2)) return;
+        }
       } finally {
         setOrigTurnLoading(false);
       }
@@ -1732,6 +1880,9 @@ const ChatPage = () => {
         );
         settingsSyncedRef.current = true;
         setMessages(prev => prev.map(m => m.id === tempId ? { ...m, pending: false } : m));
+
+        // ✅ 최근대화/대화내역 갱신(룸의 last_chat_time/snippet이 바뀜)
+        try { window.dispatchEvent(new Event('chat:roomsChanged')); } catch (_) {}
       } catch (err) {
         console.error('소켓 전송 실패', err);
         setMessages(prev => prev.filter(m => m.id !== tempId));
@@ -1813,6 +1964,8 @@ const ChatPage = () => {
       setRangeWarning(typeof warn === 'string' ? warn : '');
     } catch (e) {
       console.error('선택 처리 실패', e);
+      if (handleOrigchatDeleted(e)) return;
+      if (handleAccessDenied(e)) return;
       try {
         const retry = window.confirm('응답 생성에 실패했습니다. 다시 시도할까요?');
         if (retry && lastOrigTurnPayload) {
@@ -1831,7 +1984,11 @@ const ChatPage = () => {
           const warn = meta.warning;
           setRangeWarning(typeof warn === 'string' ? warn : '');
         }
-      } catch(_) {}
+      } catch(e2) {
+        // 재시도 중에도 삭제되었을 수 있음
+        if (handleOrigchatDeleted(e2)) return;
+        if (handleAccessDenied(e2)) return;
+      }
     } finally {
       setOrigTurnLoading(false);
       setTurnStage(null);
@@ -1868,11 +2025,13 @@ const ChatPage = () => {
       } catch (_) {}
     } catch (e) {
       console.error('선택지 요청 실패', e);
+      if (handleOrigchatDeleted(e)) return;
+      if (handleAccessDenied(e)) return;
       showToastOnce({ key: `choices-fail:${chatRoomId}`, type: 'error', message: '선택지 요청에 실패했습니다.' });
     } finally {
       setOrigTurnLoading(false);
     }
-  }, [chatRoomId, origTurnLoading, genIdemKey]); // ✅ isOrigChat 의존성 제거
+  }, [chatRoomId, origTurnLoading, genIdemKey, handleOrigchatDeleted, handleAccessDenied]); // ✅ isOrigChat 의존성 제거
 
   // 온디맨드: 자동 진행(next_event) — 선택지 표시 중엔 서버/프론트 모두 가드
   const requestNextEvent = useCallback(async () => {
@@ -1916,12 +2075,14 @@ const ChatPage = () => {
       } catch (_) {}
     } catch (e) {
       console.error('자동 진행 실패', e);
+      if (handleOrigchatDeleted(e)) return;
+      if (handleAccessDenied(e)) return;
       showToastOnce({ key: `next-fail:${chatRoomId}`, type: 'error', message: '자동 진행에 실패했습니다.' });
     } finally {
       setOrigTurnLoading(false);
       setTurnStage(null);
     }
-  }, [isOrigChat, chatRoomId, origTurnLoading, pendingChoices, genIdemKey, chatSettings]);
+  }, [isOrigChat, chatRoomId, origTurnLoading, pendingChoices, genIdemKey, chatSettings, handleOrigchatDeleted, handleAccessDenied]);
   
   // 대화 초기화
   const handleClearChat = async () => {
@@ -2397,6 +2558,52 @@ const ChatPage = () => {
     return () => { try { clearTimeout(t); } catch (_) {} };
   }, [isInitOverlayActive]);
 
+  // ✅ 접근 불가(비공개) 경고 모달 (어떤 return 경로에서도 렌더되도록 상단에 선언)
+  // ✅ AlertDialog(onOpenChange) 방어:
+  // - 일부 환경에서 onOpenChange가 동일 값(false)을 반복 호출하면, object state를 매번 새 객체로 set하여
+  //   "Maximum update depth exceeded" 루프가 생길 수 있다.
+  const accessDeniedWasOpenRef = useRef(false);
+  useEffect(() => { accessDeniedWasOpenRef.current = !!accessDeniedModal?.open; }, [accessDeniedModal?.open]);
+
+  const accessDeniedDialogEl = (
+    <AlertDialog
+      open={!!accessDeniedModal.open}
+      onOpenChange={(open) => {
+        const nextOpen = !!open;
+        // ✅ 동일 값이면 state를 업데이트하지 않는다(무한루프 방지)
+        setAccessDeniedModal((prev) => {
+          const prevOpen = !!(prev?.open);
+          if (prevOpen === nextOpen) return prev || { open: false, message: '' };
+          return { ...(prev || {}), open: nextOpen };
+        });
+        // 확인/닫기에서만 이동(초기 렌더/동일 false 콜백에서 이동 방지)
+        if (accessDeniedWasOpenRef.current && !nextOpen) {
+          try { navigate('/', { replace: true }); } catch (_) {}
+        }
+      }}
+    >
+      <AlertDialogContent className="bg-gray-900 border border-gray-700 text-white">
+        <AlertDialogHeader>
+          <AlertDialogTitle className="text-white">접근 불가</AlertDialogTitle>
+          <AlertDialogDescription className="text-gray-300">
+            {accessDeniedModal.message || '비공개된 콘텐츠입니다.'}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogAction
+            className="bg-purple-600 hover:bg-purple-700 text-white"
+            onClick={() => {
+              setAccessDeniedModal({ open: false, message: '' });
+              try { navigate('/', { replace: true }); } catch (_) {}
+            }}
+          >
+            확인
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+
   // ⚠️ React Hooks 규칙:
   // - 아래의 로딩/에러 화면은 "조건부 return"이지만, Hook 호출 이후에만 return 해야 한다.
   // - 그렇지 않으면 렌더마다 Hook 개수가 달라져(=Rendered more hooks...) 화면이 하얗게 깨진다.
@@ -2407,21 +2614,27 @@ const ChatPage = () => {
           <Loader2 className="w-8 h-8 animate-spin mx-auto mb-4" />
           <p className="text-gray-600">캐릭터 정보를 불러오는 중...</p>
         </div>
+        {accessDeniedDialogEl}
       </div>
     );
   }
 
   if (error && !character) {
+    const isDeletedWork = String(error || '').includes('삭제된 작품');
+    const isPrivateWork = String(error || '').includes('비공개');
     return (
       <div className="min-h-screen bg-gradient-to-br from-purple-50 via-blue-50 to-indigo-50 flex items-center justify-center">
         <div className="text-center">
           <AlertCircle className="w-12 h-12 text-red-500 mx-auto mb-4" />
-          <h3 className="text-lg font-medium text-gray-900 mb-2">오류가 발생했습니다</h3>
+          <h3 className="text-lg font-medium text-gray-900 mb-2">
+            {isDeletedWork ? '삭제된 작품입니다' : (isPrivateWork ? '접근할 수 없습니다' : '오류가 발생했습니다')}
+          </h3>
           <p className="text-gray-600 mb-4">{error}</p>
           <Button onClick={() => navigate('/')} variant="outline">
             홈으로 돌아가기
           </Button>
         </div>
+        {accessDeniedDialogEl}
       </div>
     );
   }
@@ -3415,6 +3628,9 @@ const ChatPage = () => {
         isOrigChat={isOrigChat}
       />
       </ErrorBoundary>
+
+      {/* ✅ 접근 불가(비공개) 경고 모달 */}
+      {accessDeniedDialogEl}
 
       {/* 재생성 모달 */}
       <ErrorBoundary>

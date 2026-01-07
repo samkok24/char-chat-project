@@ -788,6 +788,8 @@ async def enforce_character_consistency(
             "세계관/설정 모순 금지",
             "말투·어휘 결 유지",
             "내용 왜곡 없이 표현만 조정",
+            # ✅ P0: 유저 경험 보호(편집 단계에서도 '사용자 대사/행동'을 새로 만들지 않도록)
+            "사용자(대화 상대)의 대사/행동/내적을 새로 생성하거나 확정하지 말 것",
         ]
         sys_lines = [
             "당신은 한국어 소설 대사/지문 편집자입니다.",
@@ -866,6 +868,7 @@ async def normalize_dialogue_speakers(
             "- 스피커 라벨을 추가하지 말 것. 따옴표 대사/지문만 자연스럽게 유지\n"
             "- focus 인물이 있다면 화법/지각을 우선 반영\n"
             "- 의미 왜곡 없이 표현만 조정\n"
+            "- 사용자(대화 상대)의 대사/행동/내적을 새로 생성하거나 확정하지 말 것\n"
         )
         if focus_name:
             sys += f"\n[focus]\n{focus_name}"
@@ -1058,11 +1061,45 @@ def extract_character_context_from_combined(
     return result
 
 
-async def extract_characters_from_story(db: AsyncSession, story_id, max_chapters: int | None = None) -> int:
+async def extract_characters_from_story(
+    db: AsyncSession,
+    story_id,
+    max_chapters: int | None = None,
+    *,
+    job_service=None,
+    job_id: str | None = None,
+) -> int:
     """LLM을 사용하여 스토리에서 주요 등장인물 3~5명을 추출해 영속화한다.
     - max_chapters가 None이면 모든 회차를 대상으로 한다.
     반환값: 생성된 캐릭터 수(0이면 실패/없음)
+
+    ✅ 취소 지원(방어적):
+    - story_id 기반 추출은 시간이 오래 걸릴 수 있어 "중지" 요구사항이 있다.
+    - job_service/job_id가 주어지면, 작업 상태를 주기적으로 조회하여 cancelled=True면 즉시 종료(-1 반환)한다.
+      (네트워크 호출(LLM) 진행 중에는 즉시 중단이 불가능하므로, 다음 체크 포인트에서 빠르게 멈춘다.)
     """
+    def _safe_err_text(e: Exception) -> str:
+        """에러 문자열을 UI/로그에 안전하게 담기 위한 정규화(너무 길면 자른다)."""
+        try:
+            s = str(e)
+        except Exception:
+            s = "unknown_error"
+        s = (s or "").strip()
+        if len(s) > 800:
+            s = s[:800].rstrip()
+        return s
+
+    def _is_low_credit_error(msg: str) -> bool:
+        """Anthropic 크레딧 부족 에러를 감지한다(문구 기반)."""
+        try:
+            m = (msg or "").lower()
+        except Exception:
+            m = ""
+        return (
+            "credit balance is too low" in m
+            or "plans & billing" in m
+            or "too low to access the anthropic api" in m
+        )
     # 이미 존재하면 스킵
     existing = await db.execute(select(StoryExtractedCharacter.id).where(StoryExtractedCharacter.story_id == story_id).limit(1))
     if existing.first():
@@ -1083,6 +1120,13 @@ async def extract_characters_from_story(db: AsyncSession, story_id, max_chapters
     windows = _chunk_windows_from_chapters(chapters, max_chars=6000)
     if not windows:
         return 0
+
+    # ✅ 진행률(윈도우 기반) 초기화
+    try:
+        if job_service and job_id:
+            await job_service.update_job(job_id, {"total_windows": int(len(windows)), "processed_windows": 0})
+    except Exception:
+        pass
 
     from app.services.ai_service import get_ai_chat_response
     import json
@@ -1113,7 +1157,18 @@ async def extract_characters_from_story(db: AsyncSession, story_id, max_chapters
     )
     agg: Dict[str, Dict[str, Any]] = {}
     order_counter = 0
+    first_error: str | None = None
+    processed = 0
     for win in windows:
+        # ✅ 취소 체크: LLM 호출 전에 확인(즉시성 최대화)
+        if job_service and job_id:
+            try:
+                st = await job_service.get_job(job_id)
+                if st and st.get("cancelled"):
+                    return -1
+            except Exception:
+                # 취소 체크 실패는 무시(추출 지속)
+                pass
         try:
             raw = await get_ai_chat_response(
                 character_prompt=director_prompt,
@@ -1123,8 +1178,33 @@ async def extract_characters_from_story(db: AsyncSession, story_id, max_chapters
                 preferred_sub_model=CLAUDE_MODEL_PRIMARY,
                 response_length_pref="short",
             )
-        except Exception:
+        except Exception as e:
+            # ✅ 크레딧 부족은 더 시도해도 실패하므로 즉시 중단(UX/로그/시간 낭비 방지)
+            emsg = _safe_err_text(e)
+            if not first_error:
+                first_error = emsg
+            try:
+                if job_service and job_id:
+                    await job_service.update_job(job_id, {"last_error": emsg})
+            except Exception:
+                pass
+            if _is_low_credit_error(emsg):
+                raise RuntimeError("Claude(Anthropic) API 크레딧이 부족합니다. 결제/크레딧 충전 후 다시 시도해주세요.")
+            # 기타 오류는 다음 윈도우로 계속 시도(베스트-에포트)
+            processed += 1
+            try:
+                if job_service and job_id:
+                    await job_service.update_job(job_id, {"processed_windows": int(processed)})
+            except Exception:
+                pass
             continue
+
+        processed += 1
+        try:
+            if job_service and job_id:
+                await job_service.update_job(job_id, {"processed_windows": int(processed)})
+        except Exception:
+            pass
         text = (raw or "").strip()
         start = text.find('{')
         end = text.rfind('}')
@@ -1320,8 +1400,11 @@ async def extract_characters_from_story(db: AsyncSession, story_id, max_chapters
             pass
 
     if not agg:
-        # LLM이 실패하면 0을 반환하여 상위에서 폴백/에러 처리
-        return 0
+        # LLM이 실패하면 0을 반환/상위에서 폴백할 수 있지만,
+        # 비동기 Job에서는 "성공처럼 보이는" 문제가 생길 수 있어 예외로 명확히 전달한다.
+        if first_error:
+            raise RuntimeError(f"등장인물 추출에 실패했습니다. ({first_error})")
+        raise RuntimeError("등장인물 추출에 실패했습니다. (추출 결과 없음)")
     
     # 정렬: 중요도(주인공 우선) → 언급횟수 → 등장순서
     def importance_score(x):
@@ -1360,6 +1443,14 @@ async def extract_characters_from_story(db: AsyncSession, story_id, max_chapters
 
     created_count = 0
     for idx, it in enumerate(top):
+        # ✅ 취소 체크: 캐릭터 생성 루프에서도 확인(부분 생성 최소화)
+        if job_service and job_id:
+            try:
+                st = await job_service.get_job(job_id)
+                if st and st.get("cancelled"):
+                    return -1
+            except Exception:
+                pass
         try:
             # 캐릭터 엔티티 생성(원작 연동 타입)
             ch = Character(
@@ -1376,11 +1467,19 @@ async def extract_characters_from_story(db: AsyncSession, story_id, max_chapters
             )
             db.add(ch)
             await db.flush()
-            # LLM 보강은 베스트-에포트
-            try:
-                await _enrich_character_fields(db, ch, combined)
-            except Exception:
-                pass
+            # ✅ 취소 체크: flush 이후에도 확인(가급적 commit 전 중단)
+            if job_service and job_id:
+                try:
+                    st = await job_service.get_job(job_id)
+                    if st and st.get("cancelled"):
+                        # 아직 commit 전이므로 rollback으로 잔여물 최소화
+                        try:
+                            await db.rollback()
+                        except Exception:
+                            pass
+                        return -1
+                except Exception:
+                    pass
             rec = StoryExtractedCharacter(
                 story_id=story_id,
                 name=it['name'],
@@ -1392,6 +1491,22 @@ async def extract_characters_from_story(db: AsyncSession, story_id, max_chapters
             db.add(rec)
             await db.commit()
             created_count += 1
+
+            # ✅ LLM 보강은 "저장(캐릭터+추출레코드) 이후"에 실행한다.
+            # - _enrich_character_fields 내부에서 commit()을 할 수 있어, 저장 순서가 꼬이면
+            #   Character만 남고 StoryExtractedCharacter가 없는(그리드에는 안 뜨는데 홈에는 뜨는) 문제가 발생할 수 있다.
+            try:
+                # 취소된 경우 보강은 생략(불필요한 비용 방지)
+                if job_service and job_id:
+                    try:
+                        st = await job_service.get_job(job_id)
+                        if st and st.get("cancelled"):
+                            return -1
+                    except Exception:
+                        pass
+                await _enrich_character_fields(db, ch, combined)
+            except Exception:
+                pass
         except Exception:
             try:
                 await db.rollback()
