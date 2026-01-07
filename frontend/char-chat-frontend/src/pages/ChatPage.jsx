@@ -7,7 +7,7 @@ import ErrorBoundary from '../components/ErrorBoundary';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useSocket } from '../contexts/SocketContext';
-import { charactersAPI, chatAPI, usersAPI, origChatAPI, mediaAPI, storiesAPI } from '../lib/api'; // usersAPI 추가
+import { charactersAPI, chatAPI, usersAPI, origChatAPI, mediaAPI, storiesAPI, userPersonasAPI } from '../lib/api'; // usersAPI 추가
 import { showToastOnce } from '../lib/toastOnce';
 import { resolveImageUrl, getCharacterPrimaryImage, buildPortraitSrcSet } from '../lib/images';
 import { getReadingProgress } from '../lib/reading';
@@ -90,6 +90,71 @@ const ChatPage = () => {
   const [character, setCharacter] = useState(null);
   const [chatRoomId, setChatRoomId] = useState(null);
   const [aiThinking, setAiThinking] = useState(false);
+
+  /**
+   * ✅ 원작챗 페르소나 적용 여부 안내(1회)
+   *
+   * 문제:
+   * - 유저가 페르소나를 "만들기만" 하고 활성화를 안 했거나,
+   * - 적용 범위를 "일반 캐릭터챗만"으로 둔 채 원작챗을 하면,
+   *   캐릭터가 유저 이름을 모르는 것처럼 보여 혼란이 생긴다.
+   *
+   * 해결(UX/방어):
+   * - 원작챗 진입 시 활성 페르소나를 조회해, 적용 중인지/미적용인지 토스트로 1회 알려준다.
+   */
+  useEffect(() => {
+    if (!isOrigChat || !chatRoomId) return;
+
+    const SCOPE_LABEL = {
+      all: '모두 적용',
+      character: '일반 캐릭터챗만',
+      origchat: '원작챗만',
+    };
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await userPersonasAPI.getCurrentActivePersona();
+        if (cancelled) return;
+
+        const persona = res?.data || null;
+        const name = String(persona?.name || '').trim();
+        const scope = String(persona?.apply_scope || persona?.applyScope || 'all').toLowerCase();
+
+        if (!name) return;
+
+        if (scope === 'all' || scope === 'origchat') {
+          showToastOnce({
+            key: `origchat-persona-ok:${chatRoomId}`,
+            type: 'info',
+            message: `원작챗 페르소나 적용 중: ${name}`,
+          });
+        } else {
+          const label = SCOPE_LABEL[scope] || scope;
+          showToastOnce({
+            key: `origchat-persona-scope:${chatRoomId}:${scope}`,
+            type: 'warning',
+            message: `현재 활성 페르소나 적용 범위(${label})라 원작챗에는 적용되지 않습니다.`,
+          });
+        }
+      } catch (e) {
+        const status = e?.response?.status;
+        if (status === 404) {
+          showToastOnce({
+            key: `origchat-persona-none:${chatRoomId}`,
+            type: 'info',
+            message: '원작챗에서 이름을 반영하려면 유저 페르소나를 활성화하세요.',
+          });
+          return;
+        }
+        console.error('[ChatPage] active persona check failed:', e);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isOrigChat, chatRoomId]);
   
   // 채팅방 입장 시 읽음 처리
   useEffect(() => {
@@ -160,6 +225,10 @@ const ChatPage = () => {
   const [lastOrigTurnPayload, setLastOrigTurnPayload] = useState(null);
   const [pendingChoices, setPendingChoices] = useState([]);
   const [choiceLocked, setChoiceLocked] = useState(false);
+  // ✅ 원작챗 수동 동기화(모바일↔PC 이어하기용)
+  const [origSyncLoading, setOrigSyncLoading] = useState(false);
+  const [showOrigSyncHint, setShowOrigSyncHint] = useState(false);
+  const origSyncHintTimerRef = useRef(null);
   // 새로운 선택지가 도착하면 다시 활성화
   useEffect(() => { setChoiceLocked(false); }, [pendingChoices]);
   const [rangeWarning, setRangeWarning] = useState('');
@@ -181,6 +250,9 @@ const ChatPage = () => {
   // 상황 입력 토글/값
   const [showSituation, setShowSituation] = useState(false);
   const [situationText, setSituationText] = useState('');
+  // ✅ 원작챗: 상황 입력 안내 말풍선(로컬 UI 전용, DB 저장 안 함)
+  const situationHintMsgIdRef = useRef(null);
+  const situationHintTimerRef = useRef(null);
   const getCarouselButtonClass = useCallback((disabled) => {
     if (resolvedTheme === 'light') {
       return disabled
@@ -199,9 +271,107 @@ const ChatPage = () => {
   const isPinnedRef = useRef(false);
   const pinnedUrlRef = useRef('');
   const autoScrollRef = useRef(true); // 사용자가 맨 아래에 있는지 추적
+  // ✅ 최신 roomId 추적(모바일 탭 전환/언마운트 시 leave_room 정확도 확보)
+  const chatRoomIdRef = useRef(null);
   const genIdemKey = useCallback(() => {
     try { return `${chatRoomId || 'room'}:${Date.now()}:${Math.random().toString(36).slice(2,8)}`; } catch (_) { return `${Date.now()}`; }
   }, [chatRoomId]);
+
+  /**
+   * ✅ 원작챗 수동 동기화:
+   * - 원작챗은 Socket.IO 실시간 브로드캐스트가 아니라 REST로 메시지를 저장/조회한다.
+   * - 그래서 모바일↔PC를 번갈아 사용할 때 현재 탭이 자동으로 최신 메시지를 못 받을 수 있다.
+   * - 유저가 헤더의 ↻(동기화) 버튼을 누르면 DB 기준 최신 메시지 + 메타를 즉시 다시 로드한다.
+   */
+  const handleOrigSync = useCallback(async () => {
+    if (!chatRoomId || !isOrigChat) return;
+    // 생성/턴 처리 중에는 상태 경쟁을 피한다.
+    if (origTurnLoading || origSyncLoading) return;
+
+    setOrigSyncLoading(true);
+    try {
+      // 1) 메타 갱신(진행도/모드 등)
+      const metaRes = await chatAPI.getRoomMeta(chatRoomId);
+      const meta = metaRes?.data || {};
+      setOrigMeta(prev => ({
+        ...(prev || {}),
+        turnCount: Number(meta.turn_count || meta.turnCount || 0) || 0,
+        maxTurns: Number(meta.max_turns || meta.maxTurns || 500) || 500,
+        completed: Boolean(meta.completed),
+        mode: meta.mode || (prev?.mode || null),
+        narrator_mode: Boolean(meta.narrator_mode),
+        seed_label: meta.seed_label || null,
+        init_stage: meta.init_stage || prev?.init_stage || null,
+        intro_ready: typeof meta.intro_ready === 'boolean' ? meta.intro_ready : (prev?.intro_ready ?? null),
+      }));
+
+      // 2) 메시지 갱신(서버 SSOT) - 최근 기준(tail)
+      const resp = await chatAPI.getMessages(chatRoomId, { tail: 1, skip: 0, limit: 200 });
+      const serverMessages = Array.isArray(resp?.data) ? resp.data : [];
+      setMessages(serverMessages);
+
+      // 3) 선택지 복원(plain 모드는 의도적으로 스킵)
+      try {
+        const mode = (meta.mode || '').toLowerCase();
+        if (mode !== 'plain') {
+          if (meta.pending_choices_active) {
+            try {
+              const choiceResp = await origChatAPI.turn({
+                room_id: chatRoomId,
+                trigger: 'choices',
+                idempotency_key: `sync-${Date.now()}`
+              });
+              const choiceMeta = choiceResp.data?.meta || {};
+              if (Array.isArray(choiceMeta.choices) && choiceMeta.choices.length > 0) {
+                setPendingChoices(choiceMeta.choices);
+              }
+            } catch (_) {}
+          } else if (Array.isArray(meta.initial_choices) && meta.initial_choices.length > 0 && serverMessages.length <= 1) {
+            setPendingChoices(meta.initial_choices);
+          }
+        }
+      } catch (_) {}
+
+      // 4) UX: 최신 메시지로 이동(유저가 바닥에 있던 경우)
+      try {
+        autoScrollRef.current = true;
+        window.requestAnimationFrame(() => {
+          try { scrollToBottom(); } catch (_) {}
+        });
+      } catch (_) {}
+
+      // 안내 힌트는 동기화 클릭 시 바로 닫는다(자연스러운 학습)
+      try { setShowOrigSyncHint(false); } catch (_) {}
+    } catch (e) {
+      console.error('[ChatPage] origchat sync failed:', e);
+      showToastOnce({ key: `origchat-sync-fail:${chatRoomId}`, type: 'error', message: '동기화에 실패했습니다. 잠시 후 다시 시도해주세요.' });
+    } finally {
+      setOrigSyncLoading(false);
+    }
+  }, [chatRoomId, isOrigChat, origTurnLoading, origSyncLoading, setMessages]);
+
+  // ✅ 원작챗 "수동 동기화" 힌트: 각 브라우저에서 첫 1회만 짧게 노출(모바일/PC 모두 동일)
+  useEffect(() => {
+    if (!isOrigChat) return;
+    const LS_KEY = 'origchat_sync_hint_seen_v1';
+    try {
+      if (localStorage.getItem(LS_KEY) === '1') return;
+      localStorage.setItem(LS_KEY, '1'); // 한번만 보여주기(브라우저 단위)
+    } catch (_) {}
+
+    setShowOrigSyncHint(true);
+    try {
+      if (origSyncHintTimerRef.current) clearTimeout(origSyncHintTimerRef.current);
+      origSyncHintTimerRef.current = setTimeout(() => setShowOrigSyncHint(false), 6500);
+    } catch (_) {}
+
+    return () => {
+      try {
+        if (origSyncHintTimerRef.current) clearTimeout(origSyncHintTimerRef.current);
+        origSyncHintTimerRef.current = null;
+      } catch (_) {}
+    };
+  }, [isOrigChat]);
   
   // 🎯 키워드 매칭으로 이미지 자동 전환
   const findMatchingImageByKeywords = useCallback((text) => {
@@ -436,6 +606,30 @@ const ChatPage = () => {
         const rangeFromParam = params.get('rangeFrom');
         const rangeToParam = params.get('rangeTo');
         const modeNorm = String(modeParam || 'canon').toLowerCase();
+
+        /**
+         * ✅ 새로 대화(new=1) UX/안전:
+         * - 기존 룸의 messages가 잠깐 남아있으면 "새로 대화인데 왜 기존 대화방으로 들어가?"처럼 보인다.
+         * - 특히 원작챗 plain 모드는 인사말이 백그라운드에서 생성/저장되므로, 첫 메시지 도착 전(0개) 구간이 존재한다.
+         * - 이 구간에서 이전 messages 잔상을 제거해 혼란을 막는다.
+         */
+        if (forceNew) {
+          try { setMessages([]); } catch (_) {}
+          try { setPendingChoices([]); } catch (_) {}
+          try { setRangeWarning(''); } catch (_) {}
+          // 원작챗 새로 대화는 "준비 중" 오버레이가 자연스럽다(첫 메시지 도착 전까지 입력 차단).
+          if (source === 'origchat' && storyIdParam) {
+            try { setIsOrigChat(true); } catch (_) {}
+            try {
+              setOrigMeta((prev) => ({
+                ...(prev || {}),
+                mode: modeNorm || prev?.mode || null,
+                init_stage: 'init',
+                intro_ready: false,
+              }));
+            } catch (_) {}
+          }
+        }
         
         /**
          * ✅ plain 모드 앵커/게이트(표시/워밍 기준) 결정
@@ -808,9 +1002,13 @@ const ChatPage = () => {
 
     // 컴포넌트 언마운트 시 채팅방 나가기
     return () => {
-      if (chatRoomId) {
-        leaveRoom(chatRoomId);
-      }
+      // ✅ 주의: 이 effect는 chatRoomId를 deps에서 제외해(의도적으로) stale closure가 발생할 수 있다.
+      // - 모바일 탭 전환/라우트 이동 시 leave_room이 누락되면,
+      //   소켓 재연결/히스토리 복구가 "이전 방"을 기준으로 동작하며 messages가 덮어써져
+      //   '내 말풍선이 사라진 것처럼 보이는' 치명 UX가 발생할 수 있다.
+      // - 따라서 최신 roomId는 ref로 추적해 안전하게 leave한다.
+      const rid = chatRoomIdRef.current;
+      if (rid) leaveRoom(rid);
       // 페이지 이동 시 메시지를 보존하기 위해 초기화하지 않음
       window.removeEventListener('ui:settingsChanged', onUiChanged);
     };
@@ -818,6 +1016,8 @@ const ChatPage = () => {
 
   // 최신 핀 상태를 ref에 반영
   useEffect(() => { isPinnedRef.current = isPinned; pinnedUrlRef.current = pinnedUrl; }, [isPinned, pinnedUrl]);
+  // 최신 roomId를 ref에 반영(언마운트/탭 전환에서 stale closure 방지)
+  useEffect(() => { chatRoomIdRef.current = chatRoomId; }, [chatRoomId]);
 
   // 🎯 AI 메시지 도착 시 키워드 매칭으로 이미지 자동 전환 + 말풍선 아래 이미지 저장
   useEffect(() => {
@@ -934,12 +1134,55 @@ const ChatPage = () => {
   }, [uiTheme]);
 
   useEffect(() => {
+    /**
+     * ✅ 일반(소켓) 챗만 소켓 히스토리를 로드한다.
+     *
+     * 원작챗은 HTTP(REST)로 메시지를 로드/저장하는 구조라,
+     * 여기서 소켓의 message_history가 `setMessages()`를 덮어쓰면
+     * "나갔다가 재진입했더니 내 대사가 사라진 것처럼 보이는" 치명적 UX가 발생할 수 있다.
+     */
+    const params = new URLSearchParams(location.search || '');
+    const isOrigFromQuery = (params.get('source') === 'origchat') && Boolean(params.get('storyId'));
+    if (isOrigFromQuery) return;
+
     // 소켓 연결 및 채팅방 정보 로드 완료 후 채팅방 입장
     if (connected && chatRoomId && currentRoom?.id !== chatRoomId) {
-        joinRoom(chatRoomId);
-        getMessageHistory(chatRoomId, 1);
+      joinRoom(chatRoomId);
+      getMessageHistory(chatRoomId, 1);
     }
-  }, [connected, chatRoomId, currentRoom]); // currentRoom 추가하여 중복 입장 방지
+  }, [connected, chatRoomId, currentRoom, location.search]); // location.search 추가: source=origchat 가드 반영
+
+  // ✅ 모바일 탭 전환/백그라운드 복귀 시 "사라진 것처럼 보이는" 상태를 즉시 복구(SSOT 재동기화)
+  useEffect(() => {
+    if (!chatRoomId) return;
+    let lastAt = 0;
+    const onVis = () => {
+      try {
+        if (document.visibilityState !== 'visible') return;
+      } catch (_) { /* ignore */ }
+
+      // 과도한 호출 방지(짧은 시간 내 연속 복귀)
+      const now = Date.now();
+      if (now - lastAt < 1200) return;
+      lastAt = now;
+
+      // 원작챗: HTTP SSOT로 즉시 동기화
+      if (isOrigChat) {
+        try { handleOrigSync(); } catch (_) {}
+        return;
+      }
+
+      // 일반 챗: 소켓 히스토리(최근 기준) 재요청
+      if (connected) {
+        try { getMessageHistory(chatRoomId, 1); } catch (_) {}
+      }
+    };
+
+    try { document.addEventListener('visibilitychange', onVis); } catch (_) {}
+    return () => {
+      try { document.removeEventListener('visibilitychange', onVis); } catch (_) {}
+    };
+  }, [chatRoomId, isOrigChat, connected, getMessageHistory, handleOrigSync]);
 
   // ✅ 원작챗: HTTP로 메시지 로드 및 선택지 복원
   useEffect(() => {
@@ -947,9 +1190,14 @@ const ChatPage = () => {
     
     const loadOrigChatMessages = async () => {
       try {
+              // ✅ 방어: 룸 전환(새로대화/이어하기) 중 이전 비동기 로드가 현재 룸의 messages를 덮어쓰지 않도록 한다.
+        const rid = chatRoomId;
               // 1. 룸 메타 먼저 로드하여 원작챗 여부 확인
-        const metaRes = await chatAPI.getRoomMeta(chatRoomId);
+        const metaRes = await chatAPI.getRoomMeta(rid);
         const meta = metaRes?.data || {};
+        try {
+          if (chatRoomIdRef.current && String(chatRoomIdRef.current) !== String(rid)) return;
+        } catch (_) {}
 
         // ✅ 원작챗 여부 확인 및 설정 (plain 모드도 포함)
         const isOrigChatRoom = meta.mode === 'canon' || meta.mode === 'parallel' || meta.mode === 'plain';
@@ -975,16 +1223,23 @@ const ChatPage = () => {
       });
       
       // ✅ 3. 메시지 히스토리 로드 (원작챗만)
-      let response = await chatAPI.getMessages(chatRoomId);
+      // ✅ 재진입/이어하기에서 "최근 대화"가 보여야 한다 → tail(최근 기준)로 로드
+      let response = await chatAPI.getMessages(rid, { tail: 1, skip: 0, limit: 200 });
       let messages = Array.isArray(response?.data) ? response.data : [];
+      try {
+        if (chatRoomIdRef.current && String(chatRoomIdRef.current) !== String(rid)) return;
+      } catch (_) {}
       
       // ✅ plain 모드일 때 인사말이 백그라운드에서 생성되므로 폴링
       if (meta.mode === 'plain' && messages.length === 0) {
         // 인사말이 생성될 때까지 최대 10초 대기
         for (let i = 0; i < 20; i++) {
           await new Promise(resolve => setTimeout(resolve, 500));
-          response = await chatAPI.getMessages(chatRoomId);
+          response = await chatAPI.getMessages(rid, { tail: 1, skip: 0, limit: 200 });
           messages = Array.isArray(response?.data) ? response.data : [];
+          try {
+            if (chatRoomIdRef.current && String(chatRoomIdRef.current) !== String(rid)) return;
+          } catch (_) {}
           if (messages.length > 0) break;
         }
       }
@@ -998,7 +1253,7 @@ const ChatPage = () => {
             // 백엔드에 선택지 재요청 (최신 AI 메시지 기반)
             try {
               const choiceResp = await origChatAPI.turn({
-                room_id: chatRoomId,
+                room_id: rid,
                 trigger: 'choices',
                 idempotency_key: `restore-${Date.now()}`
               });
@@ -1016,7 +1271,7 @@ const ChatPage = () => {
         // ✅ 인사말이 존재(assistant 메시지)하면, 준비 상태가 늦게 갱신되더라도 UI는 즉시 ready로 본다.
         // (plain 모드에서 init_stage/intro_ready가 누락/지연될 때 '무한 준비중'을 방지)
         try {
-          const hasAssistant = messages.some((m) => String(m?.senderType || '').toLowerCase() === 'assistant');
+          const hasAssistant = messages.some((m) => String(m?.senderType || m?.sender_type || '').toLowerCase() === 'assistant');
           if (hasAssistant) {
             setOrigMeta((prev) => ({ ...(prev || {}), init_stage: 'ready', intro_ready: true }));
           }
@@ -1184,6 +1439,134 @@ const ChatPage = () => {
       messagesEndRef.current?.scrollIntoView(); // 최후 폴백
     }
   };
+
+  /**
+   * ✅ 원작챗: 상황 입력 UX(안내 말풍선 + 캐릭터 반응)
+   *
+   * 의도/동작:
+   * - '상황 입력'은 유저/캐릭터의 대사가 아니라, 시스템(중립) 메시지로 취급하는 게 UX상 자연스럽다.
+   * - 적용 시 `/chat/origchat/turn`에 `situation_text`를 보내고,
+   *   응답으로 온 `ai_message`를 즉시 말풍선으로 추가한다(현재는 누락되어 상대 대사가 안 보였음).
+   * - 안내 말풍선은 입력 토글을 열면 잠깐 보여주고 자동으로 사라진다(채팅 UI 오염 방지).
+   */
+  const removeSituationHintBubble = useCallback(() => {
+    try {
+      const id = situationHintMsgIdRef.current;
+      if (id) {
+        setMessages(prev => prev.filter(m => m.id !== id));
+        situationHintMsgIdRef.current = null;
+      }
+    } catch (_) {}
+    try {
+      if (situationHintTimerRef.current) {
+        clearTimeout(situationHintTimerRef.current);
+        situationHintTimerRef.current = null;
+      }
+    } catch (_) {}
+  }, [setMessages]);
+
+  const showSituationHintBubble = useCallback(() => {
+    if (!isOrigChat || !chatRoomId) return;
+    // 중복 표시 방지
+    if (situationHintMsgIdRef.current) return;
+
+    const id = `sys-sit-hint-${Date.now()}`;
+    situationHintMsgIdRef.current = id;
+    setMessages(prev => ([
+      ...prev,
+      {
+        id,
+        roomId: chatRoomId,
+        senderType: 'system',
+        content: "상황을 입력하고 '적용'을 누르면 반영돼요.",
+        created_at: new Date().toISOString(),
+        isSystem: true,
+      }
+    ]));
+    try { autoScrollRef.current = true; } catch (_) {}
+    try {
+      window.requestAnimationFrame(() => { try { scrollToBottom(); } catch (_) {} });
+    } catch (_) { try { scrollToBottom(); } catch (_) {} }
+
+    try {
+      situationHintTimerRef.current = setTimeout(() => {
+        try { setMessages(prev => prev.filter(m => m.id !== id)); } catch (_) {}
+        situationHintMsgIdRef.current = null;
+        situationHintTimerRef.current = null;
+      }, 4500);
+    } catch (_) {}
+  }, [isOrigChat, chatRoomId, setMessages]);
+
+  const applyOrigSituation = useCallback(async () => {
+    if (!isOrigChat || !chatRoomId) return;
+    if (origTurnLoading) return;
+
+    const text = (situationText || '').trim();
+    if (!text) return;
+
+    // 안내 말풍선이 떠 있으면 정리
+    removeSituationHintBubble();
+
+    // ✅ 시스템(중립) 말풍선로 "상황"을 먼저 보여준다(유저/캐릭터 말풍선 아님)
+    const sysId = `sys-sit-${Date.now()}`;
+    setMessages(prev => ([
+      ...prev,
+      {
+        id: sysId,
+        roomId: chatRoomId,
+        senderType: 'system',
+        content: `상황: ${text}`,
+        created_at: new Date().toISOString(),
+        isSystem: true,
+      }
+    ]));
+    try { autoScrollRef.current = true; } catch (_) {}
+    try {
+      window.requestAnimationFrame(() => { try { scrollToBottom(); } catch (_) {} });
+    } catch (_) { try { scrollToBottom(); } catch (_) {} }
+
+    try {
+      setOrigTurnLoading(true);
+      const resp = await origChatAPI.turn({ room_id: chatRoomId, situation_text: text, idempotency_key: genIdemKey() });
+
+      // ✅ 버그 수정: 상황 적용 후 캐릭터 응답 말풍선을 반드시 추가한다.
+      const assistantText = resp.data?.ai_message?.content || resp.data?.assistant || '';
+      if (assistantText) {
+        const aiId = resp.data?.ai_message?.id || `temp-ai-${Date.now()}`;
+        const aiCreatedAt = resp.data?.ai_message?.created_at || new Date().toISOString();
+        setMessages(prev => ([
+          ...prev,
+          { id: aiId, roomId: chatRoomId, senderType: 'assistant', content: assistantText, created_at: aiCreatedAt }
+        ]));
+      }
+
+      const meta = resp.data?.meta || {};
+      if (Array.isArray(meta.choices)) setPendingChoices(meta.choices);
+      const warn = meta.warning;
+      setRangeWarning(typeof warn === 'string' ? warn : '');
+
+      // 입력 종료
+      setSituationText('');
+      setShowSituation(false);
+    } catch (e) {
+      console.error('상황 적용 실패', e);
+      // 실패 시 시스템 말풍선 롤백(유저 혼란 방지)
+      try { setMessages(prev => prev.filter(m => m.id !== sysId)); } catch (_) {}
+      showToastOnce({ key: `orig-sit-fail:${chatRoomId}`, type: 'error', message: '상황 적용에 실패했습니다. 잠시 후 다시 시도해주세요.' });
+    } finally {
+      setOrigTurnLoading(false);
+    }
+  }, [isOrigChat, chatRoomId, origTurnLoading, situationText, genIdemKey, removeSituationHintBubble, setMessages]);
+
+  // ✅ 상황 입력 토글이 열릴 때: 안내 말풍선을 잠깐 보여준다(모바일/PC 공통)
+  useEffect(() => {
+    if (!isOrigChat || !chatRoomId) {
+      removeSituationHintBubble();
+      return;
+    }
+    if (showSituation) showSituationHintBubble();
+    else removeSituationHintBubble();
+  }, [isOrigChat, chatRoomId, showSituation, showSituationHintBubble, removeSituationHintBubble]);
   
   const handleScroll = useCallback(() => {
     const el = chatContainerRef.current;
@@ -1193,14 +1576,15 @@ const ChatPage = () => {
     const distanceToBottom = el.scrollHeight - el.clientHeight - el.scrollTop;
     const atBottom = distanceToBottom <= BOTTOM_THRESHOLD_PX;
     autoScrollRef.current = atBottom;
-    // 맨 위 도달 시 과거 로드
-    if (el.scrollTop <= 0 && hasMoreMessages && !historyLoading) {
+    // 맨 위 도달 시 과거 로드 (일반 챗만)
+    // - 원작챗은 HTTP 로드(SSOT)이며, 소켓 history가 messages를 덮어쓰면 유실처럼 보일 수 있어 방지한다.
+    if (!isOrigChat && el.scrollTop <= 0 && hasMoreMessages && !historyLoading) {
       prevScrollHeightRef.current = el.scrollHeight;
       getMessageHistory(chatRoomId, currentPage + 1);
     }
 
 
-  }, [hasMoreMessages, historyLoading, getMessageHistory, chatRoomId, currentPage]);
+  }, [isOrigChat, hasMoreMessages, historyLoading, getMessageHistory, chatRoomId, currentPage]);
 
 
   const handleSendMessage = async (e) => {
@@ -1700,6 +2084,33 @@ const ChatPage = () => {
   };
   
   const MessageBubble = ({ message, isLast, triggerImageUrl }) => {
+    const rawType = String(message?.sender_type || message?.senderType || '').toLowerCase();
+    const metaKind = (() => {
+      try { return String(message?.message_metadata?.kind || '').toLowerCase(); } catch (_) { return ''; }
+    })();
+    const isSystemBubble = (
+      Boolean(message?.isSystem) ||
+      rawType === 'system' ||
+      String(message?.messageType || '').toLowerCase() === 'system' ||
+      // ✅ 상황 입력(서버 저장)도 "시스템 말풍선"으로 동일하게 렌더링
+      metaKind === 'situation'
+    );
+    if (isSystemBubble) {
+      const txt = typeof message.content === 'string' ? message.content : String(message.content ?? '');
+      return (
+        <div ref={isLast ? messagesEndRef : null} className="mt-4 mb-1 flex justify-center">
+          <div
+            className={`max-w-full sm:max-w-[85%] px-3 py-2 rounded-2xl text-xs border ${
+              resolvedTheme === 'light'
+                ? 'bg-gray-100 border-gray-200 text-gray-700'
+                : 'bg-white/5 border-white/10 text-gray-200'
+            }`}
+          >
+            <p className="whitespace-pre-wrap break-words">{txt}</p>
+          </div>
+        </div>
+      );
+    }
     const isUser = message.senderType === 'user' || message.sender_type === 'user';
     const rawContent = typeof message.content === 'string' ? message.content : '';
     const isNarrationMessage = (() => {
@@ -1806,6 +2217,21 @@ const ChatPage = () => {
               </AvatarFallback>
               </Avatar>
               <span className="text-sm text-gray-300">{character?.name}</span>
+            </>
+          )}
+          {isUser && (
+            <>
+              <span className="text-sm text-gray-300">{user?.username || '나'}</span>
+              <Avatar className="size-10 rounded-full">
+                <AvatarImage
+                  className="object-cover object-top"
+                  src={resolveImageUrl(user?.avatar_url || '')}
+                  alt={user?.username || 'user'}
+                />
+                <AvatarFallback className="bg-gradient-to-r from-emerald-500 to-cyan-500 text-white">
+                  {(user?.username && String(user.username).charAt(0)) || <User className="w-4 h-4" />}
+                </AvatarFallback>
+              </Avatar>
             </>
           )}
         </div>
@@ -2055,12 +2481,12 @@ const ChatPage = () => {
       } catch (_) {}
       // 2) 메시지 재조회(plain 인사말 생성 완료 여부 확인)
       try {
-        const res = await chatAPI.getMessages(chatRoomId);
+        const res = await chatAPI.getMessages(chatRoomId, { tail: 1, skip: 0, limit: 200 });
         const items = Array.isArray(res?.data) ? res.data : [];
         if (items.length > 0) {
           setMessages(items);
           // assistant 메시지가 하나라도 있으면 "준비 완료"로 간주(무한 오버레이 방지)
-          const hasAssistant = items.some((m) => String(m?.senderType || '').toLowerCase() === 'assistant');
+          const hasAssistant = items.some((m) => String(m?.senderType || m?.sender_type || '').toLowerCase() === 'assistant');
           if (hasAssistant) {
             setOrigMeta((prev) => ({ ...(prev || {}), init_stage: 'ready', intro_ready: true }));
           }
@@ -2120,11 +2546,25 @@ const ChatPage = () => {
                 variant="ghost"
                 size="icon"
                 onClick={() => {
-                  if (isOrigChat && origStoryId) {
-                    navigate(`/stories/${origStoryId}`);
-                  } else {
+                  /**
+                   * ✅ 원작챗 뒤로가기 UX(요구사항):
+                   * - 원작챗 채팅방에서 뒤로가기(←)를 누르면 "원작챗 상세페이지"로 돌아가야 한다.
+                   * - 현재 프론트의 "원작챗 격자 카드 클릭" 동작이 `캐릭터 상세(/characters/:id)`이므로,
+                   *   채팅방에서도 동일하게 `/characters/:id`로 복귀시킨다.
+                   * - 단, 원작챗 컨텍스트(스토리Id)는 상세에서 원작 카드/링크 등에 필요할 수 있어 쿼리에 유지한다(베스트 에포트).
+                   */
+                  if (isOrigChat) {
+                    try {
+                      const sid = String(origStoryId || '').trim();
+                      if (sid) {
+                        navigate(`/characters/${characterId}?source=origchat&storyId=${encodeURIComponent(sid)}`);
+                        return;
+                      }
+                    } catch (_) {}
                     navigate(`/characters/${characterId}`);
+                    return;
                   }
+                  navigate(`/characters/${characterId}`);
                 }}
                 className="rounded-full text-[var(--app-fg)] hover:bg-[var(--hover-bg)]"
               >
@@ -2167,6 +2607,25 @@ const ChatPage = () => {
               </div>
             </div>
             <div className="flex items-center gap-3">
+              {/* ✅ 원작챗: 수동 동기화 버튼(모바일/PC 공통) */}
+              {isOrigChat && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      aria-label="동기화"
+                      className="rounded-full text-[var(--app-fg)] hover:bg-[var(--hover-bg)]"
+                      onClick={handleOrigSync}
+                      disabled={origTurnLoading || origSyncLoading}
+                      title="동기화"
+                    >
+                      <RefreshCcw className={`w-5 h-5 ${origSyncLoading ? 'animate-spin' : ''}`} />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>동기화</TooltipContent>
+                </Tooltip>
+              )}
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button variant="ghost" size="icon" className="rounded-full text-[var(--app-fg)] hover:bg-[var(--hover-bg)]">
@@ -2230,6 +2689,38 @@ const ChatPage = () => {
           </div>
         </div>
       </header>
+
+      {/* ✅ 원작챗 수동 동기화 안내(1회): UI를 해치지 않게 작게, 헤더 아래에 잠깐만 노출 */}
+      {isOrigChat && showOrigSyncHint && (
+        <div className="fixed top-[72px] right-3 z-50 pointer-events-auto">
+          <div className="max-w-[280px] rounded-xl border border-gray-700 bg-black/80 text-white shadow-xl px-3 py-2">
+            <div className="flex items-start gap-2">
+              <RefreshCcw className="w-4 h-4 mt-0.5 text-cyan-200" />
+              <div className="text-xs leading-relaxed text-gray-200">
+                <span className="font-semibold text-white">↻</span> 눌러 최신 대화 불러오기
+              </div>
+              <button
+                type="button"
+                className="ml-1 text-gray-400 hover:text-white"
+                aria-label="닫기"
+                onClick={() => setShowOrigSyncHint(false)}
+              >
+                ×
+              </button>
+            </div>
+            <div className="mt-2 flex justify-end">
+              <Button
+                variant="outline"
+                className="h-7 px-2 bg-gray-900 border-gray-700 text-gray-100 hover:bg-gray-800"
+                onClick={handleOrigSync}
+                disabled={origTurnLoading || origSyncLoading}
+              >
+                동기화
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
       {/* ✅ 유저용 상태 팝업: 생성/보정은 중앙에 작게 표시(비차단, 스크롤/읽기 가능) */}
       {statusPopup && (statusPopup.kind === 'turn' || statusPopup.kind === 'net') && (
         <div className="fixed inset-0 z-40 flex items-center justify-center pointer-events-none">
@@ -2561,7 +3052,7 @@ const ChatPage = () => {
                 return null;
               })()}
               {aiTypingEffective && (
-                <div className="flex items-start space-x-3">
+                <div className="mt-4 mb-1 flex items-start space-x-3">
                   <Avatar className="w-8 h-8 flex-shrink-0">
                     <AvatarImage className="object-cover object-top" src={getCharacterPrimaryImage(character)} alt={character?.name} />
                     <AvatarFallback className="bg-gradient-to-r from-purple-500 to-blue-500 text-white">
@@ -2649,18 +3140,7 @@ const ChatPage = () => {
                 <Button
                   type="button"
                   disabled={origTurnLoading || !chatRoomId}
-                  onClick={async ()=>{
-                    const text = (situationText||'').trim();
-                    if (!text) return;
-                    // 낙관적: 사용자 내레이션 말풍선
-                    setMessages(prev=>[...prev, { id:`temp-user-sit-${Date.now()}`, roomId: chatRoomId, senderType:'user', content:`* ${text}`, isNarration:true, created_at:new Date().toISOString() }]);
-                    try {
-                      setOrigTurnLoading(true);
-                      await origChatAPI.turn({ room_id: chatRoomId, situation_text: text, idempotency_key: genIdemKey() });
-                      setSituationText(''); setShowSituation(false);
-                    } catch (e) { console.error('상황 전송 실패', e); }
-                    finally { setOrigTurnLoading(false); }
-                  }}
+                  onClick={applyOrigSituation}
                   className="rounded-full h-10 px-4 bg-white text-black"
                 >적용</Button>
               </div>
@@ -2838,32 +3318,7 @@ const ChatPage = () => {
                 <Button
                   type="button"
                   disabled={origTurnLoading || !chatRoomId}
-                  onClick={async () => {
-                    const text = (situationText || '').trim();
-                    if (!text) return;
-                    // 낙관적: 사용자 내레이션 말풍선
-                    setMessages(prev => [
-                      ...prev,
-                      {
-                        id: `temp-user-sit-${Date.now()}`,
-                        roomId: chatRoomId,
-                        senderType: 'user',
-                        content: `* ${text}`,
-                        isNarration: true,
-                        created_at: new Date().toISOString()
-                      }
-                    ]);
-                    try {
-                      setOrigTurnLoading(true);
-                      await origChatAPI.turn({ room_id: chatRoomId, situation_text: text, idempotency_key: genIdemKey() });
-                      setSituationText('');
-                      setShowSituation(false);
-                    } catch (e) {
-                      console.error('상황 전송 실패', e);
-                    } finally {
-                      setOrigTurnLoading(false);
-                    }
-                  }}
+                  onClick={applyOrigSituation}
                   className="rounded-full h-10 px-4 bg-white text-black"
                 >
                   적용

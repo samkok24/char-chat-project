@@ -3,12 +3,21 @@ import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Badge } from './ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
-import { tagsAPI } from '../lib/api';
+import { applyTagDisplayConfig } from '../lib/tagOrder';
+import {
+  CHARACTER_TAG_DISPLAY_CHANGED_EVENT,
+  CHARACTER_TAG_DISPLAY_STORAGE_KEY,
+  getCharacterTagDisplay,
+  setCharacterTagDisplay,
+} from '../lib/cmsTagDisplay';
+import { cmsAPI } from '../lib/api';
 
 const TagSelectModal = ({ isOpen, onClose, allTags = [], selectedSlugs = [], onSave }) => {
   const [query, setQuery] = useState('');
   const [localSelected, setLocalSelected] = useState(new Set(selectedSlugs));
-  const [topTags, setTopTags] = useState([]);
+  const [tagDisplay, setTagDisplay] = useState(() => {
+    try { return getCharacterTagDisplay(); } catch (_) { return {}; }
+  });
 
   useEffect(() => {
     setLocalSelected(new Set(selectedSlugs));
@@ -16,27 +25,60 @@ const TagSelectModal = ({ isOpen, onClose, allTags = [], selectedSlugs = [], onS
 
   useEffect(() => {
     if (!isOpen) return;
+    try { setTagDisplay(getCharacterTagDisplay()); } catch (_) {}
+  }, [isOpen]);
+
+  // ✅ 운영 SSOT: 서버(DB)의 태그 노출/순서 설정을 모달 오픈 시점에도 동기화한다.
+  // - 홈을 거치지 않고(직접 진입) 모달을 여는 경우에도 숨김/순서 설정이 적용되도록 방어한다.
+  useEffect(() => {
+    if (!isOpen) return;
+    let active = true;
     (async () => {
       try {
-        const res = await tagsAPI.getUsedTags();
-        setTopTags(res.data || []);
-      } catch (_) { setTopTags([]); }
+        const res = await cmsAPI.getCharacterTagDisplay();
+        if (!active) return;
+        const cfg = (res && res.data && typeof res.data === 'object') ? res.data : null;
+        if (!cfg) return;
+        try { setCharacterTagDisplay(cfg); } catch (_) {}
+        try { setTagDisplay(getCharacterTagDisplay()); } catch (_) {}
+      } catch (e) {
+        try { console.warn('[TagSelectModal] cmsAPI.getCharacterTagDisplay failed:', e); } catch (_) {}
+      }
     })();
+    return () => { active = false; };
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const refresh = () => {
+      try { setTagDisplay(getCharacterTagDisplay()); } catch (_) {}
+    };
+    const onStorage = (e) => {
+      try {
+        if (!e) return;
+        if (e.key === CHARACTER_TAG_DISPLAY_STORAGE_KEY) refresh();
+      } catch (_) {}
+    };
+    try { window.addEventListener(CHARACTER_TAG_DISPLAY_CHANGED_EVENT, refresh); } catch (_) {}
+    try { window.addEventListener('storage', onStorage); } catch (_) {}
+    return () => {
+      try { window.removeEventListener(CHARACTER_TAG_DISPLAY_CHANGED_EVENT, refresh); } catch (_) {}
+      try { window.removeEventListener('storage', onStorage); } catch (_) {}
+    };
   }, [isOpen]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) {
-      // 기본 정렬: 전체 태그 + (마지막 5개는 사용량 Top5, 뒤에서 5번째가 최다 사용)
-      const top = (topTags || []).slice(0, 5);
-      const topSlugs = new Set(top.map(t => t.slug));
-      const base = allTags.filter(t => !topSlugs.has(t.slug));
-      // 뒤쪽에 top5를 역순으로 붙임 => 끝에서 5번째가 최다 사용
-      const arranged = [...base, ...[...top].reverse()];
-      return arranged;
-    }
-    return allTags.filter(t => (t.name || '').toLowerCase().includes(q) || (t.slug || '').toLowerCase().includes(q));
-  }, [query, allTags, topTags]);
+    const base = Array.isArray(allTags) ? allTags : [];
+    const arranged = applyTagDisplayConfig(base, tagDisplay);
+    if (!q) return arranged;
+    // 검색 시에도 우선순위 정렬을 유지한 채 필터링
+    return arranged.filter(
+      (t) =>
+        String(t?.name || '').toLowerCase().includes(q) ||
+        String(t?.slug || '').toLowerCase().includes(q)
+    );
+  }, [query, allTags, tagDisplay]);
 
   const toggle = (slug) => {
     setLocalSelected(prev => {
@@ -67,7 +109,7 @@ const TagSelectModal = ({ isOpen, onClose, allTags = [], selectedSlugs = [], onS
         <div className="max-h-80 overflow-auto border rounded-md p-3">
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
             {filtered.map(t => (
-              <button key={t.id} type="button" onClick={() => toggle(t.slug)}
+              <button key={t.id || t.slug} type="button" onClick={() => toggle(t.slug)}
                 className={`text-left px-3 py-1 rounded-full border ${localSelected.has(t.slug) ? 'bg-purple-600 text-white border-purple-500' : 'bg-gray-100 text-gray-800 border-gray-300'}`}>
                 {t.name}
               </button>

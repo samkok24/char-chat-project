@@ -130,7 +130,10 @@ const CreateCharacterPage = () => {
       greetings: [''], // UI에서 배열로 사용, 저장 시 greeting 단일 문자열로 변환
       world_setting: '',
       user_display_description: '',
-      use_custom_description: false,
+      // ✅ 요구사항:
+      // - "사용자용 설명"은 기본적으로 별도 작성(ON)으로 간주한다.
+      // - UI에서는 "크리에이터 코멘트"로 노출하며, 생성(Create) 시 필수 입력으로 검증한다.
+      use_custom_description: true,
       introduction_scenes: [
         { title: '도입부 1', content: '', secret: '' }
       ],
@@ -181,6 +184,7 @@ const CreateCharacterPage = () => {
   const activeSectionRef = useRef('section-basic');
   const [fieldErrors, setFieldErrors] = useState({}); // zod 인라인 오류 맵
   const [draftRestored, setDraftRestored] = useState(false);
+  const [isDraftEnabled, setIsDraftEnabled] = useState(false); // '임시저장'을 눌렀을 때만 로컬 초안 저장/복원
   const [imgModalOpen, setImgModalOpen] = useState(false);
   
   // 이미지 확대 모달 상태
@@ -379,6 +383,31 @@ const CreateCharacterPage = () => {
       }
     } catch (_) {}
 
+    // 3) ✅ 생성(Create) 필수 입력 검증(요구사항)
+    // 필수: 이미지/캐릭터이름/필수태그/캐릭터설명/세계관설정/크리에이터 코멘트
+    // - 편집(Edit)에서는 기존 데이터가 깨지지 않도록 강제하지 않는다(최소 수정/안전).
+    try {
+      if (!isEditMode) {
+        const hasExistingImages = Array.isArray(formData?.media_settings?.image_descriptions)
+          && formData.media_settings.image_descriptions.some((img) => String(img?.url || '').trim());
+        const hasNewFiles = Array.isArray(formData?.media_settings?.newly_added_files)
+          && formData.media_settings.newly_added_files.length > 0;
+        if (!hasExistingImages && !hasNewFiles) {
+          map['media_settings.image_descriptions'] = '캐릭터 이미지를 최소 1장 추가하세요.';
+        }
+
+        if (!String(formData?.basic_info?.description || '').trim()) {
+          map['basic_info.description'] = '캐릭터 설명을 입력하세요.';
+        }
+        if (!String(formData?.basic_info?.world_setting || '').trim()) {
+          map['basic_info.world_setting'] = '세계관 설정을 입력하세요.';
+        }
+        if (!String(formData?.basic_info?.user_display_description || '').trim()) {
+          map['basic_info.user_display_description'] = '크리에이터 코멘트를 입력하세요.';
+        }
+      }
+    } catch (_) {}
+
     const ok = Object.keys(map).length === 0;
     setFieldErrors(map);
     if (ok) return { success: true, data: result.success ? result.data : formData };
@@ -418,40 +447,98 @@ const CreateCharacterPage = () => {
     })();
   }, []);
 
-  // 자동저장(로컬 초안)
+  /**
+   * ✅ 로컬 초안(localStorage) 정책
+   *
+   * 문제/원인:
+   * - 기존 구현은 사용자가 '임시저장'을 누르지 않아도 formData가 자동으로 localStorage에 저장되었고,
+   *   재진입 시 해당 값이 그대로 복원되면서 "임시저장 안 눌렀는데도 내용/이미지가 남는" 현상이 발생했다.
+   *
+   * 해결/의도:
+   * - 사용자가 '임시저장'을 **명시적으로 누른 경우에만** 초안을 저장/복원한다.
+   * - File 객체(`newly_added_files`)는 JSON 직렬화 불가/의미가 없어 저장 대상에서 제외한다(복원 시 크래시 방지).
+   */
   useEffect(() => {
     const key = `cc_draft_${isEditMode ? characterId : 'new'}`;
-    // 초기 로드 시 기존 초안 복원
+    const manualKey = `${key}_manual`; // '임시저장' 버튼을 눌렀는지 여부(복원/자동저장 ON 기준)
+
+    // 초기 로드 시 기존 초안 복원(임시저장된 경우에만)
     if (!isEditMode && !draftRestored) {
       try {
-        const raw = localStorage.getItem(key);
-        if (raw) {
-          const draft = JSON.parse(raw);
-          setFormData(prev => ({ ...prev, ...draft }));
-          setDraftRestored(true);
+        const isManual = localStorage.getItem(manualKey) === '1';
+        if (isManual) {
+          const raw = localStorage.getItem(key);
+          if (raw) {
+            const draft = JSON.parse(raw) || {};
+            setFormData((prev) => ({
+              ...prev,
+              ...draft,
+              basic_info: { ...prev.basic_info, ...(draft.basic_info || {}) },
+              media_settings: {
+                ...prev.media_settings,
+                ...(draft.media_settings || {}),
+                newly_added_files: [], // File은 복원 불가 → 안전하게 비움
+              },
+              example_dialogues: { ...prev.example_dialogues, ...(draft.example_dialogues || {}) },
+              affinity_system: { ...prev.affinity_system, ...(draft.affinity_system || {}) },
+              publish_settings: { ...prev.publish_settings, ...(draft.publish_settings || {}) },
+            }));
+          }
+          setIsDraftEnabled(true);
         }
       } catch (_) {}
+      // 방어: 초안이 없거나(혹은 복원을 하지 않더라도) 반복 restore 체크를 막는다.
+      setDraftRestored(true);
     }
-    // 디바운스 저장
+
+    // ✅ '임시저장'을 눌렀을 때만 로컬 초안을 자동저장(디바운스)
+    if (!isDraftEnabled) return;
+
     const t = setTimeout(() => {
       try {
         setIsAutoSaving(true);
-        localStorage.setItem(key, JSON.stringify(formData));
+        const draftPayload = {
+          ...formData,
+          media_settings: {
+            ...(formData?.media_settings || {}),
+            newly_added_files: [], // File은 직렬화 불가/의미 없음 → 저장하지 않음
+          },
+        };
+        localStorage.setItem(key, JSON.stringify(draftPayload));
         setLastSavedAt(Date.now());
         setHasUnsavedChanges(false);
       } catch (_) {}
       setIsAutoSaving(false);
     }, 1500);
     return () => clearTimeout(t);
-  }, [formData, isEditMode, characterId, draftRestored]);
+  }, [formData, isEditMode, characterId, draftRestored, isDraftEnabled]);
 
   const handleManualDraftSave = () => {
     try {
       const key = `cc_draft_${isEditMode ? characterId : 'new'}`;
-      localStorage.setItem(key, JSON.stringify(formData));
+      const manualKey = `${key}_manual`;
+      const draftPayload = {
+        ...formData,
+        media_settings: {
+          ...(formData?.media_settings || {}),
+          newly_added_files: [], // File은 직렬화 불가/의미 없음 → 저장하지 않음
+        },
+      };
+      localStorage.setItem(manualKey, '1');
+      localStorage.setItem(key, JSON.stringify(draftPayload));
+      setIsDraftEnabled(true);
       setLastSavedAt(Date.now());
       setHasUnsavedChanges(false);
-    } catch (_) {}
+      try {
+        dispatchToast('success', '임시저장 완료! 다음에 이어서 작성할 수 있어요.');
+      } catch (_) {}
+    } catch (e) {
+      // 사용자가 체감하는 기능이므로, 실패 시 로그 + 토스트를 남긴다.
+      console.error('[CreateCharacterPage] draft save failed:', e);
+      try {
+        dispatchToast('error', '임시저장에 실패했습니다. 브라우저 저장 공간/권한을 확인해주세요.');
+      } catch (_) {}
+    }
   };
 
   // 폼 변경 시 이탈 경고 플래그 설정
@@ -481,8 +568,33 @@ const CreateCharacterPage = () => {
       publish: 0,
       total: 0,
     };
-    // 기본 정보 필수값 (name만 필수, description은 선택)
+    // ✅ 기본 정보 필수값(요구사항 / 생성 Create 기준):
+    // 이미지, 이름, 필수태그, 캐릭터설명, 세계관설정, 크리에이터 코멘트
     if (!formData.basic_info.name?.trim()) errors.basic += 1;
+
+    if (!isEditMode) {
+      // 이미지(최소 1장)
+      try {
+        const hasExistingImages = Array.isArray(formData?.media_settings?.image_descriptions)
+          && formData.media_settings.image_descriptions.some((img) => String(img?.url || '').trim());
+        const hasNewFiles = Array.isArray(formData?.media_settings?.newly_added_files)
+          && formData.media_settings.newly_added_files.length > 0;
+        if (!hasExistingImages && !hasNewFiles) errors.basic += 1;
+      } catch (_) {}
+
+      // 필수 텍스트
+      if (!String(formData.basic_info.description || '').trim()) errors.basic += 1;
+      if (!String(formData.basic_info.world_setting || '').trim()) errors.basic += 1;
+      if (!String(formData.basic_info.user_display_description || '').trim()) errors.basic += 1;
+
+      // 필수 태그(성향/스타일)
+      try {
+        const audience = (selectedTagSlugs || []).find((s) => REQUIRED_AUDIENCE_SLUGS.includes(s)) || null;
+        const style = (selectedTagSlugs || []).find((s) => REQUIRED_STYLE_SLUGS.includes(s)) || null;
+        if (!audience) errors.basic += 1;
+        if (!style) errors.basic += 1;
+      } catch (_) {}
+    }
 
     // 허용되지 않은 토큰 사용 검사
     const tokenFields = [
@@ -505,11 +617,11 @@ const CreateCharacterPage = () => {
       errors.basic += invalidTokenCount; // 기본 섹션에 합산해 총 오류 배지에 반영
     }
 
-    // 예시 대화: 최소 1개, 각 항목은 양쪽 메시지 필요
+    // 예시 대화: 선택 입력
+    // - 0개면 오류로 취급하지 않는다.
+    // - 입력한 항목이 있다면, 양쪽 메시지가 비어있지 않은지 검증한다.
     const ds = formData.example_dialogues.dialogues || [];
-    if (ds.length === 0) {
-      errors.dialogues += 1;
-    } else {
+    if (ds.length > 0) {
       const incomplete = ds.filter(d => !d.user_message?.trim() || !d.character_response?.trim()).length;
       errors.dialogues += incomplete;
     }
@@ -535,7 +647,7 @@ const CreateCharacterPage = () => {
 
     errors.total = errors.basic + errors.media + errors.dialogues + errors.affinity + errors.publish;
     return errors;
-  }, [formData]);
+  }, [formData, isEditMode, selectedTagSlugs]);
 
   // 스크롤 스파이: 현재 섹션 추적
   useEffect(() => {
@@ -606,6 +718,45 @@ const CreateCharacterPage = () => {
     }
   };
 
+  /**
+   * ✅ 캐릭터 비밀정보(도입부와 분리된 전역 입력)
+   *
+   * 의도/원칙:
+   * - '비밀정보'는 도입부(시작 상황)와 별개로, 캐릭터 전체에 적용되는 숨김 정보에 가깝다.
+   * - 백엔드 스키마/DB 변경 없이 기존 `introduction_scenes[].secret` 필드를 공통 값으로 유지하여 호환성을 보장한다.
+   *
+   * 동작:
+   * - 입력값을 모든 `introduction_scenes[].secret`에 동기화한다.
+   * - 도입부를 추가해도 비밀정보가 유지되도록 새 씬에도 동일 값을 채운다.
+   */
+  const updateCharacterSecretInfo = (rawValue) => {
+    const nextValue = String(rawValue ?? '');
+    setFormData((prev) => {
+      const scenes = Array.isArray(prev?.basic_info?.introduction_scenes)
+        ? prev.basic_info.introduction_scenes
+        : [];
+      const base = scenes.length ? scenes : [{ title: '도입부 1', content: '', secret: '' }];
+      const merged = base.map((s) => ({ ...(s || {}), secret: nextValue }));
+      return {
+        ...prev,
+        basic_info: {
+          ...prev.basic_info,
+          introduction_scenes: merged,
+        },
+      };
+    });
+  };
+
+  const insertCharacterSecretToken = (token) => {
+    const el = typeof document !== 'undefined' ? document.getElementById('character_secret_info') : null;
+    const current = formData?.basic_info?.introduction_scenes?.[0]?.secret || '';
+    const { next, caret } = insertAtCursor(el, current, token);
+    updateCharacterSecretInfo(next);
+    if (el && caret !== null) {
+      setTimeout(() => { try { el.focus(); el.setSelectionRange(caret, caret); } catch(_){} }, 0);
+    }
+  };
+
   const insertIntroToken = (index, subfield, token) => {
     const elementId = subfield === 'content' ? `intro_content_${index}` : `intro_secret_${index}`;
     const el = typeof document !== 'undefined' ? document.getElementById(elementId) : null;
@@ -669,6 +820,24 @@ const CreateCharacterPage = () => {
       } catch (_) {}
       
       // 🔥 고급 캐릭터 데이터 구조로 매핑
+      // ✅ 비밀정보는 전역 입력으로 취급: introduction_scenes[].secret을 하나의 값으로 통일한다.
+      const normalizeIntroScenes = (raw) => {
+        try {
+          const arr = Array.isArray(raw) && raw.length ? raw : [{ title: '도입부 1', content: '', secret: '' }];
+          const secrets = arr
+            .map((s) => String(s?.secret || '').trim())
+            .filter(Boolean);
+          const uniq = Array.from(new Set(secrets));
+          const mergedSecret = (uniq.join('\n\n') || '').slice(0, 1000); // 기존 UI maxLength와 동일하게 방어
+          return arr.map((s, idx) => ({
+            title: String(s?.title || `도입부 ${idx + 1}`),
+            content: String(s?.content || ''),
+            secret: mergedSecret,
+          }));
+        } catch (_) {
+          return [{ title: '도입부 1', content: '', secret: '' }];
+        }
+      };
       setFormData(prev => ({
         ...prev,
         basic_info: {
@@ -682,7 +851,7 @@ const CreateCharacterPage = () => {
           world_setting: char.world_setting || '',
           user_display_description: char.user_display_description || '',
           use_custom_description: char.use_custom_description || false,
-          introduction_scenes: char.introduction_scenes || [{ title: '도입부 1', content: '', secret: '' }],
+          introduction_scenes: normalizeIntroScenes(char.introduction_scenes),
           character_type: char.character_type || 'roleplay',
           base_language: char.base_language || 'ko'
         },
@@ -740,13 +909,28 @@ const CreateCharacterPage = () => {
   };
 
   const addIntroductionScene = () => {
-    const newScene = { title: `도입부 ${formData.basic_info.introduction_scenes.length + 1}`, content: '', secret: '' };
+    // ✅ 도입부 추가 시에도 '캐릭터 비밀정보'가 유지되도록 현재 secret 값을 새 씬에도 복사한다.
+    const currentSecret = formData?.basic_info?.introduction_scenes?.[0]?.secret || '';
+    const newScene = { title: `도입부 ${formData.basic_info.introduction_scenes.length + 1}`, content: '', secret: String(currentSecret || '') };
     updateFormData('basic_info', 'introduction_scenes', [...formData.basic_info.introduction_scenes, newScene]);
   };
 
   const removeIntroductionScene = (index) => {
-    const scenes = formData.basic_info.introduction_scenes.filter((_, i) => i !== index);
-    updateFormData('basic_info', 'introduction_scenes', scenes);
+    /**
+     * ✅ 도입부 삭제(UX 개선)
+     *
+     * 의도/동작:
+     * - 사용자가 "도입부 삭제"를 명확히 찾을 수 있어야 한다.
+     * - 다만 도입부 배열이 0개가 되면(백엔드/프롬프트 생성기 호환) 예외가 날 수 있어,
+     *   마지막 1개를 삭제하려고 하면 "삭제" 대신 안전하게 내용 초기화로 처리한다.
+     */
+    const currentSecret = formData?.basic_info?.introduction_scenes?.[0]?.secret || '';
+    const nextScenes = formData.basic_info.introduction_scenes.filter((_, i) => i !== index);
+    if (!nextScenes.length) {
+      updateFormData('basic_info', 'introduction_scenes', [{ title: '도입부 1', content: '', secret: String(currentSecret || '') }]);
+      return;
+    }
+    updateFormData('basic_info', 'introduction_scenes', nextScenes);
   };
 
   const updateIntroductionScene = (index, field, value) => {
@@ -884,6 +1068,7 @@ const CreateCharacterPage = () => {
       // - 금지/미등록 토큰만 제거(안전)
       const safeDescription = sanitizePromptTokens(formData.basic_info.description);
       const safeUserDisplay = sanitizePromptTokens(formData.basic_info.user_display_description);
+      const useCustomDescription = Boolean((safeUserDisplay || '').trim());
 
       // greetings 배열을 greeting 단일 문자열로 변환
       // UI에서는 greetings 배열을 사용하지만, 백엔드는 greeting 단일 문자열을 기대함
@@ -898,6 +1083,8 @@ const CreateCharacterPage = () => {
           ...formData.basic_info,
           description: safeDescription,
           user_display_description: safeUserDisplay,
+          // ✅ 방어: 코멘트가 비어있으면 별도 설명을 쓰지 않도록 보정(빈 텍스트 노출 방지)
+          use_custom_description: useCustomDescription,
           greeting: greetingValue, // greetings 배열을 greeting 단일 문자열로 변환
           greetings: undefined, // 백엔드에 전송하지 않도록 제거
         },
@@ -924,8 +1111,15 @@ const CreateCharacterPage = () => {
       if (isEditMode) {
         // 변경 없을 때도 저장 가능하게: 백엔드가 부분 업데이트 허용
         await charactersAPI.updateAdvancedCharacter(characterId, characterData);
-        // 태그 저장
-        await api.put(`/characters/${characterId}/tags`, { tags: selectedTagSlugs });
+        // 태그 저장(선택): 태그 저장 실패로 "저장 자체"가 실패처럼 보이지 않도록 분리 처리
+        try {
+          await api.put(`/characters/${characterId}/tags`, { tags: selectedTagSlugs });
+        } catch (e) {
+          console.error('[CreateCharacterPage] tag save failed (edit):', e);
+          try { dispatchToast('warning', '태그 저장에 실패했습니다. 저장은 완료되었을 수 있어요.'); } catch (_) {}
+        }
+        // ✅ 사용자 피드백(저장 성공)
+        try { dispatchToast('success', '저장되었습니다.'); } catch (_) {}
         navigate(`/characters/${characterId}`, { state: { fromEdit: true } });
       } else {
         const response = await charactersAPI.createAdvancedCharacter(characterData);
@@ -933,10 +1127,23 @@ const CreateCharacterPage = () => {
         // 🆕 캐시 무효화
         queryClient.invalidateQueries({ queryKey: ['trending-characters-daily'] });
         queryClient.invalidateQueries({ queryKey: ['characters'] });
-        // 태그 저장
+        // 태그 저장(선택): 태그 저장 실패로 생성이 실패처럼 보이지 않도록 분리 처리
         if (selectedTagSlugs.length) {
-          await api.put(`/characters/${newId}/tags`, { tags: selectedTagSlugs });
+          try {
+            await api.put(`/characters/${newId}/tags`, { tags: selectedTagSlugs });
+          } catch (e) {
+            console.error('[CreateCharacterPage] tag save failed (create):', e);
+            try { dispatchToast('warning', '태그 저장에 실패했습니다. 캐릭터는 생성되었을 수 있어요.'); } catch (_) {}
+          }
         }
+        // ✅ 생성 성공 시: 로컬 초안 정리(다음 '새 캐릭터 만들기'에서 이전 내용 노출 방지)
+        try {
+          const draftKey = `cc_draft_${isEditMode ? characterId : 'new'}`;
+          localStorage.removeItem(draftKey);
+          localStorage.removeItem(`${draftKey}_manual`);
+        } catch (_) {}
+        // ✅ 사용자 피드백(생성 성공)
+        try { dispatchToast('success', '캐릭터가 생성되었습니다.'); } catch (_) {}
         navigate(`/characters/${newId}`, { state: { fromCreate: true } });
       }
     } catch (err) {
@@ -961,12 +1168,15 @@ const CreateCharacterPage = () => {
           const first = Object.keys(serverErrors)[0];
           if (first) scrollToField(first);
           setError('입력값을 다시 확인해주세요.');
+          try { dispatchToast('error', '저장에 실패했습니다. 입력값을 다시 확인해주세요.'); } catch (_) {}
         } else {
           setError('입력값을 확인해주세요.');
+          try { dispatchToast('error', '저장에 실패했습니다. 입력값을 확인해주세요.'); } catch (_) {}
         }
       } else {
         const errorMessage = err.response?.data?.detail || err.message || `캐릭터 ${isEditMode ? '수정' : '생성'}에 실패했습니다.`;
         setError(errorMessage);
+        try { dispatchToast('error', String(errorMessage || '저장에 실패했습니다.')); } catch (_) {}
       }
     } finally {
       setLoading(false);
@@ -1022,7 +1232,15 @@ const CreateCharacterPage = () => {
           secret: clip(s?.secret, 1000),
         }))
         .filter((s) => s.content.trim() || s.secret.trim() || s.title.trim());
-      return mapped;
+      // ✅ 비밀정보는 전역 입력으로 취급: 여러 씬의 secret이 있으면 합쳐서 하나로 통일한다.
+      try {
+        const secrets = mapped.map((x) => String(x?.secret || '').trim()).filter(Boolean);
+        const uniq = Array.from(new Set(secrets));
+        const mergedSecret = (uniq.join('\n\n') || '').slice(0, 1000);
+        return mapped.map((x) => ({ ...x, secret: mergedSecret }));
+      } catch (_) {
+        return mapped;
+      }
     };
 
     const nextName = clip(data?.name, 100) || '';
@@ -1128,6 +1346,17 @@ const CreateCharacterPage = () => {
         </Card>
       )}
 
+      {/* ✅ 필수 입력 안내(요구사항): 생성 화면에서만 노출 */}
+      {!isEditMode && (
+        <div className="rounded-xl border border-gray-700/70 bg-gray-900/40 p-4 text-gray-100">
+          <div className="text-sm font-semibold">필수 입력</div>
+          <div className="mt-1 text-xs text-gray-300">
+            이미지, 캐릭터 이름, 필수 태그, 캐릭터 설명, 세계관 설정, 크리에이터 코멘트
+          </div>
+          <div className="mt-1 text-xs text-gray-500">그 외 항목은 선택입니다.</div>
+        </div>
+      )}
+
       {/* 기존 기본 정보 입력 필드 */}
       <div className="space-y-4">
         {/* 캐릭터 이미지 (AI 자동완성 아래) */}
@@ -1135,7 +1364,7 @@ const CreateCharacterPage = () => {
           <div className="flex items-center justify-between mb-3">
             <h3 className="text-lg font-semibold flex items-center text-black">
               <Image className="w-5 h-5 mr-2" />
-              캐릭터 이미지
+              캐릭터 이미지 <span className="text-red-500 ml-1">*</span>
             </h3>
             <Button
               type="button"
@@ -1195,6 +1424,9 @@ const CreateCharacterPage = () => {
             }}
           />
           </ErrorBoundary>
+          {fieldErrors['media_settings.image_descriptions'] && (
+            <p className="text-xs text-red-500 mt-2">{fieldErrors['media_settings.image_descriptions']}</p>
+          )}
         </Card>
 
         {/* 🎯 이미지 키워드 트리거 설정 */}
@@ -1313,25 +1545,14 @@ const CreateCharacterPage = () => {
           </p>
         </div>
 
-        <div>
-          <Label htmlFor="character_type">제작 유형</Label>
-          <Select 
-            value={formData.basic_info.character_type} 
-            onValueChange={(value) => updateFormData('basic_info', 'character_type', value)}
-          >
-            <SelectTrigger className="mt-4">
-              <SelectValue placeholder="캐릭터 유형 선택" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="roleplay">롤플레잉</SelectItem>
-              <SelectItem value="simulator">시뮬레이터</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
+        {/* ✅ 요구사항: 일반 캐릭터챗 생성에서 '제작 유형'은 사용자에게 노출하지 않는다. */}
 
         {/* ✅ (요구사항 반영) 필수 선택 박스/이미지형 카드 제거 → '캐릭터 설명' 바로 위에 심플 세그먼트 UI로 배치 */}
         {!isOrigChatCharacter && (
           <div className="space-y-4">
+            <div className="text-sm font-semibold text-gray-200">
+              필수 태그 <span className="text-red-400">*</span>
+            </div>
             {/* 성향 */}
             <div>
               <div className="flex items-baseline justify-between">
@@ -1573,7 +1794,7 @@ const CreateCharacterPage = () => {
       <div className="space-y-4">
         <h3 className="text-lg font-semibold">세계관</h3>
         <div>
-          <Label htmlFor="world_setting">세계관 설정</Label>
+          <Label htmlFor="world_setting">세계관 설정 *</Label>
           <Textarea
             id="world_setting"
             className="mt-2"
@@ -1593,37 +1814,56 @@ const CreateCharacterPage = () => {
           </div>
         </div>
 
-        <div className="flex items-center space-x-2">
-          <Switch
-            id="use_custom_description"
-            checked={formData.basic_info.use_custom_description}
-            onCheckedChange={(checked) => updateFormData('basic_info', 'use_custom_description', checked)}
+        {/* ✅ 캐릭터 비밀정보(선택): 도입부와 분리된 기본 정보 항목 */}
+        <div>
+          <Label htmlFor="character_secret_info">비밀정보 (선택)</Label>
+          <Textarea
+            id="character_secret_info"
+            className="mt-2"
+            value={formData?.basic_info?.introduction_scenes?.[0]?.secret || ''}
+            onChange={(e) => updateCharacterSecretInfo(e.target.value)}
+            placeholder="유저에게는 노출되지 않는 설정(금기/약점/숨겨진 관계/진짜 목적 등)을 적어두면 프롬프트 생성기에 전달됩니다."
+            rows={3}
+            maxLength={1000}
           />
-          <Label htmlFor="use_custom_description">사용자에게 보여줄 설명을 별도로 작성할게요</Label>
-        </div>
-        {fieldErrors['basic_info.description'] && (
-          <p className="text-xs text-red-500">{fieldErrors['basic_info.description']}</p>
-        )}
-
-        {formData.basic_info.use_custom_description && (
-          <div>
-            <Label htmlFor="user_display_description">사용자용 설명</Label>
-            <Textarea
-              id="user_display_description"
-              className="mt-2"
-              value={formData.basic_info.user_display_description}
-              onChange={(e) => updateFormData('basic_info', 'user_display_description', e.target.value)}
-              placeholder="사용자에게 보여질 별도의 설명을 작성하세요"
-              rows={3}
-              maxLength={2000}
-            />
-            <div className="flex items-center gap-2 mt-2">
-              <span className="text-xs text-gray-500">토큰 삽입:</span>
-              <Button type="button" variant="secondary" size="sm" title="{{character}} 삽입" onClick={() => insertBasicToken('user_display_description','user_display_description', TOKEN_CHARACTER)}>캐릭터</Button>
-              <Button type="button" variant="secondary" size="sm" title="{{user}} 삽입" onClick={() => insertBasicToken('user_display_description','user_display_description', TOKEN_USER)}>유저</Button>
-            </div>
+          <p className="text-sm text-gray-500 mt-1">필수 입력이 아니며, 캐릭터 전체에 적용됩니다.</p>
+          {(() => {
+            try {
+              const keys = Object.keys(fieldErrors || {}).filter((k) => k.startsWith('basic_info.introduction_scenes.') && k.endsWith('.secret'));
+              const firstKey = keys[0];
+              return firstKey ? <p className="text-xs text-red-500 mt-2">{fieldErrors[firstKey]}</p> : null;
+            } catch (_) {
+              return null;
+            }
+          })()}
+          <div className="flex items-center gap-2 mt-2">
+            <span className="text-xs text-gray-500">토큰 삽입:</span>
+            <Button type="button" variant="secondary" size="sm" title="{{character}} 삽입" onClick={() => insertCharacterSecretToken(TOKEN_CHARACTER)}>캐릭터</Button>
+            <Button type="button" variant="secondary" size="sm" title="{{user}} 삽입" onClick={() => insertCharacterSecretToken(TOKEN_USER)}>유저</Button>
           </div>
-        )}
+        </div>
+
+        {/* ✅ 요구사항: '사용자용 설명' → '크리에이터 코멘트' (생성 Create 시 필수) */}
+        <div>
+          <Label htmlFor="user_display_description">크리에이터 코멘트 *</Label>
+          <Textarea
+            id="user_display_description"
+            className="mt-2"
+            value={formData.basic_info.user_display_description}
+            onChange={(e) => updateFormData('basic_info', 'user_display_description', e.target.value)}
+            placeholder="유저에게 보여줄 크리에이터 코멘트를 작성하세요"
+            rows={3}
+            maxLength={2000}
+          />
+          {fieldErrors['basic_info.user_display_description'] && (
+            <p className="text-xs text-red-500">{fieldErrors['basic_info.user_display_description']}</p>
+          )}
+          <div className="flex items-center gap-2 mt-2">
+            <span className="text-xs text-gray-500">토큰 삽입:</span>
+            <Button type="button" variant="secondary" size="sm" title="{{character}} 삽입" onClick={() => insertBasicToken('user_display_description','user_display_description', TOKEN_CHARACTER)}>캐릭터</Button>
+            <Button type="button" variant="secondary" size="sm" title="{{user}} 삽입" onClick={() => insertBasicToken('user_display_description','user_display_description', TOKEN_USER)}>유저</Button>
+          </div>
+        </div>
       </div>
 
       <Separator />
@@ -1646,16 +1886,16 @@ const CreateCharacterPage = () => {
           <Card key={index} className="p-4 bg-white text-black border border-gray-200">
             <div className="flex items-center justify-between mb-3">
               <h4 className="font-medium">#{index + 1} {scene.title || '도입부'}</h4>
-              {formData.basic_info.introduction_scenes.length > 1 && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => removeIntroductionScene(index)}
-                >
-                  <Trash2 className="w-4 h-4" />
-                </Button>
-              )}
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="text-red-600 border-red-200 hover:bg-red-50"
+                onClick={() => removeIntroductionScene(index)}
+              >
+                <Trash2 className="w-4 h-4 mr-1" />
+                도입부 삭제
+              </Button>
             </div>
             
             <div className="space-y-3">
@@ -1699,28 +1939,6 @@ const CreateCharacterPage = () => {
                   <span className="text-xs text-gray-500">토큰 삽입:</span>
                   <Button type="button" variant="secondary" size="sm" title="{{character}} 삽입" onClick={() => insertIntroToken(index, 'content', TOKEN_CHARACTER)}>캐릭터</Button>
                   <Button type="button" variant="secondary" size="sm" title="{{user}} 삽입" onClick={() => insertIntroToken(index, 'content', TOKEN_USER)}>유저</Button>
-                </div>
-              </div>
-              
-              <div>
-                <Label className="!text-black">비밀 정보 (선택)</Label>
-                <Textarea
-                  id={`intro_secret_${index}`}
-                  className="mt-4 bg-white text-black placeholder-gray-500 border-gray-300"
-                  value={scene.secret}
-                  onChange={(e) => updateIntroductionScene(index, 'secret', e.target.value)}
-                  placeholder="대화중인 유저에게는 노출되지 않는 정보로, 프롬프트 생성기에 전달 됩니다."
-                  rows={2}
-                  maxLength={1000}
-                />
-                <p className="text-sm text-gray-600 mt-1">사용자에게 보여지지 않는 비밀 정보입니다.</p>
-                {fieldErrors[`basic_info.introduction_scenes.${index}.secret`] && (
-                  <p className="text-xs text-red-500">{fieldErrors[`basic_info.introduction_scenes.${index}.secret`]}</p>
-                )}
-                <div className="flex items-center gap-2 mt-2">
-                  <span className="text-xs text-gray-600">토큰 삽입:</span>
-                  <Button type="button" variant="secondary" size="sm" title="{{character}} 삽입" onClick={() => insertIntroToken(index, 'secret', TOKEN_CHARACTER)}>캐릭터</Button>
-                  <Button type="button" variant="secondary" size="sm" title="{{user}} 삽입" onClick={() => insertIntroToken(index, 'secret', TOKEN_USER)}>유저</Button>
                 </div>
               </div>
             </div>
@@ -2097,7 +2315,7 @@ const CreateCharacterPage = () => {
             </div>
             <div className="flex items-center space-x-3">
               <div className="text-xs text-gray-500 mr-2 hidden sm:block">
-                {isAutoSaving ? '자동저장 중…' : lastSavedAt ? `자동저장됨 • ${new Date(lastSavedAt).toLocaleTimeString()}` : ''}
+                {isAutoSaving ? '임시저장 중…' : lastSavedAt ? `임시저장됨 • ${new Date(lastSavedAt).toLocaleTimeString()}` : ''}
               </div>
               <Button variant="outline" onClick={() => setIsPreviewOpen(true)}>
                 <Eye className="w-4 h-4 mr-2" />

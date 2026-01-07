@@ -256,7 +256,7 @@ const ChapterManageModal = ({ open, onClose, storyId, onAfterSave }) => {
                         {/* 이미지 업로드 (선택) */}
                         <div>
                           <label className="block text-sm text-gray-300 mb-2">
-                            웹툰 이미지 (선택사항)
+                            이미지 삽입 (선택사항)
                           </label>
                           {ep.imagePreview ? (
                             // 이미지 미리보기
@@ -283,7 +283,7 @@ const ChapterManageModal = ({ open, onClose, storyId, onAfterSave }) => {
                             // 업로드 버튼
                             <label className="flex flex-col items-center justify-center h-32 border-2 border-dashed border-gray-600 rounded-lg cursor-pointer hover:border-gray-500 transition-colors">
                               <ImageIcon className="w-8 h-8 text-gray-400 mb-2" />
-                              <span className="text-sm text-gray-400">클릭하여 웹툰 이미지 업로드</span>
+                              <span className="text-sm text-gray-400">클릭하여 이미지 삽입</span>
                               <span className="text-xs text-gray-500 mt-1">이미지가 없으면 텍스트로 표시됩니다</span>
                               <input
                                 type="file"

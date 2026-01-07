@@ -448,15 +448,62 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
       const sy = Math.max(0, Math.min(naturalH, (cropRect.y - offY) / dispH * naturalH));
       const sw = Math.max(1, Math.min(naturalW - sx, cropRect.w / dispW * naturalW));
       const sh = Math.max(1, Math.min(naturalH - sy, cropRect.h / dispH * naturalH));
-      // 캔버스에 크롭
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.round(sw);
-      canvas.height = Math.round(sh);
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(imgEl, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
-      const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png', 0.92));
+
+      /**
+       * 크롭 적용(방어적)
+       *
+       * 의도/동작:
+       * - 1차: 브라우저(canvas)로 빠르게 크롭 → 업로드(/media/upload)
+       * - 2차(폴백): 운영에서 스토리지(CDN/R2 등) CORS 미설정이면 canvas 크롭이 실패할 수 있어
+       *   서버 사이드 크롭(/media/assets/{id}/crop)으로 자동 폴백한다.
+       */
+      const tryServerCrop = async () => {
+        const assetId = gallery?.[cropIndex]?.id;
+        // 레거시 url 아이템(id가 url:로 시작)은 서버에서 조회할 수 없어서 크롭 불가
+        if (!assetId || String(assetId).startsWith('url:')) {
+          try { window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', message: '크롭 실패: 이 이미지는 서버 크롭을 지원하지 않습니다. (업로드/생성 이미지로 시도해주세요)' } })); } catch {}
+          return;
+        }
+        try {
+          const res = await mediaAPI.cropAsset(String(assetId), {
+            sx: Math.round(sx),
+            sy: Math.round(sy),
+            sw: Math.round(sw),
+            sh: Math.round(sh),
+          });
+          const item = res?.data || null;
+          if (item && item.id && item.url) {
+            setGallery(prev => {
+              const next = prev.slice();
+              next[cropIndex] = item;
+              return next;
+            });
+            setCropOpen(false);
+            return;
+          }
+          try { window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', message: '크롭 실패: 서버 응답이 올바르지 않습니다.' } })); } catch {}
+        } catch (e) {
+          console.error('서버 크롭 실패', e);
+          try { window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', message: '크롭 실패: 서버 크롭에 실패했습니다.' } })); } catch {}
+        }
+      };
+
+      // 캔버스에 크롭(시도) — CORS/보안 제약으로 실패할 수 있음
+      let blob = null;
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(sw);
+        canvas.height = Math.round(sh);
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(imgEl, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+        blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png', 0.92));
+      } catch (e) {
+        // 보안 예외(SecurityError) 등 → 서버 크롭으로 폴백
+        blob = null;
+      }
       if (!blob) {
-        try { window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', message: '크롭 실패: 원본 이미지를 불러올 수 없습니다 (CORS 확인 필요).' } })); } catch {}
+        // ✅ 운영에서 자주 발생: CORS로 canvas 크롭 불가 → 서버 크롭으로 폴백
+        await tryServerCrop();
         return;
       }
       const file = new File([blob], 'crop.png', { type: 'image/png' });
@@ -801,16 +848,48 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
           onMouseLeave={onCropMouseUp}
         >
           {cropIndex >= 0 && gallery[cropIndex] && (
-            <img
-              ref={cropImgRef}
-              crossOrigin="anonymous"
-              src={`${gallery[cropIndex].url}${(gallery[cropIndex].url||'').includes('?') ? '&' : '?'}v=${Date.now()}`}
-              alt="crop"
-              className="absolute inset-0 w-full h-full object-contain"
-              onLoad={onCropImgLoad}
-              onError={() => { try { window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', message: '이미지를 불러오지 못했습니다. 공개 URL/CORS를 확인하세요.' } })); } catch {} }}
-              draggable={false}
-            />
+            (() => {
+              /**
+               * ✅ 크롭 모달 이미지 로더(운영 안정)
+               *
+               * 문제:
+               * - 일부 스토리지 URL은 쿼리 파라미터를 임의로 추가하면(예: &v=Date.now) 서명/토큰이 깨질 수 있다.
+               * - 또한 crossOrigin="anonymous"는 서버가 CORS 헤더를 주지 않으면 이미지 로딩 자체가 실패할 수 있다.
+               *
+               * 해결:
+               * - URL은 그대로 사용(추가 파라미터 금지)
+               * - same-origin일 때만 crossOrigin을 설정하여 canvas 크롭을 허용하고,
+               *   cross-origin은 로딩을 우선시키고(=crossOrigin 미설정) applyCrop에서 서버 크롭으로 폴백한다.
+               */
+              const raw = gallery?.[cropIndex]?.url || '';
+              const src = resolveImageUrl(raw) || raw;
+              const useAnon = (() => {
+                try {
+                  const s = String(src || '');
+                  if (!s) return false;
+                  if (s.startsWith('data:') || s.startsWith('blob:')) return false;
+                  const u = new URL(s, window.location.origin);
+                  return u.origin === window.location.origin;
+                } catch (_) {
+                  return false;
+                }
+              })();
+              return (
+                <img
+                  ref={cropImgRef}
+                  crossOrigin={useAnon ? "anonymous" : undefined}
+                  src={src}
+                  alt="crop"
+                  className="absolute inset-0 w-full h-full object-contain"
+                  onLoad={onCropImgLoad}
+                  onError={() => {
+                    try { console.error('[ImageGenerateInsertModal] crop image load failed', { src }); } catch (_) {}
+                    try { window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', message: '이미지를 불러오지 못했습니다. (URL/CORS/서명 여부 확인 필요)' } })); } catch {}
+                  }}
+                  draggable={false}
+                />
+              );
+            })()
           )}
           {/* 크롭 사각형 */}
           <div

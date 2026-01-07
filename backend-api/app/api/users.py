@@ -3,7 +3,7 @@
 """
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Body
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, func
 from typing import Optional, List
 import uuid
 import json
@@ -11,6 +11,7 @@ import secrets
 import re
 
 from app.core.database import get_db
+from app.models.story_chapter import StoryChapter
 from app.models.user import User
 from app.schemas.user import (
     UserProfileResponse,
@@ -21,6 +22,7 @@ from app.schemas.user import (
 from app.schemas import StatsOverview, TimeSeriesResponse, TimeSeriesPoint, TopCharacterItem
 from app.schemas.character import RecentCharacterResponse, CharacterListResponse
 from app.schemas.comment import CommentResponse, CommentWithUser, StoryCommentResponse, StoryCommentWithUser
+from app.schemas.story import StoryListItem
 from app.services import user_service
 from app.core.security import get_current_user, get_password_hash
 from app.services.comment_service import (
@@ -147,6 +149,95 @@ async def get_my_liked_characters(
             )
         )
     return out2
+
+
+@router.get(
+    "/me/stories/liked",
+    response_model=List[StoryListItem],
+    summary="내가 선호작(좋아요)한 웹소설 목록",
+    description="현재 로그인한 사용자가 좋아요한 공개 웹소설(웹툰 제외) 목록을 최신순으로 반환합니다."
+)
+async def get_my_liked_stories(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    limit: int = 20,
+    page: int = 1
+):
+    """
+    선호작(스토리 좋아요) 목록을 조회합니다.
+    - **limit**: 가져올 작품 수 (기본값: 20)
+    - **page**: 페이지 번호 (기본값: 1)
+
+    정책:
+    - 비공개로 전환된 스토리는 목록에서 제외(읽기 영역 접근 불가와 일관)
+    - 웹툰 제외(요구사항: 웹소설)
+    """
+    skip = (page - 1) * limit
+    stories = await user_service.get_liked_stories_for_user(
+        db, user_id=current_user.id, limit=limit, skip=skip
+    )
+
+    # ✅ 선호작 페이지 UI(StorySerialCard)에서 "최근 회차 기준 N/UP" 표시를 위해 최신 회차 업로드 시각을 계산한다.
+    # - 정렬은 선호작(좋아요) 등록순을 유지한다.
+    story_ids = [s.id for s in (stories or []) if getattr(s, "id", None)]
+    episode_counts: dict[str, int] = {}
+    latest_chapter_map: dict[str, object] = {}
+    if story_ids:
+        try:
+            rows = await db.execute(
+                select(StoryChapter.story_id, func.count(StoryChapter.id))
+                .where(StoryChapter.story_id.in_(story_ids))
+                .group_by(StoryChapter.story_id)
+            )
+            episode_counts = {str(r[0]): int(r[1] or 0) for r in rows.all()}
+        except Exception:
+            episode_counts = {}
+
+        try:
+            rows = await db.execute(
+                select(StoryChapter.story_id, func.max(StoryChapter.created_at))
+                .where(StoryChapter.story_id.in_(story_ids))
+                .group_by(StoryChapter.story_id)
+            )
+            latest_chapter_map = {str(r[0]): r[1] for r in rows.all()}
+        except Exception:
+            latest_chapter_map = {}
+
+    out: List[StoryListItem] = []
+    for s in (stories or []):
+        try:
+            text = (getattr(s, "content", "") or "").strip()
+        except Exception:
+            text = ""
+        excerpt = " ".join(text.split())[:140] if text else None
+
+        try:
+            sid = str(getattr(s, "id", "") or "")
+            out.append(
+                StoryListItem(
+                    id=s.id,
+                    title=s.title,
+                    genre=getattr(s, "genre", None),
+                    is_public=bool(getattr(s, "is_public", True)),
+                    is_origchat=bool(getattr(s, "is_origchat", False)),
+                    is_webtoon=bool(getattr(s, "is_webtoon", False)),
+                    like_count=int(getattr(s, "like_count", 0) or 0),
+                    view_count=int(getattr(s, "view_count", 0) or 0),
+                    comment_count=int(getattr(s, "comment_count", 0) or 0),
+                    created_at=getattr(s, "created_at", None),
+                    creator_username=(s.creator.username if getattr(s, "creator", None) else None),
+                    creator_avatar_url=(s.creator.avatar_url if getattr(s, "creator", None) else None),
+                    cover_url=getattr(s, "cover_url", None),
+                    excerpt=excerpt,
+                    episode_count=episode_counts.get(sid, 0),
+                    latest_chapter_created_at=latest_chapter_map.get(sid, None),
+                )
+            )
+        except Exception:
+            # 방어: 개별 아이템 변환 실패가 전체 500으로 이어지지 않게 스킵
+            continue
+
+    return out
 
 @router.get(
     "/users/{user_id}",

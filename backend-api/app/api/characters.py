@@ -561,6 +561,57 @@ async def get_characters(
             only=only,
         )
 
+    # ✅ 방어적 2차 필터(중요: 비공개 누출 방지)
+    # - 원작챗 캐릭터(origin_story_id가 있는 캐릭터)는 "원작 스토리"가 공개일 때만 공개 목록에 노출해야 한다.
+    # - get_public_characters에서 1차로 Story.is_public 필터를 걸었더라도,
+    #   운영/마이그레이션/조인/캐시 등으로 누락될 수 있어 응답 직전 한 번 더 차단한다(보수적).
+    try:
+        origin_story_ids = []
+        for ch in (characters or []):
+            oid = getattr(ch, "origin_story_id", None)
+            if oid:
+                origin_story_ids.append(oid)
+
+        if origin_story_ids:
+            from app.models.story import Story
+
+            rows = await db.execute(
+                select(Story.id, Story.is_public).where(Story.id.in_(origin_story_ids))
+            )
+            story_public_by_id = {str(r[0]): (r[1] is True) for r in (rows.all() or [])}
+
+            filtered = []
+            removed = 0
+            for ch in (characters or []):
+                oid = getattr(ch, "origin_story_id", None)
+                if not oid:
+                    filtered.append(ch)
+                    continue
+                if story_public_by_id.get(str(oid)) is True:
+                    filtered.append(ch)
+                else:
+                    removed += 1
+
+            if removed:
+                try:
+                    logger.warning(
+                        f"[characters] defensive_filter removed {removed} origchat characters (private/missing origin story) from public listing"
+                    )
+                except Exception:
+                    pass
+
+            characters = filtered
+    except Exception as e:
+        # 확인 실패 시에도 노출을 막는 것이 안전하다(보수적).
+        try:
+            logger.exception(f"[characters] defensive_filter failed: {e}")
+        except Exception:
+            pass
+        try:
+            characters = [ch for ch in (characters or []) if not getattr(ch, "origin_story_id", None)]
+        except Exception:
+            pass
+
     # 일관된 응답: creator_username 포함하여 매핑
     if settings.ENVIRONMENT == "production":
         items: List[CharacterListResponse] = []

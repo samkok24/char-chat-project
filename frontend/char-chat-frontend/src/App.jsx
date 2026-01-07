@@ -14,6 +14,7 @@ import { SocketProvider } from './contexts/SocketContext';
 import { Loader2 } from 'lucide-react';
 import './App.css';
 import MediaEventsBridge from './components/MediaEventsBridge';
+import ToastEventsBridge from './components/ToastEventsBridge';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -66,6 +67,7 @@ const MyCharactersPage = React.lazy(() => import('./pages/MyCharactersPage'));
 const StoryImporterPage = React.lazy(() => import('./pages/StoryImporterPage'));
 const ChatHistoryPage = React.lazy(() => import('./pages/ChatHistoryPage'));
 const FavoritesPage = React.lazy(() => import('./pages/FavoritesPage'));
+const FavoriteStoriesPage = React.lazy(() => import('./pages/FavoriteStoriesPage'));
 // 레거시 works 상세 페이지는 사용하지 않음 (stories로 이동)
 // const WorkDetailPage = React.lazy(() => import('./pages/WorkDetailPage'));
 const WorkCreatePage = React.lazy(() => import('./pages/WorkCreatePage'));
@@ -224,6 +226,15 @@ const AppRouter = () => {
             }
           />
 
+          <Route
+            path="/favorites/stories"
+            element={
+              <ProtectedRoute>
+                <FavoriteStoriesPage />
+              </ProtectedRoute>
+            }
+          />
+
           {/* 📚 레거시 works 라우트 → 스토리 상세로 리다이렉트 */}
           <Route path="/works/:workId" element={<Navigate to="/stories/:workId" replace />} />
           <Route path="/works/:workId/chapters/:chapterNumber" element={<Navigate to="/stories/:workId/chapters/:chapterNumber" replace />} />
@@ -283,6 +294,7 @@ function App() {
           <SocketProvider>
             <div className="App">
               <MediaEventsBridge />
+              <ToastEventsBridge />
               <AppRouter />
             </div>
           </SocketProvider>

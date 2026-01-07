@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { storiesAPI, filesAPI } from '../lib/api';
+import { useAuth } from '../contexts/AuthContext';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Textarea } from '../components/ui/textarea';
@@ -11,6 +12,8 @@ import ImageGenerateInsertModal from '../components/ImageGenerateInsertModal';
 const StoryEditPage = () => {
   const { storyId } = useParams();
   const navigate = useNavigate();
+  const { user } = useAuth();
+  const isAdmin = !!user?.is_admin;
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -119,11 +122,16 @@ const StoryEditPage = () => {
             type="checkbox"
             id="is-webtoon-edit"
             checked={isWebtoon}
-            onChange={(e)=>setIsWebtoon(e.target.checked)}
+            disabled={!isAdmin}
+            onChange={(e)=>{
+              if (!isAdmin) return;
+              setIsWebtoon(e.target.checked);
+            }}
             className="w-4 h-4"
+            title={!isAdmin ? '웹툰 기능은 현재 관리자 전용입니다.' : ''}
           />
-          <label htmlFor="is-webtoon-edit" className="text-sm text-gray-300 cursor-pointer">
-            웹툰
+          <label htmlFor="is-webtoon-edit" className={`text-sm text-gray-300 ${isAdmin ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'}`}>
+            웹툰{!isAdmin ? <span className="ml-1 text-xs text-gray-500">(관리자 전용)</span> : null}
           </label>
         </div>
         <div className="flex justify-end gap-2">

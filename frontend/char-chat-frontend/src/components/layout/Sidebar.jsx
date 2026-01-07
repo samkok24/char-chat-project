@@ -6,7 +6,7 @@ import { Avatar, AvatarFallback, AvatarImage } from '../ui/avatar';
 import { resolveImageUrl, getCharacterPrimaryImage } from '../../lib/images';
 import { getReadingProgress, getReadingProgressAt } from '../../lib/reading';
 import { Button } from '../ui/button';
-import { MessageSquare, Plus, Home, Star, User, History, UserCog, LogOut, BookOpen, LogIn, HelpCircle, Bell, Settings } from 'lucide-react';
+import { MessageSquare, Plus, Home, Star, Heart, User, History, UserCog, LogOut, BookOpen, LogIn, HelpCircle, Bell, Settings } from 'lucide-react';
 import { Skeleton } from '../ui/skeleton';
 import { Badge } from '../ui/badge';
 import {
@@ -333,6 +333,7 @@ const Sidebar = () => {
         {/* 로그인 시에만 표시되는 메뉴들 */}
         {isAuthenticated && (
           <>
+            <NavItem to="/favorites/stories" icon={Heart}>선호작</NavItem>
             <NavItem to="/my-characters" icon={Star}>내 캐릭터</NavItem>
         <button
               onClick={() => setShowPersonaModal(true)}
@@ -348,7 +349,7 @@ const Sidebar = () => {
         {/* A While Ago - 로그인 시에만 표시 */}
         {isAuthenticated && (
         <div className="px-3 pt-4">
-          <p className="px-1 text-xs text-gray-500 mb-2">A While Ago</p>
+          <p className="px-1 text-xs text-gray-500 mb-2">히스토리</p>
           <div className="space-y-1">
             {loading ? (
               Array.from({ length: 3 }).map((_, i) => (
@@ -381,7 +382,6 @@ const Sidebar = () => {
                   const mode = rawMode || (isOrig ? 'plain' : '');
                   const suffix = mode === 'parallel' ? ' (평행세계)'
                     : mode === 'canon' ? ' (원작대로)'
-                    : mode === 'plain' ? ' (일대일)'
                     : '';
                   return ({
                     kind: 'chat',

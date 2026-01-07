@@ -7,10 +7,10 @@ from app.core.database import get_db
 from app.core.security import get_current_active_user
 from app.models.user import User
 from app.models.media_asset import MediaAsset
-from app.schemas.media_asset import MediaAssetResponse, MediaAssetListResponse
+from app.schemas.media_asset import MediaAssetResponse, MediaAssetListResponse, MediaAssetCropRequest
 from app.core.paths import get_upload_dir
 from app.services.storage import get_storage
-import os, shutil, uuid, base64, requests, asyncio, logging
+import os, shutil, uuid, base64, requests, asyncio, logging, io
 from app.models.character import Character
 from app.models.story import Story
 
@@ -596,6 +596,147 @@ async def upload_images(
     await db.commit()
     return MediaAssetListResponse(items=[MediaAssetResponse.model_validate(a) for a in created])
 
+
+@router.post("/assets/{asset_id}/crop", response_model=MediaAssetResponse)
+async def crop_media_asset(
+    asset_id: str,
+    payload: MediaAssetCropRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """
+    이미지 크롭(서버 사이드)
+
+    의도/동작:
+    - 운영 환경에서 스토리지(CDN/R2 등) CORS 헤더가 없으면, 프론트의 `canvas.toBlob()` 기반 크롭이 실패할 수 있다.
+    - 이 엔드포인트는 MediaAsset.url을 서버에서 직접 다운로드/로컬 로드한 뒤 PIL로 크롭하고,
+      새 MediaAsset을 만들어 반환한다.
+
+    방어적 처리:
+    - 소유자(user_id) 또는 연결 엔티티(owner)만 크롭 가능
+    - url 스킴이 이상하거나, 로컬 파일이 없거나, 다운로드 실패 시 명확한 HTTP 에러를 반환
+    """
+    row = (await db.execute(select(MediaAsset).where(MediaAsset.id == asset_id))).scalars().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="asset not found")
+
+    # 권한: asset 소유자 또는 연결 엔티티 소유자
+    try:
+        if row.user_id and str(row.user_id) == str(current_user.id):
+            pass
+        elif row.entity_type and row.entity_id:
+            await _assert_owner(db, current_user, str(row.entity_type), str(row.entity_id))
+        else:
+            raise HTTPException(status_code=403, detail="forbidden")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning(f"crop_media_asset auth check failed: {e}")
+        raise HTTPException(status_code=403, detail="forbidden")
+
+    src_url = (row.url or "").strip()
+    if not src_url:
+        raise HTTPException(status_code=400, detail="asset url is empty")
+
+    # 원본 바이트 로드
+    raw: bytes | None = None
+    try:
+        # query 제거(로컬 파일 매핑 안전)
+        path_only = src_url.split("?", 1)[0]
+        if path_only.startswith("/static/"):
+            # LocalStorage: /static/<filename>
+            fname = os.path.basename(path_only[len("/static/"):])
+            if not fname:
+                raise HTTPException(status_code=400, detail="invalid static url")
+            fp = os.path.join(get_upload_dir(), fname)
+            if not os.path.exists(fp):
+                raise HTTPException(status_code=404, detail="source file not found")
+            with open(fp, "rb") as f:
+                raw = f.read()
+        elif src_url.startswith("http://") or src_url.startswith("https://"):
+            resp = requests.get(src_url, timeout=30)
+            if resp.status_code >= 400:
+                raise HTTPException(status_code=502, detail=f"source download failed ({resp.status_code})")
+            raw = resp.content
+        else:
+            raise HTTPException(status_code=400, detail="unsupported url scheme")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"crop_media_asset load failed: {e}")
+        raise HTTPException(status_code=500, detail="failed to load source image")
+
+    if not raw:
+        raise HTTPException(status_code=500, detail="empty source image bytes")
+
+    # PIL 크롭
+    try:
+        from PIL import Image, ImageOps  # type: ignore
+
+        img = Image.open(io.BytesIO(raw))
+        try:
+            # EXIF 회전 보정 (가능한 경우)
+            img = ImageOps.exif_transpose(img)
+        except Exception:
+            pass
+
+        w, h = img.size
+        sx = int(payload.sx)
+        sy = int(payload.sy)
+        sw = int(payload.sw)
+        sh = int(payload.sh)
+
+        # clamp
+        sx = max(0, min(sx, max(0, w - 1)))
+        sy = max(0, min(sy, max(0, h - 1)))
+        sw = max(1, min(sw, max(1, w - sx)))
+        sh = max(1, min(sh, max(1, h - sy)))
+
+        cropped = img.crop((sx, sy, sx + sw, sy + sh))
+
+        # 저장: png(투명도 포함 가능)
+        if cropped.mode not in ("RGB", "RGBA"):
+            try:
+                cropped = cropped.convert("RGBA")
+            except Exception:
+                cropped = cropped.convert("RGB")
+
+        out = io.BytesIO()
+        cropped.save(out, format="PNG", optimize=True)
+        out_bytes = out.getvalue()
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"crop_media_asset crop failed: {e}")
+        raise HTTPException(status_code=500, detail="crop failed")
+
+    # 새 asset 저장(원본 유지)
+    try:
+        storage = get_storage()
+        new_url = storage.save_bytes(out_bytes, content_type="image/png", key_hint="crop.png")
+        new_asset = MediaAsset(
+            id=str(uuid.uuid4()),
+            user_id=str(current_user.id),
+            url=new_url,
+            width=int(getattr(cropped, "width", 0) or 0) or None,
+            height=int(getattr(cropped, "height", 0) or 0) or None,
+            status="ready",
+            provider=row.provider,
+            model=row.model,
+            ratio=row.ratio,
+        )
+        db.add(new_asset)
+        await db.commit()
+        try:
+            await db.refresh(new_asset)
+        except Exception:
+            pass
+        return MediaAssetResponse.model_validate(new_asset)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"crop_media_asset save failed: {e}")
+        raise HTTPException(status_code=500, detail="failed to save cropped asset")
 
 
 

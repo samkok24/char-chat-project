@@ -254,7 +254,7 @@ const LoginPage = () => {
   }, [activeTab]);
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-purple-50 to-blue-50 flex items-center justify-center p-4">
+    <div className="min-h-screen bg-gray-950 flex items-center justify-center p-4">
       <div className="w-full max-w-md">
         {/* 로고 및 제목 */}
         <div className="text-center mb-8">
@@ -271,24 +271,24 @@ const LoginPage = () => {
               }}
             />
           </div>
-          <p className="text-gray-600 font-medium">
+          <p className="text-gray-300 font-medium">
             끝나지 않는 스토리와 캐릭터에 잠겨보시길.
           </p>
         </div>
 
-        <Card className="shadow-lg">
+        <Card className="shadow-lg bg-gray-900/80 border border-gray-800 text-gray-100">
           <Tabs value={activeTab} onValueChange={handleTabChange} className="w-full">
             <CardHeader className="pb-4">
-              <TabsList className="grid w-full grid-cols-2 bg-gray-200 dark:bg-gray-700">
+              <TabsList className="grid w-full grid-cols-2 bg-gray-800 border border-gray-700">
                 <TabsTrigger 
                   value="login"
-                  className="text-gray-700 dark:text-gray-300 data-[state=active]:bg-white dark:data-[state=active]:bg-gray-800 data-[state=active]:text-gray-900 dark:data-[state=active]:text-white font-semibold"
+                  className="text-gray-300 data-[state=active]:bg-gray-950 data-[state=active]:text-white font-semibold"
                 >
                   로그인
                 </TabsTrigger>
                 <TabsTrigger 
                   value="register"
-                  className="text-gray-700 dark:text-gray-300 data-[state=active]:bg-white dark:data-[state=active]:bg-gray-800 data-[state=active]:text-gray-900 dark:data-[state=active]:text-white font-semibold"
+                  className="text-gray-300 data-[state=active]:bg-gray-950 data-[state=active]:text-white font-semibold"
                 >
                   회원가입
                 </TabsTrigger>
@@ -303,17 +303,11 @@ const LoginPage = () => {
               )}
 
               <TabsContent value="login" className="space-y-4 mt-0">
-                <div className="text-center mb-4">
-                  <CardDescription className="text-gray-600 dark:text-gray-300">
-                    끝나지 않는 스토리와 캐릭터에 잠겨보시길.
-                  </CardDescription>
-                </div>
-                
                 <form onSubmit={handleLoginSubmit} className="space-y-4">
                   <div className="space-y-2">
-                    <Label htmlFor="login-email" className="text-gray-900 dark:text-gray-200 font-semibold">이메일</Label>
+                    <Label htmlFor="login-email" className="text-gray-200 font-semibold">이메일</Label>
                     <div className="relative">
-                      <Mail className="absolute left-3 top-3 h-4 w-4 text-gray-500 dark:text-gray-400" />
+                      <Mail className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
                       <Input
                         id="login-email"
                         name="email"
@@ -321,16 +315,16 @@ const LoginPage = () => {
                         placeholder="이메일을 입력하세요"
                         value={loginData.email}
                         onChange={handleLoginChange}
-                        className="pl-10 text-gray-900 dark:text-gray-100"
+                        className="pl-10 bg-gray-950/40 border-gray-700 text-gray-100 placeholder:text-gray-500"
                         required
                       />
                     </div>
                   </div>
 
                   <div className="space-y-2">
-                    <Label htmlFor="login-password" className="text-gray-900 dark:text-gray-200 font-semibold">비밀번호</Label>
+                    <Label htmlFor="login-password" className="text-gray-200 font-semibold">비밀번호</Label>
                     <div className="relative">
-                      <Lock className="absolute left-3 top-3 h-4 w-4 text-gray-500 dark:text-gray-400" />
+                      <Lock className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
                       <Input
                         id="login-password"
                         name="password"
@@ -338,13 +332,13 @@ const LoginPage = () => {
                         placeholder="비밀번호를 입력하세요"
                         value={loginData.password}
                         onChange={handleLoginChange}
-                        className="pl-10 pr-10 text-gray-900 dark:text-gray-100"
+                        className="pl-10 pr-10 bg-gray-950/40 border-gray-700 text-gray-100 placeholder:text-gray-500"
                         required
                       />
                       <button
                         type="button"
                         onClick={() => setShowLoginPassword(!showLoginPassword)}
-                        className="absolute right-3 top-3 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+                        className="absolute right-3 top-3 text-gray-400 hover:text-gray-200"
                       >
                         {showLoginPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                       </button>
@@ -381,17 +375,17 @@ const LoginPage = () => {
 
               <TabsContent value="register" className="space-y-4 mt-0">
                 <div className="text-center mb-4">
-                  <CardDescription className="text-gray-600 dark:text-gray-300">
+                  <CardDescription className="text-gray-300">
                     새 계정을 만들어 AI 캐릭터들과 대화를 시작하세요
                   </CardDescription>
                 </div>
 
                 <form onSubmit={handleRegisterSubmit} className="space-y-4">
                   <div className="space-y-2">
-                    <Label htmlFor="register-email" className="text-gray-900 dark:text-gray-200 font-semibold">이메일</Label>
+                    <Label htmlFor="register-email" className="text-gray-200 font-semibold">이메일</Label>
                     <div className="flex items-center gap-2">
                       <div className="relative flex-1">
-                        <Mail className="absolute left-3 top-3 h-4 w-4 text-gray-500 dark:text-gray-400" />
+                        <Mail className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
                         <Input
                           id="register-email"
                           name="email"
@@ -399,7 +393,7 @@ const LoginPage = () => {
                           placeholder="이메일을 입력하세요"
                           value={registerData.email}
                           onChange={handleRegisterChange}
-                          className="pl-10 text-gray-900 dark:text-gray-100"
+                          className="pl-10 bg-gray-950/40 border-gray-700 text-gray-100 placeholder:text-gray-500"
                           required
                         />
                       </div>
@@ -429,9 +423,9 @@ const LoginPage = () => {
                   </div>
 
                   <div className="space-y-2">
-                    <Label htmlFor="register-username" className="text-gray-900 dark:text-gray-200 font-semibold">사용자명</Label>
+                    <Label htmlFor="register-username" className="text-gray-200 font-semibold">사용자명</Label>
                     <div className="relative">
-                      <User className="absolute left-3 top-3 h-4 w-4 text-gray-500 dark:text-gray-400" />
+                      <User className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
                       <Input
                         id="register-username"
                         name="username"
@@ -439,7 +433,7 @@ const LoginPage = () => {
                         placeholder="사용자명을 입력하세요"
                         value={registerData.username}
                         onChange={handleRegisterChange}
-                        className="pl-10 text-gray-900 dark:text-gray-100"
+                        className="pl-10 bg-gray-950/40 border-gray-700 text-gray-100 placeholder:text-gray-500"
                         required
                         minLength={2}
                         maxLength={100}
@@ -457,9 +451,9 @@ const LoginPage = () => {
                   </div>
 
                   <div className="space-y-2">
-                    <Label htmlFor="register-password" className="text-gray-900 dark:text-gray-200 font-semibold">비밀번호</Label>
+                    <Label htmlFor="register-password" className="text-gray-200 font-semibold">비밀번호</Label>
                     <div className="relative">
-                      <Lock className="absolute left-3 top-3 h-4 w-4 text-gray-500 dark:text-gray-400" />
+                      <Lock className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
                       <Input
                         id="register-password"
                         name="password"
@@ -467,7 +461,7 @@ const LoginPage = () => {
                         placeholder="영문/숫자 조합 8자 이상"
                         value={registerData.password}
                         onChange={handleRegisterChange}
-                        className="pl-10 pr-10 text-gray-900 dark:text-gray-100"
+                        className="pl-10 pr-10 bg-gray-950/40 border-gray-700 text-gray-100 placeholder:text-gray-500"
                         required
                         minLength={8}
                         pattern="(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d]{8,}"
@@ -476,19 +470,19 @@ const LoginPage = () => {
                       <button
                         type="button"
                         onClick={() => setShowRegisterPassword(!showRegisterPassword)}
-                        className="absolute right-3 top-3 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+                        className="absolute right-3 top-3 text-gray-400 hover:text-gray-200"
                         disabled={!emailVerified}
                       >
                         {showRegisterPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                       </button>
                     </div>
-                    <p className="text-xs text-gray-600 dark:text-gray-400 font-medium">영문과 숫자를 포함해 8자 이상 입력하세요.</p>
+                    <p className="text-xs text-gray-400 font-medium">영문과 숫자를 포함해 8자 이상 입력하세요.</p>
                   </div>
 
                   <div className="space-y-2">
-                    <Label htmlFor="register-confirmPassword" className="text-gray-900 dark:text-gray-200 font-semibold">비밀번호 확인</Label>
+                    <Label htmlFor="register-confirmPassword" className="text-gray-200 font-semibold">비밀번호 확인</Label>
                     <div className="relative">
-                      <Lock className="absolute left-3 top-3 h-4 w-4 text-gray-500 dark:text-gray-400" />
+                      <Lock className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
                       <Input
                         id="register-confirmPassword"
                         name="confirmPassword"
@@ -496,14 +490,14 @@ const LoginPage = () => {
                         placeholder="비밀번호를 다시 입력하세요"
                         value={registerData.confirmPassword}
                         onChange={handleRegisterChange}
-                        className="pl-10 pr-10 text-gray-900 dark:text-gray-100"
+                        className="pl-10 pr-10 bg-gray-950/40 border-gray-700 text-gray-100 placeholder:text-gray-500"
                         required
                         disabled={!emailVerified}
                       />
                       <button
                         type="button"
                         onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-                        className="absolute right-3 top-3 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+                        className="absolute right-3 top-3 text-gray-400 hover:text-gray-200"
                         disabled={!emailVerified}
                       >
                         {showConfirmPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
@@ -512,15 +506,15 @@ const LoginPage = () => {
                   </div>
 
                   <div className="space-y-2">
-                    <Label className="text-gray-900 dark:text-gray-200 font-semibold">성별</Label>
+                    <Label className="text-gray-200 font-semibold">성별</Label>
                     <div className="flex items-center gap-4">
                       <label className="flex items-center gap-2 cursor-pointer">
                         <input type="radio" name="gender" value="male" checked={registerData.gender === 'male'} onChange={handleRegisterChange} required disabled={!emailVerified} />
-                        <span className="text-gray-900 dark:text-gray-100">남성</span>
+                        <span className="text-gray-100">남성</span>
                       </label>
                       <label className="flex items-center gap-2 cursor-pointer">
                         <input type="radio" name="gender" value="female" checked={registerData.gender === 'female'} onChange={handleRegisterChange} required disabled={!emailVerified} />
-                        <span className="text-gray-900 dark:text-gray-100">여성</span>
+                        <span className="text-gray-100">여성</span>
                       </label>
                     </div>
                   </div>

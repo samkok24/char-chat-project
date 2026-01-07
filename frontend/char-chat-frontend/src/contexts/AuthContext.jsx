@@ -2,7 +2,7 @@
  * 인증 컨텍스트
  */
 
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { authAPI, usersAPI } from '../lib/api';
 
 const AuthContext = createContext();
@@ -20,6 +20,14 @@ export const AuthProvider = ({ children }) => {
   const [loading, setLoading] = useState(true);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [profileVersion, setProfileVersion] = useState(Date.now());
+  // ✅ 멀티탭 동기화용 ref (stale closure 방지)
+  const userRef = useRef(null);
+  const isAuthenticatedRef = useRef(false);
+  const syncInFlightRef = useRef(false);
+  const lastSyncAtRef = useRef(0);
+
+  useEffect(() => { userRef.current = user; }, [user]);
+  useEffect(() => { isAuthenticatedRef.current = isAuthenticated; }, [isAuthenticated]);
 
   // 초기 로드 시 토큰 확인
   useEffect(() => {
@@ -53,6 +61,99 @@ export const AuthProvider = ({ children }) => {
       setLoading(false);
     }
   };
+
+  /**
+   * ✅ 멀티 탭 로그인 동기화(중요)
+   *
+   * 문제:
+   * - 한 탭에서 로그아웃/토큰 갱신이 일어나도, 다른 탭은 React state가 그대로라
+   *   "겉보기 로그인"인데 실제 요청/소켓만 깨지는 애매한 상태가 될 수 있다.
+   *
+   * 해결(최소 수정/방어적):
+   * - localStorage(access_token/refresh_token) 변경을 다른 탭에서 감지하여 즉시 state를 동기화한다.
+   * - access_token이 바뀌면, 기존 SocketContext 로직을 그대로 재사용하기 위해 auth:tokenRefreshed 이벤트를 발생시킨다.
+   * - 토큰이 제거되면 auth:loggedOut 이벤트를 발생시켜 소켓을 정리한다.
+   */
+  useEffect(() => {
+    const isNotAuthenticatedDetail = (detailLike) => {
+      try { return /not\s+authenticated/i.test(String(detailLike || '')); } catch (_) { return false; }
+    };
+
+    const clearLocalTokens = () => {
+      try { localStorage.removeItem('access_token'); } catch (_) {}
+      try { localStorage.removeItem('refresh_token'); } catch (_) {}
+    };
+
+    const handleLoggedOutByOtherTab = () => {
+      setUser(null);
+      setIsAuthenticated(false);
+      try { window.dispatchEvent(new Event('auth:loggedOut')); } catch (_) {}
+    };
+
+    const onStorage = (e) => {
+      try {
+        if (!e) return;
+        const k = String(e.key || '');
+        if (k !== 'access_token' && k !== 'refresh_token') return;
+
+        const at = localStorage.getItem('access_token');
+        const rt = localStorage.getItem('refresh_token');
+
+        // ✅ 토큰이 사라졌으면(다른 탭 로그아웃/리프레시 실패) 즉시 로그아웃 상태로 동기화
+        if (!at || !rt) {
+          handleLoggedOutByOtherTab();
+          return;
+        }
+
+        // ✅ access_token이 갱신/로그인으로 변경되면 소켓 인증도 같이 갱신(기존 이벤트 재사용)
+        if (k === 'access_token' && e.newValue) {
+          try {
+            window.dispatchEvent(new CustomEvent('auth:tokenRefreshed', { detail: { access_token: e.newValue, refresh_token: rt } }));
+          } catch (_) {}
+        }
+
+        // ✅ 다른 탭에서 로그인된 경우: 이 탭 UI도 유저 정보를 즉시 로드하여 로그인 상태로 동기화
+        const needsUserSync = !isAuthenticatedRef.current || !userRef.current;
+        if (!needsUserSync) return;
+
+        // 과도한 동기화 호출 방지(토큰 2개가 연속으로 set 되는 케이스)
+        const now = Date.now();
+        if (syncInFlightRef.current) return;
+        if (now - (lastSyncAtRef.current || 0) < 800) return;
+        lastSyncAtRef.current = now;
+        syncInFlightRef.current = true;
+
+        Promise.resolve(authAPI.getMe())
+          .then((res) => {
+            setUser(res.data);
+            setIsAuthenticated(true);
+          })
+          .catch((error) => {
+            console.error('[AuthContext] 멀티탭 인증 동기화 실패:', error);
+            const status = error?.response?.status;
+            const detail = error?.response?.data?.detail;
+            const isNotAuth = (status === 403) && isNotAuthenticatedDetail(detail);
+            if (status === 401 || isNotAuth) {
+              // ✅ 토큰이 실제로 무효면 정리(애매한 상태 방지)
+              clearLocalTokens();
+              handleLoggedOutByOtherTab();
+            }
+          })
+          .finally(() => {
+            syncInFlightRef.current = false;
+          });
+      } catch (err) {
+        console.error('[AuthContext] storage sync handler failed:', err);
+      }
+    };
+
+    try {
+      window.addEventListener('storage', onStorage);
+      return () => window.removeEventListener('storage', onStorage);
+    } catch (_) {
+      return undefined;
+    }
+  }, []);
 
   const login = async (email, password) => {
     try {

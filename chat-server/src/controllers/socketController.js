@@ -12,8 +12,89 @@ const authMiddleware = require('../middleware/authMiddleware');
 
 class SocketController {
   constructor() {
-    this.connectedUsers = new Map(); // userId -> socketId 매핑
-    this.activeRooms = new Map(); // roomId -> room 정보 매핑
+    /**
+     * ✅ 멀티 디바이스(모바일/PC) 방어
+     *
+     * 기존 문제:
+     * - userId -> socketId 단일 매핑 + disconnect 시 userId 기준으로 activeRooms를 통째로 정리
+     * - 유저가 여러 기기에서 동시에 접속한 상태에서 한쪽이 끊기면,
+     *   다른 기기에서도 activeRooms가 날아가 `send_message/continue`가 forbidden_room으로 막힐 수 있었다.
+     *
+     * 해결(최소 수정/방어적):
+     * - connectedUsers: userId -> Set(socketId)
+     * - activeRooms: roomId -> { userId, characterId, sockets:Set(socketId), ... }
+     * - disconnect/leave는 "해당 socket"만 제거하고, sockets가 0일 때만 room 엔트리를 제거한다.
+     */
+    this.connectedUsers = new Map(); // userId -> Set(socketId)
+    this.activeRooms = new Map(); // roomId -> { roomId, userId, characterId, sockets:Set(socketId), joinedAt }
+  }
+
+  /**
+   * room 데이터를 Redis/백엔드에서 안전하게 가져온다.
+   * - activeRooms가 비어있는(서버 재시작/레이스) 상황에서도 전송이 막히지 않도록 폴백한다.
+   */
+  async _getRoomData(socket, roomId) {
+    try {
+      // 1) Redis 캐시
+      const cached = await redisService.getChatRoom(roomId);
+      if (cached && typeof cached === 'object') return cached;
+    } catch (_) {}
+    // 2) 백엔드 API
+    const response = await axios.get(`${config.BACKEND_API_URL}/chat/rooms/${roomId}`, {
+      headers: { 'Authorization': `Bearer ${socket.token}` }
+    });
+    const room = response?.data;
+    try { if (room) await redisService.setChatRoom(roomId, room); } catch (_) {}
+    return room;
+  }
+
+  /**
+   * 소켓이 해당 room에 참여/권한이 있는지 보장하고, activeRooms 엔트리를 구성한다.
+   * - 멀티 디바이스/재연결/레이스 상황에서도 안정적으로 동작하도록 방어한다.
+   */
+  async _ensureActiveRoomEntry(socket, roomId) {
+    const userId = socket.userId;
+    const existing = this.activeRooms.get(roomId);
+
+    // 1) 이미 엔트리가 있고 같은 유저면: 소켓만 등록/조인 보강
+    if (existing && existing.userId === userId) {
+      try {
+        if (!existing.sockets) existing.sockets = new Set();
+        existing.sockets.add(socket.id);
+      } catch (_) {}
+      try {
+        if (!socket.rooms?.has(roomId)) socket.join(roomId);
+      } catch (_) {}
+      this.activeRooms.set(roomId, existing);
+      return existing;
+    }
+
+    // 2) 없으면 Redis/백엔드에서 room 조회 후 권한 검증
+    const room = await this._getRoomData(socket, roomId);
+    if (!room) {
+      const err = new Error('room_not_found');
+      err._code = 'room_not_found';
+      throw err;
+    }
+    if (room.user_id !== userId) {
+      const err = new Error('forbidden_room');
+      err._code = 'forbidden_room';
+      throw err;
+    }
+
+    // 3) 조인 + 엔트리 생성
+    try {
+      if (!socket.rooms?.has(roomId)) socket.join(roomId);
+    } catch (_) {}
+    const entry = {
+      roomId,
+      userId,
+      characterId: room.character_id,
+      sockets: new Set([socket.id]),
+      joinedAt: new Date().toISOString(),
+    };
+    this.activeRooms.set(roomId, entry);
+    return entry;
   }
 
   /**
@@ -24,7 +105,13 @@ class SocketController {
     const userInfo = socket.userInfo;
 
     // 연결된 사용자 추가
-    this.connectedUsers.set(userId, socket.id);
+    try {
+      const set = this.connectedUsers.get(userId) || new Set();
+      set.add(socket.id);
+      this.connectedUsers.set(userId, set);
+    } catch (_) {
+      this.connectedUsers.set(userId, new Set([socket.id]));
+    }
 
     // 사용자를 개인 룸에 추가 (개인 알림용)
     socket.join(`user_${userId}`);
@@ -50,19 +137,42 @@ class SocketController {
     const userId = socket.userId;
     
     if (userId) {
-      // 연결된 사용자에서 제거
-      this.connectedUsers.delete(userId);
-
-      // Redis에서 세션 삭제
-      redisService.deleteUserSession(userId);
-
-      // 활성 룸에서 사용자 제거
-      for (const [roomId, room] of this.activeRooms.entries()) {
-        if (room.userId === userId) {
-          this.activeRooms.delete(roomId);
-          socket.leave(roomId);
+      // ✅ 멀티 디바이스: 해당 socket만 제거
+      try {
+        const set = this.connectedUsers.get(userId);
+        if (set && set.delete) {
+          set.delete(socket.id);
+          if (set.size === 0) {
+            this.connectedUsers.delete(userId);
+            // 마지막 소켓이 끊긴 경우에만 Redis 세션 삭제(베스트 에포트)
+            try { redisService.deleteUserSession(userId); } catch (_) {}
+          } else {
+            this.connectedUsers.set(userId, set);
+          }
         }
-      }
+      } catch (_) {}
+
+      // 활성 룸에서 해당 socket만 제거
+      try {
+        for (const [roomId, room] of this.activeRooms.entries()) {
+          if (!room) continue;
+          const sockets = room.sockets;
+          if (sockets && sockets.delete) {
+            if (sockets.has(socket.id)) sockets.delete(socket.id);
+            if (sockets.size === 0) {
+              this.activeRooms.delete(roomId);
+            } else {
+              this.activeRooms.set(roomId, room);
+            }
+          } else {
+            // 구버전 엔트리(방어): userId가 같으면 삭제하지 않고 유지(다른 소켓을 보호)
+            if (room.userId === userId) {
+              this.activeRooms.set(roomId, room);
+            }
+          }
+          try { socket.leave(roomId); } catch (_) {}
+        }
+      } catch (_) {}
 
       logger.info(`사용자 ${userId}가 연결 해제되었습니다.`);
     }
@@ -109,14 +219,8 @@ class SocketController {
         return;
       }
 
-      // 백엔드 API에서 채팅방 정보 확인
-      const response = await axios.get(`${config.BACKEND_API_URL}/chat/rooms/${roomId}`, {
-        headers: {
-          'Authorization': `Bearer ${socket.token}`
-        }
-      });
-
-      const room = response.data;
+      // 백엔드/Redis에서 채팅방 정보 확인
+      const room = await this._getRoomData(socket, roomId);
 
       // 권한 확인 (채팅방 소유자만 입장 가능)
       if (room.user_id !== userId) {
@@ -128,12 +232,30 @@ class SocketController {
       socket.join(roomId);
 
       // 활성 룸에 추가
-      this.activeRooms.set(roomId, {
-        roomId,
-        userId,
-        characterId: room.character_id,
-        joinedAt: new Date().toISOString()
-      });
+      try {
+        const existing = this.activeRooms.get(roomId);
+        if (existing && existing.userId === userId) {
+          if (!existing.sockets) existing.sockets = new Set();
+          existing.sockets.add(socket.id);
+          this.activeRooms.set(roomId, existing);
+        } else {
+          this.activeRooms.set(roomId, {
+            roomId,
+            userId,
+            characterId: room.character_id,
+            sockets: new Set([socket.id]),
+            joinedAt: new Date().toISOString()
+          });
+        }
+      } catch (_) {
+        this.activeRooms.set(roomId, {
+          roomId,
+          userId,
+          characterId: room.character_id,
+          sockets: new Set([socket.id]),
+          joinedAt: new Date().toISOString()
+        });
+      }
 
       // Redis에 룸 정보 캐시
       await redisService.setChatRoom(roomId, room);
@@ -174,7 +296,20 @@ class SocketController {
       socket.leave(roomId);
 
       // 활성 룸에서 제거
-      this.activeRooms.delete(roomId);
+      try {
+        const existing = this.activeRooms.get(roomId);
+        if (existing && existing.userId === userId) {
+          const sockets = existing.sockets;
+          if (sockets && sockets.delete) {
+            sockets.delete(socket.id);
+            if (sockets.size === 0) this.activeRooms.delete(roomId);
+            else this.activeRooms.set(roomId, existing);
+          } else {
+            // 구버전 엔트리는 안전하게 유지(다른 소켓 보호)
+            this.activeRooms.set(roomId, existing);
+          }
+        }
+      } catch (_) {}
 
       // 나가기 확인 메시지
       socket.emit('room_left', {
@@ -223,11 +358,17 @@ class SocketController {
         return;
       }
 
-      // 채팅방 정보 확인
-      const room = this.activeRooms.get(roomId);
-      if (!room || room.userId !== userId) {
-        safeAck({ ok: false, error: 'forbidden_room' });
-        socket.emit('error', { message: '유효하지 않은 채팅방이거나 접근 권한이 없습니다.' });
+      // ✅ 채팅방 정보/권한 확인(멀티 디바이스/재연결 방어)
+      let room = null;
+      try {
+        room = await this._ensureActiveRoomEntry(socket, roomId);
+      } catch (e) {
+        const code = e?._code || e?.message;
+        safeAck({ ok: false, error: code || 'forbidden_room' });
+        const msg = (code === 'room_not_found')
+          ? '채팅방을 찾을 수 없습니다.'
+          : '유효하지 않은 채팅방이거나 접근 권한이 없습니다.';
+        socket.emit('error', { message: msg });
         return;
       }
 
@@ -347,10 +488,17 @@ class SocketController {
         return;
       }
 
-      const room = this.activeRooms.get(roomId);
-      if (!room || room.userId !== userId) {
-        safeAck({ ok: false, error: 'forbidden_room' });
-        socket.emit('error', { message: '유효하지 않은 채팅방이거나 접근 권한이 없습니다.' });
+      // ✅ 채팅방 정보/권한 확인(멀티 디바이스/재연결 방어)
+      let room = null;
+      try {
+        room = await this._ensureActiveRoomEntry(socket, roomId);
+      } catch (e) {
+        const code = e?._code || e?.message;
+        safeAck({ ok: false, error: code || 'forbidden_room' });
+        const msg = (code === 'room_not_found')
+          ? '채팅방을 찾을 수 없습니다.'
+          : '유효하지 않은 채팅방이거나 접근 권한이 없습니다.';
+        socket.emit('error', { message: msg });
         return;
       }
 
@@ -531,12 +679,15 @@ class SocketController {
         return socket.emit('error', { message: '채팅방 ID가 필요합니다.' });
       }
 
+      // ✅ 최신 기준 페이지네이션(SSOT: DB)
+      // - 백엔드 /chat/rooms/{roomId}/messages?tail=1 은 skip을 "최신에서의 오프셋"으로 해석한다.
+      // - 프론트는 page 기반이므로 (page-1)*limit을 그대로 전달하면 된다.
       const skip = (page - 1) * limit;
 
       // 백엔드 API에서 메시지 기록 조회
       const response = await axios.get(`${config.BACKEND_API_URL}/chat/rooms/${roomId}/messages`, {
         headers: { 'Authorization': `Bearer ${socket.token}` },
-        params: { skip, limit }
+        params: { skip, limit, tail: true }
       });
 
       const messages = response.data;
@@ -547,7 +698,8 @@ class SocketController {
         roomId: roomId,
         senderType: msg.sender_type, // 그대로 사용 (user 또는 character)
         content: msg.content,
-        timestamp: msg.created_at || msg.timestamp
+        timestamp: msg.created_at || msg.timestamp,
+        message_metadata: msg.message_metadata || undefined,
       }));
 
       // 클라이언트에 메시지 기록 전송
@@ -570,26 +722,3 @@ class SocketController {
 }
 
 module.exports = new SocketController();
-
-
-      // 클라이언트에 메시지 기록 전송
-      socket.emit('message_history', {
-        roomId,
-        messages: formattedMessages,
-        page,
-        limit,
-        hasMore: messages.length === limit
-      });
-
-    } catch (error) {
-      logger.error('메시지 기록 조회 오류:', error.response?.data || error.message);
-      socket.emit('error', { 
-        message: '메시지 기록을 불러오는 중 오류가 발생했습니다.',
-        details: error.response?.data?.detail || error.message
-      });
-    }
-  }
-}
-
-module.exports = new SocketController();
-

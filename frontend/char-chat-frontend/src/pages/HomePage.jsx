@@ -18,6 +18,14 @@ import { Avatar, AvatarFallback, AvatarImage } from '../components/ui/avatar';
 // 15번째 줄 수정: 이미지 썸네일 사이즈 파라미터 추가
 import { resolveImageUrl, getThumbnailUrl } from '../lib/images';
 import { replacePromptTokens } from '../lib/prompt';
+import { applyTagDisplayConfig } from '../lib/tagOrder';
+import {
+  CHARACTER_TAG_DISPLAY_STORAGE_KEY,
+  CHARACTER_TAG_DISPLAY_CHANGED_EVENT,
+  getCharacterTagDisplay,
+  setCharacterTagDisplay as persistCharacterTagDisplay,
+  isDefaultCharacterTagDisplayConfig,
+} from '../lib/cmsTagDisplay';
 import { LazyLoadImage } from 'react-lazy-load-image-component';
 import 'react-lazy-load-image-component/src/effects/blur.css';
 import { Skeleton } from '../components/ui/skeleton';
@@ -163,6 +171,63 @@ const HomePage = () => {
       try { window.removeEventListener('storage', onStorage); } catch (_) {}
     };
   }, [refreshHomeSlots]);
+
+  // ===== CMS 태그 노출/순서 설정(캐릭터 탭/태그 선택 모달 공통) =====
+  const [characterTagDisplay, setCharacterTagDisplayState] = useState(() => {
+    try { return getCharacterTagDisplay(); } catch (_) { return {}; }
+  });
+  const refreshCharacterTagDisplay = React.useCallback(() => {
+    try { setCharacterTagDisplayState(getCharacterTagDisplay()); } catch (e) {
+      try { console.error('[HomePage] getCharacterTagDisplay failed:', e); } catch (_) {}
+      setCharacterTagDisplayState({});
+    }
+  }, []);
+  useEffect(() => {
+    const onCustom = () => refreshCharacterTagDisplay();
+    const onStorage = (e) => {
+      try {
+        if (!e) return;
+        if (e.key === CHARACTER_TAG_DISPLAY_STORAGE_KEY) refreshCharacterTagDisplay();
+      } catch (_) {}
+    };
+    try { window.addEventListener(CHARACTER_TAG_DISPLAY_CHANGED_EVENT, onCustom); } catch (_) {}
+    try { window.addEventListener('storage', onStorage); } catch (_) {}
+    return () => {
+      try { window.removeEventListener(CHARACTER_TAG_DISPLAY_CHANGED_EVENT, onCustom); } catch (_) {}
+      try { window.removeEventListener('storage', onStorage); } catch (_) {}
+    };
+  }, [refreshCharacterTagDisplay]);
+
+  // ✅ 운영 SSOT: 서버(DB)의 태그 노출/순서 설정을 우선 사용한다.
+  useEffect(() => {
+    let active = true;
+    const load = async () => {
+      try {
+        const res = await cmsAPI.getCharacterTagDisplay();
+        if (!active) return;
+        const cfg = (res && res.data && typeof res.data === 'object') ? res.data : null;
+        if (!cfg) return;
+
+        // ✅ 안전 전환: 배포 직후 서버 SSOT가 "기본값(미설정)"일 수 있다.
+        // - 관리자에게는 로컬 편집/기본값이 덮여 사라지지 않게 보호한다.
+        let skipApply = false;
+        try {
+          const hasLocal = !!localStorage.getItem(CHARACTER_TAG_DISPLAY_STORAGE_KEY);
+          const looksDefault = isDefaultCharacterTagDisplayConfig(cfg);
+          if (isAdmin && hasLocal && looksDefault) skipApply = true;
+        } catch (_) {}
+
+        if (!skipApply) {
+          try { persistCharacterTagDisplay(cfg); } catch (_) {}
+        }
+        refreshCharacterTagDisplay();
+      } catch (e) {
+        try { console.warn('[HomePage] cmsAPI.getCharacterTagDisplay failed:', e); } catch (_) {}
+      }
+    };
+    load();
+    return () => { active = false; };
+  }, [isAdmin, refreshCharacterTagDisplay]);
 
   /**
    * ✅ 운영 SSOT: 서버(DB)의 구좌 설정을 우선 사용한다.
@@ -339,6 +404,29 @@ const HomePage = () => {
     navigate({ pathname: location.pathname, search: p.toString() }, { replace: true });
   };
 
+  const goToOrigSerialNovelTab = () => {
+    /**
+     * 온보딩 CTA: "웹소설 읽고 원작캐릭터 만나기"
+     *
+     * 의도/동작:
+     * - 홈 상단 탭 "원작연재"로 이동하되, 서브탭은 '원작소설'로 강제한다.
+     * - 사용자가 과거에 sub=origchat을 보고 있었더라도, 이 CTA는 읽기(원작소설) 동선으로 안내한다.
+     *
+     * 방어적 처리:
+     * - URL 파싱 실패 시에도 안전하게 동작하도록 기본 경로로 폴백한다.
+     */
+    try {
+      const p = new URLSearchParams(location.search);
+      p.set('tab', 'origserial');
+      p.set('sub', 'novel');
+      navigate({ pathname: location.pathname, search: p.toString() }, { replace: true });
+    } catch (_) {
+      try {
+        navigate('/dashboard?tab=origserial&sub=novel', { replace: true });
+      } catch (__) {}
+    }
+  };
+
   // ✅ URL 쿼리로 탭 상태 동기화(더보기 링크 등으로 이동 시 UI가 안 바뀌는 문제 방지)
   useEffect(() => {
     const next =
@@ -498,7 +586,7 @@ const HomePage = () => {
     const collatorKo = new Intl.Collator('ko-KR', { numeric: true, sensitivity: 'base' });
     const collatorEtc = new Intl.Collator('en', { numeric: true, sensitivity: 'base' });
 
-    return [...base].sort((a, b) => {
+    const baseSorted = [...base].sort((a, b) => {
       const la = getLabel(a);
       const lb = getLabel(b);
       const ha = isHangulStart(la);
@@ -507,7 +595,9 @@ const HomePage = () => {
       if (ha) return collatorKo.compare(la, lb);
       return collatorEtc.compare(la, lb);
     });
-  }, [allTags]);
+    // ✅ 우선순위 태그를 상단에 배치(남성향 위주), 나머지는 기존 정렬 유지
+    return applyTagDisplayConfig(baseSorted, characterTagDisplay);
+  }, [allTags, characterTagDisplay]);
 
   const visibleCharacterTabTags = React.useMemo(() => {
     return showAllTags
@@ -576,6 +666,29 @@ const HomePage = () => {
 
   const characters = (characterPages?.pages || []).flatMap(p => p.items);
   const [characterPage, setCharacterPage] = useState(1);
+  /**
+   * ✅ 무한스크롤(캐릭터탭/원작챗탭) 센티넬/락
+   *
+   * 의도:
+   * - 캐릭터탭: 페이지네이션 대신 스크롤 하단 진입 시 `characterPage`를 1씩 올려 누적 노출한다.
+   * - 원작연재 > 원작챗탭: "더보기" 버튼 대신 스크롤 하단 진입 시 다음 페이지를 자동 로드한다.
+   *
+   * 방어:
+   * - 홈 메인 탐색영역은 기존대로 "더보기 버튼" 유지(푸터 접근성/과도한 자동 로딩 이슈).
+   * - IO 미지원 환경에서는 클릭 fallback을 남긴다(데모 안정성).
+   */
+  const characterTabSentinelRef = useRef(null);
+  const origChatTabSentinelRef = useRef(null);
+  const characterTabAutoFetchLockRef = useRef(false);
+  const characterTabAutoScrollLockRef = useRef(false);
+  const origChatAutoScrollLockRef = useRef(false);
+  const supportsIntersectionObserver = React.useMemo(() => {
+    try {
+      return typeof window !== 'undefined' && 'IntersectionObserver' in window;
+    } catch (_) {
+      return false;
+    }
+  }, []);
   const generalCharacters = React.useMemo(
     () =>
       characters.filter((ch) => {
@@ -751,10 +864,12 @@ const HomePage = () => {
   // 페이지 범위 보정
   useEffect(() => {
     if (!isCharacterTab) return;
+    // ✅ 무한스크롤: 아직 추가 로드 가능하면(또는 로딩 중이면) 강제로 페이지를 줄이지 않는다.
+    if (hasNextPage || isFetchingNextPage) return;
     if (characterPage > totalCharacterPages) {
       setCharacterPage(totalCharacterPages || 1);
     }
-  }, [isCharacterTab, characterPage, totalCharacterPages]);
+  }, [isCharacterTab, characterPage, totalCharacterPages, hasNextPage, isFetchingNextPage]);
 
   // 캐릭터 탭에서 필요한 만큼 데이터 확보
   useEffect(() => {
@@ -762,7 +877,15 @@ const HomePage = () => {
     const requiredItems = characterPage * CHARACTER_PAGE_SIZE;
     if (generalCharacters.length >= requiredItems) return;
     if (!hasNextPage || isFetchingNextPage) return;
-    fetchNextPage();
+    if (characterTabAutoFetchLockRef.current) return;
+    characterTabAutoFetchLockRef.current = true;
+    fetchNextPage()
+      .catch((e) => {
+        try { console.error('[홈] 캐릭터 탭 자동 로드 실패:', e); } catch (_) {}
+      })
+      .finally(() => {
+        characterTabAutoFetchLockRef.current = false;
+      });
   }, [
     isCharacterTab,
     characterPage,
@@ -773,7 +896,109 @@ const HomePage = () => {
     fetchNextPage
   ]);
 
-  // ✅ 무한스크롤(IntersectionObserver)은 제거됨: 홈에서 스크롤로 자동 로딩하면 로딩이 느리고 푸터 접근이 어려움
+  /**
+   * ✅ 캐릭터 탭 무한스크롤(페이지네이션 제거)
+   *
+   * 원리:
+   * - 하단 센티넬이 뷰포트에 들어오면 `characterPage`를 +1 해서 "다음 묶음(40개)"을 누적 노출한다.
+   * - 데이터가 부족하면 위의 "필요한 만큼 데이터 확보" effect가 `fetchNextPage()`로 채운다.
+   */
+  useEffect(() => {
+    if (!isCharacterTab) return;
+    if (!supportsIntersectionObserver) return;
+    const el = characterTabSentinelRef.current;
+    if (!el) return;
+
+    const margin = isMobile ? 900 : 700;
+    let cancelled = false;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (cancelled) return;
+        const first = entries?.[0];
+        if (!first?.isIntersecting) return;
+        if (isFetchingNextPage) return;
+
+        const nextEnd = (characterPage + 1) * CHARACTER_PAGE_SIZE;
+        const hasMoreLoaded = generalCharacters.length >= nextEnd;
+        const canFetchMore = !!hasNextPage;
+        if (!hasMoreLoaded && !canFetchMore) return;
+
+        // 연속 트리거 방지(빠른 스크롤/레이아웃 변화)
+        if (characterTabAutoScrollLockRef.current) return;
+        characterTabAutoScrollLockRef.current = true;
+        setCharacterPage((prev) => prev + 1);
+        try {
+          window.setTimeout(() => {
+            characterTabAutoScrollLockRef.current = false;
+          }, 250);
+        } catch (_) {
+          characterTabAutoScrollLockRef.current = false;
+        }
+      },
+      { root: null, rootMargin: `${margin}px 0px`, threshold: 0.01 }
+    );
+    observer.observe(el);
+    return () => {
+      cancelled = true;
+      try { observer.disconnect(); } catch (_) {}
+    };
+  }, [
+    isCharacterTab,
+    supportsIntersectionObserver,
+    isMobile,
+    isFetchingNextPage,
+    hasNextPage,
+    characterPage,
+    generalCharacters.length
+  ]);
+
+  /**
+   * ✅ 원작연재 > 원작챗 탭 무한스크롤("더보기" 버튼 대체)
+   *
+   * 원리:
+   * - 하단 센티넬이 보이면 다음 페이지(fetchNextPage)를 자동 호출한다.
+   * - `origSerialCharacters`는 `characters`에서 필터링되므로, 다음 페이지가 로드되면 자동으로 격자가 확장된다.
+   */
+  useEffect(() => {
+    if (!isOrigSerialTab || origSerialTab !== 'origchat') return;
+    if (!supportsIntersectionObserver) return;
+    const el = origChatTabSentinelRef.current;
+    if (!el) return;
+
+    const margin = isMobile ? 900 : 700;
+    let cancelled = false;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (cancelled) return;
+        const first = entries?.[0];
+        if (!first?.isIntersecting) return;
+        if (!hasNextPage || isFetchingNextPage) return;
+        if (origChatAutoScrollLockRef.current) return;
+        origChatAutoScrollLockRef.current = true;
+        Promise.resolve(handleLoadMoreCharacters())
+          .catch((e) => {
+            try { console.error('[홈] 원작챗 탭 자동 로드 실패:', e); } catch (_) {}
+          })
+          .finally(() => {
+            origChatAutoScrollLockRef.current = false;
+          });
+      },
+      { root: null, rootMargin: `${margin}px 0px`, threshold: 0.01 }
+    );
+    observer.observe(el);
+    return () => {
+      cancelled = true;
+      try { observer.disconnect(); } catch (_) {}
+    };
+  }, [
+    isOrigSerialTab,
+    origSerialTab,
+    supportsIntersectionObserver,
+    isMobile,
+    hasNextPage,
+    isFetchingNextPage,
+    handleLoadMoreCharacters
+  ]);
 
   const handleSearch = (e) => {
     e.preventDefault();
@@ -866,8 +1091,9 @@ const HomePage = () => {
 
   const displayGridItems = React.useMemo(() => {
     if (isCharacterTab) {
-      const start = (characterPage - 1) * CHARACTER_PAGE_SIZE;
-      const slice = generalCharacters.slice(start, start + CHARACTER_PAGE_SIZE);
+      // ✅ 캐릭터탭: 무한스크롤(누적) - 1페이지/2페이지...가 아니라 40개씩 점진적으로 "쌓아서" 보여준다.
+      const end = characterPage * CHARACTER_PAGE_SIZE;
+      const slice = generalCharacters.slice(0, end);
       return slice.map((c) => ({ kind: 'character', data: c }));
     }
     if (isOrigSerialTab) {
@@ -896,7 +1122,8 @@ const HomePage = () => {
   }, [isCharacterTab, isOrigSerialTab, displayGridItems, exploreVisibleCount]);
 
   const hasGridItems = visibleGridItems.length > 0;
-  const shouldShowPagination = isCharacterTab && generalCharacters.length > 0;
+  // ✅ 캐릭터탭은 페이지네이션을 제거하고 무한스크롤로 전환
+  const shouldShowPagination = false;
 
   const headerIconButtonBaseClass =
     'relative inline-flex items-center justify-center rounded-full border border-gray-700 bg-gray-800 text-gray-200 hover:bg-gray-700 transition-colors';
@@ -1030,7 +1257,7 @@ const HomePage = () => {
     if (!id) return null;
 
     if (id === 'slot_top_origchat') {
-      return (
+  return (
         <ErrorBoundary>
           <TopOrigChat title={title} />
         </ErrorBoundary>
@@ -1358,7 +1585,7 @@ const HomePage = () => {
 
             {/* ✅ 데스크탑: 기존처럼 탭 중앙 + 아이콘 우측 */}
             <div className="hidden md:grid grid-cols-3 items-center">
-              <div />
+            <div />
               {homeTopTabsNode}
               <div className="justify-self-end flex items-center gap-2">
                 {user?.is_admin && (
@@ -1386,8 +1613,8 @@ const HomePage = () => {
                     <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-red-500" aria-hidden="true" />
                   )}
                 </button>
-              </div>
             </div>
+          </div>
           </div>
 
           {/* ✅ 캐러셀 배너(상단 탭 ↔ 필터 탭 사이) */}
@@ -1431,7 +1658,7 @@ const HomePage = () => {
                       {/* 성별 */}
                       <div className="sm:col-span-3">
                         <Select value={onboardingGender} onValueChange={setOnboardingGender}>
-                          <SelectTrigger className="w-full h-11 rounded-xl bg-gray-800/60 border-gray-700/80 text-white hover:bg-gray-800/80 focus-visible:ring-purple-500/30">
+                          <SelectTrigger className="w-full h-10 sm:h-11 rounded-xl bg-gray-800/60 border-gray-700/80 text-white hover:bg-gray-800/80 focus-visible:ring-purple-500/30 text-[13px] sm:text-sm">
                             <SelectValue placeholder="전체" />
                           </SelectTrigger>
                           <SelectContent>
@@ -1449,7 +1676,7 @@ const HomePage = () => {
                           value={onboardingQueryRaw}
                           onChange={(e) => setOnboardingQueryRaw(e.target.value)}
                           placeholder="이름/키워드로 검색(예: 아이돌, 북부대공)"
-                          className="h-11 rounded-xl bg-gray-800/60 border-gray-700/80 text-white placeholder:text-gray-400 w-full focus-visible:ring-purple-500/30 focus-visible:border-purple-500/40"
+                          className="h-10 sm:h-11 rounded-xl bg-gray-800/60 border-gray-700/80 text-white placeholder:text-gray-400 w-full focus-visible:ring-purple-500/30 focus-visible:border-purple-500/40 text-[13px] sm:text-sm"
                         />
                       </div>
                     </div>
@@ -1538,8 +1765,15 @@ const HomePage = () => {
                           30초만에 캐릭터 만나기
                         </Button>
                       </div>
-                      <div className="mt-3 text-xs text-gray-500">
-                        생성 후 프리뷰를 보고, 마음에 들면 바로 대화로 이동할 수 있어요.
+                      <div className="mt-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={goToOrigSerialNovelTab}
+                          className="w-full h-11 rounded-xl border-blue-500/40 bg-gray-900/30 text-blue-100 hover:bg-blue-500/10 hover:border-blue-400/60"
+                        >
+                          웹소설 읽고 원작캐릭터 만나기
+                        </Button>
                       </div>
                     </div>
                   </div>
@@ -1560,35 +1794,35 @@ const HomePage = () => {
           <div className="mb-6">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex flex-wrap items-center gap-3">
-                <button
+              <button
                   onClick={() => updateTab(null, null)}
-                  className={`h-9 px-4 rounded-full border text-sm font-medium transition-colors ${sourceFilter === null ? 'bg-purple-600 text-white border-purple-500 shadow-sm shadow-purple-900/30' : 'bg-gray-800/60 text-gray-200 border-gray-700/80 hover:bg-gray-800'}`}
-                >전체</button>
-                <button
+                  className={`h-8 px-3 text-[13px] sm:h-9 sm:px-4 sm:text-sm rounded-full border font-medium transition-colors ${sourceFilter === null ? 'bg-purple-600 text-white border-purple-500 shadow-sm shadow-purple-900/30' : 'bg-gray-800/60 text-gray-200 border-gray-700/80 hover:bg-gray-800'}`}
+              >전체</button>
+              <button
                   onClick={() => updateTab('ORIGINAL', 'character')}
-                  className={`h-9 px-4 rounded-full border text-sm font-medium transition-colors ${sourceFilter === 'ORIGINAL' ? 'bg-purple-600 text-white border-purple-500 shadow-sm shadow-purple-900/30' : 'bg-gray-800/60 text-gray-200 border-gray-700/80 hover:bg-gray-800'}`}
+                  className={`h-8 px-3 text-[13px] sm:h-9 sm:px-4 sm:text-sm rounded-full border font-medium transition-colors ${sourceFilter === 'ORIGINAL' ? 'bg-purple-600 text-white border-purple-500 shadow-sm shadow-purple-900/30' : 'bg-gray-800/60 text-gray-200 border-gray-700/80 hover:bg-gray-800'}`}
                 >캐릭터</button>
-                <button
+              <button
                   onClick={() => updateTab('ORIGSERIAL', 'origserial')}
-                  className={`h-9 px-4 rounded-full border text-sm font-medium transition-colors ${isOrigSerialTab ? 'bg-purple-600 text-white border-purple-500 shadow-sm shadow-purple-900/30' : 'bg-gray-800/60 text-gray-200 border-gray-700/80 hover:bg-gray-800'}`}
+                  className={`h-8 px-3 text-[13px] sm:h-9 sm:px-4 sm:text-sm rounded-full border font-medium transition-colors ${isOrigSerialTab ? 'bg-purple-600 text-white border-purple-500 shadow-sm shadow-purple-900/30' : 'bg-gray-800/60 text-gray-200 border-gray-700/80 hover:bg-gray-800'}`}
                 >원작연재</button>
 
                 {/* ✅ 검색 UI 비노출(요구사항): 전 탭에서 숨김 */}
                 {SEARCH_UI_ENABLED && (
                   <form onSubmit={handleSearch} className="w-full sm:w-auto sm:flex-1 sm:max-w-md">
-                    <div className="relative">
-                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-500" />
-                      <Input
-                        type="text"
-                        placeholder="캐릭터 검색"
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                        className="w-full pl-10 pr-4 py-2 bg-gray-800 border-gray-700 text-white placeholder-gray-400 rounded-full focus:ring-2 focus:ring-purple-500 focus:border-purple-500 text-sm"
-                      />
-                    </div>
-                  </form>
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-500" />
+                  <Input
+                    type="text"
+                    placeholder="캐릭터 검색"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="w-full h-8 sm:h-9 pl-9 sm:pl-10 pr-3 sm:pr-4 py-1.5 sm:py-2 bg-gray-800 border-gray-700 text-white placeholder-gray-400 rounded-full focus:ring-2 focus:ring-purple-500 focus:border-purple-500 text-[13px] sm:text-sm"
+                  />
+                </div>
+              </form>
                 )}
-              </div>
+            </div>
 
               {/* ✅ 사이드패널 버튼은 그대로 유지 + 탭 우상단에 CTA를 한 번 더 노출(복제) */}
               <div className="flex items-center justify-end gap-2">
@@ -1612,7 +1846,7 @@ const HomePage = () => {
 
           {/* 원작연재 탭: 스토리 리스트 또는 캐릭터 격자 */}
           {isOrigSerialTab && (
-            <section className="mb-10">
+          <section className="mb-10">
               <div className="flex items-center justify-center mb-4">
                 <div className="flex items-center gap-2">
                 <button
@@ -1651,7 +1885,7 @@ const HomePage = () => {
                 >
                   원작 쓰기
                 </Link>
-              </div>
+                    </div>
               
               {/* 원작소설 탭: 스토리 리스트 */}
               {origSerialTab === 'novel' && (
@@ -1667,10 +1901,10 @@ const HomePage = () => {
                             <div className="h-4 w-24 bg-gray-700 rounded" />
                             <div className="h-4 w-full bg-gray-700 rounded" />
                             <div className="h-4 w-3/4 bg-gray-700 rounded" />
-                          </div>
-                        </div>
-                      ))}
                     </div>
+                  </div>
+                      ))}
+                  </div>
                   ) : novelStories.length > 0 ? (
                     <div className="bg-gray-800/50 rounded-xl overflow-hidden border border-purple-500/30 shadow-lg">
                       {novelStories.map((story) => (
@@ -1690,7 +1924,7 @@ const HomePage = () => {
                               <Loader2 className="w-4 h-4 animate-spin text-gray-300" />
                             )}
                           </button>
-                        </div>
+                </div>
                       )}
                     </div>
                   ) : (
@@ -1707,17 +1941,22 @@ const HomePage = () => {
                   {loading ? (
                     <div className={gridColumnClasses}>
                       {Array.from({ length: 12 }).map((_, i) => (
-                        <CharacterCardSkeleton key={i} />
-                      ))}
-                    </div>
+                        <CharacterCardSkeleton key={i} variant="home" />
+              ))}
+            </div>
                   ) : origSerialCharacters.length > 0 ? (
                     <>
                       <div className={gridColumnClasses}>
                         {origSerialCharacters.map((c) => (
-                          <CharacterCard key={c.id} character={c} showOriginBadge />
+                          <CharacterCard key={c.id} character={c} showOriginBadge variant="home" />
                         ))}
                       </div>
-                      {hasNextPage && (
+                      {/* ✅ 원작챗 탭: 무한스크롤(센티넬) / IO 미지원 fallback: 더보기 버튼 */}
+                      {supportsIntersectionObserver ? (
+                        hasNextPage ? (
+                          <div ref={origChatTabSentinelRef} className="mt-6 h-10" aria-hidden="true" />
+                        ) : null
+                      ) : hasNextPage ? (
                         <div className="mt-8 flex justify-center">
                           <button
                             type="button"
@@ -1732,11 +1971,11 @@ const HomePage = () => {
                             )}
                           </button>
                         </div>
-                      )}
+                      ) : null}
                       {isFetchingNextPage && (
                         <div className={`${gridColumnClasses} mt-3`}>
                           {Array.from({ length: 6 }).map((_, i) => (
-                            <CharacterCardSkeleton key={`sk-${i}`} />
+                            <CharacterCardSkeleton key={`sk-${i}`} variant="home" />
                           ))}
                         </div>
                       )}
@@ -1748,7 +1987,7 @@ const HomePage = () => {
                   )}
                 </>
               )}
-            </section>
+          </section>
           )}
 
           {!isCharacterTab && !isOrigSerialTab && (
@@ -1783,14 +2022,19 @@ const HomePage = () => {
             const featuredRaw = Array.isArray(storyDiveStories) ? storyDiveStories : [];
             const featuredBase = featuredRaw.filter((it) => hasCover(it?.cover_url));
 
-            // ✅ 요구사항: 로그인 상태는 "최근(실제 다이브)"만. 추천으로 채우지 않는다.
-            const useRecent = !!isAuthenticated;
+            // ✅ UX 보강(신규 유저 방어):
+            // - 로그인 유저라도 "최근 스토리다이브"가 0개면, 추천(기준 기반)으로 폴백한다.
+            // - 단, 최근 로딩 중에는 깜빡임 방지를 위해 먼저 기다린다.
+            const useRecent = !!isAuthenticated && recentBase.length > 0;
             const base = useRecent ? recentBase : featuredBase;
-            const loading =
+            const loading = (() => {
               // 로그인 유저는 "최근 여부 판단"이 끝날 때까지 먼저 기다린다(깜빡임 방지)
-              (isAuthenticated && recentStoryDiveLoading)
-                ? true
-                : (useRecent ? false : storyDiveStoriesLoading);
+              if (isAuthenticated && recentStoryDiveLoading) return true;
+              // 최근이 없으면 추천 로딩 상태를 따른다.
+              if (isAuthenticated && recentBase.length === 0) return storyDiveStoriesLoading;
+              // 비로그인 또는 최근이 있는 경우
+              return useRecent ? false : storyDiveStoriesLoading;
+            })();
 
             // 0개면 구좌 비노출 (로딩 중이면 스켈레톤만 노출)
             if (!loading && base.length === 0) return null;
@@ -1799,17 +2043,17 @@ const HomePage = () => {
 
             return (
               <section className="mt-8">
-                <h2 className="text-xl font-bold text-white mb-4">
-                  주인공으로 다시 몰입하는 원작소설 - 스토리다이브
-                </h2>
-                <div className="flex gap-4 overflow-x-auto pb-2 scrollbar-hide">
+                <h2 className="text-lg sm:text-xl font-bold text-white mb-4">
+                  내가 주인공인 원작소설 - 스토리다이브
+            </h2>
+            <div className="flex gap-3 sm:gap-4 overflow-x-auto pb-2 scrollbar-hide">
                   {loading ? (
                     Array.from({ length: 5 }).map((_, idx) => (
-                      <div key={`sd-sk-${idx}`} className="flex-shrink-0 w-[200px]">
-                        <div className="relative aspect-[3/4] rounded-lg overflow-hidden mb-2 bg-gray-900 border border-gray-700/50">
+                      <div key={`sd-sk-${idx}`} className="flex-shrink-0 w-[160px] sm:w-[200px]">
+                        <div className="relative aspect-[3/4] rounded-lg overflow-hidden mb-1.5 sm:mb-2 bg-gray-900 border border-gray-700/50">
                           <Skeleton className="w-full h-full bg-gray-800" />
                         </div>
-                        <Skeleton className="h-5 w-40 bg-gray-800" />
+                        <Skeleton className="h-4 sm:h-5 w-32 sm:w-40 bg-gray-800" />
                       </div>
                     ))
                   ) : (
@@ -1818,39 +2062,39 @@ const HomePage = () => {
                       const coverSrc = getThumbnailUrl(s?.cover_url, 600) || placeholderCover;
                       const intro = String(s?.excerpt || '').trim();
                       const overlayText = intro || '이 작품에서 직접 주인공이 되어보세요.';
-                      return (
-                        <div
+                return (
+                  <div
                           key={key}
-                          className="flex-shrink-0 w-[200px] cursor-pointer group"
-                          onClick={() => {
+                    className="flex-shrink-0 w-[160px] sm:w-[200px] cursor-pointer group"
+                    onClick={() => {
                             if (useRecent) {
                               if (!requireAuth('스토리 다이브')) return;
                               if (!s?.novel_id || !s?.session_id) return;
                               navigate(`/storydive/novels/${s.novel_id}?sessionId=${encodeURIComponent(String(s.session_id))}`);
-                              return;
-                            }
+                        return;
+                      }
                             if (!s?.id) return;
                             // 추천 구좌는 1화 뷰어로 바로 진입
                             navigate(`/stories/${s.id}/chapters/1`);
                           }}
                         >
-                          <div className="relative aspect-[3/4] rounded-lg overflow-hidden mb-2 bg-gray-900 border border-gray-700/50 group-hover:border-gray-600 transition-colors">
-                            <img
+                  <div className="relative aspect-[3/4] rounded-lg overflow-hidden mb-1.5 sm:mb-2 bg-gray-900 border border-gray-700/50 group-hover:border-gray-600 transition-colors">
+                    <img 
                               src={coverSrc}
                               alt={s?.title || '작품 표지'}
-                              className="w-full h-full object-cover"
-                              onError={(e) => {
+                      className="w-full h-full object-cover"
+                      onError={(e) => {
                                 e.target.src = placeholderCover;
-                              }}
-                            />
-                            <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent" />
-                            <div className="absolute bottom-0 left-0 right-0 p-3">
+                      }}
+                    />
+                    <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent" />
+                    <div className="absolute bottom-0 left-0 right-0 p-2 sm:p-3">
                               <p
-                                className="text-white text-sm leading-snug"
+                                className="text-white text-xs sm:text-sm leading-snug"
                                 style={{
                                   textShadow: '0 2px 10px rgba(0,0,0,0.85)',
                                   display: '-webkit-box',
-                                  WebkitLineClamp: 3,
+                                  WebkitLineClamp: isMobile ? 2 : 3,
                                   WebkitBoxOrient: 'vertical',
                                   overflow: 'hidden',
                                 }}
@@ -1858,22 +2102,22 @@ const HomePage = () => {
                               >
                                 {overlayText}
                               </p>
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-1.5">
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5">
                             <Badge
-                              className="bg-blue-600/80 hover:bg-blue-600 text-white text-[10px] px-2 py-0.5 max-w-full truncate"
+                              className="bg-blue-600/80 hover:bg-blue-600 text-white text-[10px] px-1.5 sm:px-2 py-0.5 max-w-full truncate"
                               title={s?.title || ''}
                             >
                               {s?.title || '작품명'}
-                            </Badge>
-                          </div>
-                        </div>
-                      );
+                    </Badge>
+                  </div>
+                  </div>
+                );
                     })
                   )}
-                </div>
-              </section>
+            </div>
+          </section>
             );
           })()}
 
@@ -1915,7 +2159,7 @@ const HomePage = () => {
           {!isOrigSerialTab && (
           <section className="mt-8 mb-10">
             {isCharacterTab ? (
-              <div className="mb-5">
+            <div className="mb-5">
                 {/* ✅ 모바일 최적화: 태그는 한 줄 가로 스크롤(줄바꿈 방지) */}
                 <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1 scrollbar-hide sm:flex-wrap sm:overflow-visible sm:pb-0">
                   {/* ✅ 기본값: 전체 */}
@@ -1935,8 +2179,8 @@ const HomePage = () => {
                     const name = String(t?.name || t?.slug || '').trim();
                     if (!slug || !name) return null;
                     const active = selectedTags.includes(slug);
-                    return (
-                      <button
+                  return (
+                    <button
                         type="button"
                         key={t.id || slug}
                         onClick={() => setSelectedTags((prev) => (prev.length === 1 && prev[0] === slug ? [] : [slug]))}
@@ -1948,21 +2192,27 @@ const HomePage = () => {
                         title={name}
                       >
                         {name}
-                      </button>
-                    );
-                  })}
+                    </button>
+                  );
+                })}
 
                   {sortedTagsForCharacterTab.length > visibleTagLimit && (
-                    <button
+                  <button
                       type="button"
                       onClick={() => setShowAllTags((v) => !v)}
-                      className="px-3 py-1 rounded-full bg-gray-800 text-gray-200 border border-gray-700 text-xs sm:text-sm flex-shrink-0 whitespace-nowrap"
-                    >
-                      {showAllTags ? '접기' : '더보기'}
-                    </button>
-                  )}
-                </div>
+                      className={`px-3 py-1 rounded-full border text-xs sm:text-sm flex-shrink-0 whitespace-nowrap font-semibold shadow-sm transition-colors ${
+                        showAllTags
+                          ? 'bg-purple-700 text-white border-purple-500 hover:bg-purple-800'
+                          : 'bg-purple-600 text-white border-purple-500 hover:bg-purple-700'
+                      }`}
+                      aria-expanded={showAllTags}
+                      aria-label={showAllTags ? '태그 접기' : '태그 더보기'}
+                  >
+                    {showAllTags ? '접기' : '더보기'}
+                  </button>
+                )}
               </div>
+            </div>
             ) : (
               <h2 className="text-xl font-normal text-white mb-3">탐색</h2>
             )}
@@ -1970,7 +2220,7 @@ const HomePage = () => {
             {loading ? (
               <div className={gridColumnClasses}>
                 {Array.from({ length: 12 }).map((_, i) => (
-                  <CharacterCardSkeleton key={i} />
+                  <CharacterCardSkeleton key={i} variant={isCharacterTab ? 'home' : 'explore'} />
                 ))}
               </div>
             ) : hasGridItems ? (
@@ -1989,7 +2239,12 @@ const HomePage = () => {
                         return isStory ? (
                           <StoryExploreCard key={key} story={item.data} />
                         ) : (
-                          <CharacterCard key={key} character={item.data} showOriginBadge />
+                          <CharacterCard
+                            key={key}
+                            character={item.data}
+                            showOriginBadge
+                            variant={isCharacterTab ? 'home' : 'explore'}
+                          />
                         );
                       }
 
@@ -2006,6 +2261,32 @@ const HomePage = () => {
                     })}
                   </div>
                 </ErrorBoundary>
+
+                {/* ✅ 캐릭터 탭: 무한스크롤 센티넬(하단 진입 시 다음 묶음 누적 노출) */}
+                {isCharacterTab &&
+                  (hasNextPage || generalCharacters.length > characterPage * CHARACTER_PAGE_SIZE) && (
+                    <div ref={characterTabSentinelRef} className="h-10" aria-hidden="true" />
+                  )}
+
+                {/* ✅ IO 미지원(극소수) fallback: 버튼으로 누적 로드 */}
+                {isCharacterTab &&
+                  !supportsIntersectionObserver &&
+                  (hasNextPage || generalCharacters.length > characterPage * CHARACTER_PAGE_SIZE) && (
+                    <div className="mt-8 flex justify-center">
+                      <button
+                        type="button"
+                        onClick={() => setCharacterPage((p) => p + 1)}
+                        disabled={isFetchingNextPage}
+                        className="inline-flex items-center gap-2 rounded-full border border-gray-700/70 bg-gray-800/60 px-6 py-2.5 text-sm text-gray-200 shadow-lg transition-colors hover:bg-gray-800 hover:border-gray-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                        aria-label="캐릭터 더보기"
+                      >
+                        <span className="font-medium">더보기</span>
+                        {isFetchingNextPage && (
+                          <Loader2 className="w-4 h-4 animate-spin text-gray-300" />
+                        )}
+                      </button>
+                    </div>
+                  )}
                 {/* ✅ 더보기 버튼 (메인탭 탐색영역 전용): 20개씩 단계 노출 */}
                 {!isCharacterTab && !isOrigSerialTab && hasGridItems && (
                   (displayGridItems.length > exploreVisibleCount || hasNextPage) ? (
@@ -2018,7 +2299,7 @@ const HomePage = () => {
                         aria-label="탐색 더보기"
                       >
                         <span className="font-medium">더보기</span>
-                        {isFetchingNextPage && (
+                {isFetchingNextPage && (
                           <Loader2 className="w-4 h-4 animate-spin text-gray-300" />
                         )}
                       </button>
@@ -2028,7 +2309,7 @@ const HomePage = () => {
                 {isFetchingNextPage && (
                   <div className={`${gridColumnClasses} mt-3`}>
                     {Array.from({ length: 6 }).map((_, i) => (
-                      <CharacterCardSkeleton key={`sk-${i}`} />
+                      <CharacterCardSkeleton key={`sk-${i}`} variant={isCharacterTab ? 'home' : 'explore'} />
                     ))}
                   </div>
                 )}

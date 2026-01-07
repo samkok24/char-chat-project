@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { storiesAPI, chaptersAPI, mediaAPI } from '../lib/api';
+import { useAuth } from '../contexts/AuthContext';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../components/ui/card';
 import { Textarea } from '../components/ui/textarea';
@@ -16,6 +17,8 @@ import { AlertDialog, AlertDialogAction, AlertDialogContent, AlertDialogDescript
 
 const WorkCreatePage = () => {
   const navigate = useNavigate();
+  const { user } = useAuth();
+  const isAdmin = !!user?.is_admin;
   const [title, setTitle] = useState('');
   const [genre, setGenre] = useState('');
   const [keywords, setKeywords] = useState('');
@@ -485,11 +488,17 @@ const WorkCreatePage = () => {
                   type="checkbox"
                   id="is-webtoon"
                   checked={isWebtoon}
-                  onChange={(e)=>{ setIsWebtoon(e.target.checked); markDirty(); }}
+                  disabled={!isAdmin}
+                  onChange={(e)=>{
+                    if (!isAdmin) return;
+                    setIsWebtoon(e.target.checked);
+                    markDirty();
+                  }}
                   className="w-4 h-4"
+                  title={!isAdmin ? '웹툰 기능은 현재 관리자 전용입니다.' : ''}
                 />
-                <label htmlFor="is-webtoon" className="text-sm text-gray-300 cursor-pointer">
-                  웹툰
+                <label htmlFor="is-webtoon" className={`text-sm text-gray-300 ${isAdmin ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'}`}>
+                  웹툰{!isAdmin ? <span className="ml-1 text-xs text-gray-500">(관리자 전용)</span> : null}
                 </label>
               </div>
               {/* 등록 버튼은 우측 회차 관리 하단으로 이동 */}
@@ -566,7 +575,7 @@ const WorkCreatePage = () => {
                                 document.getElementById(`image-input-${ep.id}`)?.click();
                               }}
                               onDoubleClick={(e) => handleImageIconDoubleClick(ep.id, e)}
-                              title={ep.imagePreview ? "이미지 변경 (더블클릭: 제거)" : "웹툰 이미지 업로드"}
+                              title={ep.imagePreview ? "이미지 변경 (더블클릭: 제거)" : "이미지 삽입"}
                             >
                               <ImageIcon className="w-4 h-4" />
                             </Button>
@@ -605,7 +614,7 @@ const WorkCreatePage = () => {
                           />
                           {ep.imagePreview && (
                             <div className="mt-2 text-xs text-gray-400">
-                              ✓ 웹툰 이미지가 업로드되었습니다. 독자에게는 이미지만 표시됩니다.
+                              ✓ 이미지가 삽입되었습니다. 독자에게는 이미지만 표시됩니다.
                             </div>
                           )}
                         </div>

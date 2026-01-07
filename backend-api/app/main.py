@@ -103,6 +103,16 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"[warn] site_configs 테이블 생성 실패(계속 진행): {e}")
 
+        # ✅ 선호작(스토리 좋아요) 기능은 운영에서도 필요하므로, story_likes 테이블을 멱등 생성한다.
+        # - 운영에선 Base.metadata.create_all을 전체로 돌리지 않기 때문에, 테이블 누락 시 500(UndefinedTableError)이 날 수 있다.
+        # - checkfirst=True로 이미 존재하면 아무 작업도 하지 않는다.
+        try:
+            from app.models.like import StoryLike  # 로컬 import(순환 방지)
+            await conn.run_sync(lambda c: StoryLike.__table__.create(c, checkfirst=True))
+            logger.info("💗 story_likes 테이블 확인/생성 완료")
+        except Exception as e:
+            logger.warning(f"[warn] story_likes 테이블 생성 실패(계속 진행): {e}")
+
         # SQLite 사용 시 누락 컬럼 자동 보정 (idempotent)
         try:
             if settings.DATABASE_URL.startswith("sqlite"):

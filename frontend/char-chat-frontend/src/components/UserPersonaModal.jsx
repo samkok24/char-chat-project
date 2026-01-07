@@ -11,7 +11,21 @@ import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Textarea } from './ui/textarea';
 import { Switch } from './ui/switch';
-import { X, Edit2, Trash2, Star, Check } from 'lucide-react';
+import { X, Edit2, Trash2, Star, Check, Loader2 } from 'lucide-react';
+
+/**
+ * ✅ 공용 토스트 디스패처
+ *
+ * 의도:
+ * - 활성화/저장 실패 등이 콘솔에만 찍히면 사용자는 "무반응"으로 느낀다.
+ * - 전역 `ToastEventsBridge`가 'toast' 이벤트를 Sonner 토스트로 연결하므로,
+ *   여기서는 이벤트만 쏴서 UI 피드백을 확보한다.
+ */
+const dispatchToast = (type, message) => {
+  try {
+    window.dispatchEvent(new CustomEvent('toast', { detail: { type, message } }));
+  } catch (_) {}
+};
 
 const APPLY_SCOPE_OPTIONS = [
   { value: 'all', label: '모두 적용' },
@@ -26,6 +40,7 @@ const UserPersonaModal = ({ isOpen, onClose }) => {
   const [newPersonaScope, setNewPersonaScope] = useState('all');
   const [editingPersona, setEditingPersona] = useState(null);
   const [activePersona, setActivePersona] = useState(null);
+  const [activatingPersonaId, setActivatingPersonaId] = useState(null);
 
   // 모달이 열릴 때 페르소나 목록 로드
   useEffect(() => {
@@ -98,6 +113,11 @@ const UserPersonaModal = ({ isOpen, onClose }) => {
 
   const setActiveUserPersona = async (personaId) => {
     try {
+      if (!personaId) {
+        dispatchToast('error', '활성화할 페르소나를 찾지 못했습니다.');
+        return;
+      }
+      setActivatingPersonaId(personaId);
       const response = await userPersonasAPI.setActivePersona(personaId);
       setActivePersona(response.data);
       // 페르소나 목록에서 활성 상태 업데이트
@@ -105,8 +125,14 @@ const UserPersonaModal = ({ isOpen, onClose }) => {
         ...p,
         isActive: p.id === personaId
       })));
+      const pn = String(response?.data?.name || '').trim();
+      dispatchToast('success', pn ? `활성 페르소나로 설정되었습니다: ${pn}` : '활성 페르소나로 설정되었습니다.');
     } catch (error) {
       console.error('활성 페르소나 설정 실패:', error);
+      const detail = error?.response?.data?.detail || error?.message;
+      dispatchToast('error', detail ? `활성화 실패: ${detail}` : '활성화에 실패했습니다. 잠시 후 다시 시도해주세요.');
+    } finally {
+      setActivatingPersonaId(null);
     }
   };
 
@@ -316,9 +342,21 @@ const UserPersonaModal = ({ isOpen, onClose }) => {
                           size="sm"
                           variant={persona.isActive ? "default" : "outline"}
                           className={persona.isActive ? 'bg-green-600 hover:bg-green-700' : ''}
-                          disabled={persona.isActive}
+                          disabled={persona.isActive || activatingPersonaId === persona.id}
                         >
-                          {persona.isActive ? <Check className="w-4 h-4" /> : '활성화'}
+                          {activatingPersonaId === persona.id ? (
+                            <>
+                              <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+                              활성화 중…
+                            </>
+                          ) : persona.isActive ? (
+                            <>
+                              <Check className="w-4 h-4 mr-1" />
+                              활성중
+                            </>
+                          ) : (
+                            '활성화'
+                          )}
                         </Button>
                         
                         {/* 대표 설정 버튼 */}

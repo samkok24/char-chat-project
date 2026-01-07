@@ -278,7 +278,10 @@ const HomeBannerCarousel = ({ className = '' }) => {
         setApi={setApi}
       >
         <CarouselContent className="-ml-2">
-          {renderBanners.map((b) => {
+          {renderBanners.map((b, idx) => {
+            // ✅ UX/성능: 상단 배너는 "첫 화면"에서 가장 먼저 보이므로 0번만 우선 로드한다.
+            // - 나머지는 lazy로 유지해 네트워크 과부하를 막는다.
+            const isPriority = idx === 0;
             const img = String(b.imageUrl || '').trim();
             const mobileImg = String(b.mobileImageUrl || '').trim();
             const href = String(b.linkUrl || '').trim();
@@ -310,7 +313,8 @@ const HomeBannerCarousel = ({ className = '' }) => {
                       src={imgSrc || mobileSrc}
                       alt={b.title || '배너'}
                       className="absolute inset-0 w-full h-full object-cover"
-                      loading="lazy"
+                      loading={isPriority ? 'eager' : 'lazy'}
+                      fetchPriority={isPriority ? 'high' : 'auto'}
                       onLoad={(e) => {
                         // 방어: 이전 로드 실패로 display:none 이 남아있을 수 있으므로 복구
                         try { e.currentTarget.style.display = ''; } catch (_) {}
