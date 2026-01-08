@@ -202,9 +202,27 @@ const ChatPage = () => {
   const [characterImages, setCharacterImages] = useState([]);
   const [imageKeywords, setImageKeywords] = useState([]); // [{url, keywords:[]}] 키워드 트리거용
   const [aiMessageImages, setAiMessageImages] = useState({}); // messageId -> imageUrl (말풍선 아래 이미지)
+  // ✅ 새로고침 UX 안정화:
+  // - "말풍선 아래 트리거 이미지"와 모바일 스테이지 배경이 새로고침 시 사라지는 현상을 줄이기 위해,
+  //   최소한의 캐시를 sessionStorage로 복원한다(SSOT는 서버, UI 캐시는 클라이언트).
+  const [stageFallbackUrl, setStageFallbackUrl] = useState(() => {
+    try {
+      const k = `cc:chat:stage:v1:${characterId || 'none'}`;
+      const raw = sessionStorage.getItem(k);
+      if (!raw) return '';
+      const parsed = JSON.parse(raw);
+      return String(parsed?.url || '').trim();
+    } catch (_) {
+      return '';
+    }
+  });
+  const aiMessageImagesRef = useRef({});
   const [mediaAssets, setMediaAssets] = useState([]);
   const [isPinned, setIsPinned] = useState(false);
   const [pinnedUrl, setPinnedUrl] = useState('');
+  // ✅ 새로고침 후에도 "... 로딩 말풍선"을 유지하기 위한 최소 상태(세션)
+  // - 소켓 aiTyping/origTurnLoading은 새로고침 시 초기화되므로, "응답 대기 중" 플래그를 룸 단위로 보존한다.
+  const [persistedTypingTs, setPersistedTypingTs] = useState(null); // number(ms) | null
   // 이미지 확대 모달
   const [imageModalOpen, setImageModalOpen] = useState(false);
   const [imageModalSrc, setImageModalSrc] = useState('');
@@ -380,6 +398,40 @@ const ChatPage = () => {
   const genIdemKey = useCallback(() => {
     try { return `${chatRoomId || 'room'}:${Date.now()}:${Math.random().toString(36).slice(2,8)}`; } catch (_) { return `${Date.now()}`; }
   }, [chatRoomId]);
+
+  /**
+   * ✅ 새로고침/탭 재로드에도 "응답 생성 중" UX를 유지하기 위한 세션 플래그
+   *
+   * 의도:
+   * - 소켓 aiTyping/origTurnLoading은 새로고침 시 초기화된다.
+   * - 하지만 서버는 계속 응답 생성 중일 수 있어, 사용자 입장에서는 "... 로딩"이 사라지면 불안/오류로 오해한다.
+   *
+   * 구현(방어):
+   * - roomId 기준으로 sessionStorage에 타임스탬프를 기록하고,
+   *   응답(assistant)이 도착하면 자동으로 제거한다.
+   * - TTL을 둬서 영구히 남는 것을 방지한다.
+   */
+  const TYPING_PERSIST_TTL_MS = 5 * 60 * 1000;
+  const buildTypingPersistKey = useCallback((rid) => `cc:chat:typing:v1:${rid || 'none'}`, []);
+  const markTypingPersist = useCallback((rid, kind = 'chat') => {
+    try {
+      const room = String(rid || '').trim();
+      if (!room) return;
+      const now = Date.now();
+      const k = buildTypingPersistKey(room);
+      sessionStorage.setItem(k, JSON.stringify({ ts: now, kind }));
+      setPersistedTypingTs(now);
+    } catch (_) {}
+  }, [buildTypingPersistKey]);
+  const clearTypingPersist = useCallback((rid) => {
+    try {
+      const room = String(rid || '').trim();
+      if (!room) return;
+      const k = buildTypingPersistKey(room);
+      sessionStorage.removeItem(k);
+    } catch (_) {}
+    try { setPersistedTypingTs(null); } catch (_) {}
+  }, [buildTypingPersistKey]);
 
   /**
    * ✅ 원작챗: 삭제된 작품(원작) 처리
@@ -1449,48 +1501,192 @@ const ChatPage = () => {
   // 최신 roomId를 ref에 반영(언마운트/탭 전환에서 stale closure 방지)
   useEffect(() => { chatRoomIdRef.current = chatRoomId; }, [chatRoomId]);
 
+  // ✅ stageFallbackUrl은 동일 컴포넌트에서 characterId만 바뀌는 케이스에서도 복원되도록 별도 처리한다.
+  useEffect(() => {
+    try {
+      const k = `cc:chat:stage:v1:${characterId || 'none'}`;
+      const raw = sessionStorage.getItem(k);
+      if (!raw) { setStageFallbackUrl(''); return; }
+      const parsed = JSON.parse(raw);
+      setStageFallbackUrl(String(parsed?.url || '').trim());
+    } catch (_) {
+      setStageFallbackUrl('');
+    }
+  }, [characterId]);
+
+  // ✅ aiMessageImages를 ref로도 유지(이미지 매칭 effect에서 deps 루프 방지)
+  useEffect(() => { aiMessageImagesRef.current = aiMessageImages || {}; }, [aiMessageImages]);
+
+  // ✅ 새로고침 시에도 "말풍선 아래 트리거 이미지"가 사라지지 않도록 룸 단위로 세션 복원한다.
+  useEffect(() => {
+    if (!chatRoomId) return;
+    try {
+      const k = `cc:chat:triggerImages:v1:${chatRoomId}`;
+      const raw = sessionStorage.getItem(k);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      const map = parsed?.map && typeof parsed.map === 'object' ? parsed.map : null;
+      if (map && Object.keys(map).length > 0) {
+        setAiMessageImages(map);
+      }
+    } catch (_) {}
+  }, [chatRoomId]);
+
+  // ✅ 트리거 이미지 맵을 세션에 저장(현재 룸에 존재하는 메시지만)
+  useEffect(() => {
+    if (!chatRoomId) return;
+    try {
+      const k = `cc:chat:triggerImages:v1:${chatRoomId}`;
+      const ids = new Set();
+      try {
+        (Array.isArray(messages) ? messages : []).forEach((m) => {
+          const id = String(m?.id || m?._id || '').trim();
+          if (id) ids.add(id);
+        });
+      } catch (_) {}
+      const src = (aiMessageImages && typeof aiMessageImages === 'object') ? aiMessageImages : {};
+      const filtered = {};
+      for (const [mid, url] of Object.entries(src)) {
+        if (!mid || !url) continue;
+        if (ids.size && !ids.has(String(mid))) continue;
+        filtered[mid] = url;
+      }
+      if (!Object.keys(filtered).length) {
+        sessionStorage.removeItem(k);
+        return;
+      }
+      sessionStorage.setItem(k, JSON.stringify({ v: 1, ts: Date.now(), map: filtered }));
+    } catch (_) {}
+  }, [chatRoomId, aiMessageImages, messages]);
+
+  // ✅ 새로고침 후에도 "... 로딩"을 유지하기 위한 룸 단위 복원
+  useEffect(() => {
+    if (!chatRoomId) { setPersistedTypingTs(null); return; }
+    try {
+      const k = buildTypingPersistKey(chatRoomId);
+      const raw = sessionStorage.getItem(k);
+      if (!raw) { setPersistedTypingTs(null); return; }
+      const parsed = JSON.parse(raw);
+      const ts = Number(parsed?.ts);
+      if (!Number.isFinite(ts)) { setPersistedTypingTs(null); return; }
+      // TTL 초과면 제거
+      if (Date.now() - ts > TYPING_PERSIST_TTL_MS) {
+        try { sessionStorage.removeItem(k); } catch (_) {}
+        setPersistedTypingTs(null);
+        return;
+      }
+      setPersistedTypingTs(ts);
+    } catch (_) {
+      setPersistedTypingTs(null);
+    }
+  }, [chatRoomId, buildTypingPersistKey, TYPING_PERSIST_TTL_MS]);
+
+  // ✅ 응답(assistant)이 도착하면 persisted typing 플래그를 자동 해제한다(새로고침/탭 복귀 포함)
+  useEffect(() => {
+    if (!chatRoomId) return;
+    try {
+      const k = buildTypingPersistKey(chatRoomId);
+      // persistedTypingTs가 없더라도 세션에 남은 값이 있을 수 있어, 메시지 상태로 정리한다.
+      const arr = Array.isArray(messages) ? messages : [];
+      if (!arr.length) {
+        // TTL 초과면 정리
+        if (persistedTypingTs && (Date.now() - persistedTypingTs > TYPING_PERSIST_TTL_MS)) {
+          try { sessionStorage.removeItem(k); } catch (_) {}
+          setPersistedTypingTs(null);
+        }
+        return;
+      }
+      // 마지막 "비시스템" 메시지 기준으로 판단(상황 안내 등 system bubble은 제외)
+      let last = null;
+      for (let i = arr.length - 1; i >= 0; i--) {
+        const t = String(arr[i]?.senderType || arr[i]?.sender_type || '').toLowerCase();
+        if (t === 'system') continue;
+        last = arr[i];
+        break;
+      }
+      if (!last) return;
+      const lastType = String(last?.senderType || last?.sender_type || '').toLowerCase();
+      const isAi = lastType === 'assistant' || lastType === 'ai' || lastType === 'character';
+      if (isAi) {
+        try { sessionStorage.removeItem(k); } catch (_) {}
+        setPersistedTypingTs(null);
+        return;
+      }
+      // TTL 초과면 정리(유령 로딩 방지)
+      if (persistedTypingTs && (Date.now() - persistedTypingTs > TYPING_PERSIST_TTL_MS)) {
+        try { sessionStorage.removeItem(k); } catch (_) {}
+        setPersistedTypingTs(null);
+      }
+    } catch (_) {}
+  }, [chatRoomId, messages, persistedTypingTs, buildTypingPersistKey, TYPING_PERSIST_TTL_MS]);
+
   // 🎯 AI 메시지 도착 시 키워드 매칭으로 이미지 자동 전환 + 말풍선 아래 이미지 저장
   useEffect(() => {
-    if (!messages.length || !characterImages.length) return;
-    const lastMsg = messages[messages.length - 1];
-    // AI 메시지인 경우만 매칭
-    if (!isAssistantMessage(lastMsg)) return;
+    const arr = Array.isArray(messages) ? messages : [];
+    if (!arr.length) return;
+    if (!Array.isArray(characterImages) || characterImages.length === 0) return;
 
-    const msgId = lastMsg.id || lastMsg._id || `temp-${messages.length}`;
-    
-    // 이미 처리된 메시지면 스킵
-    if (aiMessageImages[msgId]) return;
+    // ✅ 새로고침 케이스:
+    // - 마지막 메시지가 user일 수 있다(그 직후 ... 로딩 말풍선이 별도 렌더됨).
+    // - 이때도 "가장 최근 assistant 메시지"의 트리거 이미지는 유지되어야 한다.
+    let firstAssistantId = '';
+    try {
+      for (let i = 0; i < arr.length; i++) {
+        if (!isAssistantMessage(arr[i])) continue;
+        const id = String(arr[i]?.id || arr[i]?._id || '').trim();
+        if (id) { firstAssistantId = id; break; }
+      }
+    } catch (_) { firstAssistantId = ''; }
 
-    const content = lastMsg?.content || '';
-    
-    // 1) suggested_image_index 우선 (백엔드에서 내려준 값)
-    let idx = lastMsg?.meta?.suggested_image_index ?? lastMsg?.suggested_image_index ?? -1;
-    
-    // 2) 백엔드 값이 없으면 프론트 키워드 매칭
-    if (idx < 0 && !isPinned) {
-      idx = findMatchingImageByKeywords(content);
-    }
-    
-    // 3) 첫 AI 메시지(인사말)는 무조건 0번 이미지
-    const aiMsgCount = messages.filter((m) => isAssistantMessage(m)).length;
-    if (idx < 0 && aiMsgCount === 1) {
-      idx = 0;
-    }
+    const existing = aiMessageImagesRef.current || {};
+    const patch = {};
+    let focusedIdx = null;
+    let processed = 0;
 
-    // 유효한 인덱스면 처리
-    if (idx >= 0 && idx < characterImages.length) {
-      const imageUrl = characterImages[idx];
-      const resolvedUrl = resolveImageUrl(imageUrl);
-      
-      // 말풍선 아래 이미지 저장
-      setAiMessageImages(prev => ({ ...prev, [msgId]: resolvedUrl }));
-      
-      // 미니갤러리 포커싱 (핀 안 된 경우만)
-      if (!isPinned) {
-        setCurrentImageIndex(idx);
+    for (let i = arr.length - 1; i >= 0; i--) {
+      if (processed >= 12) break; // 방어: 너무 많은 업데이트로 렌더 부담 증가 방지
+      const m = arr[i];
+      if (!isAssistantMessage(m)) continue;
+      const msgId = String(m?.id || m?._id || '').trim();
+      if (!msgId) continue;
+      if (existing[msgId]) continue;
+
+      const content = String(m?.content || '');
+
+      // 1) suggested_image_index 우선 (백엔드)
+      let idx = m?.meta?.suggested_image_index ?? m?.suggested_image_index ?? -1;
+
+      // 2) 백엔드 값이 없으면 프론트 키워드 매칭 (핀 고정 중이면 자동 전환 안 함)
+      if (idx < 0 && !isPinned) {
+        idx = findMatchingImageByKeywords(content);
+      }
+
+      // 3) 첫 assistant(인사말)은 0번 이미지로 폴백
+      if (idx < 0 && firstAssistantId && msgId === firstAssistantId) {
+        idx = 0;
+      }
+
+      if (Number.isFinite(idx) && idx >= 0 && idx < characterImages.length) {
+        const imageUrl = characterImages[idx];
+        const resolvedUrl = resolveImageUrl(imageUrl);
+        if (resolvedUrl) {
+          patch[msgId] = resolvedUrl;
+          // 가장 최근 assistant 기준으로 미니갤러리 포커싱
+          if (focusedIdx === null) focusedIdx = idx;
+          processed += 1;
+        }
+      } else {
+        processed += 1;
       }
     }
-  }, [messages, characterImages, isPinned, findMatchingImageByKeywords, aiMessageImages, isAssistantMessage]);
+
+    if (Object.keys(patch).length > 0) {
+      setAiMessageImages((prev) => ({ ...(prev || {}), ...patch }));
+      if (!isPinned && typeof focusedIdx === 'number') {
+        setCurrentImageIndex((prev) => (prev === focusedIdx ? prev : focusedIdx));
+      }
+    }
+  }, [messages, characterImages, isPinned, findMatchingImageByKeywords, isAssistantMessage]);
 
   // 상세에서 미디어 변경 시 채팅방 이미지 갱신(세션 핀 유지)
   useEffect(() => {
@@ -1998,6 +2194,8 @@ const ChatPage = () => {
     } catch (_) { try { scrollToBottom(); } catch (_) {} }
 
     try {
+      // ✅ 새로고침/탭 재로드에도 "응답 생성 중(...)" 상태를 유지하기 위한 세션 플래그
+      try { markTypingPersist(chatRoomId, 'orig'); } catch (_) {}
       setOrigTurnLoading(true);
       const resp = await origChatAPI.turn({ room_id: chatRoomId, situation_text: text, idempotency_key: genIdemKey() });
 
@@ -2023,6 +2221,7 @@ const ChatPage = () => {
       return true;
     } catch (e) {
       console.error('상황 적용 실패', e);
+      try { clearTypingPersist(chatRoomId); } catch (_) {}
       if (handleOrigchatDeleted(e)) return;
       if (handleAccessDenied(e)) return;
       // 실패 시 시스템 말풍선 롤백(유저 혼란 방지)
@@ -2032,7 +2231,7 @@ const ChatPage = () => {
     } finally {
       setOrigTurnLoading(false);
     }
-  }, [isOrigChat, chatRoomId, origTurnLoading, situationText, genIdemKey, removeSituationHintBubble, setMessages, handleOrigchatDeleted, handleAccessDenied]);
+  }, [isOrigChat, chatRoomId, origTurnLoading, situationText, genIdemKey, removeSituationHintBubble, setMessages, handleOrigchatDeleted, handleAccessDenied, markTypingPersist, clearTypingPersist]);
 
   // ✅ 상황 입력 토글이 열릴 때: 안내 말풍선을 잠깐 보여준다(모바일/PC 공통)
   useEffect(() => {
@@ -2114,6 +2313,8 @@ const ChatPage = () => {
       try { scrollToBottom(); } catch (_) {}
     }
       try {
+        // ✅ 새로고침/탭 재로드에도 "... 로딩"을 유지하기 위한 세션 플래그(원작챗)
+        try { markTypingPersist(chatRoomId, 'orig'); } catch (_) {}
         setOrigTurnLoading(true);
         const payload = { room_id: chatRoomId, user_text: messageContentRaw, idempotency_key: genIdemKey(), settings_patch: (settingsSyncedRef.current ? null : chatSettings) };
         setLastOrigTurnPayload(payload);
@@ -2157,6 +2358,7 @@ const ChatPage = () => {
         try { window.dispatchEvent(new Event('chat:roomsChanged')); } catch (_) {}
       } catch (err) {
         console.error('원작챗 턴 실패', err);
+        try { clearTypingPersist(chatRoomId); } catch (_) {}
         if (handleOrigchatDeleted(err)) {
           try { setNewMessage(''); } catch (_) {}
           return;
@@ -2169,6 +2371,7 @@ const ChatPage = () => {
         try {
           const retry = window.confirm('응답 생성에 실패했습니다. 다시 시도할까요?');
           if (retry && lastOrigTurnPayload) {
+            try { markTypingPersist(chatRoomId, 'orig'); } catch (_) {}
             const resp = await origChatAPI.turn(lastOrigTurnPayload);
             const assistantText = resp.data?.assistant || '';
             const meta = resp.data?.meta || {};
@@ -2224,6 +2427,8 @@ const ChatPage = () => {
       try {
         // ✅ 일반 챗도 settings_patch를 "변경 직후 1회"만 전송 → 이후 메시지는 룸 메타를 사용
         // (응답 길이/temperature를 한번 바꾸면 계속 적용되도록)
+        // ✅ 새로고침/탭 재로드에도 "... 로딩"을 유지하기 위한 세션 플래그(일반챗)
+        try { markTypingPersist(chatRoomId, 'chat'); } catch (_) {}
         await sendSocketMessage(
           chatRoomId,
           messageContent,
@@ -2237,6 +2442,7 @@ const ChatPage = () => {
         try { window.dispatchEvent(new Event('chat:roomsChanged')); } catch (_) {}
       } catch (err) {
         console.error('소켓 전송 실패', err);
+        try { clearTypingPersist(chatRoomId); } catch (_) {}
         setMessages(prev => prev.filter(m => m.id !== tempId));
         showToastOnce({ key: `socket-send-fail:${chatRoomId}`, type: 'error', message: '전송에 실패했습니다. 다시 시도해주세요.' });
       }
@@ -2259,6 +2465,8 @@ const ChatPage = () => {
     setMessages(prev => [...prev, tempUser]);
     setPendingChoices([]);
     try {
+      // ✅ 새로고침/탭 재로드에도 "... 로딩"을 유지하기 위한 세션 플래그(선택 처리)
+      try { markTypingPersist(chatRoomId, 'orig'); } catch (_) {}
       setOrigTurnLoading(true);
       if (isOrigChat) setTurnStage('generating');
 
@@ -2316,11 +2524,13 @@ const ChatPage = () => {
       setRangeWarning(typeof warn === 'string' ? warn : '');
     } catch (e) {
       console.error('선택 처리 실패', e);
+      try { clearTypingPersist(chatRoomId); } catch (_) {}
       if (handleOrigchatDeleted(e)) return;
       if (handleAccessDenied(e)) return;
       try {
         const retry = window.confirm('응답 생성에 실패했습니다. 다시 시도할까요?');
         if (retry && lastOrigTurnPayload) {
+          try { markTypingPersist(chatRoomId, 'orig'); } catch (_) {}
           const resp = await origChatAPI.turn(lastOrigTurnPayload);
           const assistantText = resp.data?.assistant || '';
           const meta = resp.data?.meta || {};
@@ -2353,6 +2563,8 @@ const ChatPage = () => {
     if (!chatRoomId || origTurnLoading) return;
     
     try {
+      // ✅ 새로고침/탭 재로드에도 "... 로딩"을 유지하기 위한 세션 플래그(선택지 요청)
+      try { markTypingPersist(chatRoomId, 'orig'); } catch (_) {}
       setOrigTurnLoading(true);
       const resp = await origChatAPI.turn({ 
         room_id: chatRoomId, 
@@ -2377,19 +2589,22 @@ const ChatPage = () => {
       } catch (_) {}
     } catch (e) {
       console.error('선택지 요청 실패', e);
+      try { clearTypingPersist(chatRoomId); } catch (_) {}
       if (handleOrigchatDeleted(e)) return;
       if (handleAccessDenied(e)) return;
       showToastOnce({ key: `choices-fail:${chatRoomId}`, type: 'error', message: '선택지 요청에 실패했습니다.' });
     } finally {
       setOrigTurnLoading(false);
     }
-  }, [chatRoomId, origTurnLoading, genIdemKey, handleOrigchatDeleted, handleAccessDenied]); // ✅ isOrigChat 의존성 제거
+  }, [chatRoomId, origTurnLoading, genIdemKey, handleOrigchatDeleted, handleAccessDenied, markTypingPersist, clearTypingPersist]); // ✅ isOrigChat 의존성 제거
 
   // 온디맨드: 자동 진행(next_event) — 선택지 표시 중엔 서버/프론트 모두 가드
   const requestNextEvent = useCallback(async () => {
     if (!isOrigChat || !chatRoomId || origTurnLoading) return;
     if (pendingChoices && pendingChoices.length > 0) { setRangeWarning('선택지가 표시 중입니다. 선택 처리 후 진행하세요.'); return; }
     try {
+      // ✅ 새로고침/탭 재로드에도 "... 로딩"을 유지하기 위한 세션 플래그(계속/자동진행)
+      try { markTypingPersist(chatRoomId, 'orig'); } catch (_) {}
       setOrigTurnLoading(true);
       // ✅ "계속" 버튼에서도 응답 길이/온도 변경을 즉시 반영:
       // - 변경 직후 1회만 settings_patch를 보내 룸 메타(Redis)에 저장하고,
@@ -2427,6 +2642,7 @@ const ChatPage = () => {
       } catch (_) {}
     } catch (e) {
       console.error('자동 진행 실패', e);
+      try { clearTypingPersist(chatRoomId); } catch (_) {}
       if (handleOrigchatDeleted(e)) return;
       if (handleAccessDenied(e)) return;
       showToastOnce({ key: `next-fail:${chatRoomId}`, type: 'error', message: '자동 진행에 실패했습니다.' });
@@ -2434,7 +2650,7 @@ const ChatPage = () => {
       setOrigTurnLoading(false);
       setTurnStage(null);
     }
-  }, [isOrigChat, chatRoomId, origTurnLoading, pendingChoices, genIdemKey, chatSettings, handleOrigchatDeleted, handleAccessDenied]);
+  }, [isOrigChat, chatRoomId, origTurnLoading, pendingChoices, genIdemKey, chatSettings, handleOrigchatDeleted, handleAccessDenied, markTypingPersist, clearTypingPersist]);
   
   // 대화 초기화
   const handleClearChat = async () => {
@@ -2530,8 +2746,38 @@ const ChatPage = () => {
   const canSend = Boolean(newMessage.trim()) && (isOrigChat ? true : connected);
   // ✅ 원작챗 생성 중에는 입력/전송을 UI에서도 잠가, "눌렀는데 왜 안 보내져?" 혼란을 방지한다.
   const isOrigBusy = Boolean(isOrigChat && origTurnLoading);
+  // ✅ 새로고침 방어:
+  // - 소켓 aiTyping/origTurnLoading은 새로고침 시 초기화되어 "... 로딩 말풍선"이 사라질 수 있다.
+  // - 마지막 유저 메시지가 최근(TTL 이내)인데 아직 assistant가 오지 않았다면, 응답 대기 중으로 간주해 유지한다.
+  const isAwaitingAiByHistory = (() => {
+    try {
+      if (!chatRoomId) return false;
+      const arr = Array.isArray(messages) ? messages : [];
+      if (!arr.length) return false;
+      let last = null;
+      for (let i = arr.length - 1; i >= 0; i--) {
+        const t = String(arr[i]?.senderType || arr[i]?.sender_type || '').toLowerCase();
+        if (t === 'system') continue;
+        last = arr[i];
+        break;
+      }
+      if (!last) return false;
+      const lastType = String(last?.senderType || last?.sender_type || '').toLowerCase();
+      if (lastType !== 'user') return false;
+      const ts = Date.parse(last?.created_at || last?.timestamp || '');
+      if (!Number.isFinite(ts)) return true;
+      return (Date.now() - ts) <= TYPING_PERSIST_TTL_MS;
+    } catch (_) {
+      return false;
+    }
+  })();
+  const isAwaitingAiByPersist = Boolean(
+    typeof persistedTypingTs === 'number' &&
+    Number.isFinite(persistedTypingTs) &&
+    (Date.now() - persistedTypingTs) <= TYPING_PERSIST_TTL_MS
+  );
   // ✅ 원작챗은 HTTP 호출이므로, 소켓의 aiTyping 대신 origTurnLoading을 타이핑 상태로 취급한다.
-  const aiTypingEffective = Boolean(aiTyping || (isOrigChat && origTurnLoading));
+  const aiTypingEffective = Boolean(aiTyping || (isOrigChat && origTurnLoading) || isAwaitingAiByPersist || isAwaitingAiByHistory);
   const textSizeClass = uiFontSize==='sm' ? 'text-sm' : uiFontSize==='lg' ? 'text-lg' : uiFontSize==='xl' ? 'text-xl' : 'text-base';
 
   /**
@@ -2552,7 +2798,18 @@ const ChatPage = () => {
   const effectiveActiveIndex = pinnedIndex >= 0 ? pinnedIndex : currentImageIndex;
   const currentPortraitUrl = (isPinned && pinnedUrl)
     ? pinnedUrl
-    : (portraitImages[currentImageIndex] || portraitImages[0] || primaryPortrait || '');
+    : (portraitImages[currentImageIndex] || portraitImages[0] || primaryPortrait || stageFallbackUrl || '');
+  // ✅ 모바일 스테이지(배경) 이미지가 새로고침 때 사라지지 않도록 마지막 URL을 세션에 캐시한다.
+  useEffect(() => {
+    try {
+      const url = String(currentPortraitUrl || '').trim();
+      if (!url) return;
+      const k = `cc:chat:stage:v1:${characterId || 'none'}`;
+      sessionStorage.setItem(k, JSON.stringify({ url, ts: Date.now() }));
+      // 다음 렌더에서 primary/gallery가 비어도 즉시 복원할 수 있게 state에도 반영
+      setStageFallbackUrl((prev) => (prev === url ? prev : url));
+    } catch (_) {}
+  }, [characterId, currentPortraitUrl]);
   // 모바일은 기본적으로 최소한의 딤을 강제해(경쟁사처럼 이미지 위에서도 글자가 읽히게), 사용자가 uiOverlay를 올리면 그 값이 우선한다.
   const mobileStageOverlayAlpha = Math.max(0.35, Math.min(0.85, (Number(uiOverlay) || 0) / 100));
   
