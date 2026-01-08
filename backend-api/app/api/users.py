@@ -57,14 +57,19 @@ async def get_my_recent_characters(
     - **page**: 페이지 번호 (기본값: 1)
     """
     skip = (page - 1) * limit
-    characters = await user_service.get_recent_characters_for_user(
+    rows = await user_service.get_recent_characters_for_user(
         db, user_id=current_user.id, limit=limit, skip=skip
     )
     
     # Character 모델 객체를 CharacterListResponse 스키마에 맞게 변환
     # 서비스 단에서 creator 정보를 미리 join하거나, 여기서 추가 쿼리 없이 간단하게 처리
     out: List[RecentCharacterResponse] = []
-    for char in characters:
+    for row in (rows or []):
+        try:
+            char, chat_room_id, last_chat_time, last_message_snippet, origin_story_title = row
+        except Exception:
+            # 방어: 예기치 않은 형태면 건너뛴다.
+            continue
         imgs = getattr(char, 'image_descriptions', [])
         if isinstance(imgs, str):
             try:
@@ -73,6 +78,16 @@ async def get_my_recent_characters(
                 imgs = []
         if isinstance(imgs, list):
             imgs = [img for img in imgs if not (isinstance(img, dict) and str(img.get('url','')).startswith('cover:'))]
+
+        # 원작 웹소설 제목 보강(있을 때)
+        try:
+            if getattr(char, 'origin_story_id', None) and origin_story_title:
+                origin_story_title_out = origin_story_title
+            else:
+                origin_story_title_out = None
+        except Exception:
+            origin_story_title_out = None
+
         out.append(
             RecentCharacterResponse(
                 creator_id=char.creator_id,
@@ -93,10 +108,10 @@ async def get_my_recent_characters(
                 # ✅ 최근대화/대화내역 UI에서 크리에이터 프로필 이미지를 표시하기 위한 필드
                 # - 프론트는 creator_avatar_url을 사용한다.
                 creator_avatar_url=getattr(char.creator, 'avatar_url', None) if getattr(char, 'creator', None) else None,
-                chat_room_id=getattr(char, 'chat_room_id', None),
-                last_chat_time=getattr(char, 'last_chat_time', None),
-                last_message_snippet=getattr(char, 'last_message_snippet', None),
-                origin_story_title=getattr(char, 'origin_story_title', None)
+                chat_room_id=chat_room_id,
+                last_chat_time=last_chat_time,
+                last_message_snippet=last_message_snippet,
+                origin_story_title=origin_story_title_out,
             )
         )
     return out

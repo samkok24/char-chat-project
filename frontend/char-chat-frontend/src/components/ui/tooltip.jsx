@@ -10,14 +10,19 @@ function TooltipProvider({
   return (<TooltipPrimitive.Provider data-slot="tooltip-provider" delayDuration={delayDuration} {...props} />);
 }
 
+/**
+ * Tooltip
+ *
+ * 의도/동작:
+ * - 기존 구현은 Tooltip마다 Provider를 중첩해서 감쌌다.
+ * - 레이아웃이 자주 변하는 화면(채팅 입력 높이 변화 등)에서 Popper 업데이트가 잦아질 때
+ *   Provider 재생성과 합쳐져 업데이트 루프가 발생할 여지가 있어, Root만 노출한다.
+ * - 필요한 경우 상위(페이지/레이아웃)에서 `<TooltipProvider>`로 1회 감싼다.
+ */
 function Tooltip({
   ...props
 }) {
-  return (
-    <TooltipProvider>
-      <TooltipPrimitive.Root data-slot="tooltip" {...props} />
-    </TooltipProvider>
-  );
+  return <TooltipPrimitive.Root data-slot="tooltip" {...props} />;
 }
 
 function TooltipTrigger({

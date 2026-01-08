@@ -941,12 +941,17 @@ async def delete_character_info(
             detail="이 캐릭터를 삭제할 권한이 없습니다."
         )
     
-    # 원작챗 연결이 있는 경우 그리드가 변형되지 않도록 character_id만 NULL 처리 후 삭제
+    # ✅ 원작챗(등장인물 그리드) 동기화
+    #
+    # 요구사항:
+    # - 크리에이터가 원작챗 캐릭터를 삭제하면, 스토리 상세의 "등장인물 그리드"에서도 다시 뜨면 안 된다.
+    #
+    # 구현:
+    # - 해당 캐릭터를 참조하는 StoryExtractedCharacter 레코드를 삭제한다.
+    # - (기존: character_id만 NULL 처리) → 고아 레코드가 남아 그리드에 "빈 캐릭터 카드"가 보이는 문제가 있었다.
     try:
         await db.execute(
-            sql_update(StoryExtractedCharacter)
-            .where(StoryExtractedCharacter.character_id == character_id)
-            .values(character_id=None)
+            delete(StoryExtractedCharacter).where(StoryExtractedCharacter.character_id == character_id)
         )
         await db.commit()
     except Exception:

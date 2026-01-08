@@ -63,13 +63,13 @@ const AppLayout = ({ children, SidebarComponent = Sidebar, sidebarProps, mobileH
                   onClick={() => setMobileSidebarOpen(true)}
                   className="inline-flex items-center justify-center h-10 w-10 rounded-full border border-gray-700 bg-gray-800 text-gray-200 hover:bg-gray-700 transition-colors"
                   aria-label="메뉴 열기"
-                  title="메뉴"
+                  title="챕터8 - 캐릭터 ∞ 스토리"
                 >
                   <Menu className="w-5 h-5" />
                 </button>
 
                 <div className="flex-1 min-w-0 text-center">
-                  <span className="text-sm font-semibold text-gray-100 truncate">메뉴</span>
+                  <span className="text-sm font-semibold text-gray-100 truncate">챕터8 - 캐릭터 ∞ 웹소설</span>
                 </div>
 
                 {/* 우측 영역: 페이지별 액션 슬롯(없으면 레이아웃 균형용 스페이서) */}

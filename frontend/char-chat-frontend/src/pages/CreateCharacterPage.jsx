@@ -1377,7 +1377,12 @@ const CreateCharacterPage = () => {
           </div>
           <ErrorBoundary>
           <DropzoneGallery
-            existingImages={formData.media_settings.image_descriptions.map(img => ({ url: `${API_BASE_URL}${img.url}`, description: img.description }))}
+            // ✅ 운영(배포)에서 API_BASE_URL이 `/api`로 끝나면 `/static/*` 이미지가 `/api/static/*`로 잘못 붙어 깨질 수 있다.
+            // - 표준 유틸(`resolveImageUrl`)로만 렌더링 URL을 만든다.
+            existingImages={formData.media_settings.image_descriptions.map((img) => ({
+              url: resolveImageUrl(img?.url),
+              description: img?.description,
+            }))}
             newFiles={formData.media_settings.newly_added_files}
             onAddFiles={(files) => setFormData(prev => ({
               ...prev,
@@ -1448,12 +1453,8 @@ const CreateCharacterPage = () => {
             </CardHeader>
             <CardContent className="space-y-3">
               {formData.media_settings.image_descriptions.map((img, index) => {
-                // URL 처리 로직 강화 (DropzoneGallery와 동일한 방식 적용)
-                let displayUrl = img.url;
-                if (img.url && !img.url.startsWith('http') && !img.url.startsWith('blob:')) {
-                    // 상대 경로인 경우 API_BASE_URL 결합
-                    displayUrl = `${API_BASE_URL}${img.url.startsWith('/') ? '' : '/'}${img.url}`;
-                }
+                // ✅ 운영(배포) 경로 방어: `/static/*` 는 `/api`가 아닌 origin으로 내려야 하므로 resolveImageUrl로 통일
+                const displayUrl = resolveImageUrl(img?.url);
                 
                 return (
                 <div
@@ -1978,7 +1979,11 @@ const CreateCharacterPage = () => {
           
           <Card className="p-4">
             <DropzoneGallery
-              existingImages={formData.media_settings.image_descriptions.map(img => ({ url: `${API_BASE_URL}${img.url}`, description: img.description }))}
+              // ✅ 운영(배포)에서 API_BASE_URL(`/api`)로 `/static`이 깨지지 않게 resolveImageUrl로 통일
+              existingImages={formData.media_settings.image_descriptions.map((img) => ({
+                url: resolveImageUrl(img?.url),
+                description: img?.description,
+              }))}
               newFiles={formData.media_settings.newly_added_files}
               onAddFiles={(files) => setFormData(prev => ({
                 ...prev,
@@ -2128,7 +2133,7 @@ const CreateCharacterPage = () => {
           onCheckedChange={(checked) => updateFormData('affinity_system', 'has_affinity_system', checked)}
         />
         <Label htmlFor="has_affinity_system" className="text-lg font-semibold">
-          캐릭터에 호감도 시스템을 설정할게요 (선택)
+          캐릭터에 호감도 시스템을 설정할게요 (Beta)
         </Label>
         <Badge variant="secondary">Beta</Badge>
       </div>

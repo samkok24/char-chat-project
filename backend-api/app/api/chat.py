@@ -27,6 +27,7 @@ from app.models.character import CharacterSetting, CharacterExampleDialogue, Cha
 from app.models.story import Story
 from app.models.story_chapter import StoryChapter
 from app.models.story_summary import StoryEpisodeSummary
+from app.models.story_extracted_character import StoryExtractedCharacter
 from app.services.chat_service import get_chat_room_by_character_and_session
 from app.services import chat_service
 from app.services import origchat_service
@@ -65,6 +66,109 @@ async def _get_room_meta(room_id: uuid.UUID | str) -> Dict[str, Any]:
     except Exception:
         pass
     return {}
+
+async def _ensure_private_content_access(
+    db: AsyncSession,
+    current_user: User,
+    *,
+    character: Optional[Character] = None,
+) -> None:
+    """
+    비공개 스토리/캐릭터 접근을 차단한다.
+
+    의도/동작:
+    - 요구사항: 비공개(스토리/캐릭터)로 전환되면, 과거에 생성된 채팅방이 있더라도 '접근 시도' 자체를 막는다.
+    - 예외: 생성자/관리자는 접근 허용.
+    - 방어적: 조회/속성 접근 실패 시에도 조용히 통과하지 않고, 가능한 범위에서 안전하게 판단한다.
+    """
+    try:
+        uid = getattr(current_user, "id", None)
+        is_admin = bool(getattr(current_user, "is_admin", False))
+    except Exception:
+        uid = None
+        is_admin = False
+
+    # 1) 캐릭터 비공개 가드
+    try:
+        if character is not None and (getattr(character, "is_public", True) is False):
+            creator_id = getattr(character, "creator_id", None)
+            if (not is_admin) and (creator_id != uid):
+                raise HTTPException(status_code=403, detail="비공개 캐릭터입니다.")
+    except HTTPException:
+        raise
+    except Exception:
+        # 캐릭터 객체가 비정상인 경우는 다른 권한 체크(방 소유권)가 이미 있으므로 여기서는 추가로 막지 않는다.
+        pass
+
+    # 2) 스토리 비공개/삭제 가드(원작챗 파생 캐릭터만)
+    try:
+        sid = getattr(character, "origin_story_id", None) if character is not None else None
+        if sid:
+            srow = (await db.execute(select(Story.creator_id, Story.is_public).where(Story.id == sid))).first()
+            if not srow:
+                # 원작챗 컨텍스트에서 스토리가 없어졌으면 삭제로 간주
+                raise HTTPException(status_code=410, detail="삭제된 작품입니다")
+            s_creator_id = srow[0]
+            s_is_public = bool(srow[1]) if srow[1] is not None else True
+            if (not s_is_public) and (not is_admin) and (s_creator_id != uid):
+                raise HTTPException(status_code=403, detail="비공개 작품입니다.")
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+
+
+async def _ensure_character_story_accessible(db: AsyncSession, current_user: User, character: Character):
+    """
+    비공개 콘텐츠 접근 가드(채팅 공통).
+
+    요구사항(변경 반영):
+    - 비공개된 웹소설/캐릭터챗/원작챗은 모두 "접근 불가" 처리한다.
+    - 작성자/관리자는 예외적으로 접근 가능(관리/운영 목적).
+
+    동작:
+    - 캐릭터가 비공개면(creator/admin 제외) 403
+    - 캐릭터가 원작(스토리)에 연결(origin_story_id)되어 있고, 스토리가 비공개면(creator/admin 제외) 403
+    - 연결된 스토리가 삭제되었으면 410
+    """
+    # 방어: is_admin 속성이 없을 수 있음
+    try:
+        is_admin = bool(getattr(current_user, "is_admin", False))
+    except Exception:
+        is_admin = False
+
+    # 1) 캐릭터 비공개 차단
+    try:
+        c_is_public = bool(getattr(character, "is_public", True))
+        c_creator_id = getattr(character, "creator_id", None)
+    except Exception:
+        c_is_public = True
+        c_creator_id = None
+
+    if (not c_is_public) and (c_creator_id != current_user.id) and (not is_admin):
+        raise HTTPException(status_code=403, detail="비공개된 캐릭터입니다.")
+
+    # 2) 원작 연결 캐릭터라면 스토리 공개 여부도 검사
+    sid = getattr(character, "origin_story_id", None)
+    if sid:
+        try:
+            srow = (await db.execute(
+                select(Story.id, Story.creator_id, Story.is_public).where(Story.id == sid)
+            )).first()
+        except Exception as e:
+            try:
+                logger.warning(f"[chat] story access check failed: {e}")
+            except Exception:
+                pass
+            raise HTTPException(status_code=500, detail="작품 접근 확인에 실패했습니다.")
+
+        if not srow:
+            raise HTTPException(status_code=410, detail="삭제된 작품입니다.")
+
+        s_creator_id = getattr(srow, "creator_id", None)
+        s_is_public = bool(getattr(srow, "is_public", True))
+        if (not s_is_public) and (s_creator_id != current_user.id) and (not is_admin):
+            raise HTTPException(status_code=403, detail="비공개된 작품입니다.")
 
 
 def _merge_character_tokens(character, user):
@@ -470,9 +574,18 @@ async def _set_room_meta(room_id: uuid.UUID | str, data: Dict[str, Any], ttl: in
 
 
 async def _build_light_context(db: AsyncSession, story_id, player_max: Optional[int], character_id: Optional[uuid.UUID] = None) -> Optional[str]:
+    """원작챗에서 사용할 경량 컨텍스트를 생성한다.
+
+    의도/동작:
+    - 기존 방식은 회차 원문(스토리 전체 텍스트)을 크게 주입해, 특정 캐릭터가 '주인공의 개인사'를
+      자기 1인칭으로 착각/답습하는 문제가 있었다(UX 치명).
+    - 개선: 요약/인물표/관계 중심 발췌를 구조화해 주입한다.
+      스토리 사실은 유지하면서도, 캐릭터 개인사(1인칭) 오염을 줄인다.
+    - character_id가 주어지면, 대상 인물과 '주인공(추정)'의 상호 등장 장면을 우선 발췌한다.
+    """
     if not story_id:
         return None
-    
+
     # character_id를 UUID로 변환 (문자열일 수 있음)
     char_uuid = None
     if character_id:
@@ -482,83 +595,404 @@ async def _build_light_context(db: AsyncSession, story_id, player_max: Optional[
             else:
                 char_uuid = character_id
         except Exception:
-            char_uuid = None  # 변환 실패 시 None으로 설정
-    
-    # 1순위: Redis 캐시에서 combined 텍스트 가져오기 (SSOT)
+            char_uuid = None
+
+    # anchor(기준 회차)
     try:
-        from app.core.database import redis_client
-        cached = await redis_client.get(f"story:combined:{story_id}")
-        if cached:
-            combined_text = cached.decode('utf-8') if isinstance(cached, bytes) else cached
-            # 앞부분 우선 (설정 정보 확실히 포함)
-            return combined_text[:20000]
+        anchor = int(player_max or 1)
+        if anchor < 1:
+            anchor = 1
     except Exception:
-        pass
-    
-    # 2순위: 캐시가 없으면 동적으로 생성하고 캐싱 (Lazy Loading)
+        anchor = 1
+
+    # 0) 기본 메타(제목/소개)
+    story_title = ""
+    story_summary = ""
     try:
-        from app.services.origchat_service import _chunk_windows_from_chapters
-        
-        # 회차 텍스트 수집
-        stmt = (
-            select(StoryChapter.no, StoryChapter.title, StoryChapter.content)
-            .where(StoryChapter.story_id == story_id)
-            .order_by(StoryChapter.no.asc())
-        )
-        rows = await db.execute(stmt)
-        chapters = rows.all()
-        
-        if chapters:
-            # 기존 함수 재사용
-            windows = _chunk_windows_from_chapters(chapters, max_chars=6000)
-            if windows:
-                combined_text = "\n\n".join(windows)
-                if len(combined_text) > 20000:
-                    combined_text = combined_text[:20000]
-                
-                # Redis 캐싱 (SSOT: 같은 키 사용)
-                try:
-                    from app.core.database import redis_client
-                    await redis_client.set(
-                        f"story:combined:{story_id}",
-                        combined_text.encode('utf-8'),
-                        ex=86400 * 365
-                    )
-                except Exception:
-                    pass
-                
-                # 앞부분 우선 (설정 정보 확실히 포함)
-                return combined_text[:20000]
+        srow = await db.execute(select(Story.title, Story.summary).where(Story.id == story_id))
+        s = srow.first()
+        if s:
+            story_title = (s[0] or "").strip()
+            story_summary = (s[1] or "").strip()
     except Exception:
-        pass
-    
-    # 3순위: 기존 방식 (fallback)
-    anchor = int(player_max or 1)
-    summary = None
-    excerpt = None
+        story_title = story_title
+        story_summary = story_summary
+
+    # 1) 누적 요약(세계관/사건) — 원문보다 안정적(개인사 오염 ↓)
+    cumulative_summary = ""
     try:
         res = await db.execute(
             select(StoryEpisodeSummary.cumulative_summary)
             .where(StoryEpisodeSummary.story_id == story_id, StoryEpisodeSummary.no == anchor)
         )
-        summary = (res.first() or [None])[0]
+        cumulative_summary = ((res.first() or [None])[0] or "").strip()
     except Exception:
-        summary = None
+        cumulative_summary = ""
+
+    # 2) 추출 캐릭터(인물표) — 관계성 힌트
+    personas: list[dict] = []
+    protagonist_guess = ""
+    focus_name = ""
+    focus_desc = ""
     try:
-        row = await db.execute(
-            select(StoryChapter.content)
-            .where(StoryChapter.story_id == story_id, StoryChapter.no == anchor)
+        rows = await db.execute(
+            select(
+                StoryExtractedCharacter.name,
+                StoryExtractedCharacter.description,
+                StoryExtractedCharacter.character_id,
+                StoryExtractedCharacter.order_index,
+            )
+            .where(StoryExtractedCharacter.story_id == story_id)
+            .order_by(StoryExtractedCharacter.order_index.asc())
+            .limit(12)
         )
-        excerpt = (row.first() or [None])[0]
+        for n, d, cid, oi in rows.all():
+            n2 = (n or "").strip()
+            d2 = (d or "").strip()
+            if not n2:
+                continue
+            personas.append({"name": n2, "desc": d2[:160] if d2 else "", "character_id": cid, "order_index": oi})
+        if personas:
+            protagonist_guess = (personas[0].get("name") or "").strip()
+        # focus 정보(추출 목록 우선)
+        if char_uuid:
+            for it in personas:
+                if it.get("character_id") == char_uuid:
+                    focus_name = (it.get("name") or "").strip()
+                    focus_desc = (it.get("desc") or "").strip()
+                    break
     except Exception:
-        excerpt = None
-    parts = []
-    if summary:
-        parts.append(f"[요약] {summary[-800:]}")
-    if excerpt:
-        parts.append(f"[장면] {(excerpt or '')[:600]}")
-    text = "\n\n".join(parts).strip()
+        personas = personas
+
+    # 3) focus_name이 없으면 Character 테이블에서 보강(최소)
+    if char_uuid and not focus_name:
+        try:
+            crow = await db.execute(select(Character.name, Character.description).where(Character.id == char_uuid))
+            c = crow.first()
+            if c:
+                focus_name = (c[0] or "").strip()
+                focus_desc = (c[1] or "").strip()[:160]
+        except Exception:
+            pass
+
+    # 4) 원문(combined)은 "사실 근거 발췌" 용도로만 사용(전체 주입 금지)
+    source_text = ""
+    try:
+        from app.core.database import redis_client
+        cached = await redis_client.get(f"story:combined:{story_id}")
+        if cached:
+            source_text = cached.decode("utf-8") if isinstance(cached, (bytes, bytearray)) else str(cached)
+    except Exception:
+        source_text = ""
+    if not source_text:
+        try:
+            from app.services.origchat_service import _chunk_windows_from_chapters
+            stmt = (
+                select(StoryChapter.no, StoryChapter.title, StoryChapter.content)
+                .where(StoryChapter.story_id == story_id)
+                .order_by(StoryChapter.no.asc())
+            )
+            rows = await db.execute(stmt)
+            chapters = rows.all()
+            if chapters:
+                windows = _chunk_windows_from_chapters(chapters, max_chars=6000)
+                if windows:
+                    source_text = "\n\n".join(windows)
+                    if len(source_text) > 20000:
+                        source_text = source_text[:20000]
+                    # Redis 캐싱(기존 SSOT 키 유지)
+                    try:
+                        from app.core.database import redis_client
+                        await redis_client.set(
+                            f"story:combined:{story_id}",
+                            source_text.encode("utf-8"),
+                            ex=86400 * 365
+                        )
+                    except Exception:
+                        pass
+        except Exception:
+            source_text = ""
+
+    def _collect_positions(t: str, kw: str, max_hits: int = 4) -> list[int]:
+        out: list[int] = []
+        if not t or not kw:
+            return out
+        start = 0
+        while len(out) < max_hits:
+            idx = t.find(kw, start)
+            if idx == -1:
+                break
+            out.append(idx)
+            start = idx + max(1, len(kw))
+        return out
+
+    def _snip(t: str, idx: int, radius: int = 520) -> str:
+        if not t:
+            return ""
+        lo = max(0, idx - radius)
+        hi = min(len(t), idx + radius)
+        # 문단 경계로 살짝 확장(가독성)
+        try:
+            p0 = t.rfind("\n\n", 0, idx)
+            if p0 != -1:
+                lo = max(0, p0)
+        except Exception:
+            pass
+        try:
+            p1 = t.find("\n\n", idx)
+            if p1 != -1:
+                hi = min(len(t), p1)
+        except Exception:
+            pass
+        s = (t[lo:hi] or "").strip()
+        # 너무 길면 안전 컷
+        if len(s) > 1400:
+            s = s[:1400].rstrip()
+        return s
+
+    # 관계 중심 발췌: (대상) + (주인공/중심) 동시 등장 장면을 우선
+    snippets: list[str] = []
+    try:
+        if source_text and focus_name:
+            cand: list[tuple[int, str]] = []
+            for pos in _collect_positions(source_text, focus_name, max_hits=5):
+                s = _snip(source_text, pos)
+                if not s:
+                    continue
+                score = 2
+                if protagonist_guess and protagonist_guess in s:
+                    score += 4  # 관계 장면 우선
+                cand.append((score, s))
+            # 중복 제거 + 상위 선택
+            seen = set()
+            for score, s in sorted(cand, key=lambda x: (-x[0], -len(x[1]))):
+                key = s[:120]
+                if key in seen:
+                    continue
+                seen.add(key)
+                snippets.append(s)
+                if len(snippets) >= 3:
+                    break
+    except Exception:
+        snippets = []
+
+    # 최종 조립(구조화 컨텍스트)
+    out_parts: list[str] = []
+    try:
+        if story_title or story_summary:
+            t = "[작품]\n"
+            if story_title:
+                t += f"제목: {story_title}\n"
+            if story_summary:
+                t += f"소개: {story_summary[:600]}"
+            out_parts.append(t.strip())
+    except Exception:
+        pass
+    if cumulative_summary:
+        out_parts.append("[누적 요약]\n" + cumulative_summary[-1200:])
+    if personas:
+        lines = ["[주요 인물]"]
+        for it in personas[:10]:
+            n2 = (it.get("name") or "").strip()
+            d2 = (it.get("desc") or "").strip()
+            if not n2:
+                continue
+            if d2:
+                lines.append(f"- {n2}: {d2}")
+            else:
+                lines.append(f"- {n2}")
+        # 주인공/중심 인물은 '사실'로 단정하지 않고 힌트로만 제공
+        if protagonist_guess:
+            lines.append(f"(중심 인물 후보: {protagonist_guess})")
+        out_parts.append("\n".join(lines))
+    if focus_name:
+        fx = "[대상 인물]\n" + focus_name
+        if focus_desc:
+            fx += "\n" + focus_desc
+        out_parts.append(fx.strip())
+    if snippets:
+        out_parts.append("[관계 장면 발췌]\n" + "\n---\n".join(snippets))
+
+    # ✅ 관계/역할 카드(캐릭터-주인공 관계 + 개인사 경계)
+    # - generate_if_missing=False: 여기서는 턴 지연을 만들지 않도록 LLM 생성은 하지 않는다.
+    try:
+        if char_uuid:
+            rel = await _build_relationship_card(db, story_id, char_uuid, anchor, generate_if_missing=False)
+            if rel:
+                out_parts.append(str(rel).strip())
+    except Exception:
+        pass
+
+    text = "\n\n".join([p for p in out_parts if p]).strip()
+    # 마지막 방어: 너무 길면 컷
+    if text and len(text) > 12000:
+        text = text[:12000].rstrip()
     return text or None
+
+
+async def _build_relationship_card(
+    db: AsyncSession,
+    story_id,
+    character_id,
+    anchor: int,
+    *,
+    generate_if_missing: bool = True,
+) -> Optional[str]:
+    """원작챗에서 캐릭터의 '역할/관계/개인사 경계'를 고정하는 짧은 카드 생성.
+
+    의도/동작:
+    - 스토리 전체 텍스트를 크게 넣으면 "누가 겪은 사건/가족사인지"가 섞이기 쉬움.
+    - 카드에는 '주인공과의 관계' + '이 캐릭터만의 고유 개인사'를 짧게 요약하고,
+      타 인물 개인사를 1인칭으로 차용하지 말라는 경계를 명시한다.
+    - Redis에 캐시하여(짧은 TTL) 매 턴 비용/변동성을 줄인다.
+    """
+    if not story_id or not character_id:
+        return None
+    try:
+        a = int(anchor or 1)
+        if a < 1:
+            a = 1
+    except Exception:
+        a = 1
+
+    cache_key = f"ctx:warm:{story_id}:relcard:{character_id}:a{a}"
+    try:
+        from app.core.database import redis_client
+        cached = await redis_client.get(cache_key)
+        if cached:
+            return cached.decode("utf-8") if isinstance(cached, (bytes, bytearray)) else str(cached)
+    except Exception:
+        pass
+
+    # 입력 데이터 수집(베스트-에포트)
+    story_title = ""
+    story_summary = ""
+    focus_name = ""
+    focus_desc = ""
+    try:
+        srow = await db.execute(select(Story.title, Story.summary).where(Story.id == story_id))
+        s = srow.first()
+        if s:
+            story_title = (s[0] or "").strip()
+            story_summary = (s[1] or "").strip()
+    except Exception:
+        pass
+    try:
+        crow = await db.execute(select(Character.name, Character.description, Character.background_story).where(Character.id == character_id))
+        c = crow.first()
+        if c:
+            focus_name = (c[0] or "").strip()
+            # description은 공개용이라 짧게
+            focus_desc = (c[1] or "").strip()
+            # background_story는 prompt에만(과다 노출 방지)
+            focus_bg = (c[2] or "").strip()
+        else:
+            focus_bg = ""
+    except Exception:
+        focus_bg = ""
+    personas_text = ""
+    protagonist_guess = ""
+    try:
+        rows = await db.execute(
+            select(StoryExtractedCharacter.name, StoryExtractedCharacter.description)
+            .where(StoryExtractedCharacter.story_id == story_id)
+            .order_by(StoryExtractedCharacter.order_index.asc())
+            .limit(10)
+        )
+        data = rows.all()
+        items = []
+        for n, d in data:
+            n2 = (n or "").strip()
+            if not n2:
+                continue
+            d2 = (d or "").strip()
+            items.append(f"- {n2}: {(d2[:120] if d2 else '')}".rstrip())
+        if items:
+            try:
+                protagonist_guess = (data[0][0] or "").strip() if data else ""
+            except Exception:
+                protagonist_guess = ""
+            personas_text = "\n".join(items)
+    except Exception:
+        personas_text = ""
+        protagonist_guess = ""
+
+    # 앵커 요약(있으면) — 관계/사건 맥락 유지
+    anchor_summary = ""
+    try:
+        res = await db.execute(
+            select(StoryEpisodeSummary.cumulative_summary)
+            .where(StoryEpisodeSummary.story_id == story_id, StoryEpisodeSummary.no == a)
+        )
+        anchor_summary = ((res.first() or [None])[0] or "").strip()
+    except Exception:
+        anchor_summary = ""
+
+    # 폴백(LLM 실패/미사용 시): 추출 설명 기반 + 강한 경계
+    fallback_card = None
+    try:
+        lines = ["[관계/역할]"]
+        if focus_name:
+            lines.append(f"- 당신은 '{focus_name}'입니다.")
+        if protagonist_guess and focus_name and protagonist_guess != focus_name:
+            lines.append(f"- 중심 인물 후보: '{protagonist_guess}'")
+        if focus_desc:
+            lines.append(f"- 역할/관계 힌트: {focus_desc[:180]}")
+        # ✅ 핵심: 개인사 오염 차단
+        lines.append("- 혼동 방지: 타 인물(주인공 포함)의 개인사/가족사/과거를 '내 이야기'로 1인칭 답습하지 마세요.")
+        lines.append("- 혼동 방지: 다른 인물 사건을 말할 땐 '그/그녀/OO(이/가)'로 구분하고, 본인이 겪은 것처럼 단정하지 마세요.")
+        fallback_card = "\n".join(lines)[:900]
+    except Exception:
+        fallback_card = None
+
+    # generate_if_missing=False면 LLM 생성은 하지 않는다(턴 지연 방지).
+    if not generate_if_missing:
+        return fallback_card
+
+    # LLM으로 관계 카드 작성(베스트-에포트)
+    try:
+        from app.services.ai_service import get_ai_chat_response
+        system = (
+            "당신은 웹소설 캐릭터 설정 편집자입니다.\n"
+            "아래 정보만 근거로 '관계/역할 카드'를 작성하세요. 허위 설정/추측 금지.\n"
+            "출력 형식: 6~10줄, 각 줄은 '- '로 시작. 한국어.\n"
+            "반드시 포함:\n"
+            "1) 대상 캐릭터의 역할/목표 1줄\n"
+            "2) 주인공/중심 인물(가능하면 이름)과의 관계 1줄 (불명확하면 '불명')\n"
+            "3) 대상 캐릭터의 고유 개인사/가족사(있을 때만) 1~2줄\n"
+            "4) 혼동 방지 규칙 1줄: '타 인물 개인사를 1인칭으로 말하지 말 것'\n"
+            "주의: '컨텍스트에 따르면' 같은 메타 발언은 금지."
+        )
+        user = (
+            f"[작품]\n제목: {story_title}\n소개: {story_summary[:600]}\n\n"
+            f"[주요 인물(후보)]\n{personas_text}\n\n"
+            f"[대상 캐릭터]\n이름: {focus_name}\n설명: {focus_desc[:200]}\n배경: {focus_bg[:900]}\n\n"
+            f"[앵커까지 누적 요약(≤{a}화)]\n{anchor_summary[-900:]}"
+        )
+        raw = await get_ai_chat_response(
+            character_prompt=system,
+            user_message=user,
+            history=[],
+            preferred_model="claude",
+            preferred_sub_model=getattr(ai_service, "CLAUDE_MODEL_PRIMARY", None) or "claude-sonnet-4-20250514",
+            response_length_pref="short",
+        )
+        card = (raw or "").strip()
+        # 최소 검증: 너무 짧으면 폐기
+        if card and len(card) >= 60:
+            card2 = "[관계/역할]\n" + card
+            # 캐시 저장(짧게)
+            try:
+                from app.core.database import redis_client
+                await redis_client.setex(cache_key, 3600, card2[:1200])
+            except Exception:
+                pass
+            return card2[:1200]
+    except Exception:
+        pass
+
+    # LLM 실패 시 폴백 카드 반환
+    return fallback_card
 
 # --- Agent simulator (no character, optional auth) ---
 @router.post("/agent/simulate")
@@ -1244,6 +1678,20 @@ async def start_chat(
     db: AsyncSession = Depends(get_db),
 ):
     """채팅 시작 - CAVEDUCK 스타일 간단한 채팅 시작"""
+    # ✅ 비공개 접근 차단(요구사항 변경 반영)
+    try:
+        ch = (await db.execute(select(Character).where(Character.id == request.character_id))).scalars().first()
+        if not ch:
+            raise HTTPException(status_code=404, detail="캐릭터를 찾을 수 없습니다.")
+        await _ensure_character_story_accessible(db, current_user, ch)
+    except HTTPException:
+        raise
+    except Exception as e:
+        try:
+            logger.warning(f"[chat] start privacy check failed: {e}")
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail="접근 권한 확인에 실패했습니다.")
     # 채팅방 가져오기 또는 생성
     chat_room = await chat_service.get_or_create_chat_room(
         db, user_id=current_user.id, character_id=request.character_id
@@ -1283,6 +1731,20 @@ async def start_new_chat(
     db: AsyncSession = Depends(get_db),
 ):
     """새 채팅 시작 - 무조건 새로운 채팅방 생성"""
+    # ✅ 비공개 접근 차단(요구사항 변경 반영)
+    try:
+        ch = (await db.execute(select(Character).where(Character.id == request.character_id))).scalars().first()
+        if not ch:
+            raise HTTPException(status_code=404, detail="캐릭터를 찾을 수 없습니다.")
+        await _ensure_character_story_accessible(db, current_user, ch)
+    except HTTPException:
+        raise
+    except Exception as e:
+        try:
+            logger.warning(f"[chat] start-new privacy check failed: {e}")
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail="접근 권한 확인에 실패했습니다.")
     # 무조건 새 채팅방 생성 (기존 방과 분리)
     chat_room = await chat_service.create_chat_room(
         db, user_id=current_user.id, character_id=request.character_id
@@ -1613,6 +2075,9 @@ async def send_message(
             raise HTTPException(status_code=404, detail="채팅방을 찾을 수 없습니다.")
         character = room.character
 
+    # ✅ 비공개 캐릭터/작품 접근 차단(요구사항: 기존 방도 포함)
+    await _ensure_private_content_access(db, current_user, character=character)
+
     # ✅ 토큰 치환용 사용자명: 페르소나(활성+scope) 우선, 없으면 닉네임 폴백
     # - DB에는 토큰 원문을 보존하고, "프롬프트/첫 인사" 생성 시점에만 렌더링한다(SSOT).
     try:
@@ -1821,6 +2286,8 @@ async def send_message(
     character_prompt += "\n- 기계적인 선택지나 구조화된 답변 금지"
     character_prompt += "\n- 감정을 진짜로 표현하고, 말줄임표나 감탄사를 자연스럽게 사용"
     character_prompt += "\n- 절대로 AI나 챗봇임을 드러내지 마세요"
+    # ✅ 출력 완결성(말풍선 끊김 방지): 문장 중간에서 끝나지 않게 강제
+    character_prompt += "\n- 출력은 문장 중간에서 끊지 말고, 반드시 마침표/물음표/느낌표/… 등 문장부호로 자연스럽게 마무리하세요. 마지막 문장이 미완이면 1문장 더 보완해 완결하세요."
     character_prompt += "\n\n[자연스러운 대화 원칙]"
     character_prompt += f"\n- 당신은 '{character.name}'의 본성과 성격을 완전히 체화한 실제 인간입니다"
     character_prompt += "\n- 실제 그 성격의 사람이라면 어떻게 반응할지 스스로 판단하세요"
@@ -1976,6 +2443,8 @@ async def get_chat_history(
         raise HTTPException(status_code=404, detail="채팅방을 찾을 수 없습니다.")
     if room.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="이 채팅방에 접근할 권한이 없습니다.")
+    # ✅ 비공개 캐릭터/작품 접근 차단(요구사항: 기존 방도 포함)
+    await _ensure_private_content_access(db, current_user, character=getattr(room, "character", None))
     messages = await chat_service.get_messages_by_room_id(db, session_id, skip, limit)
     return messages
 
@@ -2023,6 +2492,8 @@ async def get_chat_room(
     # 권한 확인
     if room.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="이 채팅방에 접근할 권한이 없습니다.")
+    # ✅ 비공개 캐릭터/작품 접근 차단(요구사항: 기존 방도 포함)
+    await _ensure_private_content_access(db, current_user, character=getattr(room, "character", None))
     
     return room
 
@@ -2039,6 +2510,8 @@ async def get_chat_room_meta(
         raise HTTPException(status_code=404, detail="채팅방을 찾을 수 없습니다.")
     if room.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="이 채팅방에 접근할 권한이 없습니다.")
+    # ✅ 비공개 캐릭터/작품 접근 차단(요구사항: 기존 방도 포함)
+    await _ensure_private_content_access(db, current_user, character=getattr(room, "character", None))
     meta = await _get_room_meta(room_id)
     # 필요한 키만 노출(안전)
     allowed = {
@@ -2058,8 +2531,46 @@ async def get_chat_room_meta(
         "updated_at": meta.get("updated_at"),
     }
     # ✅ 추가: 선택지 복원을 위한 필드 (plain 모드에서는 제외)
-    mode = meta.get("mode", "canon")
-    if mode != "plain":
+    # ✅ 방어: Redis 메타 유실 시에도 원작챗 룸은 'plain'으로 폴백하여 프론트가 빈 화면/새 방 생성으로 오인하지 않게 한다.
+    mode = meta.get("mode", None)
+    try:
+        if not mode:
+            # room.character를 통해 원작챗 여부를 판별(스토리 연결이 있으면 origchat)
+            try:
+                from sqlalchemy.orm import selectinload
+                stmt = select(ChatRoom).where(ChatRoom.id == room_id).options(selectinload(ChatRoom.character))
+                rr = await db.execute(stmt)
+                rr_room = rr.scalar_one_or_none()
+                if rr_room and getattr(getattr(rr_room, "character", None), "origin_story_id", None):
+                    mode = "plain"
+                    # 베스트-에포트로 Redis 메타도 복구(다음 호출부터 안정)
+                    try:
+                        await _set_room_meta(room_id, {"mode": "plain"})
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+    except Exception:
+        pass
+    # ✅ 서비스 정책: 원작챗은 plain-only
+    # - 과거/레거시로 meta.mode가 canon/parallel로 남아있을 수 있으므로, 응답/저장 모두 plain으로 정규화한다.
+    try:
+        mm = str(mode or "").strip().lower()
+        if mm in ("canon", "parallel"):
+            mode = "plain"
+            try:
+                await _set_room_meta(room_id, {"mode": "plain"})
+            except Exception:
+                pass
+    except Exception:
+        pass
+    # ✅ mode는 "원작챗 방"에서만 의미가 있다.
+    # - 일반 캐릭터챗 방은 meta.mode가 없으며, 이때 mode를 임의로 'canon' 같은 값으로 채우면
+    #   프론트가 원작챗으로 오인하여(선택지/HTTP 로드 등) UX가 깨진다.
+    # - 따라서 origchat 판별이 가능한 경우(스토리 연결)만 plain으로 폴백하고,
+    #   그 외에는 None 그대로 둔다.
+    allowed["mode"] = mode
+    if mode and mode != "plain":
         allowed["pending_choices_active"] = meta.get("pending_choices_active")
         allowed["initial_choices"] = meta.get("initial_choices")
     return allowed
@@ -2125,6 +2636,35 @@ async def origchat_start(
     try:
         if not settings.ORIGCHAT_V2:
             raise HTTPException(status_code=404, detail="origchat v2 비활성화")
+
+        # ✅ 삭제된 작품(스토리) 가드
+        #
+        # 요구사항:
+        # - 작품(원작)이 삭제된 경우, 원작챗 진입 시 "삭제된 작품입니다"를 노출하고 진입을 막는다.
+        #
+        # 구현:
+        # - 프론트는 story_id를 함께 보내므로, story_id가 있고 스토리가 없으면 즉시 410(Gone)으로 차단한다.
+        # - 이후 character.origin_story_id로도 동일하게 방어(레거시/호환).
+        story_id_from_payload = payload.get("story_id")
+        if story_id_from_payload:
+            try:
+                if not isinstance(story_id_from_payload, uuid.UUID):
+                    story_id_from_payload = uuid.UUID(str(story_id_from_payload))
+            except Exception:
+                story_id_from_payload = None
+        if story_id_from_payload:
+            try:
+                s_exists = (await db.execute(select(Story.id).where(Story.id == story_id_from_payload))).first()
+                if not s_exists:
+                    raise HTTPException(status_code=410, detail="삭제된 작품입니다")
+            except HTTPException:
+                raise
+            except Exception as e:
+                # DB 오류는 조용히 삼키지 않는다(로그 남김)
+                try:
+                    logger.warning(f"[origchat_start] story deleted check failed: {e}")
+                except Exception:
+                    pass
         character_id = payload.get("character_id")
         if not character_id:
             raise HTTPException(status_code=400, detail="character_id가 필요합니다")
@@ -2138,7 +2678,15 @@ async def origchat_start(
             raise HTTPException(status_code=400, detail="character_id 형식이 올바르지 않습니다")
         
         # mode 확인
-        mode = (payload.get("mode") or "canon").lower()
+        #
+        # ✅ 서비스 정책: 원작챗은 plain 모드만 사용한다.
+        # - 과거/레거시 링크/클라이언트가 canon/parallel을 보내더라도 UX가 흔들리지 않도록 서버에서 plain으로 정규화한다.
+        try:
+            mode = str(payload.get("mode") or "plain").strip().lower()
+        except Exception:
+            mode = "plain"
+        if mode != "plain":
+            mode = "plain"
         
         # ✅ 새 대화 강제 플래그(프론트 new=1 대응)
         # - plain 모드는 기본적으로 "최근 plain 방 재사용"을 허용하지만,
@@ -2157,9 +2705,8 @@ async def origchat_start(
         except Exception:
             force_new = False
 
-        # ✅ 비공개 정책(요구사항 정리):
-        # - 스토리/캐릭터가 비공개가 되더라도 "기존에 이용하던 유저"는 계속 이용(기존 room 재사용) 가능
-        # - 다만, 새로 대화(force_new 포함) 또는 기존 room이 없는 상태의 "신규 시작"은 차단한다.
+        # ✅ 비공개 정책(요구사항 변경 반영):
+        # - 비공개된 웹소설/캐릭터/원작챗은 모두 접근 불가(creator/admin 제외)
         #
         # 방어적 처리:
         # - 스토리 비공개(Story.is_public=False)라면 작성자/관리자 외 신규 시작 금지
@@ -2186,6 +2733,9 @@ async def origchat_start(
                 srow = (await db.execute(
                     select(Story.id, Story.creator_id, Story.is_public).where(Story.id == story_id)
                 )).first()
+                # ✅ 삭제된 작품이면 신규/기존 상관없이 차단
+                if not srow:
+                    raise HTTPException(status_code=410, detail="삭제된 작품입니다")
                 if srow:
                     s_is_public = bool(getattr(srow, "is_public", True))
                     s_creator_id = getattr(srow, "creator_id", None)
@@ -2203,9 +2753,9 @@ async def origchat_start(
             logger.warning(f"[origchat_start] privacy check 실패(continue): {e}")
             restrict_new_room = False
 
-        # 새로 대화(강제 신규 생성)는 비공개 대상이면 차단
-        if restrict_new_room and force_new:
-            raise HTTPException(status_code=403, detail="비공개된 원작/캐릭터는 새로 대화를 시작할 수 없습니다.")
+        # ✅ 비공개 대상이면 접근 자체를 차단(새로 대화/기존 대화 구분 없음)
+        if restrict_new_room:
+            raise HTTPException(status_code=403, detail="비공개된 작품/캐릭터는 접근할 수 없습니다.")
         
         # ✅ plain 모드인 경우 기존 room 재사용 시도
         room = None
@@ -2314,6 +2864,12 @@ async def origchat_start(
                     logger.warning(f"[origchat_start] origchat starts incr 실패: {e}")
                 await db.execute(update(Story).where(Story.id == story_id).values(is_origchat=True))
                 await db.commit()
+        except HTTPException:
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+            raise
         except Exception:
             await db.rollback()
 
@@ -2327,7 +2883,7 @@ async def origchat_start(
             _start_chapter = None
 
         meta_payload: Dict[str, Any] = {
-            "mode": (payload.get("mode") or "canon").lower(),
+            "mode": mode,
             "start": payload.get("start") or {},
             "focus_character_id": str(payload.get("focus_character_id")) if payload.get("focus_character_id") else None,
             "range_from": payload.get("range_from"),
@@ -2338,7 +2894,11 @@ async def origchat_start(
             "turn_count": 0,
             "completed": False,
             # P0 설정 기본값
-            "postprocess_mode": "first2",   # always | first2 | off
+            # ✅ 기본값은 off:
+            # - postprocess(경량 재작성)는 결과가 "처음/재진입에서 달라 보이는" UX를 만들 수 있어,
+            #   데모 안정성 기준으로 기본은 비활성화한다.
+            # - 필요 시 프론트 settings_patch로 always/first2를 다시 켤 수 있다.
+            "postprocess_mode": "off",   # always | first2 | off
             "next_event_len": 1,            # 1 | 2 (장면 수)
             "prewarm_on_start": True,
         }
@@ -2347,8 +2907,7 @@ async def origchat_start(
             _narr = bool(payload.get("narrator_mode") or False)
         except Exception:
             _narr = False
-        if _narr and meta_payload.get("mode") == "canon":
-            meta_payload["mode"] = "parallel"
+        # ✅ plain-only 정책: mode는 변경하지 않는다.
         meta_payload["narrator_mode"] = _narr
         if _start_chapter:
             meta_payload["anchor"] = _start_chapter
@@ -2371,7 +2930,7 @@ async def origchat_start(
             meta_payload["light_context"] = light[:2000]
         # 초기 선택지 제안(메타에 탑재하여 프론트가 바로 표시) - plain 모드 제외
         try:
-            mode = meta_payload.get("mode", "canon")
+            mode = meta_payload.get("mode", "plain")
             if mode != "plain" and story_id and _start_chapter:
                 pack = await origchat_service.build_context_pack(db, story_id, _start_chapter, character_id=str(payload.get("focus_character_id") or payload.get("character_id")))
                 if isinstance(pack, dict) and isinstance(pack.get("initial_choices"), list):
@@ -2384,7 +2943,7 @@ async def origchat_start(
         await _set_room_meta(room.id, meta_payload)
 
         # ✅ mode == 'plain'일 때 인사말을 동기적으로 먼저 생성 (기존 room 재사용 시 제외)
-        mode = meta_payload.get("mode", "canon")
+        mode = meta_payload.get("mode", "plain")
         if mode == "plain" and story_id and not is_reusing_existing_room:
             try:
                 from app.services.origchat_service import generate_backward_weighted_recap, get_scene_anchor_text
@@ -2516,6 +3075,16 @@ async def origchat_start(
                             user_name=token_user_name,
                             character_name=char_name,
                         )
+                        # ✅ UX 개선(최소 수정):
+                        # - 원작챗에서 유저는 "내 이름(페르소나)이 불리는지"로 적용 여부를 강하게 체감한다.
+                        # - 기존 인사말이 토큰({{user}})을 포함하지 않는 경우에도,
+                        #   활성 페르소나(또는 닉네임)가 있으면 자연스럽게 1회 언급하도록 보강한다.
+                        try:
+                            tn = (token_user_name or "").strip()
+                            if tn and (tn not in final_greeting):
+                                final_greeting = f"{tn}, {final_greeting}"
+                        except Exception:
+                            pass
                         
                         await chat_service.save_message(db, room.id, sender_type="character", content=final_greeting, message_metadata={"kind":"intro"})
                         await db.commit()
@@ -2528,8 +3097,13 @@ async def origchat_start(
                 # ✅ 2순위: LLM으로 인사말 생성 (기존 인사말이 없거나, 페르소나 모드이거나, 실패한 경우)
                 if not char_greeting or len(char_greeting) <= 20 or pov == "persona":
                     try:
-                        if not settings.GEMINI_API_KEY:
-                            raise ValueError("GEMINI_API_KEY가 설정되지 않았습니다")
+                        # ✅ 방어(치명 UX 방지):
+                        # - 현재 인사말 생성은 Claude(get_claude_completion)를 사용한다.
+                        # - 과거 Gemini 코드가 제거되면서도 GEMINI_API_KEY 체크가 남아,
+                        #   CLAUDE 키가 있어도 불필요하게 폴백 인사말(건조한 문구)로 떨어질 수 있었다.
+                        # - 따라서 Claude 키를 기준으로 체크한다.
+                        if not settings.CLAUDE_API_KEY:
+                            raise ValueError("CLAUDE_API_KEY가 설정되지 않았습니다")
                         
                         # genai.configure(api_key=settings.GEMINI_API_KEY)
                         # model = genai.GenerativeModel('gemini-2.5-pro')
@@ -2651,7 +3225,45 @@ async def origchat_start(
                         except Exception as save_err:
                             logger.error(f"인사말 저장 실패: {save_err}", exc_info=True)
             except Exception as e:
-                logger.error(f"plain 모드 인사말 생성 실패: {e}", exc_info=True)
+                # ✅ 치명 UX 방지:
+                # - 어떤 예외가 나도 "인사말 1개"는 반드시 DB(SSOT)에 남겨야 한다.
+                #   그렇지 않으면 프론트가 빈 화면에서 오래 대기하거나, 재진입 시 '대화가 사라진 것처럼' 보인다.
+                try:
+                    logger.error(f"plain 모드 인사말 생성 실패: {e}", exc_info=True)
+                except Exception:
+                    pass
+                try:
+                    # 이미 메시지가 있으면 중복 저장하지 않음
+                    existing = await chat_service.get_messages_by_room_id(db, room.id, limit=1)
+                    if not existing:
+                        try:
+                            token_user_name = await _resolve_user_name_for_tokens(db, current_user, scope="origchat")
+                        except Exception:
+                            token_user_name = _fallback_user_name(current_user)
+                        cn = ""
+                        try:
+                            cn = (getattr(char, "name", None) or "").strip()
+                        except Exception:
+                            cn = ""
+                        if not cn:
+                            try:
+                                cn = (getattr(room, "character", None) and getattr(room.character, "name", None)) or ""
+                                cn = (cn or "").strip()
+                            except Exception:
+                                cn = ""
+                        cn = cn or "캐릭터"
+                        tn = (token_user_name or "").strip() or "사용자"
+                        fallback = f"{tn}, {cn}이야. 잠깐만… 지금 상황을 정리해볼게. 먼저 무엇부터 이야기해줄래?"
+                        await chat_service.save_message(db, room.id, sender_type="character", content=fallback, message_metadata={"kind":"intro"})
+                        try:
+                            await db.commit()
+                        except Exception:
+                            pass
+                except Exception:
+                    try:
+                        await db.rollback()
+                    except Exception:
+                        pass
                 try:
                     await _set_room_meta(room.id, {"intro_ready": True, "init_stage": "ready"})
                 except Exception:
@@ -2707,7 +3319,7 @@ async def origchat_start(
 
         # 인사말 말풍선: 사전 준비 결과가 있으면 즉시 사용(없으면 생략) - plain 모드에서는 제외 (이미 생성됨)
         try:
-            mode = meta_payload.get("mode", "canon")
+            mode = meta_payload.get("mode", "plain")
             if mode != "plain":
                 from app.core.database import redis_client as _r
                 _scene_id = None
@@ -2774,14 +3386,29 @@ async def origchat_turn(
             raise HTTPException(status_code=404, detail="채팅방을 찾을 수 없습니다")
         if room.user_id != current_user.id:
             raise HTTPException(status_code=403, detail="권한이 없습니다")
-        # 안전망: 캐릭터에 연결된 원작 스토리가 있으면 플래그 지정
+        # ✅ 비공개/삭제 가드(요구사항 변경 반영)
+        # - 비공개된 작품/캐릭터: 403
+        # - 삭제된 작품(연결 깨짐 포함): 410
         sid = None  # 명시적 초기화
         try:
-            crow = await db.execute(select(Character.origin_story_id).where(Character.id == room.character_id))
-            sid = (crow.first() or [None])[0]
-            if sid:
-                await db.execute(update(Story).where(Story.id == sid).values(is_origchat=True))
-                await db.commit()
+            char = getattr(room, "character", None)
+            if not char:
+                char = (await db.execute(select(Character).where(Character.id == room.character_id))).scalars().first()
+            if not char:
+                raise HTTPException(status_code=404, detail="캐릭터를 찾을 수 없습니다.")
+            sid = getattr(char, "origin_story_id", None)
+            if not sid:
+                raise HTTPException(status_code=410, detail="삭제된 작품입니다.")
+            await _ensure_character_story_accessible(db, current_user, char)
+            # 안전망: 캐릭터에 연결된 원작 스토리가 있으면 플래그 지정(베스트 에포트)
+            await db.execute(update(Story).where(Story.id == sid).values(is_origchat=True))
+            await db.commit()
+        except HTTPException:
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+            raise
         except Exception:
             await db.rollback()
         user_text = (payload.get("user_text") or "").strip()
@@ -2837,7 +3464,23 @@ async def origchat_turn(
         idempotency_key = (payload.get("idempotency_key") or "").strip()
 
         # 룸 메타 로드
+        #
+        # ✅ 방어(치명 UX 방지):
+        # - 원작챗 룸 메타는 Redis에 저장되므로, Redis 재시작/flush 등으로 meta가 유실될 수 있다.
+        # - meta가 비어 있으면 프론트가 '원작챗 방이 아닌 것'으로 오판하여 새 방을 만들거나(=대화 유실처럼 보임),
+        #   서버도 default(mode='canon')로 동작해 체감이 달라질 수 있다.
+        # - 따라서 meta가 없을 때는 최소한의 폴백(mode='plain')을 설정하고 Redis에 복구한다.
         meta_state = await _get_room_meta(room_id)
+        if not isinstance(meta_state, dict):
+            meta_state = {}
+        try:
+            if not meta_state.get("mode"):
+                # origin_story_id가 있는 룸은 원작챗으로 간주한다.
+                if sid:
+                    meta_state["mode"] = "plain"
+                    await _set_room_meta(room.id, {"mode": "plain"})
+        except Exception:
+            pass
         player_max = meta_state.get("player_max") if isinstance(meta_state, dict) else None
         logger.info(f"[origchat_turn] meta_state에서 pov: {meta_state.get('pov')}, mode: {meta_state.get('mode')}")
 
@@ -2941,7 +3584,20 @@ async def origchat_turn(
 
         # 간단 스포일러/완결 가드 + 세계관/반복 방지 규칙 + 경량 컨텍스트 주입
         guarded_text = user_text
-        mode = (meta_state.get("mode") or "canon").lower()
+        # ✅ 서비스 정책: 원작챗은 plain-only
+        # - Redis에 과거 mode(canon/parallel)가 남아있거나 기본값이 섞이면 UX가 깨진다.
+        # - 서버에서 강제로 plain으로 정규화하고 Redis에도 복구한다.
+        try:
+            mode = str(meta_state.get("mode") or "plain").strip().lower()
+        except Exception:
+            mode = "plain"
+        if mode != "plain":
+            mode = "plain"
+            try:
+                meta_state["mode"] = "plain"
+                await _set_room_meta(room.id, {"mode": "plain"})
+            except Exception:
+                pass
         if mode != "plain" and isinstance(player_max, int) and player_max >= 1:
             hint = f"[스포일러 금지 규칙] {player_max}화 이후의 사건/정보는 언급/암시 금지. 범위 내에서만 대답."
             if guarded_text:
@@ -2980,6 +3636,19 @@ async def origchat_turn(
             "[일관성 규칙] 세계관/인물/설정의 내적 일관성을 유지하라. 원작과 모순되는 사실/타작품 요소 도입 금지.",
             "[반복 금지] 이전 대사/서술을 재탕하거나 공회전하는 전개 금지. 매 턴 새로운 상황/감정/행동/갈등을 진행.",
         ]
+        # ✅ [P0] 사용자 대사/행동 '대신 생성' 방지(원작챗 전 모드 공통)
+        #
+        # 문제:
+        # - 모델이 '상대(사용자/페르소나)의 대사/행동'까지 서술/창작해버리면
+        #   유저가 "내가 한 말을 네가 정해버렸다"라고 강한 거부감을 느낀다(치명 UX).
+        #
+        # 정책:
+        # - 사용자의 말/행동/내적(생각/감정)은 "사용자가 입력한 내용"을 넘어서 확정/창작하지 않는다.
+        # - 필요하면 질문으로 확인하거나, 선택지(제안) 형태로 제시한다.
+        # - 사용자를 3인칭 서술(예: 'OO이 말했다/했다')로 쓰지 않는다.
+        rule_lines.append("[대화 원칙] ⛔ 사용자의 대사/행동/생각을 대신 쓰거나 확정하지 마세요. 사용자가 입력한 것만 사실로 취급하세요.")
+        rule_lines.append("[대화 원칙] ⛔ 사용자를 3인칭으로 서술하지 마세요. (예: '상대가 말했다/OO이 했다' 금지)")
+        rule_lines.append("[대화 원칙] ✅ 상대의 행동이 필요하면 질문하거나 선택지를 제안하세요. 당신은 캐릭터의 말/행동만 작성하세요.")
         if mode == "plain":
             # ✅ [P0] plain 모드 규칙 완화(정체성 회복)
             # - 기존 문구는 모델이 "원작 사건/줄거리 언급 자체"를 회피(=모른다/말 못한다)로 오해할 수 있다.
@@ -2989,6 +3658,12 @@ async def origchat_turn(
             rule_lines.append("[일대일 대화 모드] ⛔ 금지: 새로운 사건을 '전개/창작'하거나, 원작에 없는 설정을 단정하거나, 스포일러(범위 밖)를 말하는 것.")
             rule_lines.append("[일대일 대화 모드] 작품/줄거리/회차/자기 정체성 질문을 받으면 회피하지 말고, 원작 설정을 바탕으로 간결하게 답하세요.")
             rule_lines.append("[일대일 대화 모드] 사용자와 자연스럽게 대화하고, 질문하고, 교감하세요.")
+            # ✅ [P0] 개인사/가족사 오염 차단(UX 핵심)
+            # - 특정 캐릭터가 주인공의 개인사(가족/과거)를 자기 1인칭으로 답습하면 즉시 '가짜 캐릭터'로 느껴진다.
+            # - 해결: 타 인물 개인사는 '그/그녀/OO'로 구분해 말하고, 내 개인사로 단정하지 못하게 강제한다.
+            rule_lines.append("[정체성/개인사] 타 인물(주인공 포함)의 개인사/가족사/과거를 '내 이야기'로 1인칭 답습 금지. 반드시 화자/소유자를 구분하세요.")
+            rule_lines.append("[정체성/개인사] 다른 인물 사건을 언급할 때는 '그/그녀/OO(이/가)'로 서술하고, 본인이 직접 겪은 것처럼 단정하지 마세요.")
+            rule_lines.append("[정체성/개인사] 만약 방금 혼동했다면 즉시 1문장으로 정정 후 이어가세요. (예: \"방금 말은 OO의 이야기였어. 나는 …\")")
         elif mode == "parallel":
             rule_lines.append("[평행세계] 원작과 다른 전개 허용. 다만 세계관/인물 심리의 개연성을 유지하고 스포일러 금지.")
         else:
@@ -3000,6 +3675,8 @@ async def origchat_turn(
         # 컨텍스트 활용 규칙 추가 (메타 발언 방지)
         if mode == "plain":
             rule_lines.append("[컨텍스트 활용] 제공된 배경 정보를 자연스럽게 활용하되, '컨텍스트에 따르면', '정보에 따르면' 같은 메타 발언은 절대 금지. 마치 직접 경험한 것처럼 자연스럽게 대화하세요.")
+            # ✅ 출력 완결성(말풍선 끊김 방지)
+            rule_lines.append("[출력 완결성] 응답은 문장 중간에서 끊지 말고, 반드시 마침표/물음표/느낌표/… 등 문장부호로 자연스럽게 마무리하라. 마지막 문장이 미완이면 1문장 더 보완해 완결하라.")
         rules_block = "\n".join(rule_lines)
         # ctx = (meta_state.get("light_context") or "").strip()
         # 캐릭터 중심 컨텍스트 생성 (대화 중에도 적용)
@@ -3009,6 +3686,51 @@ async def origchat_turn(
                 ctx = await _build_light_context(db, sid, player_max, character_id=room.character_id)
             except Exception:
                 pass
+
+        # ✅ 관계/역할 카드 프리워밍(백그라운드)
+        # - 매 턴 LLM 호출로 지연을 만들지 않기 위해, 캐시가 없을 때만 비동기 생성한다.
+        # - 이미 _build_light_context에는 (캐시된 카드 or 폴백 카드)가 포함되므로, 현재 턴에는 즉시 반영된다.
+        try:
+            if sid and room.character_id:
+                _a = None
+                try:
+                    # player_max(=range_to/anchor) 우선, 없으면 meta.anchor/start.chapter 폴백
+                    if isinstance(player_max, int) and player_max >= 1:
+                        _a = int(player_max)
+                    elif isinstance(meta_state, dict) and isinstance(meta_state.get("anchor"), int) and meta_state.get("anchor") >= 1:
+                        _a = int(meta_state.get("anchor"))
+                    else:
+                        st = meta_state.get("start") if isinstance(meta_state, dict) else None
+                        if isinstance(st, dict) and st.get("chapter") is not None:
+                            _a = int(st.get("chapter"))
+                except Exception:
+                    _a = None
+                _a = int(_a or 1)
+                if _a < 1:
+                    _a = 1
+                from app.core.database import redis_client as _r
+                key = f"ctx:warm:{sid}:relcard:{str(room.character_id)}:a{_a}"
+                inflight = key + ":inflight"
+                cached = await _r.get(key)
+                if not cached:
+                    try:
+                        infl = await _r.get(inflight)
+                        if not infl:
+                            await _r.setex(inflight, 60, "1")
+                            import asyncio
+
+                            async def _warm_relcard(sid2, cid2, a2):
+                                async with AsyncSessionLocal() as _db:
+                                    try:
+                                        await _build_relationship_card(_db, sid2, cid2, int(a2), generate_if_missing=True)
+                                    except Exception:
+                                        pass
+
+                            asyncio.create_task(_warm_relcard(sid, room.character_id, _a))
+                    except Exception:
+                        pass
+        except Exception:
+            pass
 
         # 실패하거나 sid가 없으면 기존 방식 사용
         if not ctx:
@@ -3100,17 +3822,27 @@ async def origchat_turn(
                     work_title = (w[0] or "").strip()
                     work_summary = (w[1] or "").strip()
 
-            # 기준 회차(앵커): player_max 우선, 없으면 meta.start.chapter 폴백
+            # 기준 회차(앵커): player_max 우선, 없으면 meta.anchor → meta.start.chapter 폴백
+            #
+            # ✅ 치명 UX 방지:
+            # - 유저가 "몇화야?"를 물으면 반드시 숫자 회차를 답해야 한다.
+            # - meta에는 anchor가 저장되는데, 기존 로직이 anchor를 보지 않아 None으로 떨어질 수 있었다.
             anchor_no = None
             try:
                 if isinstance(player_max, int) and player_max >= 1:
                     anchor_no = int(player_max)
                 else:
-                    st = meta_state.get("start") if isinstance(meta_state, dict) else None
-                    if isinstance(st, dict) and st.get("chapter") is not None:
-                        anchor_no = int(st.get("chapter"))
+                    if isinstance(meta_state, dict) and meta_state.get("anchor") is not None:
+                        anchor_no = int(meta_state.get("anchor"))
+                    else:
+                        st = meta_state.get("start") if isinstance(meta_state, dict) else None
+                        if isinstance(st, dict) and st.get("chapter") is not None:
+                            anchor_no = int(st.get("chapter"))
             except Exception:
                 anchor_no = None
+            # 마지막 안전망: 스토리가 있는 원작챗이면 최소 1화로라도 고정(회피/모른다 방지)
+            if ('sid' in locals() and sid) and not anchor_no:
+                anchor_no = 1
 
             # 스포일러 기준(범위): range_to가 있으면 우선, 없으면 anchor_no를 기준으로 사용
             spoiler_from = None
@@ -3162,6 +3894,15 @@ async def origchat_turn(
                 work_lines.append(f"소개: {work_summary[:420]}")
             if anchor_no:
                 work_lines.append(f"현재 기준: {anchor_no}화")
+            # ✅ 메타 질문 응답 고정(치명 UX 방지)
+            #
+            # - 유저가 작품명/몇화/줄거리를 물으면 "모른다"가 아니라 아래 값을 그대로 답해야 한다.
+            # - '컨텍스트에 따르면' 같은 메타 발언은 금지이므로, 자연스럽게 회상/설명하듯 답한다.
+            try:
+                if work_title and anchor_no:
+                    work_lines.append(f"질문 대응: 작품명 질문 → '{work_title}' / '지금 몇화' 질문 → '{anchor_no}화'")
+            except Exception:
+                pass
             # 스포일러 기준 표시(모드별 적용은 rules_block이 담당, 여기서는 사실로만 제공)
             if spoiler_from and spoiler_to:
                 work_lines.append(f"스포일러 기준: {spoiler_from}~{spoiler_to}화 범위 내에서만 언급")
@@ -3290,6 +4031,10 @@ async def origchat_turn(
                 partner_block.append(f"- 이름을 모르는 척 하지 마세요")
                 partner_block.append(f"- 다른 호칭 금지")
                 partner_block.append(f"- 자연스럽게 '{pn}'의 이름을 언급하세요")
+                # ✅ 사용자(페르소나) 대사/행동 대신 생성 방지(가장 강한 위치=상단)
+                partner_block.append(f"- ⛔ '{pn}'의 대사/행동/생각을 당신이 대신 작성하거나 확정하지 마세요.")
+                partner_block.append(f"- ⛔ '\"...\" {pn}이 말했다/했다' 같은 3인칭 서술 금지. '{pn}, ...'처럼 직접 호칭은 허용.")
+                partner_block.append(f"- ✅ 필요한 경우 질문으로 확인하거나 선택지를 제안하세요.")
                 parts.insert(0, "\n".join(partner_block))
                 if ctx_block:
                     # ✅ [P0] 작품/정체성 블록을 상단에서 밀어내지 않도록 ctx 삽입 위치를 조정한다.
@@ -3505,7 +4250,8 @@ async def origchat_turn(
                     world_bible = None
                 ai_text0 = getattr(resp.ai_message, 'content', '') or ''
                 # postprocess_mode: always | first2 | off
-                pp_mode = str(meta_state.get("postprocess_mode") or "first2").lower()
+                # ✅ meta 유실(Redis 재시작 등) 시에도 postprocess가 "갑자기 켜지는" 상황을 방지하기 위해 default는 off
+                pp_mode = str(meta_state.get("postprocess_mode") or "off").lower()
                 need_pp = (pp_mode == "always") or (pp_mode == "first2" and int(meta_state.get("turn_count") or 0) <= 2)
                 refined = ai_text0
                 if need_pp:
@@ -3535,13 +4281,46 @@ async def origchat_turn(
                         resp.ai_message.content = refined2  # type: ignore[attr-defined]
                     except Exception:
                         pass
+                    # ✅ SSOT 일치(치명 UX 방지):
+                    # - DB에는 postprocess 전 ai_response_text가 저장되어 있고,
+                    #   응답(resp)에는 postprocess 후 텍스트가 노출되면 재진입 시 "대사가 바뀐 것처럼" 보인다.
+                    # - 따라서 postprocess로 바뀐 본문은 DB(ChatMessage.content)에도 반영한다.
+                    try:
+                        from app.models.chat import ChatMessage as _ChatMessage
+                        if 'ai_message' in locals() and ai_message and getattr(ai_message, "id", None):
+                            await db.execute(
+                                update(_ChatMessage)
+                                .where(_ChatMessage.id == ai_message.id)
+                                .values(content=refined2)
+                            )
+                            await db.commit()
+                    except Exception as e:
+                        try:
+                            await db.rollback()
+                        except Exception:
+                            pass
+                        try:
+                            logger.warning(f"[origchat_turn] postprocess DB update failed (continue): {e}")
+                        except Exception:
+                            pass
             except Exception:
                 pass
 
         meta_resp: Dict[str, Any] = {"turn_count": turn_count, "max_turns": max_turns, "completed": completed}
 
         # ✅ 선택지 생성 - plain 모드에서는 선택지 생성 안 함
-        mode = meta_state.get("mode", "canon")
+        mode = meta_state.get("mode", "plain")
+        try:
+            mode = str(mode or "").strip().lower() or "plain"
+        except Exception:
+            mode = "plain"
+        if mode != "plain":
+            mode = "plain"
+            try:
+                meta_state["mode"] = "plain"
+                await _set_room_meta(room.id, {"mode": "plain"})
+            except Exception:
+                pass
         if mode != "plain":
             # ✅ 온디맨드 선택지: 쿨다운 무시
             if want_choices:
@@ -3642,6 +4421,8 @@ async def clear_chat_messages(
     
     if room.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="이 채팅방에 접근할 권한이 없습니다.")
+    # ✅ 비공개 캐릭터/작품 접근 차단(요구사항: 기존 방도 포함)
+    await _ensure_private_content_access(db, current_user, character=getattr(room, "character", None))
     
     # 메시지 삭제
     await chat_service.delete_all_messages_in_room(db, room_id)
@@ -3661,6 +4442,8 @@ async def delete_chat_room(
     
     if room.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="이 채팅방에 접근할 권한이 없습니다.")
+    # ✅ 비공개 캐릭터/작품 접근 차단(요구사항: 기존 방도 포함)
+    await _ensure_private_content_access(db, current_user, character=getattr(room, "character", None))
     
     # 채팅방 삭제 (연관된 메시지도 함께 삭제됨)
     await chat_service.delete_chat_room(db, room_id)
@@ -3681,6 +4464,8 @@ async def update_message_content(
     room = await chat_service.get_chat_room_by_id(db, msg.chat_room_id)
     if not room or room.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="권한이 없습니다.")
+    # ✅ 비공개 캐릭터/작품 접근 차단(요구사항: 기존 방도 포함)
+    await _ensure_private_content_access(db, current_user, character=getattr(room, "character", None))
     if msg.sender_type != 'assistant' and msg.sender_type != 'character':
         raise HTTPException(status_code=400, detail="AI 메시지만 수정할 수 있습니다.")
     updated = await chat_service.update_message_content(db, message_id, payload.content)
@@ -3701,11 +4486,83 @@ async def regenerate_message(
     room = await chat_service.get_chat_room_by_id(db, msg.chat_room_id)
     if not room or room.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="권한이 없습니다.")
+    # ✅ 비공개 캐릭터/작품 접근 차단(요구사항: 기존 방도 포함)
+    await _ensure_private_content_access(db, current_user, character=getattr(room, "character", None))
 
-    # 재생성 지시사항을 사용자 메시지로 전송 → 기존 send_message 흐름 재사용
-    instruction = payload.instruction or "방금 응답을 같은 맥락으로 다시 생성해줘."
-    req = SendMessageRequest(character_id=room.character_id, content=instruction)
-    return await send_message(req, current_user, db)
+    # ✅ 재생성은 "사용자 메시지"로 저장되면 안 된다.
+    # - 요구사항: 재생성 지시문(예: "말투를 더 부드럽게")은 채팅 로그에 사용자 발화로 남지 않아야 한다.
+    # - 따라서 DB에는 새 메시지를 추가하지 않고, 대상 AI 메시지(content)만 업데이트한다.
+    if msg.sender_type not in ("assistant", "character"):
+        raise HTTPException(status_code=400, detail="AI 메시지만 재생성할 수 있습니다.")
+
+    instruction = ""
+    try:
+        instruction = str(payload.instruction or "").strip()
+    except Exception:
+        instruction = ""
+    if not instruction:
+        instruction = "말투를 더 부드럽게"
+
+    # 직전 맥락(베스트-에포트): 재작성 품질/연결감을 위해 최근 몇 개 메시지를 함께 전달한다.
+    before_ctx = ""
+    try:
+        from app.models.chat import ChatMessage
+        prev_rows = await db.execute(
+            select(ChatMessage.sender_type, ChatMessage.content)
+            .where(ChatMessage.chat_room_id == room.id)
+            .where(ChatMessage.created_at < msg.created_at)
+            .order_by(ChatMessage.created_at.desc())
+            .limit(8)
+        )
+        prev = prev_rows.all() or []
+        lines: List[str] = []
+        for sender_type, content in reversed(prev):
+            st = str(sender_type or "").strip().lower()
+            label = "사용자" if st == "user" else "캐릭터"
+            txt = str(content or "").strip()
+            if not txt:
+                continue
+            lines.append(f"{label}: {txt}")
+        before_ctx = "\n".join(lines).strip()
+    except Exception as e:
+        try:
+            logger.warning(f"[regenerate_message] before_context fetch failed: {e}")
+        except Exception:
+            pass
+        before_ctx = ""
+
+    # 재작성(베스트-에포트): 실패 시 원문 유지(사용자에게는 에러로 알림)
+    try:
+        new_text = await ai_service.regenerate_partial_text(
+            selected_text=str(getattr(msg, "content", "") or ""),
+            user_prompt=instruction,
+            before_context=before_ctx,
+            after_context="",
+        )
+        new_text = str(new_text or "").strip()
+        if not new_text:
+            raise ValueError("재생성 결과가 비어 있습니다")
+    except Exception as e:
+        try:
+            logger.exception(f"[regenerate_message] regenerate_partial_text failed: {e}")
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=f"재생성에 실패했습니다. ({_safe_exc(e)})")
+
+    # DB 업데이트(편집 이력 포함)
+    try:
+        updated = await chat_service.update_message_content(db, message_id, new_text)
+    except Exception as e:
+        try:
+            logger.exception(f"[regenerate_message] update_message_content failed: {e}")
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=f"재생성 결과 저장에 실패했습니다. ({_safe_exc(e)})")
+
+    return SendMessageResponse(
+        user_message=None,
+        ai_message=ChatMessageResponse.model_validate(updated),
+    )
 
 
 @router.post("/messages/{message_id}/feedback", response_model=ChatMessageResponse)
@@ -3721,6 +4578,8 @@ async def message_feedback(
     room = await chat_service.get_chat_room_by_id(db, msg.chat_room_id)
     if not room or room.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="권한이 없습니다.")
+    # ✅ 비공개 캐릭터/작품 접근 차단(요구사항: 기존 방도 포함)
+    await _ensure_private_content_access(db, current_user, character=getattr(room, "character", None))
     updated = await chat_service.apply_feedback(db, message_id, upvote=(payload.action=='upvote'))
     return ChatMessageResponse.model_validate(updated)
 

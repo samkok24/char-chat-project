@@ -519,11 +519,12 @@ export const chatAPI = {
 // 💬 원작챗 API (MVP 스텁 연동)
 export const origChatAPI = {
   // 컨텍스트 팩
-  getContextPack: (storyId, { anchor, characterId, mode = 'canon', rangeFrom, rangeTo, sceneId } = {}) =>
+  // ✅ 서비스 정책: 원작챗은 plain 모드만 사용한다.
+  getContextPack: (storyId, { anchor, characterId, mode = 'plain', rangeFrom, rangeTo, sceneId } = {}) =>
     api.get(`/stories/${storyId}/context-pack`, { params: { anchor, characterId, mode, rangeFrom, rangeTo, sceneId } }),
 
   // 세션 시작(기존 채팅방 구조 재사용)
-  start: ({ story_id, character_id, mode = 'canon', start = null, focus_character_id = null, range_from = null, range_to = null, narrator_mode = null, pov = null, force_new = null }) =>
+  start: ({ story_id, character_id, mode = 'plain', start = null, focus_character_id = null, range_from = null, range_to = null, narrator_mode = null, pov = null, force_new = null }) =>
     api.post('/chat/origchat/start', { story_id, character_id, mode, start, focus_character_id, range_from, range_to, narrator_mode, pov, force_new }),
 
   // 턴 진행(스텁 응답)

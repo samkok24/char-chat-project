@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import AppLayout from '../components/layout/AppLayout';
 import { Button } from '../components/ui/button';
@@ -10,6 +10,7 @@ import { resolveImageUrl } from '../lib/images';
 import ChapterViewer from '../components/ChapterViewer';
 import OrigChatStartModal from '../components/OrigChatStartModal';
 import MiniChatWindow from '../components/MiniChatWindow';
+import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogAction } from '../components/ui/alert-dialog';
 import { toast } from 'sonner';
 
 const ChapterReaderPage = () => {
@@ -22,8 +23,10 @@ const ChapterReaderPage = () => {
   const [origChatModalOpen, setOrigChatModalOpen] = useState(false);
   const [miniChatOpen, setMiniChatOpen] = useState(false);
   const [storyDivePreparing, setStoryDivePreparing] = useState(false);
+  // ✅ 비공개/접근 불가 경고 모달
+  const [accessDeniedModal, setAccessDeniedModal] = useState({ open: false, message: '' });
   // 스토리 상세 (헤더/좌측 표지용)
-  const { data: story } = useQuery({
+  const { data: story, error: storyLoadError } = useQuery({
     queryKey: ['story', storyId],
     queryFn: async () => {
       const res = await storiesAPI.getStory(storyId);
@@ -53,7 +56,7 @@ const ChapterReaderPage = () => {
     staleTime: 0,
     refetchOnMount: 'always',
   });
-  const { data: chapterList = [] } = useQuery({
+  const { data: chapterList = [], error: chapterListError } = useQuery({
     queryKey: ['chapters-by-story', storyId],
     queryFn: async () => {
       const res = await chaptersAPI.getByStory(storyId, 'asc');
@@ -89,6 +92,47 @@ const ChapterReaderPage = () => {
   const coverUrl = useMemo(() => galleryImages[0] || '', [galleryImages]);
 
   const hasChapter = !!chapter;
+
+  // ✅ 비공개 콘텐츠 접근 시: 경고 모달 노출(요구사항 반영)
+  useEffect(() => {
+    const err = storyLoadError || chapterListError;
+    const status = err?.response?.status;
+    if (status !== 403) return;
+    const msg = String(err?.response?.data?.detail || err?.message || '접근할 수 없습니다.').trim();
+    setAccessDeniedModal({ open: true, message: msg });
+  }, [storyLoadError, chapterListError]);
+
+  const accessDeniedDialogEl = (
+    <AlertDialog
+      open={!!accessDeniedModal.open}
+      onOpenChange={(open) => {
+        setAccessDeniedModal((prev) => ({ ...(prev || {}), open: !!open }));
+        if (!open) {
+          try { navigate('/dashboard'); } catch (_) {}
+        }
+      }}
+    >
+      <AlertDialogContent className="bg-gray-900 border border-gray-700 text-white">
+        <AlertDialogHeader>
+          <AlertDialogTitle className="text-white">접근 불가</AlertDialogTitle>
+          <AlertDialogDescription className="text-gray-300">
+            {accessDeniedModal.message || '비공개된 작품입니다.'}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <div className="flex justify-end gap-2 mt-4">
+          <AlertDialogAction
+            className="bg-purple-600 hover:bg-purple-700 text-white"
+            onClick={() => {
+              setAccessDeniedModal({ open: false, message: '' });
+              try { navigate('/dashboard'); } catch (_) {}
+            }}
+          >
+            확인
+          </AlertDialogAction>
+        </div>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
 
   /**
    * 플로팅 버튼 노출 정책 (UX 안전장치):
@@ -219,6 +263,7 @@ const ChapterReaderPage = () => {
     return (
       <div className="min-h-screen bg-white w-full overflow-x-hidden">
         <ChapterViewer chapter={chapter} />
+        {accessDeniedDialogEl}
         
         {/* 우측 하단 플로팅 버튼들 */}
         {canShowFloatingButtons && (
@@ -337,6 +382,7 @@ const ChapterReaderPage = () => {
   return (
     <AppLayout>
       <div className={`min-h-screen ${isWebtoon ? 'bg-black' : 'bg-gray-900'} text-white`}>
+        {accessDeniedDialogEl}
         <div className={`${isWebtoon ? 'px-0 py-0' : 'max-w-6xl mx-auto px-4 sm:px-5 py-4 sm:py-6'} ${chatOpen ? 'pb-40' : 'pb-16'}`}>
           {/* 상단 헤더 - 웹툰 모드에서는 숨김 */}
           {!isWebtoon && (

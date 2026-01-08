@@ -9,8 +9,10 @@ import {
 } from './ui/select';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { usersAPI, chatAPI } from '../lib/api';
+import { usersAPI, chatAPI, origChatAPI } from '../lib/api';
 import { useLoginModal } from '../contexts/LoginModalContext';
+import { getReadingProgress } from '../lib/readingProgress';
+import { Loader2 } from 'lucide-react';
 
 const ChatInteraction = ({ onStartChat, characterId, isAuthenticated, isWebNovel = false, originStoryId = null }) => {
   const navigate = useNavigate();
@@ -19,6 +21,7 @@ const ChatInteraction = ({ onStartChat, characterId, isAuthenticated, isWebNovel
   const safeOriginStoryId = (() => {
     try { return String(originStoryId || '').trim(); } catch (_) { return ''; }
   })();
+  const [startingOrigChat, setStartingOrigChat] = React.useState(false);
 
   const { data: recent = [] } = useQuery({
     queryKey: ['recent-characters-for-continue'],
@@ -77,7 +80,42 @@ const ChatInteraction = ({ onStartChat, characterId, isAuthenticated, isWebNovel
     // ✅ 원작챗 캐릭터는 "새로 대화"도 origchat plain 모드로 진입해야 한다.
     // - new=1을 붙이면 ChatPage가 기존 원작챗 방을 재사용하지 않고 새 방을 생성한다.
     if (isOrigChatCharacter && safeOriginStoryId) {
-      navigate(`/ws/chat/${characterId}?source=origchat&storyId=${safeOriginStoryId}&mode=plain&new=1`);
+      // ✅ 원작챗 모달(스토리 상세)과 동일한 흐름으로 맞춘다:
+      // 1) start API로 방 생성/인사말 저장(SSOT)
+      // 2) 생성된 room 파라미터로 ChatPage 진입 → 진입 즉시 인사말이 보이게 한다.
+      if (startingOrigChat) return;
+      setStartingOrigChat(true);
+      try {
+        const anchor = (() => {
+          try {
+            const p = Number(getReadingProgress(safeOriginStoryId) || 0);
+            if (Number.isFinite(p) && p >= 1) return Math.floor(p);
+          } catch (_) {}
+          return 1;
+        })();
+        const startRes = await origChatAPI.start({
+          story_id: safeOriginStoryId,
+          character_id: characterId,
+          mode: 'plain',
+          force_new: true,
+          start: { chapter: anchor },
+        });
+        const roomId = startRes.data?.id || startRes.data?.room_id || startRes.data?.room?.id || null;
+        const usp = new URLSearchParams();
+        usp.set('source', 'origchat');
+        usp.set('storyId', safeOriginStoryId);
+        usp.set('mode', 'plain');
+        usp.set('new', '1');
+        usp.set('anchor', String(anchor));
+        if (roomId) usp.set('room', String(roomId));
+        navigate(`/ws/chat/${characterId}?${usp.toString()}`);
+      } catch (err) {
+        console.error('[ChatInteraction] origchat start failed, fallback', err);
+        // 최후 폴백: 기존 방식(채팅 페이지에서 start)
+        navigate(`/ws/chat/${characterId}?source=origchat&storyId=${safeOriginStoryId}&mode=plain&new=1`);
+      } finally {
+        setStartingOrigChat(false);
+      }
       return;
     }
     try {
@@ -95,16 +133,21 @@ const ChatInteraction = ({ onStartChat, characterId, isAuthenticated, isWebNovel
     <div className="space-y-4">
       {hasHistory ? (
         <div className="grid grid-cols-2 gap-2">
-          <Button onClick={handleContinue} className="w-full bg-gray-700 hover:bg-gray-600 text-white font-semibold py-5">
+          <Button onClick={handleContinue} disabled={startingOrigChat} className="w-full bg-gray-700 hover:bg-gray-600 text-white font-semibold py-5">
             계속 대화
           </Button>
-          <Button onClick={handleNew} className="w-full bg-red-600 hover:bg-red-700 text-white font-semibold py-5">
-            새로 대화
+          <Button onClick={handleNew} disabled={startingOrigChat} className="w-full bg-red-600 hover:bg-red-700 text-white font-semibold py-5">
+            {startingOrigChat ? (
+              <span className="inline-flex items-center gap-2">
+                <Loader2 className="w-4 h-4 animate-spin" /> 준비 중...
+              </span>
+            ) : '새로 대화'}
           </Button>
         </div>
       ) : (
         <Button
           onClick={isOrigChatCharacter ? handleContinue : onStartChat}
+          disabled={startingOrigChat}
           className="w-full bg-red-600 hover:bg-red-700 text-white font-bold text-lg py-6"
         >
           {isOrigChatCharacter ? '원작챗 시작' : (isWebNovel ? '등장인물과 원작챗 시작' : '대화 시작')}

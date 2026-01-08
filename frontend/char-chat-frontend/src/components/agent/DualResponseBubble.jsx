@@ -70,8 +70,8 @@ function DualResponseBubble({ message, onSelect, canSelect = true }) {
     };
     
     return (
-      // ✅ 그리드 셀 높이(가장 큰 박스)에 맞춰 이 컬럼도 stretch 되도록 h-full 적용
-      <div className="flex flex-col h-full">
+      // ✅ 한쪽 박스가 길어져도 다른쪽 박스가 같이 늘어나지 않도록(내용 높이만큼만) self-start
+      <div className="flex flex-col self-start">
         {/* 헤더 */}
         <div className="flex items-center gap-2 mb-3">
           <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 bg-gradient-to-br from-purple-600 to-fuchsia-700 text-white/90">
@@ -84,8 +84,8 @@ function DualResponseBubble({ message, onSelect, canSelect = true }) {
         </div>
         
         {/* 텍스트 박스 */}
-        {/* ✅ 박스 자체를 flex-1로 늘려 "한쪽만 펼쳤을 때 다른쪽 버튼이 아래로 밀리는" UX를 방지한다. */}
-        <div className="relative w-full flex-1 bg-gray-900/30 border-2 border-gray-700/80 rounded-2xl px-4 py-3 shadow-lg">
+        {/* ✅ 박스 높이는 "자기 콘텐츠" 기준. (장르 선택/펼치기 시 일상 박스가 같이 늘어나는 문제 방지) */}
+        <div className="relative w-full bg-gray-900/30 border-2 border-gray-700/80 rounded-2xl px-4 py-3 shadow-lg">
           <div 
             ref={contentRef}
             className={`prose prose-sm whitespace-pre-wrap text-gray-100 transition-all duration-300 ${

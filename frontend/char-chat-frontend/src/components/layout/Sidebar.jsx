@@ -360,29 +360,40 @@ const Sidebar = () => {
               ))
             ) : (
               (() => {
-                // 캐릭터별로 가장 최근 채팅방만 선택
-                const roomsByCharacter = new Map();
-                (chatRooms || []).forEach((room) => {
-                  const charId = room?.character?.id;
-                  if (!charId) return;
-                  
-                  const existing = roomsByCharacter.get(charId);
-                  const roomTime = new Date(room.last_message_time || room.updated_at || room.created_at || 0).getTime();
-                  const existingTime = existing ? new Date(existing.last_message_time || existing.updated_at || existing.created_at || 0).getTime() : 0;
-                  
-                  if (!existing || roomTime > existingTime) {
-                    roomsByCharacter.set(charId, room);
-                  }
-                });
-
-                const chatItems = Array.from(roomsByCharacter.values()).map((room) => {
+                /**
+                 * ✅ 히스토리는 "캐릭터 단위"가 아니라 "채팅방(룸) 단위"로 보여야 한다.
+                 *
+                 * 요구사항:
+                 * - 같은 캐릭터와 밥 대화/술 대화처럼 '새로대화'로 생성된 방이 여러 개면
+                 *   히스토리/최근대화/대화내역에서 모두 병존해야 한다.
+                 *
+                 * 기존 문제:
+                 * - 캐릭터별로 최신 룸 1개로 dedupe 하면서, 새로대화 룸이 사라져 보였다.
+                 */
+                const chatItems = (chatRooms || [])
+                  .filter((room) => Boolean(room?.id) && Boolean(room?.character?.id))
+                  .map((room) => {
                   const meta = roomMetaById[String(room.id)] || {};
                   const isOrig = !!(room?.character?.origin_story_id);
                   const rawMode = String(meta.mode || '').toLowerCase();
-                  const mode = rawMode || (isOrig ? 'plain' : '');
-                  const suffix = mode === 'parallel' ? ' (평행세계)'
-                    : mode === 'canon' ? ' (원작대로)'
-                    : '';
+                  // ✅ 서비스 정책: 원작챗은 plain 모드만 사용한다.
+                  // - 과거/레거시로 meta.mode가 canon/parallel로 남아있어도, UI에는 노출되지 않게 plain으로 정규화한다.
+                  const mode = (rawMode === 'canon' || rawMode === 'parallel')
+                    ? 'plain'
+                    : (rawMode || (isOrig ? 'plain' : ''));
+                  const suffix = '';
+                  // ✅ 비공개 캐릭터 접근 차단(요구사항)
+                  // - 히스토리에 남아있더라도, 크리에이터가 비공개로 바꾸면 클릭 진입을 막고 토스트만 보여준다.
+                  let blocked = false;
+                  try {
+                    const isPublic = (room?.character?.is_public !== false);
+                    const creatorId = String(room?.character?.creator_id || '').trim();
+                    const isAdmin = !!user?.is_admin;
+                    const isCreator = !!creatorId && String(user?.id || '') === creatorId;
+                    blocked = (!isPublic && !isAdmin && !isCreator);
+                  } catch (_) {
+                    blocked = false;
+                  }
                   return ({
                     kind: 'chat',
                     id: room.id,
@@ -403,6 +414,7 @@ const Sidebar = () => {
                       return `/ws/chat/${room.character?.id}?${usp.toString()}`;
                     })(),
                     is_origchat: isOrig,
+                    blocked,
                   });
                 });
                 const storyItems = (recentStories || []).map((s) => ({
@@ -423,9 +435,19 @@ const Sidebar = () => {
                   <NavLink
                     key={`${item.kind}-${item.id}`}
                     to={item.href}
+                    onClick={(e) => {
+                      try {
+                        if (item.kind === 'chat' && item.blocked) {
+                          e.preventDefault();
+                          window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', message: '크리에이터가 비공개한 캐릭터입니다.' } }));
+                        }
+                      } catch (_) {}
+                    }}
                     className={({ isActive }) =>
                       `flex items-center px-4 py-2 text-sm transition-colors rounded-lg ${
-                        isActive ? 'bg-purple-600 text-white' : 'text-gray-300 hover:bg-gray-700 hover:text-white'
+                        (item.kind === 'chat' && item.blocked)
+                          ? 'text-gray-500 cursor-not-allowed opacity-60'
+                          : (isActive ? 'bg-purple-600 text-white' : 'text-gray-300 hover:bg-gray-700 hover:text-white')
                       }`
                     }
                   >
