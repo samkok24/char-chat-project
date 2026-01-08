@@ -115,10 +115,31 @@ async def _enrich_character_fields(
         prompt = (
             "당신은 스토리에서 특정 등장인물의 캐릭터 시트를 작성하는 전문가입니다.\n"
             "아래 작품 발췌(다수 회차를 연결한 텍스트)에서 인물의 말투/성격/세계관 맥락을 추론해 필드를 채우세요.\n"
+            "목표: '이 캐릭터는 이런 사람'이 1문장만 봐도 느껴지도록, 말투/캐릭터성을 뾰족하게 만드세요.\n"
+            "⚠️ 매우 중요(혼동 방지):\n"
+            "- 대상 캐릭터가 직접 겪은 사건/개인사/가족사만 대상의 '배경 스토리'로 작성하세요.\n"
+            "- 다른 인물(주인공 포함)의 개인사/가족사를 대상 캐릭터의 1인칭 개인사로 섞지 마세요.\n"
+            "- 불확실하면 추측하지 말고 비워두거나 '불명'으로 처리하세요(허위 설정 금지).\n"
+            "- 가능하면(근거가 있을 때만) 대상 캐릭터의 '주인공/중심 인물과의 관계'를 background_story에 자연스럽게 반영하세요.\n"
             "JSON만 출력하세요. 스키마는 다음과 같습니다.\n"
             "{\"personality\": string, \"speech_style\": string, \"greeting\": string, \"world_setting\": string, \"background_story\": string}\n"
-            "제약:\n- 모든 텍스트는 한국어로 작성\n- greeting은 1~2문장, 말투 반영\n- background_story는 스포일러/향후 전개 금지, 현 시점 특징 요약\n- 허위 설정 금지, 텍스트에 근거\n"
+            "제약:\n"
+            "- 모든 텍스트는 한국어로 작성\n"
+            "- 허위 설정 금지, 반드시 텍스트에 근거\n"
+            "- 모르면 추측 금지(불명/빈값 허용)\n"
+            "- greeting은 1~2문장, 말투 강제 반영(무난한 인사말 금지)\n"
+            "- background_story는 스포일러/향후 전개 금지, 현 시점 특징 요약\n"
+            "\n"
+            "[필드 작성 가이드]\n"
+            "- personality: 3~6개 핵심 성격/가치관/금기/감정 트리거를 '짧은 문장'으로. (예: \"원칙을 우선한다\", \"거짓말에 민감\"…)\n"
+            "- speech_style: 실제 대사에 바로 적용 가능한 규칙으로 구체화.\n"
+            "  * 존댓말/반말, 종결어미(예: ~다/~해/~요), 호칭 습관, 문장 길이, 속도감, 자주 쓰는 단어/감탄사 3개 이상\n"
+            "  * 말버릇/금지어(절대 안 쓰는 표현) 1~2개\n"
+            "  * \"예시 대사\" 2~3줄(이 캐릭터만의 결이 드러나게)\n"
+            "- greeting: 방금 만난 사용자에게 하는 첫마디. 캐릭터 성격+말투가 드러나고, 질문 1개 포함(대화 유도)\n"
+            "\n"
             f"대상 캐릭터명: {character.name}\n"
+            f"대상 캐릭터 요약(추출): {(getattr(character, 'description', None) or '').strip()}\n"
             "[작품 발췌]\n"
             f"{combined_context[:12000]}"
         )
@@ -1058,10 +1079,25 @@ def extract_character_context_from_combined(
     return result
 
 
-async def extract_characters_from_story(db: AsyncSession, story_id, max_chapters: int | None = None) -> int:
-    """LLM을 사용하여 스토리에서 주요 등장인물 3~5명을 추출해 영속화한다.
+async def extract_characters_from_story(
+    db: AsyncSession,
+    story_id,
+    max_chapters: int | None = None,
+    job_service=None,
+    job_id: str | None = None,
+) -> int:
+    """
+    LLM을 사용하여 스토리에서 주요 등장인물 3~5명을 추출해 영속화한다.
     - max_chapters가 None이면 모든 회차를 대상으로 한다.
-    반환값: 생성된 캐릭터 수(0이면 실패/없음)
+
+    진행률/취소(비동기 Job 연동):
+    - job_service/job_id가 주어지면, 윈도우 단위(total_windows/processed_windows) 진행률을 Job 상태에 기록한다.
+    - cancelled 플래그가 감지되면 즉시 -1을 반환한다.
+      (호출자는 이 신호를 받으면 cleanup 후 'cancelled'로 종료해야 잔여물이 남지 않는다.)
+
+    반환값:
+    - 생성된 캐릭터 수(0이면 실패/없음)
+    - -1이면 취소됨(cancelled)
     """
     # 이미 존재하면 스킵
     existing = await db.execute(select(StoryExtractedCharacter.id).where(StoryExtractedCharacter.story_id == story_id).limit(1))
@@ -1083,6 +1119,18 @@ async def extract_characters_from_story(db: AsyncSession, story_id, max_chapters
     windows = _chunk_windows_from_chapters(chapters, max_chars=6000)
     if not windows:
         return 0
+
+    # ✅ 진행률 초기화(윈도우 기준)
+    total_windows = len(windows)
+    processed_windows = 0
+    if job_service and job_id:
+        try:
+            await job_service.update_job(job_id, {
+                "total_windows": int(total_windows or 0),
+                "processed_windows": 0,
+            })
+        except Exception:
+            pass
 
     from app.services.ai_service import get_ai_chat_response
     import json
@@ -1107,13 +1155,21 @@ async def extract_characters_from_story(db: AsyncSession, story_id, max_chapters
         "【출력 형식】\n"
         "- JSON만 출력: {\"characters\": [{\"name\": string, \"description\": string, \"importance\": \"주인공\"|\"핵심조연\", \"aliases\": [string]}]}\n"
         "- name: 작중에서 가장 자주 사용되는 고유 이름 (본명 우선)\n"
-        "- description: 80자 이내, 작품 맥락(역할/관계/직업/능력/갈등 축)을 구체적으로.\n"
+        "- description: 80자 이내, 작품 맥락(역할/관계/직업/능력/갈등 축) + 말투/태도 키워드 1~2개(예: 반말/존댓말, 냉소/능글/다정, 딱딱/구어체)를 포함.\n"
         "- importance: 반드시 \"주인공\" 또는 \"핵심조연\"만 사용.\n"
         "- aliases: 해당 인물의 다른 호칭/별명 목록 (없으면 빈 배열)"
     )
     agg: Dict[str, Dict[str, Any]] = {}
     order_counter = 0
     for win in windows:
+        # ✅ 취소 체크(윈도우 처리 중)
+        if job_service and job_id:
+            try:
+                st = await job_service.get_job(job_id)
+                if st and st.get("cancelled"):
+                    return -1
+            except Exception:
+                pass
         try:
             raw = await get_ai_chat_response(
                 character_prompt=director_prompt,
@@ -1124,6 +1180,16 @@ async def extract_characters_from_story(db: AsyncSession, story_id, max_chapters
                 response_length_pref="short",
             )
         except Exception:
+            # 진행률은 전진시킨다(실패 윈도우도 처리된 것으로 간주)
+            processed_windows += 1
+            if job_service and job_id:
+                try:
+                    await job_service.update_job(job_id, {
+                        "total_windows": int(total_windows or 0),
+                        "processed_windows": int(processed_windows or 0),
+                    })
+                except Exception:
+                    pass
             continue
         text = (raw or "").strip()
         start = text.find('{')
@@ -1135,6 +1201,15 @@ async def extract_characters_from_story(db: AsyncSession, story_id, max_chapters
             except Exception:
                 data = None
         if not data or not isinstance(data.get('characters'), list):
+            processed_windows += 1
+            if job_service and job_id:
+                try:
+                    await job_service.update_job(job_id, {
+                        "total_windows": int(total_windows or 0),
+                        "processed_windows": int(processed_windows or 0),
+                    })
+                except Exception:
+                    pass
             continue
         for ch in data['characters'][:5]:
             try:
@@ -1181,6 +1256,17 @@ async def extract_characters_from_story(db: AsyncSession, story_id, max_chapters
                     agg[key]["aliases"] = agg[key].get("aliases", set()) | set(aliases)
             except Exception:
                 continue
+
+        # ✅ 진행률 업데이트(윈도우 1개 처리 완료)
+        processed_windows += 1
+        if job_service and job_id:
+            try:
+                await job_service.update_job(job_id, {
+                    "total_windows": int(total_windows or 0),
+                    "processed_windows": int(processed_windows or 0),
+                })
+            except Exception:
+                pass
 
     # ---- 별칭 기반 중복 캐릭터 병합 ----
     def _norm_name_for_cmp(name: str) -> str:
@@ -1348,6 +1434,15 @@ async def extract_characters_from_story(db: AsyncSession, story_id, max_chapters
     top = [it for it in top if not is_generic(it['name'])]
     if not top:
         return 0
+
+    # ✅ 취소 체크(영속화 직전)
+    if job_service and job_id:
+        try:
+            st = await job_service.get_job(job_id)
+            if st and st.get("cancelled"):
+                return -1
+        except Exception:
+            pass
     # 스토리 소유자 ID로 캐릭터 소유자 설정
     srow = await db.execute(select(Story.creator_id).where(Story.id == story_id))
     s_creator = (srow.first() or [None])[0]
@@ -1361,6 +1456,18 @@ async def extract_characters_from_story(db: AsyncSession, story_id, max_chapters
     created_count = 0
     for idx, it in enumerate(top):
         try:
+            # ✅ 취소 체크(캐릭터 생성 루프)
+            if job_service and job_id:
+                try:
+                    st = await job_service.get_job(job_id)
+                    if st and st.get("cancelled"):
+                        try:
+                            await db.rollback()
+                        except Exception:
+                            pass
+                        return -1
+                except Exception:
+                    pass
             # 캐릭터 엔티티 생성(원작 연동 타입)
             ch = Character(
                 creator_id=owner_id,
@@ -1376,11 +1483,39 @@ async def extract_characters_from_story(db: AsyncSession, story_id, max_chapters
             )
             db.add(ch)
             await db.flush()
+
+            # ✅ 기본 대표 이미지(배포 안정)
+            #
+            # 의도/동작:
+            # - 원작챗 추출 캐릭터는 자동 생성이라 대표 이미지가 비어 있으면 UI에서 이니셜 원형으로만 보인다.
+            # - 운영에서 "깨지지 않는" URL을 쓰기 위해, 이미지 모달 업로드(`/media/upload`)로 생성된 URL을
+            #   환경변수 `ORIGCHAT_DEFAULT_AVATAR_URL`로 주입하면 여기서 자동으로 avatar_url을 채운다.
+            # - 값이 비어있거나 이미 avatar_url이 있으면 건드리지 않는다(방어적).
+            try:
+                default_avatar = (settings.ORIGCHAT_DEFAULT_AVATAR_URL or "").strip()
+                if default_avatar and not (getattr(ch, "avatar_url", "") or "").strip():
+                    ch.avatar_url = default_avatar
+            except Exception:
+                pass
+
             # LLM 보강은 베스트-에포트
             try:
                 await _enrich_character_fields(db, ch, combined)
             except Exception:
                 pass
+
+            # ✅ 취소 체크(commit 직전)
+            if job_service and job_id:
+                try:
+                    st = await job_service.get_job(job_id)
+                    if st and st.get("cancelled"):
+                        try:
+                            await db.rollback()
+                        except Exception:
+                            pass
+                        return -1
+                except Exception:
+                    pass
             rec = StoryExtractedCharacter(
                 story_id=story_id,
                 name=it['name'],

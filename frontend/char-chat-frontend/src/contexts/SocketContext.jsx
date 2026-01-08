@@ -30,11 +30,49 @@ export const SocketProvider = ({ children }) => {
   const [socketError, setSocketError] = useState('');
   const { user, isAuthenticated } = useAuth();
   const currentRoomRef = useRef(null);
+  /**
+   * ✅ 표시 대상(의도한) 룸 ID ref — 방 전환 레이스 방지
+   *
+   * 문제(재현: 두 브라우저/탭에서 같은 캐릭터로 A룸↔B룸을 빠르게 왕복):
+   * - 소켓은 `new_message/message_history`를 roomId 기반으로 이벤트로 보내지만,
+   *   클라이언트가 roomId를 확인하지 않고 `messages`에 append/overwrite 하면
+   *   A룸 메시지가 B룸 화면에 섞여 보일 수 있다(신뢰도/데모 치명).
+   *
+   * 해결(최소 수정/롤백 용이):
+   * - joinRoom/getMessageHistory/sendMessage 호출 "순간"에 이 ref를 갱신한다(= 사용자가 보고자 하는 룸).
+   * - 소켓 수신 이벤트에서 roomId가 이 ref와 다르면 UI 상태(messages)를 건드리지 않는다.
+   *
+   * 방어:
+   * - 이벤트 payload에 roomId가 없으면(레거시/예외) 기존 동작을 유지한다(필터 통과).
+   */
+  const desiredRoomIdRef = useRef(null);
   const userRef = useRef(user);
   const historyTimeoutRef = useRef(null);
 
   useEffect(() => { currentRoomRef.current = currentRoom; }, [currentRoom]);
   useEffect(() => { userRef.current = user; }, [user]);
+
+  const setDesiredRoomId = useCallback((roomId) => {
+    try {
+      const rid = String(roomId || '').trim();
+      if (!rid) return;
+      desiredRoomIdRef.current = rid;
+    } catch (_) {}
+  }, []);
+
+  const isDesiredRoom = useCallback((roomId) => {
+    try {
+      const rid = String(roomId || '').trim();
+      const wanted = String(desiredRoomIdRef.current || currentRoomRef.current?.id || '').trim();
+      // 필터 기준이 없으면 통과(초기/레거시)
+      if (!wanted) return true;
+      // 이벤트에 roomId가 없으면 기존 동작 유지(통과)
+      if (!rid) return true;
+      return rid === wanted;
+    } catch (_) {
+      return true;
+    }
+  }, []);
 
   /**
    * ✅ 히스토리 로딩 타임아웃 관리
@@ -100,6 +138,8 @@ export const SocketProvider = ({ children }) => {
           const room = currentRoomRef.current;
           if (room && room.id) {
             try {
+              // ✅ 표시 대상 룸을 먼저 지정(레이스 방지)
+              setDesiredRoomId(room.id);
               setHasMoreMessages(true);
               setCurrentPage(1);
               setHistoryLoading(true);
@@ -154,11 +194,22 @@ export const SocketProvider = ({ children }) => {
         // 채팅 이벤트 리스너
         newSocket.on('room_joined', (data) => {
           console.log('채팅방 입장:', data);
+          // ✅ 방어: 이전 join 응답이 늦게 도착해도 현재 표시 룸이 아니면 무시
+          try {
+            const rid = String(data?.roomId || data?.room?.id || '').trim();
+            if (!isDesiredRoom(rid)) return;
+            if (rid) setDesiredRoomId(rid);
+          } catch (_) {}
           setCurrentRoom(data.room);
         });
 
         newSocket.on('room_left', (data) => {
           console.log('채팅방 나감:', data);
+          // ✅ 방어: 이전 leave 응답이 늦게 도착해도 현재 표시 룸이 아니면 무시
+          try {
+            const rid = String(data?.roomId || '').trim();
+            if (!isDesiredRoom(rid)) return;
+          } catch (_) {}
           setCurrentRoom(null);
           // 소켓 재연결 중에도 UI가 공백이 되지 않도록 즉시 비우지 않음
           setHasMoreMessages(true); // 상태 초기화
@@ -168,11 +219,21 @@ export const SocketProvider = ({ children }) => {
         newSocket.on('new_message', (message) => {
           console.log('새 메시지:', message);
           if (isSkipDirective(message)) return; // 스킵 지시문은 화면에 표시하지 않음
+          // ✅ 방어: 현재 표시 룸이 아니면 메시지를 UI에 섞지 않는다.
+          try {
+            const rid = String(message?.roomId || message?.room_id || message?.chat_room_id || '').trim();
+            if (!isDesiredRoom(rid)) return;
+          } catch (_) {}
           setMessages(prev => [...prev, message]);
         });
 
         newSocket.on('message_history', (data) => {
           console.log('메시지 기록:', data);
+          // ✅ 방어: 방 전환 중 이전 방의 히스토리가 도착해도 덮어쓰지 않는다.
+          try {
+            const rid = String(data?.roomId || '').trim();
+            if (!isDesiredRoom(rid)) return;
+          } catch (_) {}
           const filtered = Array.isArray(data.messages) ? data.messages.filter(m => !isSkipDirective(m)) : [];
           if (data.page === 1) {
             setMessages(filtered);
@@ -186,6 +247,8 @@ export const SocketProvider = ({ children }) => {
         });
 
         newSocket.on('user_typing_start', (data) => {
+          // ✅ 방어: 다른 방의 타이핑 표시가 섞이지 않게 한다.
+          try { if (!isDesiredRoom(String(data?.roomId || '').trim())) return; } catch (_) {}
           setTypingUsers(prev => {
             if (!prev.find(u => u.userId === data.userId)) {
               return [...prev, data];
@@ -195,21 +258,26 @@ export const SocketProvider = ({ children }) => {
         });
 
         newSocket.on('user_typing_stop', (data) => {
+          try { if (!isDesiredRoom(String(data?.roomId || '').trim())) return; } catch (_) {}
           setTypingUsers(prev => prev.filter(u => u.userId !== data.userId));
         });
 
         newSocket.on('ai_typing_start', (data) => {
           console.log('AI 타이핑 시작:', data);
+          try { if (!isDesiredRoom(String(data?.roomId || '').trim())) return; } catch (_) {}
           setAiTyping(true);
         });
 
         newSocket.on('ai_typing_stop', (data) => {
           console.log('AI 타이핑 종료:', data);
+          try { if (!isDesiredRoom(String(data?.roomId || '').trim())) return; } catch (_) {}
           setAiTyping(false);
         });
 
         // AI 메시지 스트리밍 처리
         newSocket.on('ai_message_chunk', (data) => {
+          // ✅ 방어: 스트리밍 청크도 다른 방에 섞이지 않게 한다.
+          try { if (!isDesiredRoom(String(data?.roomId || '').trim())) return; } catch (_) {}
           setMessages(prev => {
             const existingMessageIndex = prev.findIndex(m => m.id === data.id);
             if (existingMessageIndex !== -1) {
@@ -238,6 +306,11 @@ export const SocketProvider = ({ children }) => {
         });
 
         newSocket.on('ai_message_end', (data) => {
+          try {
+            const rid = String(data?.roomId || '').trim();
+            // roomId가 없다면(레거시) 메시지 id 기반 업데이트는 충돌 가능성이 낮으므로 통과
+            if (rid && !isDesiredRoom(rid)) return;
+          } catch (_) {}
           setMessages(prev => prev.map(m => 
             m.id === data.id 
               ? { ...m, content: data.content, isStreaming: false, meta: data.meta || m.meta }
@@ -274,6 +347,7 @@ export const SocketProvider = ({ children }) => {
           setConnected(false);
           setCurrentRoom(null);
           setMessages([]);
+          try { desiredRoomIdRef.current = null; } catch (_) {}
         };
 
         window.addEventListener('auth:tokenRefreshed', handleTokenRefreshed);
@@ -304,6 +378,8 @@ export const SocketProvider = ({ children }) => {
   // 채팅방 입장
   const joinRoom = useCallback((roomId) => {
     if (socket && connected) {
+      // ✅ 방 전환 레이스 방지: "내가 지금 보려는 룸"을 먼저 지정
+      setDesiredRoomId(roomId);
       setSocketError('');
       // 기존 메시지를 즉시 비우지 않고 히스토리만 새로 요청
       setHasMoreMessages(true);
@@ -312,7 +388,7 @@ export const SocketProvider = ({ children }) => {
       socket.emit('join_room', { roomId });
       armHistoryTimeout('채팅방 입장이 지연되고 있습니다. 잠시 후 다시 시도해주세요.');
     }
-  }, [socket, connected]);
+  }, [socket, connected, setDesiredRoomId, armHistoryTimeout]);
 
   // 채팅방 나가기
   const leaveRoom = useCallback((roomId) => {
@@ -328,6 +404,8 @@ export const SocketProvider = ({ children }) => {
         reject(new Error('not_connected'));
         return;
       }
+      // ✅ 방어: 전송 대상 룸을 표시 룸으로 지정(빠른 전환 중 수신 섞임 방지)
+      setDesiredRoomId(roomId);
     const needsJoin = !currentRoom || currentRoom?.id !== roomId;
       const payload = { roomId, content, messageType };
       // 설정 패치가 있으면 함께 전송 (백엔드 지원 시)
@@ -408,12 +486,14 @@ export const SocketProvider = ({ children }) => {
   // 메시지 기록 요청
   const getMessageHistory = useCallback((roomId, page = 1, limit = 50) => {
     if (socket && connected && !historyLoading) {
+      // ✅ 방어: 히스토리 요청 시점에 표시 룸을 지정(레이스 방지)
+      setDesiredRoomId(roomId);
       setSocketError('');
       setHistoryLoading(true);
       socket.emit('get_message_history', { roomId, page, limit });
       armHistoryTimeout('메시지 기록을 불러오지 못했습니다. 잠시 후 다시 시도해주세요.');
     }
-  }, [socket, connected, historyLoading]);
+  }, [socket, connected, historyLoading, setDesiredRoomId, armHistoryTimeout]);
 
   const value = {
     socket,

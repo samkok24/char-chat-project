@@ -37,21 +37,31 @@ const buttonVariants = cva(
   }
 )
 
-function Button({
+/**
+ * Button
+ *
+ * 의도/동작:
+ * - Radix(tooltip/dropdown/popover 등)의 Trigger가 `asChild`로 이 컴포넌트를 감쌀 때,
+ *   내부에서 ref(Anchor)를 반드시 필요로 한다.
+ * - forwardRef가 없으면 PopperAnchor가 앵커를 잡지 못해 렌더링 루프/크래시가 날 수 있다.
+ */
+const Button = React.forwardRef(({
   className,
   variant,
   size,
   asChild = false,
   ...props
-}) {
+}, ref) => {
   const Comp = asChild ? Slot : "button"
 
   return (
     <Comp
+      ref={ref}
       data-slot="button"
       className={cn(buttonVariants({ variant, size, className }))}
       {...props} />
   );
-}
+});
+Button.displayName = "Button";
 
 export { Button, buttonVariants }

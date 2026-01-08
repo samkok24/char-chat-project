@@ -5,7 +5,7 @@
 import logging
 from sqlalchemy import select, update, delete, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, and_, or_, func, Integer
+from sqlalchemy import select, update, and_, or_, func, Integer, exists
 from typing import Optional, Union, Dict, List
 import uuid
 from sqlalchemy import func
@@ -357,62 +357,77 @@ async def admin_list_users(
         raise
 
 
-async def get_recent_characters_for_user(db: AsyncSession, user_id: uuid.UUID, limit: int = 10, skip: int = 0) -> list[Character]:
+async def get_recent_characters_for_user(db: AsyncSession, user_id: uuid.UUID, limit: int = 10, skip: int = 0):
     """
-    사용자가 최근에 대화한 캐릭터 목록을 반환합니다.
-    creator 정보를 함께 로드하고, last_message_snippet을 포함합니다.
+    사용자가 최근에 대화한 캐릭터 목록(=채팅방 단위)을 반환합니다.
+
+    ✅ 중요한 구현 포인트(덮어쓰기 버그 방지):
+    - SQLAlchemy는 동일 PK(캐릭터)를 하나의 ORM 인스턴스로 재사용(identity map)합니다.
+    - 따라서 Character 객체에 chat_room_id 같은 "임시 속성"을 주입하면,
+      동일 캐릭터의 여러 채팅방 카드가 마지막 값으로 덮어써져 프론트에서 '방이 덮어씌워지는' 문제가 발생합니다.
+    - 이를 방지하기 위해 이 함수는 Character 객체를 변형하지 않고,
+      (Character, chat_room_id, last_chat_time, last_message_snippet, origin_story_title) 튜플 리스트를 반환합니다.
     """
     if limit > 50:  # 최대 limit 제한으로 보안 강화
         limit = 50
     
-    # Subquery: last message timestamp per chat room (PostgreSQL-compatible)
-    # Include a sample of content via aggregate MIN over filtered rows to satisfy GROUP BY
-    last_message_subquery = (
-        select(
-            ChatMessage.chat_room_id,
-            func.max(ChatMessage.created_at).label('last_chat_time'),
-            func.min(func.substring(ChatMessage.content, 1, 100)).label('last_message_snippet')
-        )
-        .group_by(ChatMessage.chat_room_id)
-        .subquery()
+    # ✅ last_chat_time / last_message_snippet 계산(치명 UX 방지)
+    #
+    # 문제:
+    # - 과거 구현에서 "GROUP BY + MIN(substring)"으로 snippet을 뽑으면,
+    #   최신 메시지가 아니라 인사말/과거 문장이 랜덤하게(혹은 사전순) 잡혀 UI가 혼란스러워진다.
+    #
+    # 해결:
+    # - 룸 단위 상관 서브쿼리로 "가장 최근 메시지"를 직접 가져온다(DB/환경에 덜 민감).
+    last_chat_time_sq = (
+        select(func.max(ChatMessage.created_at))
+        .where(ChatMessage.chat_room_id == ChatRoom.id)
+        .correlate(ChatRoom)
+        .scalar_subquery()
+    ).label("last_chat_time")
+    last_message_content_sq = (
+        select(ChatMessage.content)
+        .where(ChatMessage.chat_room_id == ChatRoom.id)
+        .order_by(ChatMessage.created_at.desc())
+        .limit(1)
+        .correlate(ChatRoom)
+        .scalar_subquery()
     )
-    
+    last_message_snippet_sq = func.substr(last_message_content_sq, 1, 100).label("last_message_snippet")
+
+    # ✅ 원작챗 유령 방(인사말만 있고 유저 메시지 0개) 숨김
+    # - new=1 중복 호출/이탈 등으로 생성될 수 있는데, 유저 입장에선 "왜 방이 1개 더 생김?"으로 보인다.
+    has_user_message = exists(
+        select(1).where(
+            ChatMessage.chat_room_id == ChatRoom.id,
+            ChatMessage.sender_type == "user",
+        )
+    )
 
     result = await db.execute(
         select(
             Character,
             ChatRoom.id.label('chat_room_id'),
-            last_message_subquery.c.last_chat_time,
-            last_message_subquery.c.last_message_snippet,
+            last_chat_time_sq,
+            last_message_snippet_sq,
             Story.title.label('origin_story_title')
         )
         .join(ChatRoom, Character.id == ChatRoom.character_id)
-        .outerjoin(last_message_subquery, ChatRoom.id == last_message_subquery.c.chat_room_id)
         .outerjoin(Story, Character.origin_story_id == Story.id)
         .where(ChatRoom.user_id == user_id)
+        # origchat(스토리 연결)인 경우, 유저 메시지가 0개면 리스트에서 제외
+        .where(or_(Character.origin_story_id.is_(None), has_user_message))
         .options(selectinload(Character.creator))
         .order_by(
-            last_message_subquery.c.last_chat_time.desc().nullslast(),
+            last_chat_time_sq.desc().nullslast(),
             ChatRoom.updated_at.desc()
         )
         .limit(limit)
         .offset(skip)
     )
     rows = result.all()
-    characters = []
-    for char, chat_room_id, last_chat_time, last_message_snippet, origin_story_title in rows:
-        # 연관된 정보를 Character 모델 객체의 임시 속성으로 추가
-        char.chat_room_id = chat_room_id
-        char.last_chat_time = last_chat_time
-        char.last_message_snippet = last_message_snippet
-        # 원작 웹소설 제목 보강(있을 때)
-        try:
-            if getattr(char, 'origin_story_id', None) and origin_story_title:
-                char.origin_story_title = origin_story_title
-        except Exception:
-            pass
-        characters.append(char)
-    return characters    
+    # rows: List[Tuple[Character, chat_room_id, last_chat_time, last_message_snippet, origin_story_title]]
+    return rows
     # 동일 캐릭터가 여러 방으로 중복될 수 있으므로 character_id 기준 dedupe (가장 최신만 유지)
     # seen = set()
     # deduped: list[Character] = []

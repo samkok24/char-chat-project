@@ -2128,7 +2128,7 @@ const CreateCharacterPage = () => {
           onCheckedChange={(checked) => updateFormData('affinity_system', 'has_affinity_system', checked)}
         />
         <Label htmlFor="has_affinity_system" className="text-lg font-semibold">
-          캐릭터에 호감도 시스템을 설정할게요 (선택)
+          캐릭터에 호감도 시스템을 설정할게요 (Beta)
         </Label>
         <Badge variant="secondary">Beta</Badge>
       </div>

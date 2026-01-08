@@ -3,10 +3,21 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.jsx'
 import { Toaster } from './components/ui/sonner'
+import { TooltipProvider } from './components/ui/tooltip'
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
-    <App />
+    {/*
+      ✅ Radix Tooltip 전역 Provider
+
+      의도/동작:
+      - Tooltip 컴포넌트는 Provider 컨텍스트가 필요하다.
+      - 채팅 페이지 등에서 Tooltip을 광범위하게 사용하므로, 앱 루트에서 1회만 감싸 SSOT로 유지한다.
+      - delayDuration=0으로 즉시 노출(기존 UX 유지)
+    */}
+    <TooltipProvider delayDuration={0}>
+      <App />
+    </TooltipProvider>
     <Toaster richColors position="top-center" />
   </StrictMode>,
 )

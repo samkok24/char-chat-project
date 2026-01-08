@@ -65,6 +65,14 @@ class Settings(BaseSettings):
     
     JOB_EXPIRATION_SECONDS: int = 3600 # 1 hour
 
+    # ✅ 원작챗(추출 캐릭터) 기본 대표 이미지 URL
+    #
+    # 의도/동작:
+    # - 원작챗 추출 캐릭터 생성 시 `avatar_url`이 비어 있으면, 이 URL을 기본값으로 채운다.
+    # - 배포에서 안 깨지는 경로를 쓰기 위해, "이미지 모달" 업로드(`/media/upload`)로 생성된 URL을 그대로 넣는 것을 권장한다.
+    #   (스토리지/R2/정적서빙 설정에 맞춰 저장되므로 운영환경에서 가장 안전함)
+    ORIGCHAT_DEFAULT_AVATAR_URL: str | None = None
+
     class Config:
         env_file = ".env"
         env_file_encoding = 'utf-8'

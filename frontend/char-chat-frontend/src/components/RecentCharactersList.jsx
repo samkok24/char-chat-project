@@ -21,9 +21,11 @@ import {
   AlertDialogTrigger,
 } from './ui/alert-dialog';
 import { RecentChatCard, RecentChatCardSkeleton } from './RecentChatCard';
+import { useAuth } from '../contexts/AuthContext';
 
 export const RecentCharactersList = ({ limit = 4 }) => {
   const navigate = useNavigate();
+  const { user } = useAuth();
 
   const { data: characters = [], isLoading: loading, isError, refetch } = useQuery({
     queryKey: ['recent-characters', limit],
@@ -63,6 +65,21 @@ export const RecentCharactersList = ({ limit = 4 }) => {
      */
     const cid = String(character?.id || '').trim();
     if (!cid) return;
+
+    // ✅ 비공개 캐릭터 접근 차단(요구사항)
+    // - 최근대화에 남아있더라도, 크리에이터가 비공개로 바꾸면 접근을 막아야 한다.
+    try {
+      const isPublic = (character?.is_public !== false);
+      const creatorId = String(character?.creator_id || '').trim();
+      const isAdmin = !!user?.is_admin;
+      const isCreator = !!creatorId && String(user?.id || '') === creatorId;
+      if (!isPublic && !isAdmin && !isCreator) {
+        try {
+          window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', message: '크리에이터가 비공개한 캐릭터입니다.' } }));
+        } catch (_) {}
+        return;
+      }
+    } catch (_) {}
     const roomId = String(character?.chat_room_id || '').trim();
     const storyId = String(character?.origin_story_id || '').trim();
     const isOrig = !!storyId || !!(character?.is_origchat || character?.source === 'origchat');
