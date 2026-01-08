@@ -5,7 +5,7 @@
 import logging
 from sqlalchemy import select, update, delete, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, and_, or_, func, Integer
+from sqlalchemy import select, update, and_, or_, func, Integer, exists
 from typing import Optional, Union, Dict, List
 import uuid
 from sqlalchemy import func
@@ -359,47 +359,67 @@ async def admin_list_users(
 
 async def get_recent_characters_for_user(db: AsyncSession, user_id: uuid.UUID, limit: int = 10, skip: int = 0):
     """
-    사용자가 최근에 대화한 '채팅방(룸)' 목록을 반환합니다.
+    사용자가 최근에 대화한 캐릭터 목록(=채팅방 단위)을 반환합니다.
 
-    ⚠️ 중요(버그 방지):
-    - 동일 캐릭터와의 채팅방이 여러 개 존재할 수 있다(새로대화/기존대화 병존 요구사항).
-    - ORM Character 객체를 row마다 재사용(Identity Map)하면,
-      chat_room_id/last_chat_time 같은 "룸 단위 메타"가 마지막 값으로 덮여써져
-      프론트에서 '두 방이 같은 방처럼 보이거나' 목록이 꼬일 수 있다.
-    - 그래서 여기서는 Character 객체에 임시 속성을 주입하지 않고,
-      (Character, chat_room_id, last_chat_time, last_message_snippet, origin_story_title) 튜플 목록을 그대로 반환한다.
+    ✅ 덮어쓰기/오표시 버그 방지:
+    - 동일 캐릭터(id)는 여러 채팅방(chat_room_id)을 가질 수 있습니다(새로대화/기존대화 병존).
+    - SQLAlchemy identity map으로 Character ORM 인스턴스가 재사용되므로,
+      Character 객체에 chat_room_id 같은 "룸 단위 메타"를 주입하면 마지막 값으로 덮어써질 수 있습니다.
+    - 그래서 Character 객체를 변형하지 않고,
+      (Character, chat_room_id, last_chat_time, last_message_snippet, origin_story_title) 튜플 리스트로 반환합니다.
     """
     if limit > 50:  # 최대 limit 제한으로 보안 강화
         limit = 50
     
-    # Subquery: last message timestamp per chat room (PostgreSQL-compatible)
-    # Include a sample of content via aggregate MIN over filtered rows to satisfy GROUP BY
-    last_message_subquery = (
-        select(
-            ChatMessage.chat_room_id,
-            func.max(ChatMessage.created_at).label('last_chat_time'),
-            func.min(func.substring(ChatMessage.content, 1, 100)).label('last_message_snippet')
-        )
-        .group_by(ChatMessage.chat_room_id)
-        .subquery()
+    # ✅ last_chat_time / last_message_snippet 계산(치명 UX 방지)
+    #
+    # 문제:
+    # - 과거 구현에서 "GROUP BY + MIN(substring)"으로 snippet을 뽑으면,
+    #   최신 메시지가 아니라 인사말/과거 문장이 랜덤하게(혹은 사전순) 잡혀 UI가 혼란스러워진다.
+    #
+    # 해결:
+    # - 룸 단위 상관 서브쿼리로 "가장 최근 메시지"를 직접 가져온다(DB/환경에 덜 민감).
+    last_chat_time_sq = (
+        select(func.max(ChatMessage.created_at))
+        .where(ChatMessage.chat_room_id == ChatRoom.id)
+        .correlate(ChatRoom)
+        .scalar_subquery()
+    ).label("last_chat_time")
+    last_message_content_sq = (
+        select(ChatMessage.content)
+        .where(ChatMessage.chat_room_id == ChatRoom.id)
+        .order_by(ChatMessage.created_at.desc())
+        .limit(1)
+        .correlate(ChatRoom)
+        .scalar_subquery()
     )
-    
+    last_message_snippet_sq = func.substr(last_message_content_sq, 1, 100).label("last_message_snippet")
+
+    # ✅ 원작챗 유령 방(인사말만 있고 유저 메시지 0개) 숨김
+    # - new=1 중복 호출/이탈 등으로 생성될 수 있는데, 유저 입장에선 "왜 방이 1개 더 생김?"으로 보인다.
+    has_user_message = exists(
+        select(1).where(
+            ChatMessage.chat_room_id == ChatRoom.id,
+            ChatMessage.sender_type == "user",
+        )
+    )
 
     result = await db.execute(
         select(
             Character,
             ChatRoom.id.label('chat_room_id'),
-            last_message_subquery.c.last_chat_time,
-            last_message_subquery.c.last_message_snippet,
+            last_chat_time_sq,
+            last_message_snippet_sq,
             Story.title.label('origin_story_title')
         )
         .join(ChatRoom, Character.id == ChatRoom.character_id)
-        .outerjoin(last_message_subquery, ChatRoom.id == last_message_subquery.c.chat_room_id)
         .outerjoin(Story, Character.origin_story_id == Story.id)
         .where(ChatRoom.user_id == user_id)
+        # origchat(스토리 연결)인 경우, 유저 메시지가 0개면 리스트에서 제외
+        .where(or_(Character.origin_story_id.is_(None), has_user_message))
         .options(selectinload(Character.creator))
         .order_by(
-            last_message_subquery.c.last_chat_time.desc().nullslast(),
+            last_chat_time_sq.desc().nullslast(),
             ChatRoom.updated_at.desc()
         )
         .limit(limit)

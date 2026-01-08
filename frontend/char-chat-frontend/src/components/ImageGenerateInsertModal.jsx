@@ -617,7 +617,14 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
   return (
     <>
     <Dialog open={open} onOpenChange={(v)=>{ if(!v) handleDismiss(); }}>
-      <DialogContent className="bg-gray-900 text-white border border-gray-800 max-w-4xl flex flex-col max-h-[85vh] overflow-hidden" aria-describedby="img-gen-insert-desc">
+      {/* ✅ 모바일 최적화(컴포넌트 누락 방지)
+          - 문제: 모바일에서 상단 폼이 커지면(flex-shrink-0) max-h 안에서 갤러리/하단바가 0px로 눌려 보이지 않을 수 있다.
+          - 해결: 모바일은 DialogContent 자체를 스크롤 컨테이너로 만들고, 갤러리는 자연 높이로 렌더링한다.
+            데스크탑은 기존대로 "갤러리 영역만 스크롤"을 유지한다. */}
+      <DialogContent
+        className="bg-gray-900 text-white border border-gray-800 max-w-4xl flex flex-col max-h-[92svh] md:max-h-[85vh] overflow-y-auto md:overflow-hidden"
+        aria-describedby="img-gen-insert-desc"
+      >
         <button
           type="button"
           onClick={handleDismiss}
@@ -744,8 +751,10 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
           </div>
         </div>
 
-        {/* 단일 갤러리 영역 (스크롤 가능) */}
-        <div className="flex-grow overflow-y-auto p-4 space-y-4 custom-scrollbar">
+        {/* 단일 갤러리 영역
+            - 모바일: 전체 모달이 스크롤(갤러리는 자연 높이)
+            - 데스크탑: 갤러리만 스크롤 */}
+        <div className="p-4 space-y-4 custom-scrollbar md:flex-grow md:overflow-y-auto">
           <div className="flex items-center justify-between mb-2">
             <h3 className="text-sm font-medium text-gray-200">갤러리</h3>
             <div className="text-xs text-gray-400">
@@ -823,7 +832,7 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
         {/* 로딩 오버레이 제거: 취소 버튼 접근 가능 유지 */}
 
         {/* 하단 확인 바 (좌측 업로드 추가) */}
-        <div className="flex-shrink-0 flex flex-col sm:flex-row sm:items-center justify-between gap-2 p-4 bg-gray-800 border-t border-gray-700">
+        <div className="flex-shrink-0 flex flex-col sm:flex-row sm:items-center justify-between gap-2 p-4 bg-gray-800 border-t border-gray-700 sticky bottom-0 md:static z-10">
           <div className="flex items-center gap-2 w-full sm:w-auto">
             <input ref={inputRef} type="file" accept="image/*" multiple className="hidden" onChange={onFiles} />
             <Button onClick={onPick} disabled={busy} className="w-full sm:w-auto bg-white text-black hover:bg-gray-100">업로드</Button>

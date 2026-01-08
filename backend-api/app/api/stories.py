@@ -1343,6 +1343,150 @@ async def get_story_like_status(
 #                 DELETE /stories/{story_id}/extracted-characters
 # ──────────────────────────────────────────────────────────────────────────────
 
+async def _cleanup_origchat_entities_for_story(db: AsyncSession, story_id: uuid.UUID) -> dict:
+    """
+    스토리와 연관된 모든 원작챗 엔티티(등장인물 그리드 + 파생 캐릭터 + 채팅방/메시지 등)를 정리한다.
+
+    의도/동작:
+    - "전체삭제", "추출 재생성", "중지(취소)" 시 잔여물이 남지 않도록 완전 정리한다.
+    - StoryExtractedCharacter만 지우면, 파생 Character가 남아 홈/탐색 원작챗 격자에 계속 노출될 수 있다.
+      또한 Character를 직접 DELETE하면 FK 때문에 실패할 수 있으므로, 참조 테이블을 먼저 삭제한다.
+
+    방어적:
+    - 여러 번 호출되어도 안전(idempotent)하도록 설계한다.
+    - Redis 캐시 삭제는 best-effort로 수행한다(실패해도 DB 정리는 우선).
+    """
+    summary = {
+        "extracted_rows": 0,
+        "characters": 0,
+        "chat_rooms": 0,
+        "chat_messages": 0,
+        "chat_message_edits": 0,
+        "character_settings": 0,
+        "character_example_dialogues": 0,
+        "character_likes": 0,
+        "character_comments": 0,
+        "character_bookmarks": 0,
+        "memory_notes": 0,
+        "character_tags": 0,
+        "redis_keys": 0,
+    }
+    try:
+        # 1) 그리드 레코드 조회(파생 캐릭터 ID 확보)
+        rows = await db.execute(
+            select(StoryExtractedCharacter.id, StoryExtractedCharacter.character_id)
+            .where(StoryExtractedCharacter.story_id == story_id)
+        )
+        extracted_rows = rows.all() or []
+        character_ids = [r[1] for r in extracted_rows if r and r[1]]
+
+        # 2) 그리드 레코드 삭제
+        if extracted_rows:
+            res = await db.execute(delete(StoryExtractedCharacter).where(StoryExtractedCharacter.story_id == story_id))
+            # rowcount는 드라이버에 따라 None일 수 있음
+            summary["extracted_rows"] = int(getattr(res, "rowcount", 0) or 0) or len(extracted_rows)
+
+        # 3) 파생 캐릭터 관련 엔티티 삭제(참조 테이블 → 본체 순)
+        if character_ids:
+            from app.models.chat import ChatRoom, ChatMessage, ChatMessageEdit
+            from app.models.character import CharacterSetting, CharacterExampleDialogue
+            from app.models.like import CharacterLike
+            from app.models.comment import CharacterComment
+            from app.models.bookmark import CharacterBookmark
+            from app.models.memory_note import MemoryNote
+            from app.models.tag import CharacterTag
+
+            # 3-1) 채팅방/메시지/메시지 수정이력 삭제
+            room_rows = await db.execute(select(ChatRoom.id).where(ChatRoom.character_id.in_(character_ids)))
+            room_ids = [r[0] for r in (room_rows.all() or []) if r and r[0]]
+            if room_ids:
+                msg_rows = await db.execute(select(ChatMessage.id).where(ChatMessage.chat_room_id.in_(room_ids)))
+                msg_ids = [r[0] for r in (msg_rows.all() or []) if r and r[0]]
+                if msg_ids:
+                    res = await db.execute(delete(ChatMessageEdit).where(ChatMessageEdit.message_id.in_(msg_ids)))
+                    summary["chat_message_edits"] = int(getattr(res, "rowcount", 0) or 0)
+                res = await db.execute(delete(ChatMessage).where(ChatMessage.chat_room_id.in_(room_ids)))
+                summary["chat_messages"] = int(getattr(res, "rowcount", 0) or 0)
+                res = await db.execute(delete(ChatRoom).where(ChatRoom.id.in_(room_ids)))
+                summary["chat_rooms"] = int(getattr(res, "rowcount", 0) or 0)
+
+            # 3-2) 캐릭터 부가 테이블
+            res = await db.execute(delete(MemoryNote).where(MemoryNote.character_id.in_(character_ids)))
+            summary["memory_notes"] = int(getattr(res, "rowcount", 0) or 0)
+
+            res = await db.execute(delete(CharacterBookmark).where(CharacterBookmark.character_id.in_(character_ids)))
+            summary["character_bookmarks"] = int(getattr(res, "rowcount", 0) or 0)
+
+            res = await db.execute(delete(CharacterLike).where(CharacterLike.character_id.in_(character_ids)))
+            summary["character_likes"] = int(getattr(res, "rowcount", 0) or 0)
+
+            res = await db.execute(delete(CharacterComment).where(CharacterComment.character_id.in_(character_ids)))
+            summary["character_comments"] = int(getattr(res, "rowcount", 0) or 0)
+
+            res = await db.execute(delete(CharacterSetting).where(CharacterSetting.character_id.in_(character_ids)))
+            summary["character_settings"] = int(getattr(res, "rowcount", 0) or 0)
+
+            res = await db.execute(delete(CharacterExampleDialogue).where(CharacterExampleDialogue.character_id.in_(character_ids)))
+            summary["character_example_dialogues"] = int(getattr(res, "rowcount", 0) or 0)
+
+            res = await db.execute(delete(CharacterTag).where(CharacterTag.character_id.in_(character_ids)))
+            summary["character_tags"] = int(getattr(res, "rowcount", 0) or 0)
+
+            # 3-3) 스토리의 대표 캐릭터로 연결된 경우가 있으면 끊는다(희귀 케이스 방어)
+            try:
+                from sqlalchemy import update as _update
+                await db.execute(_update(Story).where(Story.character_id.in_(character_ids)).values(character_id=None))
+            except Exception:
+                pass
+
+            # 3-4) 파생 Character 삭제(원작 연결(origin_story_id)로 한정)
+            res = await db.execute(
+                delete(Character).where(Character.id.in_(character_ids), Character.origin_story_id == story_id)
+            )
+            summary["characters"] = int(getattr(res, "rowcount", 0) or 0)
+
+        # 4) 스토리 플래그 초기화
+        try:
+            from sqlalchemy import update as _update
+            await db.execute(_update(Story).where(Story.id == story_id).values(is_origchat=False))
+        except Exception:
+            pass
+
+        await db.commit()
+
+        # 5) Redis 캐시 정리(best-effort)
+        try:
+            # 진행 상태 키
+            try:
+                await redis_client.delete(f"extract:status:{story_id}")
+                summary["redis_keys"] += 1
+            except Exception:
+                pass
+            # 스토리 텍스트 캐시(추출 컨텍스트)
+            try:
+                await redis_client.delete(f"story:combined:{story_id}")
+                summary["redis_keys"] += 1
+            except Exception:
+                pass
+            # 캐릭터 상세 캐시(있다면)
+            for cid in character_ids:
+                try:
+                    await redis_client.delete(f"character:{cid}")
+                    summary["redis_keys"] += 1
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        return summary
+    except Exception as e:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+        # 에러를 삼키지 않는다(상위에서 토스트/응답 처리)
+        raise e
+
 @router.get("/{story_id}/extracted-characters")
 async def get_extracted_characters_endpoint(
     story_id: uuid.UUID,
@@ -1484,7 +1628,7 @@ async def get_extracted_characters_endpoint(
             "avatar_url": avatar,
             "character_id": str(rec.character_id) if getattr(rec, "character_id", None) else None,
             "order_index": rec.order_index,
-            # ✅ 등장인물 카드에서 공개/비공개 아이콘을 표시하기 위한 필드
+            # ✅ 등장인물 카드 공개/비공개 표시용
             "is_public": bool(is_public),
         }
 
@@ -1521,7 +1665,7 @@ async def rebuild_extracted_characters_endpoint(
 
     # ✅ 잔여물 없는 "완전 초기화" 후 추출(요구사항)
     # - StoryExtractedCharacter만 지우면, 파생 Character가 남아 홈/탐색에 계속 노출될 수 있다.
-    # - 따라서 파생 캐릭터/채팅방까지 함께 정리한다.
+    # - 따라서 파생 캐릭터/채팅방/메시지까지 함께 정리한다.
     await _cleanup_origchat_entities_for_story(db, story_id)
 
     # LLM 기반 추출 시도 → 실패 시 간이 보장 로직
@@ -1566,11 +1710,8 @@ async def delete_extracted_characters_endpoint(
     if story.creator_id != current_user.id:
         raise HTTPException(status_code=403, detail="삭제 권한이 없습니다")
     # ✅ 잔여물 없는 "전체삭제"(요구사항)
-    # - StoryExtractedCharacter만 지우면 파생 Character가 남아 홈/탐색에 계속 보일 수 있다.
-    # - 따라서 파생 캐릭터/채팅방까지 함께 정리한다.
     summary = await _cleanup_origchat_entities_for_story(db, story_id)
-    deleted = summary.get("deleted_extracted_rows")
-    return {"deleted": deleted if isinstance(deleted, int) else True, "summary": summary}
+    return {"deleted": True, "summary": summary}
 
 
 @router.post("/{story_id}/extracted-characters/{extracted_id}/rebuild")
@@ -1678,24 +1819,29 @@ async def rebuild_extracted_characters_async_endpoint(
 
     job_id = str(uuid.uuid4())
 
+    # ✅ 레이스 방지: 프론트는 job_id를 받은 즉시 /jobs/{id}를 폴링한다.
+    # job 생성이 백그라운드 task 안에만 있으면 아주 짧은 타이밍에 404가 나서
+    # 프론트가 job_id를 지워버리고(추적 실패) UI가 꼬일 수 있다.
+    await job_service.create_job(job_id, {
+        "kind": "extract_characters",
+        "story_id": str(story_id),
+        "status": "queued",
+        "stage": "starting",
+        "created": 0,
+        "error_message": None,
+        "cancelled": False,
+        # 진행률(윈도우 기준): extract_characters_from_story에서 업데이트
+        "total_windows": 0,
+        "processed_windows": 0,
+    })
+
     async def run_job():
-        # ✅ 백그라운드 작업은 request-scope DB 세션을 쓰면 안된다(요청 종료 시 세션 close).
-        # - 별도 세션을 열어 추출/삭제를 수행한다.
+        # ✅ request-scope DB 세션은 백그라운드에서 쓰면 위험(요청 종료 시 close).
+        # 별도 세션을 열어 cleanup/추출을 수행한다.
         from app.core.database import AsyncSessionLocal
         async with AsyncSessionLocal() as _db:
             try:
-                # 초기 상태 기록
-                await job_service.create_job(job_id, {
-                    "kind": "extract_characters",
-                    "story_id": str(story_id),
-                    "status": "queued",
-                    "stage": "starting",
-                    "created": 0,
-                    "error_message": None,
-                    "cancelled": False,
-                })
-
-                # ✅ 취소 선반영(버튼 눌렀다가 바로 중지한 케이스)
+                # ✅ 취소 선반영(버튼 눌렀다가 바로 중지)
                 state0 = await job_service.get_job(job_id)
                 if state0 and state0.get("cancelled"):
                     await job_service.update_job(job_id, {"status": "cancelled", "stage": "cancelled"})
@@ -1706,27 +1852,27 @@ async def rebuild_extracted_characters_async_endpoint(
                     return
 
                 await job_service.update_job(job_id, {"status": "running", "stage": "clearing"})
-                # UI(상세페이지)에서 "추출중" 상태를 안정적으로 보여주기 위해 Redis 상태도 길게 유지한다.
-                try:
-                    await redis_client.setex(f"extract:status:{story_id}", 1800, "in_progress")
-                except Exception:
-                    pass
 
-                # ✅ 잔여물 없는 초기화(StoryExtractedCharacter + 파생 Character/채팅방까지)
+                # ✅ 잔여물 없는 완전 초기화(그리드 + 파생 Character/채팅방/Redis 상태 등)
                 try:
                     await _cleanup_origchat_entities_for_story(_db, story_id)
                 except Exception:
-                    # cleanup 내부에서 commit/rollback을 처리하지만, 혹시 모를 세션 상태를 방어
                     try:
                         await _db.rollback()
                     except Exception:
                         pass
 
-                # 취소 확인
+                # UI 즉시 반영: Redis 상태를 in_progress로 설정(충분히 길게 유지)
+                # - cleanup 함수에서 extract:status 키를 삭제할 수 있으므로, cleanup 이후에 세팅한다.
+                try:
+                    await redis_client.setex(f"extract:status:{story_id}", 1800, "in_progress")
+                except Exception:
+                    pass
+
+                # 취소 확인(초기화 중 눌렀을 수도 있음)
                 state = await job_service.get_job(job_id)
                 if state and state.get("cancelled"):
                     await job_service.update_job(job_id, {"status": "cancelled", "stage": "cancelled"})
-                    # 취소 시 잔여물 방지(재확인용 1회 더 정리)
                     try:
                         await _cleanup_origchat_entities_for_story(_db, story_id)
                     except Exception:
@@ -1739,7 +1885,7 @@ async def rebuild_extracted_characters_async_endpoint(
 
                 await job_service.update_job(job_id, {"stage": "extracting"})
 
-                # 추출 실행
+                # 추출 실행(+진행률/취소 체크는 extract_characters_from_story에서 처리)
                 created = 0
                 try:
                     created = await extract_characters_from_story(
@@ -1757,15 +1903,15 @@ async def rebuild_extracted_characters_async_endpoint(
                         except Exception:
                             pass
                         return
-                    # ✅ 생성 결과가 0이면 성공이 아니라 실패로 처리한다.
+
+                    # ✅ created=0이면 '완료'가 아니라 실패
                     # - 크레딧 부족/키 오류 등으로 LLM 호출이 실패하면 created=0이 될 수 있는데,
                     #   이 상태에서 done으로 처리하면 프론트가 "완료" 토스트를 띄워 UX가 망가진다.
                     if not created:
                         raise RuntimeError("등장인물 추출 결과가 없습니다. (API 키/크레딧을 확인해주세요)")
                 except Exception as e:
-                    # 실패 시 에러 상태 기록
-                    await job_service.update_job(job_id, {"status": "error", "error_message": f"{str(e)}"})
-                    # 실패 시에도 부분 생성 잔여물 정리(방어)
+                    await job_service.update_job(job_id, {"status": "error", "error_message": str(e)})
+                    # 실패 시 잔여물 정리(방어)
                     try:
                         await _cleanup_origchat_entities_for_story(_db, story_id)
                     except Exception:
@@ -1818,7 +1964,6 @@ async def cancel_extracted_characters_job(
 
     요구사항:
     - "중지"를 누르면 즉시 취소되고 잔여물이 남지 않아야 한다.
-
     구현:
     - JobService에 cancelled 플래그를 즉시 기록한다.
     - Job 메타에서 story_id를 얻어, Redis 상태(extract:status)를 'cancelled'로 즉시 갱신한다.
@@ -1829,6 +1974,7 @@ async def cancel_extracted_characters_job(
     if not state:
         raise HTTPException(status_code=404, detail="Job not found")
 
+    # story_id 추출(가능한 경우)
     story_id_raw = state.get("story_id")
     sid: Optional[uuid.UUID] = None
     try:
@@ -1866,6 +2012,13 @@ async def cancel_extracted_characters_job(
             summary = await _cleanup_origchat_entities_for_story(db, sid)
         except Exception:
             summary = None
+
+    # cleanup 과정에서 extract:status 키가 삭제될 수 있으므로, UI 반영을 위해 한 번 더 세팅(방어)
+    if sid:
+        try:
+            await redis_client.setex(f"extract:status:{sid}", 60, "cancelled")
+        except Exception:
+            pass
 
     return {"message": "cancelled", "summary": summary}
 

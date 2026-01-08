@@ -2,13 +2,21 @@ import * as React from "react"
 
 import { cn } from "@/lib/utils"
 
-function Input({
+/**
+ * Input
+ *
+ * 의도/동작:
+ * - Radix(asChild) / 포커스 제어 / 외부에서 DOM 접근(ref)이 필요한 경우가 많아 forwardRef로 제공한다.
+ * - ref가 막히면 Popper(tooltip/popover) 앵커/트리거가 불안정해져 업데이트 루프가 날 수 있다.
+ */
+const Input = React.forwardRef(({
   className,
   type,
   ...props
-}) {
+}, ref) => {
   return (
     <input
+      ref={ref}
       type={type}
       data-slot="input"
       className={cn(
@@ -22,6 +30,7 @@ function Input({
       )}
       {...props} />
   );
-}
+});
+Input.displayName = "Input";
 
 export { Input }

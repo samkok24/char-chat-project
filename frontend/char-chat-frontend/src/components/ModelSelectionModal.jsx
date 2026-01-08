@@ -45,7 +45,8 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
   // P0: 전역 UI 설정(로컬 저장)
   const [uiFontSize, setUiFontSize] = useState('base'); // sm|base|lg|xl
   const [uiLetterSpacing, setUiLetterSpacing] = useState('normal'); // tighter|tight|normal|wide|wider
-  const [uiOverlay, setUiOverlay] = useState(60); // 0~100
+  // ✅ 기본값은 0(오버레이 없음): 대표 이미지가 과도하게 어두워지는 문제 방지
+  const [uiOverlay, setUiOverlay] = useState(0); // 0~100
   const [uiFontFamily, setUiFontFamily] = useState('sans'); // sans|serif
   const [uiColors, setUiColors] = useState({
     charSpeech: '#ffffff',
@@ -372,7 +373,17 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
       } else if (activeTab === 'settings') {
         // 추가 설정 탭: 답변 길이 + 전역 UI 설정 로컬 저장
         await usersAPI.updateModelSettings(selectedModel, selectedSubModel, responseLength);
-        const ui = { fontSize: uiFontSize, letterSpacing: uiLetterSpacing, overlay: uiOverlay, fontFamily: uiFontFamily, colors: uiColors, theme: uiTheme, typingSpeed };
+        // ✅ 저장 스키마 버전(마이그레이션/호환)
+        const overlayClipped = (() => {
+          try {
+            const v = Number(uiOverlay);
+            const clipped = Number.isFinite(v) ? Math.max(0, Math.min(100, Math.round(v))) : 0;
+            return clipped;
+          } catch (_) {
+            return 0;
+          }
+        })();
+        const ui = { schema_version: 2, fontSize: uiFontSize, letterSpacing: uiLetterSpacing, overlay: overlayClipped, fontFamily: uiFontFamily, colors: uiColors, theme: uiTheme, typingSpeed };
         localStorage.setItem('cc:ui:v1', JSON.stringify(ui));
         window.dispatchEvent(new CustomEvent('ui:settingsChanged', { detail: ui }));
       }

@@ -391,6 +391,8 @@ const StoryDetailPage = () => {
   })();
   const isOwner = user && story?.creator_id === user.id;
   const isAdmin = user && !!user?.is_admin;
+  // ✅ 관리 가능 여부: 작성자 또는 관리자
+  const canManageExtracted = !!(user && (story?.creator_id === user.id || user?.is_admin));
   // 이어보기 진행 상황 (스토리 기준 localStorage 키 사용)
   const progressChapterNo = getReadingProgress(storyId);
   const [sortDesc, setSortDesc] = useState(false);
@@ -418,8 +420,21 @@ const StoryDetailPage = () => {
   const extractJobStorageKey = useMemo(() => `cc:extractJob:${storyId || 'none'}`, [storyId]);
   const extractErrorStorageKey = useMemo(() => `cc:extractError:${storyId || 'none'}`, [storyId]);
   const fetchExtracted = async () => {
+    /**
+     * ✅ 추출 캐릭터 목록 로드
+     *
+     * 의도/동작:
+     * - 추출 Job이 돌고 있을 때도 그리드는 "반짝반짝(스켈레톤 ↔ 진행률)"하지 않게 유지한다.
+     * - 즉, Job 활성 상태에서는 `charactersLoading`으로 스켈레톤을 띄우지 않고,
+     *   기존 그리드를 유지한 채 데이터만 갱신한다(UX 안정성).
+     *
+     * 반환:
+     * - 로드된 캐릭터 수(토스트 메시지에 사용 가능). 호출부에서 무시해도 안전.
+     */
     try {
-      setCharactersLoading(true);
+      const stLower = String(extractJobInfo?.status || '').trim().toLowerCase();
+      const jobActiveNow = !!extractJobId && !['done', 'error', 'cancelled'].includes(stLower);
+      if (!jobActiveNow) setCharactersLoading(true);
       const r = await storiesAPI.getExtractedCharacters(storyId);
       const items = Array.isArray(r.data?.items) ? r.data.items : [];
       const status = r.data?.extraction_status || null;
@@ -432,8 +447,9 @@ const StoryDetailPage = () => {
         try { localStorage.removeItem(extractErrorStorageKey); } catch (_) {}
       }
       
-      // 진행 중이고 아이템이 없으면 3초 후 재시도
-      if (status === 'in_progress' && items.length === 0) {
+      // ✅ 레거시/동기 추출(in_progress)에서만 가벼운 재시도.
+      // - 비동기 Job 기반 추출 중에는 Job 폴링이 SSOT이며, 여기서 재시도하면 스켈레톤 깜빡임만 유발할 수 있다.
+      if (status === 'in_progress' && items.length === 0 && !extractJobId) {
         try {
           if (extractedPollTimerRef.current) clearTimeout(extractedPollTimerRef.current);
         } catch (_) {}
@@ -441,11 +457,19 @@ const StoryDetailPage = () => {
           fetchExtracted();
         }, 3000);
       }
+      return items.length;
     } catch (_) {
       setExtractedItems([]);
       setExtractionStatus(null);
+      return 0;
     } finally {
-      setCharactersLoading(false);
+      try {
+        const stLower = String(extractJobInfo?.status || '').trim().toLowerCase();
+        const jobActiveNow = !!extractJobId && !['done', 'error', 'cancelled'].includes(stLower);
+        if (!jobActiveNow) setCharactersLoading(false);
+      } catch (_) {
+        setCharactersLoading(false);
+      }
     }
   };
   // 재생성 중 백엔드 처리 지연을 대비한 폴링
@@ -464,6 +488,39 @@ const StoryDetailPage = () => {
     }
     return false;
   };
+
+  // ✅ 공통: 추출 Job 정리(로컬 상태 + localStorage)
+  const clearExtractJob = () => {
+    try { setExtractJobId(null); } catch (_) {}
+    try { setExtractJobInfo(null); } catch (_) {}
+    try { localStorage.removeItem(extractJobStorageKey); } catch (_) {}
+  };
+
+  const extractStatusLower = String(extractJobInfo?.status || '').trim().toLowerCase();
+  const isExtractJobActive = !!extractJobId && !['done', 'error', 'cancelled'].includes(extractStatusLower);
+  const processedWindows = Number(extractJobInfo?.processed_windows || 0);
+  const totalWindows = Number(extractJobInfo?.total_windows || 0);
+  const progressPct = (totalWindows > 0)
+    ? Math.min(100, Math.max(0, Math.round((processedWindows / totalWindows) * 100)))
+    : 0;
+  // ✅ 25/25 이후에도 실제로는 "정리/저장" 단계가 남아 있을 수 있어 UX 혼동 방지용 표기
+  const extractStage = String(extractJobInfo?.stage || '').trim();
+  const isExtractFinalizing = Boolean(isExtractJobActive && totalWindows > 0 && processedWindows >= totalWindows);
+
+  // ✅ 새로고침/재방문 시 진행 중 job 추적(배포 안정성)
+  useEffect(() => {
+    if (!storyId) return;
+    if (extractJobId) return;
+    try {
+      const saved = localStorage.getItem(extractJobStorageKey);
+      if (saved) {
+        setExtractJobId(String(saved));
+        // UI가 즉시 "추출중" 상태를 인지하도록 힌트
+        try { setExtractionStatus('in_progress'); } catch (_) {}
+      }
+    } catch (_) {}
+  }, [storyId, extractJobId, extractJobStorageKey]);
+
   useEffect(() => {
     fetchExtracted();
   }, [storyId]);
@@ -475,15 +532,6 @@ const StoryDetailPage = () => {
       extractedPollTimerRef.current = null;
     };
   }, []);
-  // ✅ 새로고침/탭 이동 후에도 "중지"가 가능하도록 jobId를 로컬에 보관(베스트 에포트)
-  useEffect(() => {
-    if (!storyId) return;
-    if (extractJobId) return;
-    try {
-      const saved = localStorage.getItem(extractJobStorageKey);
-      if (saved) setExtractJobId(saved);
-    } catch (_) {}
-  }, [storyId, extractJobId, extractJobStorageKey]);
   useEffect(() => {
     if (!storyId) return;
     const cur = String(extractionError || '').trim();
@@ -1021,7 +1069,7 @@ const StoryDetailPage = () => {
                   episodesSorted.length === 0 ? (
                     <div className="flex items-center justify-between bg-gray-800/40 border border-gray-700 rounded-md p-3">
                       <span className="text-sm text-gray-400">회차 등록을 먼저 해주세요.</span>
-                      {isOwner && (
+                      {canManageExtracted && (
                         <Button variant="outline" className="h-8 px-3 bg-white text-black border-gray-300 hover:bg-gray-100" onClick={() => setChapterModalOpen(true)}>회차등록</Button>
                       )}
                     </div>
@@ -1033,13 +1081,11 @@ const StoryDetailPage = () => {
                           {String(extractionError || '').trim() || 'AI가 등장인물을 인식하지 못했습니다. 회차를 더 추가하거나 재생성해주세요.'}
                         </div>
                       </div>
-                      {isOwner && (
+                      {canManageExtracted && (
                         <Button
                           variant="outline"
                           className="h-8 px-3 bg-red-600 text-white border-red-500 hover:bg-red-700"
-                          onClick={async()=>{
-                            await startExtractJob();
-                          }}
+                          onClick={() => setConfirmRebuildOpen(true)}
                         >재생성</Button>
                       )}
                     </div>
@@ -1076,28 +1122,23 @@ const StoryDetailPage = () => {
                   ) : (
                     /* 추출 전 상태 (회차는 있지만 아직 추출되지 않음) */
                     <div className="flex items-center justify-between bg-gray-800/40 border border-gray-700 rounded-md p-3">
-                      <div>
-                        <div className="text-sm text-gray-300">원작챗을 할 캐릭터가 없습니다.</div>
-                        <div className="text-xs text-gray-500 mt-1">자동 생성은 하지 않습니다. 아래 버튼을 눌러 추출을 시작해주세요.</div>
-                      </div>
-                      {isOwner && (
+                      <span className="text-sm text-gray-400">원작챗을 할 캐릭터가 추출되지 않았습니다.</span>
+                      {canManageExtracted && (
                         <Button
                           variant="outline"
                           className="h-8 px-3 bg-white text-black border-gray-300 hover:bg-gray-100"
-                          onClick={async()=>{
-                            await startExtractJob();
-                          }}
+                          onClick={() => setConfirmRebuildOpen(true)}
                         >원작챗 일괄 생성</Button>
                       )}
                     </div>
                   )
                 )}
-                {!charactersLoading && extractedItems.length > 0 && (
+                {extractedItems.length > 0 && (
                   <ExtractedCharactersGrid
                     storyId={storyId}
                     itemsOverride={extractedItems}
                     maxNo={episodesSorted.length || 1}
-                    isOwner={!!isOwner}
+                    isOwner={!!canManageExtracted}
                     onStart={(payload)=>handleStartOrigChatWithRange(payload)}
                     onCharacterClick={(characterId) => {
                       setPreselectedCharacterId(characterId);
@@ -1373,7 +1414,7 @@ const StoryDetailPage = () => {
 const ExtractedCharactersGrid = ({ storyId, itemsOverride = null, onStart, maxNo = 1, isOwner = false, onCharacterClick = null }) => {
   const [items, setItems] = useState(itemsOverride || []);
   const [busyId, setBusyId] = useState(null);
-  const [visibilityBusyId, setVisibilityBusyId] = useState(null); // character_id
+  const [busyPublicId, setBusyPublicId] = useState(null);
   const [toast, setToast] = useState({ show: false, type: 'success', message: '' });
   const [imgModalFor, setImgModalFor] = useState(null); // { entityType, entityId }
   // ✅ (방어) 기존 코드에서 setPreviewMap 참조가 있어 런타임 ReferenceError를 막기 위해 최소 상태만 둔다.
@@ -1386,6 +1427,40 @@ const ExtractedCharactersGrid = ({ storyId, itemsOverride = null, onStart, maxNo
     if (Array.isArray(itemsOverride)) setItems(itemsOverride);
   }, [itemsOverride]);
 
+  /**
+   * ✅ 공개/비공개 토글 (원작챗 파생 캐릭터)
+   *
+   * 의도/동작:
+   * - 크리에이터/관리자가 등장인물 그리드에서 개별 캐릭터의 공개 상태를 즉시 변경할 수 있어야 한다.
+   * - 성공 시 로컬 리스트를 즉시 갱신하고, 홈/탐색 등 캐릭터 목록 캐시도 무효화한다.
+   *
+   * 방어적:
+   * - 더블클릭/중복 요청 방지(busyPublicId)
+   * - 에러는 콘솔 로깅 + 토스트로 사용자에게 명확히 알림
+   */
+  const handleTogglePublic = async (e, characterId, currentIsPublic, characterName) => {
+    e.stopPropagation();
+    if (!isOwner) return;
+    const cid = String(characterId || '').trim();
+    if (!cid) return;
+    if (busyPublicId) return;
+    setBusyPublicId(cid);
+    try {
+      await charactersAPI.toggleCharacterPublic(cid);
+      setItems((prev) => (Array.isArray(prev) ? prev : []).map((it) => {
+        if (String(it?.character_id || '') !== cid) return it;
+        return { ...it, is_public: !currentIsPublic };
+      }));
+      setToast({ show: true, type: 'success', message: `${characterName || '캐릭터'}이(가) ${!currentIsPublic ? '공개' : '비공개'} 처리되었습니다.` });
+      try { queryClient.invalidateQueries({ queryKey: ['characters'] }); } catch (_) {}
+    } catch (err) {
+      console.error('공개/비공개 토글 실패', err);
+      setToast({ show: true, type: 'error', message: `${characterName || '캐릭터'} 공개 상태 변경 실패` });
+    } finally {
+      setBusyPublicId(null);
+    }
+  };
+
   return (
     <>
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
@@ -1394,80 +1469,52 @@ const ExtractedCharactersGrid = ({ storyId, itemsOverride = null, onStart, maxNo
             key={`${c.name}-${idx}`}
             className="relative bg-gray-800/40 border border-gray-700 rounded-md p-3 text-left hover:bg-gray-700/40 cursor-pointer transition-colors"
             onClick={() => {
-              // 원작챗 모달 열기 + 해당 캐릭터 선택
-              if (c.character_id && onCharacterClick) {
-                onCharacterClick(c.character_id);
+              // ✅ 비공개 캐릭터는(작성자/관리자 제외) 원작챗 모달을 띄우지 않고 안내 토스트만 노출한다.
+              // - 요구사항: 비공개 처리된 캐릭터를 클릭하면 "크리에이터가 비공개한 캐릭터입니다"를 보여주고 진입을 막는다.
+              const isPublic = (c?.is_public !== false);
+              if (!isPublic && !isOwner) {
+                setToast({ show: true, type: 'error', message: '크리에이터가 비공개한 캐릭터입니다.' });
+                return;
               }
+              // 원작챗 모달 열기 + 해당 캐릭터 선택
+              if (c.character_id && onCharacterClick) onCharacterClick(c.character_id);
             }}
           >
-            {/* ✅ 공개/비공개 상태 아이콘 (크리에이터는 클릭해서 토글 가능) */}
-            <div className="absolute top-2 left-2 z-10">
-              {(() => {
-                const cid = String(c?.character_id || '').trim();
-                const isPublic = c?.is_public !== false; // undefined는 공개로 취급
-                const busy = visibilityBusyId === cid;
-                const canToggle = isOwner && !!cid;
-                const title = canToggle
-                  ? (isPublic ? '공개(클릭하면 비공개)' : '비공개(클릭하면 공개)')
-                  : (isPublic ? '공개' : '비공개');
-                return (
-                  <button
-                    type="button"
-                    title={title}
-                    className={[
-                      'w-7 h-7 rounded text-white flex items-center justify-center',
-                      isPublic ? 'bg-green-600/80 hover:bg-green-700' : 'bg-red-600/80 hover:bg-red-700',
-                      'border border-black/20 shadow-sm transition-colors',
-                      busy ? 'opacity-60 cursor-not-allowed' : '',
-                      canToggle ? '' : 'cursor-default',
-                    ].join(' ')}
-                    onClick={async (e) => {
-                      e.stopPropagation();
-                      if (!canToggle) return;
-                      if (busy) return;
-                      try {
-                        setVisibilityBusyId(cid);
-                        const resp = await charactersAPI.toggleCharacterPublic(cid);
-                        const nextPublic = resp?.data?.is_public !== false;
-                        setItems((prev) => {
-                          try {
-                            return (Array.isArray(prev) ? prev : []).map((it) =>
-                              String(it?.character_id || '') === cid ? { ...it, is_public: nextPublic } : it
-                            );
-                          } catch (_) {
-                            return prev;
-                          }
-                        });
-                        setToast({
-                          show: true,
-                          type: 'success',
-                          message: `${c?.name || '캐릭터'} ${nextPublic ? '공개' : '비공개'}로 변경`,
-                        });
-                        // 홈/탐색 원작챗 그리드 즉시 반영
-                        try { queryClient.invalidateQueries({ queryKey: ['characters'] }); } catch (_) {}
-                      } catch (err) {
-                        console.error('공개/비공개 변경 실패', err);
-                        setToast({ show: true, type: 'error', message: '공개/비공개 변경 실패' });
-                      } finally {
-                        setVisibilityBusyId(null);
-                      }
-                    }}
-                    aria-label={title}
+            {/* ✅ 공개/비공개 토글 아이콘 */}
+            {c.character_id && (
+              (isOwner ? (
+                <button
+                  type="button"
+                  title={c.is_public === false ? '비공개 상태 (클릭하여 공개)' : '공개 상태 (클릭하여 비공개)'}
+                  className={`absolute top-2 left-2 z-10 w-7 h-7 rounded bg-black/70 text-white flex items-center justify-center transition-colors ${busyPublicId ? 'opacity-50 cursor-not-allowed' : 'hover:bg-black/90'}`}
+                  onClick={(e) => handleTogglePublic(e, c.character_id, c.is_public !== false, c.name)}
+                  disabled={!!busyPublicId}
+                >
+                  {c.is_public === false ? (
+                    // lock
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-3.5 h-3.5">
+                      <path fillRule="evenodd" d="M12 1.5a5.25 5.25 0 0 0-5.25 5.25v3a3 3 0 0 0-3 3v6.75a3 3 0 0 0 3 3h10.5a3 3 0 0 0 3-3v-6.75a3 3 0 0 0-3-3v-3c0-2.9-2.35-5.25-5.25-5.25Zm3.75 8.25v-3a3.75 3.75 0 1 0-7.5 0v3h7.5Z" clipRule="evenodd" />
+                    </svg>
+                  ) : (
+                    // unlock/sun-like icon (visibility)
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-3.5 h-3.5">
+                      <path d="M12 6a6 6 0 1 0 0 12 6 6 0 0 0 0-12ZM12 1.5a.75.75 0 0 1 .75.75V4.5a.75.75 0 0 1-1.5 0V2.25a.75.75 0 0 1 .75-.75ZM3.75 12a.75.75 0 0 0 0 1.5h2.25a.75.75 0 0 0 0-1.5H3.75ZM18 12a.75.75 0 0 0 0 1.5h2.25a.75.75 0 0 0 0-1.5H18ZM5.626 4.31a.75.75 0 1 0-1.06 1.06l1.59 1.59a.75.75 0 0 0 1.06-1.06l-1.59-1.59ZM16.784 16.468a.75.75 0 0 1 1.06 0l1.59 1.59a.75.75 0 1 1-1.06 1.06l-1.59-1.59a.75.75 0 0 1 0-1.06ZM19.434 5.37a.75.75 0 0 0-1.06-1.06l-1.59 1.59a.75.75 0 1 0 1.06 1.06l1.59-1.59ZM7.216 16.468a.75.75 0 0 0-1.06 0l-1.59 1.59a.75.75 0 1 0 1.06 1.06l1.59-1.59a.75.75 0 0 0 0-1.06ZM12 18a.75.75 0 0 0-.75.75v2.25a.75.75 0 0 0 1.5 0V18.75A.75.75 0 0 0 12 18Z" />
+                    </svg>
+                  )}
+                </button>
+              ) : (
+                c.is_public === false ? (
+                  <div
+                    title="비공개 캐릭터"
+                    className="absolute top-2 left-2 z-10 w-7 h-7 rounded bg-black/70 text-white flex items-center justify-center"
                   >
-                    {busy ? (
-                      <svg className="animate-spin w-3.5 h-3.5" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
-                      </svg>
-                    ) : isPublic ? (
-                      <Unlock className="w-3.5 h-3.5" />
-                    ) : (
-                      <Lock className="w-3.5 h-3.5" />
-                    )}
-                  </button>
-                );
-              })()}
-            </div>
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-3.5 h-3.5">
+                      <path fillRule="evenodd" d="M12 1.5a5.25 5.25 0 0 0-5.25 5.25v3a3 3 0 0 0-3 3v6.75a3 3 0 0 0 3 3h10.5a3 3 0 0 0 3-3v-6.75a3 3 0 0 0-3-3v-3c0-2.9-2.35-5.25-5.25-5.25Zm3.75 8.25v-3a3.75 3.75 0 1 0-7.5 0v3h7.5Z" clipRule="evenodd" />
+                    </svg>
+                  </div>
+                ) : null
+              ))
+            )}
             <div className="flex items-center gap-3">
               {c.avatar_url ? (
                 <img
@@ -1480,10 +1527,10 @@ const ExtractedCharactersGrid = ({ storyId, itemsOverride = null, onStart, maxNo
                     } catch (_) { return c.avatar_url; }
                   })()}
                   alt={c.name}
-                  className="w-10 h-10 rounded-full object-cover"
+                  className="w-10 h-10 rounded-full object-cover flex-shrink-0"
                 />
               ) : (
-                <div className="w-10 h-10 rounded-full bg-blue-600 text-white flex items-center justify-center text-sm font-bold">
+                <div className="w-10 h-10 rounded-full bg-blue-600 text-white flex items-center justify-center text-sm font-bold flex-shrink-0">
                   {c.initial || (c.name||'')[0] || 'C'}
                 </div>
               )}
@@ -1529,7 +1576,7 @@ const ExtractedCharactersGrid = ({ storyId, itemsOverride = null, onStart, maxNo
                 </button>
                 <button
                   type="button"
-                  title="이미지 생성/삽입"
+                  title="이미지 편집"
                   className="w-7 h-7 rounded bg-black/70 text-white hover:bg-black/90 flex items-center justify-center"
                   onClick={(e)=>{ e.stopPropagation(); if (!c.character_id) return; setImgModalFor({ entityType: 'character', entityId: c.character_id }); }}
                 >
@@ -1566,18 +1613,6 @@ const ExtractedCharactersGrid = ({ storyId, itemsOverride = null, onStart, maxNo
                     return (Array.isArray(items) ? items : []).map(it => it?.character_id === targetCharId ? { ...it, avatar_url: fu } : it);
                   } catch(_) { return items; }
                 });
-
-                // 2) 프리뷰 캐시 갱신
-                if (targetCharId) {
-                  try {
-                    const cr = await charactersAPI.getCharacter(targetCharId);
-                    const ch = cr?.data || {};
-                    const patched = fu ? { ...ch, avatar_url: fu } : ch;
-                    setPreviewMap(m => ({ ...m, [targetCharId]: patched }));
-                  } catch(_) {
-                    if (fu) setPreviewMap(m => ({ ...m, [targetCharId]: { ...(m?.[targetCharId]||{}), avatar_url: fu } }));
-                  }
-                }
               } catch(_) {}
             })();
           }

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { usersAPI, chatAPI } from '../lib/api';
 import { formatDistanceToNow } from 'date-fns';
@@ -36,7 +36,9 @@ const ChatHistoryPage = () => {
   const lastCharacterRef = useRef();
 
   // --- 핀 저장소 (로컬, 사용자별) ---
-  const pinnedKey = currentUser?.id ? `pinned_chars:${currentUser.id}` : 'pinned_chars:guest';
+  const pinnedKey = useMemo(() => (
+    currentUser?.id ? `pinned_chars:${currentUser.id}` : 'pinned_chars:guest'
+  ), [currentUser?.id]);
   const loadPinnedSet = () => {
     try {
       const arr = JSON.parse(localStorage.getItem(pinnedKey) || '[]');
@@ -89,9 +91,13 @@ const ChatHistoryPage = () => {
       setLoading(false);
       setLoadingMore(false);
     }
-  }, []);
+  }, [pinnedKey]);
 
   useEffect(() => {
+    // ✅ 계정 전환(로그아웃→다른 계정 로그인) 시에도 이전 계정 데이터가 남지 않도록
+    // 페이지/무한스크롤 상태를 초기화하고 1페이지부터 다시 로드한다.
+    try { setPage(1); } catch (_) {}
+    try { setHasMore(true); } catch (_) {}
     fetchChatHistory(1);
   }, [fetchChatHistory]);
 
@@ -155,6 +161,21 @@ const ChatHistoryPage = () => {
      */
     const cid = String(character?.id || '').trim();
     if (!cid) return;
+
+    // ✅ 비공개 캐릭터 접근 차단(요구사항)
+    // - 히스토리/대화내역/최근대화에 남아있더라도, 크리에이터가 비공개로 바꾸면 접근을 막아야 한다.
+    try {
+      const isPublic = (character?.is_public !== false);
+      const creatorId = String(character?.creator_id || '').trim();
+      const isAdmin = !!currentUser?.is_admin;
+      const isCreator = !!creatorId && String(currentUser?.id || '') === creatorId;
+      if (!isPublic && !isAdmin && !isCreator) {
+        try {
+          window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', message: '크리에이터가 비공개한 캐릭터입니다.' } }));
+        } catch (_) {}
+        return;
+      }
+    } catch (_) {}
     const roomId = String(character?.chat_room_id || '').trim();
     const storyId = String(character?.origin_story_id || '').trim();
     const isOrig = !!storyId || !!(character?.is_origchat || character?.source === 'origchat');
@@ -269,8 +290,9 @@ const ChatHistoryPage = () => {
             <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 lg:gap-6 mt-7">
               {characters.map((character, index) => (
                 <div
-                  // ✅ 같은 캐릭터라도 "새로대화"로 생성된 방은 여러 개가 병존해야 한다.
-                  // 따라서 key는 character.id가 아니라 chat_room_id(=room 단위)로 둔다.
+                  // ✅ 룸 단위로 히스토리를 보여주므로, key도 room 단위로 유니크해야 한다.
+                  // - 같은 캐릭터(id)는 여러 채팅방(chat_room_id)을 가질 수 있다.
+                  // - key가 character.id면 React가 카드 DOM/클로저를 재사용해 "술방 눌렀는데 밥방 열림" 같은 오동작이 난다.
                   key={String(character.chat_room_id || `${character.id}-${index}`)}
                   ref={index === characters.length - 1 ? lastCharacterRef : null}
                 >
