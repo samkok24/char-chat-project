@@ -96,12 +96,29 @@ async def get_daily_rankings(
                             continue
             except Exception:
                 continue
+            # ✅ 썸네일 폴백(홈/랭킹 UX):
+            # - 랭킹 응답은 기존에 avatar_url만 내려주고 있어, avatar_url이 비어있는(갤러리만 있는) 캐릭터는
+            #   프론트에서 기본이미지로 보이는 문제가 있었다.
+            # - 목록 API(`/characters/`)처럼 "avatar가 없으면 image_descriptions[0].url"을 썸네일로 사용한다.
+            thumb = getattr(c, "avatar_url", None)
+            if not thumb:
+                try:
+                    imgs = getattr(c, "image_descriptions", None) or []
+                    if isinstance(imgs, list) and len(imgs) > 0:
+                        first = imgs[0]
+                        if isinstance(first, dict):
+                            u = first.get("url")
+                            if u:
+                                thumb = u
+                except Exception:
+                    pass
             result.append({
                 "id": c.id,
                 "name": c.name,
                 "description": c.description,
                 "greeting": c.greeting,
                 "avatar_url": c.avatar_url,
+                "thumbnail_url": thumb,
                 "origin_story_id": c.origin_story_id,
                 # ✅ 원작챗 카드에서 "원작 웹소설(파란 배지)"를 보여주기 위한 표시 필드
                 "origin_story_title": getattr(getattr(c, "origin_story", None), "title", None),

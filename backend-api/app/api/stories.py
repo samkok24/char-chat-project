@@ -1620,6 +1620,16 @@ async def get_extracted_characters_endpoint(
             ver = None
 
         avatar = _with_cache_bust(avatar, ver)
+        # ✅ 배포 안정: 기본 대표 이미지 폴백
+        # - 과거에 생성된 추출 캐릭터(avatar_url 비어있음)도 운영에서 "빈 동그라미"로 보이지 않게 한다.
+        # - 환경변수(ORIGCHAT_DEFAULT_AVATAR_URL)가 비어있으면 기존 동작과 동일(아무것도 하지 않음).
+        try:
+            if not avatar:
+                default_avatar = (settings.ORIGCHAT_DEFAULT_AVATAR_URL or "").strip()
+                if default_avatar:
+                    avatar = _with_cache_bust(default_avatar, ver)
+        except Exception:
+            pass
         return {
             "id": str(rec.id),
             "name": rec.name,

@@ -1061,8 +1061,34 @@ const CreateCharacterPage = () => {
         uploadedImageUrls = uploadResponse.data;
       }
       
-      const existingImageUrls = formData.media_settings.image_descriptions.map(img => img.url);
-      const finalImageUrls = [...existingImageUrls, ...uploadedImageUrls];
+      const existingImageUrls = (formData.media_settings.image_descriptions || []).map(img => img?.url);
+      const finalImageUrlsRaw = [...existingImageUrls, ...uploadedImageUrls];
+
+      // ✅ 서버 스키마 방어: image_descriptions.url 최대 500자
+      // - 일부 환경에서 "임시 서명 URL"이 그대로 들어오면 길이가 500자를 넘을 수 있어 422가 난다.
+      // - 가능하면 쿼리스트링을 제거해 축약하고, 그래도 길면 명확히 안내한다(조용히 삼키지 않음).
+      const finalImageUrls = [];
+      const tooLong = [];
+      for (let i = 0; i < finalImageUrlsRaw.length; i += 1) {
+        const raw = String(finalImageUrlsRaw[i] || '').trim();
+        if (!raw) continue;
+        let u = raw;
+        if (u.length > 500) {
+          try { u = u.split('?')[0].split('#')[0]; } catch (_) {}
+        }
+        if (!u || u.length > 500) {
+          tooLong.push(i + 1);
+          continue;
+        }
+        finalImageUrls.push(u);
+      }
+      if (tooLong.length > 0) {
+        const msg = `이미지 URL이 너무 길어 저장할 수 없습니다. (해당 이미지: ${tooLong.slice(0, 5).join(', ')}번${tooLong.length > 5 ? ` 외 ${tooLong.length - 5}개` : ''})\n이미지를 다시 업로드/삽입해주세요.`;
+        setError(msg);
+        try { dispatchToast('error', '이미지 URL이 너무 길어 저장할 수 없습니다. 이미지를 다시 업로드/삽입해주세요.'); } catch (_) {}
+        setLoading(false);
+        return;
+      }
 
       // ✅ 저장 시점에는 토큰을 "치환"하지 않고 원문 보존(SSOT)
       // - 금지/미등록 토큰만 제거(안전)
@@ -1077,6 +1103,73 @@ const CreateCharacterPage = () => {
         ? greetingsArray.filter(g => g?.trim()).join('\n')
         : (formData.basic_info.greeting || '');
 
+      // ✅ 서버 스키마 방어: introduction_scenes는 (title/content) 필수(str)라 빈 값이면 422가 난다.
+      // - UI/요구사항 상 도입부는 "필수 입력"이 아니므로, 비어있으면 안전한 기본값으로 보정해 저장 실패를 막는다.
+      const normalizedIntroScenes = (() => {
+        try {
+          const raw = Array.isArray(formData?.basic_info?.introduction_scenes)
+            ? formData.basic_info.introduction_scenes
+            : [];
+          if (!raw.length) return [];
+
+          const nameSafe = String(formData?.basic_info?.name || '').trim() || '캐릭터';
+          const baseTitle = (idx) => `도입부 ${idx + 1}`;
+
+          const s0 = raw[0] || {};
+          const title0 = String(s0?.title || baseTitle(0)).trim() || baseTitle(0);
+          const content0Raw = String(s0?.content || '').trim();
+          const secret0Raw = String(s0?.secret || '').trim();
+          const content0 = content0Raw || `지금부터 ${nameSafe}와(과) 대화를 시작합니다.`;
+
+          const out = [{
+            title: title0,
+            content: content0,
+            ...(secret0Raw ? { secret: secret0Raw } : {}),
+          }];
+
+          for (let i = 1; i < raw.length; i += 1) {
+            const sc = raw[i] || {};
+            const title = String(sc?.title || baseTitle(i)).trim() || baseTitle(i);
+            const contentRaw = String(sc?.content || '').trim();
+            const secretRaw = String(sc?.secret || '').trim();
+            if (!contentRaw) continue; // 비어있는 도입부는 전송하지 않음(선택 입력)
+            const item = { title, content: contentRaw };
+            if (secretRaw) item.secret = secretRaw;
+            out.push(item);
+          }
+          return out;
+        } catch (_) {
+          return [];
+        }
+      })();
+
+      // ✅ 서버 스키마 방어: avatar_url / image_descriptions 내부 타입 강제 정규화
+      // - 운영/배포에서 간헐적으로 keywords/description에 비문자 타입이 섞이면 422가 날 수 있어
+      //   저장 직전에 안전하게 문자열/문자열배열로 보정한다.
+      const safeAvatarUrl = (() => {
+        try {
+          const v = formData?.media_settings?.avatar_url;
+          let s = '';
+          if (v == null) s = '';
+          else if (typeof v === 'string') s = v;
+          else s = String(v);
+          s = String(s || '').trim();
+
+          // ✅ 생성(Create) UX: 대표이미지 미지정이면 첫 번째 이미지로 자동 지정
+          // - 홈/랭킹/추천 등 일부 영역은 avatar_url 기반 렌더가 많아, 비어있으면 기본이미지로 보일 수 있다.
+          if (!isEditMode && !s) {
+            try {
+              const first = Array.isArray(finalImageUrls) ? String(finalImageUrls[0] || '').trim() : '';
+              if (first) return first;
+            } catch (_) {}
+          }
+
+          return s || undefined;
+        } catch (_) {
+          return undefined;
+        }
+      })();
+
       const characterData = {
         ...formData,
         basic_info: {
@@ -1087,9 +1180,12 @@ const CreateCharacterPage = () => {
           use_custom_description: useCustomDescription,
           greeting: greetingValue, // greetings 배열을 greeting 단일 문자열로 변환
           greetings: undefined, // 백엔드에 전송하지 않도록 제거
+          introduction_scenes: normalizedIntroScenes,
         },
         media_settings: {
           ...formData.media_settings,
+          avatar_url: safeAvatarUrl,
+          newly_added_files: undefined, // 백엔드 전송 대상 아님(File 객체/제어상태)
           // 기존 이미지의 description/keywords 유지
           image_descriptions: (() => {
             const existingMap = {};
@@ -1098,10 +1194,43 @@ const CreateCharacterPage = () => {
             });
             return finalImageUrls.map(url => {
               const existing = existingMap[url];
+              // ✅ 방어(최우선): 현재 생성(Create)에서 422가 "Input should be a valid string"으로 막히는 케이스가 있어
+              // - 생성 시에는 url만 보내고(description/keywords는 서버 default로 두어) 생성 실패를 원천 차단한다.
+              // - 수정(Edit)에서는 기존에 입력된 description/keywords를 가능한 한 유지한다(회귀 방지).
+              if (!isEditMode) {
+                void existing;
+                return { url: String(url || '').trim() };
+              }
+              const safeImgDesc = (() => {
+                try {
+                  return String(existing?.description ?? '').slice(0, 500);
+                } catch (_) {
+                  return '';
+                }
+              })();
+              const safeImgKeywords = (() => {
+                try {
+                  const raw = Array.isArray(existing?.keywords) ? existing.keywords : [];
+                  const cleaned = [];
+                  const seen = new Set();
+                  for (const kw of raw) {
+                    const s = String(kw ?? '').trim().slice(0, 50);
+                    if (!s) continue;
+                    const key = s.toLowerCase();
+                    if (seen.has(key)) continue;
+                    seen.add(key);
+                    cleaned.push(s);
+                    if (cleaned.length >= 20) break;
+                  }
+                  return cleaned;
+                } catch (_) {
+                  return [];
+                }
+              })();
               return {
-                url,
-                description: existing?.description || '',
-                keywords: existing?.keywords || []
+                url: String(url || '').trim(),
+                description: safeImgDesc,
+                keywords: safeImgKeywords,
               };
             });
           })()
@@ -1167,7 +1296,35 @@ const CreateCharacterPage = () => {
           setFieldErrors(prev => ({ ...prev, ...serverErrors }));
           const first = Object.keys(serverErrors)[0];
           if (first) scrollToField(first);
-          setError('입력값을 다시 확인해주세요.');
+          // ✅ UX: 화면 상단에도 "왜 실패했는지"를 짧게 보여준다(필드가 접혀있거나, 이미지 URL 같은 비가시 에러 대비)
+          const toLabel = (k) => {
+            try {
+              const s = String(k || '');
+              if (s === 'basic_info.name') return '캐릭터 이름';
+              if (s === 'basic_info.description') return '캐릭터 설명';
+              if (s === 'basic_info.world_setting') return '세계관 설정';
+              if (s === 'basic_info.user_display_description') return '크리에이터 코멘트';
+              if (s.startsWith('basic_info.introduction_scenes.') && s.endsWith('.content')) {
+                const m = s.match(/basic_info\.introduction_scenes\.(\d+)\.content/);
+                const n = m ? (Number(m[1]) + 1) : 1;
+                return `도입부 ${n} 내용`;
+              }
+              if (s.startsWith('media_settings.image_descriptions.') && s.endsWith('.url')) {
+                const m = s.match(/media_settings\.image_descriptions\.(\d+)\.url/);
+                const n = m ? (Number(m[1]) + 1) : 1;
+                return `이미지 ${n}`;
+              }
+              if (s.startsWith('media_settings.image_descriptions')) return '캐릭터 이미지';
+              return s;
+            } catch (_) {
+              return String(k || '');
+            }
+          };
+          const lines = Object.entries(serverErrors)
+            .slice(0, 3)
+            .map(([k, m]) => `- ${toLabel(k)}: ${String(m || '').trim()}`)
+            .filter(Boolean);
+          setError(lines.length ? `입력값을 다시 확인해주세요.\n${lines.join('\n')}` : '입력값을 다시 확인해주세요.');
           try { dispatchToast('error', '저장에 실패했습니다. 입력값을 다시 확인해주세요.'); } catch (_) {}
         } else {
           setError('입력값을 확인해주세요.');
@@ -1364,7 +1521,7 @@ const CreateCharacterPage = () => {
           <div className="flex items-center justify-between mb-3">
             <h3 className="text-lg font-semibold flex items-center text-black">
               <Image className="w-5 h-5 mr-2" />
-              캐릭터 이미지 <span className="text-red-500 ml-1">*</span>
+              캐릭터 이미지 {!isEditMode && <span className="text-red-500 ml-1">*</span>}
             </h3>
             <Button
               type="button"
@@ -1487,8 +1644,11 @@ const CreateCharacterPage = () => {
                     <Input
                       value={(img.keywords || []).join(', ')}
                       onChange={(e) => {
-                        const keywords = e.target.value
-                          .split(',')
+                        // ✅ 쉼표 인식 강화(UX):
+                        // - 일부 키보드/IME에서 ',' 대신 '，'(전각 콤마) / '、' / 줄바꿈으로 입력되는 케이스가 있어
+                        //   split(',')만 쓰면 키워드가 1개로 뭉쳐 트리거가 동작하지 않을 수 있다.
+                        const keywords = String(e.target.value || '')
+                          .split(/[,，、\n]+/g)
                           .map((k) => k.trim())
                           .filter(Boolean)
                           .slice(0, 20);
@@ -1531,7 +1691,9 @@ const CreateCharacterPage = () => {
         )}
 
         <div>
-          <Label htmlFor="name">캐릭터 이름 *</Label>
+          <Label htmlFor="name">
+            캐릭터 이름 <span className="text-red-400 ml-1">*</span>
+          </Label>
           <Input
             id="name"
             className="mt-4"
@@ -1552,13 +1714,13 @@ const CreateCharacterPage = () => {
         {!isOrigChatCharacter && (
           <div className="space-y-4">
             <div className="text-sm font-semibold text-gray-200">
-              필수 태그 <span className="text-red-400">*</span>
+              필수 태그 {!isEditMode && <span className="text-red-400">*</span>}
             </div>
             {/* 성향 */}
             <div>
               <div className="flex items-baseline justify-between">
                 <div className="text-sm font-semibold text-gray-200">
-                  남성향 / 여성향 / 전체 <span className="text-red-400">*</span>
+                  남성향 / 여성향 / 전체 {!isEditMode && <span className="text-red-400">*</span>}
                 </div>
                 <div className="text-xs text-gray-500">클릭하면 선택, 다시 클릭하면 해제</div>
               </div>
@@ -1592,7 +1754,7 @@ const CreateCharacterPage = () => {
             <div>
               <div className="flex items-baseline justify-between">
                 <div className="text-sm font-semibold text-gray-200">
-                  이미지 스타일 <span className="text-red-400">*</span>
+                  이미지 스타일 {!isEditMode && <span className="text-red-400">*</span>}
                 </div>
                 <div className="text-xs text-gray-500">레퍼런스 느낌을 선택하세요</div>
               </div>
@@ -1626,7 +1788,9 @@ const CreateCharacterPage = () => {
 
 
         <div>
-          <Label htmlFor="description">캐릭터 설명 *</Label>
+          <Label htmlFor="description">
+            캐릭터 설명 {!isEditMode && <span className="text-red-400 ml-1">*</span>}
+          </Label>
           <Textarea
             id="description"
             className="mt-4"
@@ -1634,7 +1798,7 @@ const CreateCharacterPage = () => {
             onChange={(e) => updateFormData('basic_info', 'description', e.target.value)}
             placeholder="캐릭터에 대한 설명입니다 (캐릭터 설명은 다른 사용자에게도 공개 됩니다)"
             rows={3}
-            required
+            required={!isEditMode}
             maxLength={1000}
           />
           {fieldErrors['basic_info.description'] && (
@@ -1795,7 +1959,9 @@ const CreateCharacterPage = () => {
       <div className="space-y-4">
         <h3 className="text-lg font-semibold">세계관</h3>
         <div>
-          <Label htmlFor="world_setting">세계관 설정 *</Label>
+          <Label htmlFor="world_setting">
+            세계관 설정 {!isEditMode && <span className="text-red-400 ml-1">*</span>}
+          </Label>
           <Textarea
             id="world_setting"
             className="mt-2"
@@ -1804,6 +1970,7 @@ const CreateCharacterPage = () => {
             placeholder="이야기의 배경에 대해서 설명해주세요"
             rows={4}
             maxLength={3000}
+            required={!isEditMode}
           />
           {fieldErrors['basic_info.world_setting'] && (
             <p className="text-xs text-red-500">{fieldErrors['basic_info.world_setting']}</p>
@@ -1846,7 +2013,9 @@ const CreateCharacterPage = () => {
 
         {/* ✅ 요구사항: '사용자용 설명' → '크리에이터 코멘트' (생성 Create 시 필수) */}
         <div>
-          <Label htmlFor="user_display_description">크리에이터 코멘트 *</Label>
+          <Label htmlFor="user_display_description">
+            크리에이터 코멘트 {!isEditMode && <span className="text-red-400 ml-1">*</span>}
+          </Label>
           <Textarea
             id="user_display_description"
             className="mt-2"
@@ -1855,6 +2024,7 @@ const CreateCharacterPage = () => {
             placeholder="유저에게 보여줄 크리에이터 코멘트를 작성하세요"
             rows={3}
             maxLength={2000}
+            required={!isEditMode}
           />
           {fieldErrors['basic_info.user_display_description'] && (
             <p className="text-xs text-red-500">{fieldErrors['basic_info.user_display_description']}</p>

@@ -2708,6 +2708,12 @@ return (
                   {/* 하단 페이드아웃 그라데이션 - 타원 컨테이너로 향하는 블러 효과 */}
                   <div className="absolute bottom-0 left-0 right-0 h-32 bg-gradient-to-t from-gray-900/95 via-gray-900/75 to-transparent pointer-events-none z-10" />
                   {stableMessages.map((m) => {
+                      // ✅ 요구사항: '일상/장르' 선택 후 노출되던 추천 카드(캐릭터챗/원작챗, 웹소설 작품)는 비노출
+                      // - 주의: "일상/장르 선택 버튼(dual_response)" / "이어보기" / "태그칩+바꿔보기" 플로우는 유지해야 한다.
+                      if (m?.type === 'recommendation') {
+                        const sm = String(m?.storyMode || '').trim().toLowerCase();
+                        if (sm === 'snap' || sm === 'genre') return null;
+                      }
                       const text = (m.content || '').toString();
                       const isStreaming = !!(m.streaming || m.thinking);
                       const truncated = text.length > 500 ? text.slice(0, 500) + '…' : text;

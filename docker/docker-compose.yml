@@ -72,6 +72,10 @@ services:
 
       # Optional: font override for image captions
       KOREAN_FONT_PATH: ${KOREAN_FONT_PATH:-}
+
+      # ✅ 원작챗(추출 캐릭터) 기본 대표 이미지 URL
+      # - 배포에서 static 경로가 깨지는 문제를 피하기 위해, 운영 스토리지(R2/S3 또는 업로드된 URL)를 넣어주세요.
+      ORIGCHAT_DEFAULT_AVATAR_URL: ${ORIGCHAT_DEFAULT_AVATAR_URL:-}
       
       # 환경 설정
       ENVIRONMENT: ${ENVIRONMENT:-production}

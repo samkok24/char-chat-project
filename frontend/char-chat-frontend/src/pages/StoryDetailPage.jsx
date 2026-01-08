@@ -498,6 +498,13 @@ const StoryDetailPage = () => {
 
   const extractStatusLower = String(extractJobInfo?.status || '').trim().toLowerCase();
   const isExtractJobActive = !!extractJobId && !['done', 'error', 'cancelled'].includes(extractStatusLower);
+  // ✅ UX/배포 안정:
+  // - extraction_status(Redis)는 job 시작 직후 짧은 타이밍에 아직 세팅되지 않을 수 있다.
+  // - 그 사이 fetchExtracted()가 extractionStatus를 null로 덮어쓰면, 진행 UI가 사라져 "지워진 것처럼" 보인다.
+  // - 따라서 비동기 Job이 존재하면(jobId), job 상태를 SSOT로 보고 진행 UI를 유지한다.
+  const isExtractInProgress = Boolean(
+    isExtractJobActive || String(extractionStatus || '').trim().toLowerCase() === 'in_progress'
+  );
   const processedWindows = Number(extractJobInfo?.processed_windows || 0);
   const totalWindows = Number(extractJobInfo?.total_windows || 0);
   const progressPct = (totalWindows > 0)
@@ -956,7 +963,7 @@ const StoryDetailPage = () => {
                   {isOwner && (
                     <div className="flex items-center gap-2">
                       {/* ✅ 추출 진행률/중지 버튼(요구: 전체 삭제 옆 배치) */}
-                      {(extractionStatus === 'in_progress') && (
+                      {isExtractInProgress && (
                         <div className="hidden sm:flex items-center gap-2 mr-1 text-xs text-blue-200">
                           <svg className="animate-spin h-3.5 w-3.5 text-blue-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
@@ -975,29 +982,40 @@ const StoryDetailPage = () => {
                       <Button
                         variant="destructive"
                         className="h-8 px-3"
-                        disabled={charactersLoading || extractionStatus === 'in_progress' || !!extractJobId}
+                        disabled={charactersLoading || isExtractInProgress || !!extractJobId}
                         onClick={()=> setConfirmDeleteOpen(true)}
                       >전체 삭제</Button>
                       <Button
                         variant="outline"
                         className="h-8 px-3 bg-white text-black border-gray-300 hover:bg-gray-100"
-                        disabled={charactersLoading || extractionStatus === 'in_progress' || !!extractJobId}
+                        disabled={charactersLoading || isExtractInProgress || !!extractJobId}
                         onClick={()=> setConfirmRebuildOpen(true)}
                       >원작챗 일괄 생성</Button>
                       <Button
                         variant="outline"
-                        className={`h-8 px-3 ${extractionStatus === 'in_progress' ? 'bg-red-600 text-white border-red-500 hover:bg-red-700 hover:border-red-600' : 'bg-white text-black border-gray-300 hover:bg-gray-100'}`}
-                        disabled={extractionStatus !== 'in_progress' || extractCancelling || !extractJobId}
+                        className={`h-8 px-3 ${isExtractInProgress ? 'bg-red-600 text-white border-red-500 hover:bg-red-700 hover:border-red-600' : 'bg-white text-black border-gray-300 hover:bg-gray-100'}`}
+                        disabled={!isExtractInProgress || extractCancelling || !extractJobId}
                         onClick={cancelExtractJob}
-                        title={extractionStatus !== 'in_progress' ? '추출 중일 때만 중지할 수 있습니다.' : '추출 중지'}
+                        title={!isExtractInProgress ? '추출 중일 때만 중지할 수 있습니다.' : '추출 중지'}
                       >
                         {extractCancelling ? '중지중...' : '중지'}
                       </Button>
                     </div>
                   )}
                 </div>
+
+                {/* ✅ 크리에이터 안내(크리에이터만 노출) */}
+                {isOwner && (
+                  <div className="bg-gray-800/40 border border-gray-700 rounded-md p-3">
+                    <ul className="list-disc pl-5 space-y-1 text-xs sm:text-sm text-gray-200">
+                      <li>'원작챗 일괄생성'으로 웹소설 원고 텍스트를 분석해 AI가 원작 캐릭터(원작챗)을 추출합니다.</li>
+                      <li className="text-yellow-200">원작챗은 추출완료 즉시 공개됩니다. 공개를 원하지 않으시면 비공개버튼을 바로 눌러주세요.</li>
+                      <li>회차수가 많을수록, 회차 텍스트가 많을수록 원작캐릭터 추출에 오래걸립니다. 페이지 이동을 하지마세요.</li>
+                    </ul>
+                  </div>
+                )}
                 {/* ✅ 추출 진행 중: 로딩 스켈레톤 대신 진행 카드(중지 버튼) 노출 */}
-                {extractedItems.length === 0 && extractionStatus === 'in_progress' && (
+                {extractedItems.length === 0 && isExtractInProgress && (
                   <div className="flex items-center gap-3 bg-gray-800/40 border border-gray-700 rounded-md p-3">
                     <div>
                       <div className="text-sm text-gray-300 flex items-center gap-2">
@@ -1011,9 +1029,10 @@ const StoryDetailPage = () => {
                         {(() => {
                           try {
                             const st = String(extractJobInfo?.stage || '').trim().toLowerCase();
-                            if (st === 'clearing') return '이전 데이터 정리 중...';
-                            if (st === 'extracting') return '등장인물 추출 중...';
-                            if (st === 'starting') return '작업 시작 중...';
+                            // 백엔드는 'extracting (3/10)' 같은 형태를 쓸 수 있으므로 startsWith로 방어한다.
+                            if (st.startsWith('clearing')) return '이전 데이터 정리 중...';
+                            if (st.startsWith('extracting')) return '등장인물 추출 중...';
+                            if (st.startsWith('starting')) return '작업 시작 중...';
                             return '잠시만 기다려주세요.';
                           } catch (_) {
                             return '잠시만 기다려주세요.';
@@ -1045,7 +1064,7 @@ const StoryDetailPage = () => {
                   </div>
                 )}
 
-                {charactersLoading && !(extractedItems.length === 0 && extractionStatus === 'in_progress') && (
+                {charactersLoading && !(extractedItems.length === 0 && isExtractInProgress) && (
                   <div className="space-y-3">
                     <div className="h-1.5 w-full bg-gray-700 rounded overflow-hidden">
                       <div className="h-full w-1/3 bg-blue-500/70 animate-pulse" />

@@ -4235,7 +4235,10 @@ const ChatPage = () => {
                       ? '서술/묘사로 입력하세요. 예) * 창밖에는 비가 내리고 있었다.'
                       : '대사입력 예) 반가워!')
                 }
-                className="w-full bg-transparent border-0 focus:border-0 focus:ring-0 outline-none text-sm p-0 pl-3 placeholder:text-gray-500 resize-none"
+                // ✅ iOS Safari(아이폰) 자동 확대(줌) 방지:
+                // - input/textarea font-size가 16px 미만이면 포커스 시 화면이 확대되며 하단 버튼이 잘리는 문제가 발생한다.
+                // - 모바일 입력창은 16px로 고정한다.
+                className="w-full bg-transparent border-0 focus:border-0 focus:ring-0 outline-none text-base p-0 pl-3 placeholder:text-gray-500 resize-none"
                 style={{ minHeight: 36 }}
                 rows={1}
               />
