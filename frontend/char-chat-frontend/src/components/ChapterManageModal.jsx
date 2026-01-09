@@ -8,9 +8,12 @@ import { Alert, AlertDescription } from './ui/alert';
 import { AlertCircle, Edit, Menu, Trash2, Upload, Image as ImageIcon, X } from 'lucide-react';
 import { chaptersAPI, mediaAPI } from '../lib/api';
 import StoryChapterImporterModal from './StoryChapterImporterModal';
+import BlockingLoadingOverlay from './BlockingLoadingOverlay';
 
 const ChapterManageModal = ({ open, onClose, storyId, onAfterSave }) => {
   const [loading, setLoading] = React.useState(false);
+  const [saving, setSaving] = React.useState(false);
+  const [saveProgress, setSaveProgress] = React.useState({ current: 0, total: 0 });
   const [error, setError] = React.useState('');
   const [episodes, setEpisodes] = React.useState([]); // 신규 추가분만 관리
   const [existingCount, setExistingCount] = React.useState(0);
@@ -124,11 +127,16 @@ const ChapterManageModal = ({ open, onClose, storyId, onAfterSave }) => {
   const handleSaveAll = async () => {
     const valid = (episodes || []).filter(e => (e.content || '').trim().length > 0);
     if (valid.length === 0) { setError('내용이 있는 회차가 없습니다.'); return; }
-    setLoading(true); setError('');
+    setLoading(true);
+    setSaving(true);
+    setSaveProgress({ current: 0, total: valid.length });
+    setError('');
     try {
       // 기존 마지막 번호 기준으로 번호 매김
       let no = existingCount + 1;
-      for (const ep of valid) {
+      for (let i = 0; i < valid.length; i++) {
+        const ep = valid[i];
+        try { setSaveProgress({ current: i + 1, total: valid.length }); } catch (_) {}
         const title = (ep.title || `${no}화`).trim();
         
         // 1. 회차 생성 (텍스트)
@@ -169,12 +177,21 @@ const ChapterManageModal = ({ open, onClose, storyId, onAfterSave }) => {
       onClose?.();
     } catch (e) {
       setError('회차 저장에 실패했습니다.');
-    } finally { setLoading(false); }
+    } finally {
+      setLoading(false);
+      setSaving(false);
+      setSaveProgress({ current: 0, total: 0 });
+    }
   };
 
   return (
-    <Dialog open={open} onOpenChange={(v)=> { if (!v) onClose?.(); }}>
-      <DialogContent className="sm:max-w-4xl max-h-[85vh] bg-gray-900 text-gray-100 border border-gray-700 overflow-hidden flex flex-col" aria-describedby="chapter-manage-desc">
+    <Dialog open={open} onOpenChange={(v)=> { if (!v) { if (saving) return; onClose?.(); } }}>
+      <DialogContent className="sm:max-w-4xl max-h-[85vh] bg-gray-900 text-gray-100 border border-gray-700 overflow-hidden flex flex-col relative" aria-describedby="chapter-manage-desc">
+        <BlockingLoadingOverlay
+          open={saving}
+          title="회차를 저장하고 있어요"
+          description={`AI 분석(요약/등장인물 보강) 때문에 시간이 걸릴 수 있어요.\n진행: ${saveProgress.total ? `${saveProgress.current}/${saveProgress.total}` : '0/0'}\n완료될 때까지 페이지를 이동하지 말아주세요.`}
+        />
         <DialogHeader>
           <DialogTitle className="text-white">회차 등록</DialogTitle>
         </DialogHeader>

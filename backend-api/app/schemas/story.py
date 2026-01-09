@@ -102,6 +102,8 @@ class StoryResponse(StoryBase):
     updated_at: datetime
     # 태그 슬러그 목록
     tags: list[str] = Field(default_factory=list)
+    # ✅ 작품공지(작가 공지) - 텍스트만
+    announcements: List[dict] = Field(default_factory=list)
 
 
 class StoryListItem(BaseModel):

@@ -14,6 +14,7 @@ import ImageGenerateInsertModal from '../components/ImageGenerateInsertModal';
 import StoryChapterImporterModal from '../components/StoryChapterImporterModal';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../components/ui/dialog';
 import { AlertDialog, AlertDialogAction, AlertDialogContent, AlertDialogDescription, AlertDialogHeader, AlertDialogTitle } from '../components/ui/alert-dialog';
+import BlockingLoadingOverlay from '../components/BlockingLoadingOverlay';
 
 const WorkCreatePage = () => {
   const navigate = useNavigate();
@@ -59,6 +60,7 @@ const WorkCreatePage = () => {
   const [hasUnsaved, setHasUnsaved] = useState(false);
   const [confirmLeaveOpen, setConfirmLeaveOpen] = useState(false);
   const [savedModalOpen, setSavedModalOpen] = useState(false);
+  const [chapterSaveProgress, setChapterSaveProgress] = useState({ current: 0, total: 0 });
 
   const markDirty = () => setHasUnsaved(true);
 
@@ -118,6 +120,9 @@ const WorkCreatePage = () => {
       setError('키워드 입력을 확인해주세요.');
       return;
     }
+    // ✅ 진행률(UX): 회차 저장이 오래 걸릴 수 있으므로, 총 회차 수를 미리 계산해 안내에 사용한다.
+    const filledEpisodes = (episodes || []).filter((ep) => (ep?.content || '').trim().length > 0);
+    try { setChapterSaveProgress({ current: 0, total: filledEpisodes.length }); } catch (_) {}
     setLoading(true);
     try {
       // 키워드=태그 일치. 장르를 항상 첫 태그로 포함(중복 제거)
@@ -153,13 +158,14 @@ const WorkCreatePage = () => {
               await mediaAPI.attach({ entityType: 'story', entityId: id, assetIds, asPrimary: true });
             }
           } catch (_) {}
-          const filled = (episodes || []).filter((e) => (e?.content || '').trim().length > 0);
+          const filled = filledEpisodes;
           const nowIso = new Date().toISOString();
           
           // 서버에 회차 저장 (이미지 업로드 포함)
           try {
             for (let idx = 0; idx < filled.length; idx++) {
               const e = filled[idx];
+              try { setChapterSaveProgress({ current: idx + 1, total: filled.length }); } catch (_) {}
               const no = idx + 1;
               const title = (e.title || `${no}화`).trim();
               const content = (e.content || '').trim();
@@ -216,6 +222,7 @@ const WorkCreatePage = () => {
       setError(msg);
     } finally {
       setLoading(false);
+      try { setChapterSaveProgress({ current: 0, total: 0 }); } catch (_) {}
     }
   };
 
@@ -404,6 +411,12 @@ const WorkCreatePage = () => {
 
   return (
     <div className="min-h-screen bg-gray-900 text-gray-200 p-4 sm:p-6 lg:p-8 pb-28">
+      <BlockingLoadingOverlay
+        open={loading}
+        fullScreen
+        title="작품/회차를 등록하고 있어요"
+        description={`AI 분석(요약/등장인물 보강) 때문에 시간이 걸릴 수 있어요.\n진행: ${chapterSaveProgress.total ? `${chapterSaveProgress.current}/${chapterSaveProgress.total}` : '0/0'}\n완료될 때까지 페이지를 이동하지 말아주세요.`}
+      />
       <div className="max-w-5xl mx-auto">
         <header className="mb-6 flex items-center justify-between">
           <Button variant="ghost" onClick={() => { if (hasUnsaved) setConfirmLeaveOpen(true); else navigate(-1); }}>

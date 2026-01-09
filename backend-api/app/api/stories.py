@@ -9,6 +9,7 @@ from typing import List, Optional
 import uuid
 import json
 import asyncio
+import re
 
 from app.core.database import get_db
 from app.core.security import get_current_user, get_current_user_optional
@@ -53,6 +54,89 @@ from app.models.memory_note import MemoryNote
 from app.models.character import CharacterSetting, CharacterExampleDialogue
 
 router = APIRouter()
+
+# ---- 작품공지(작가 공지) ----
+class StoryAnnouncementCreateReq(BaseModel):
+    """작품공지 생성 요청
+
+    요구사항:
+    - 텍스트만(HTML 미지원)
+    - 크리에이터만 등록/삭제/고정 가능
+    """
+    content: str = Field(..., min_length=1, max_length=5000)
+
+
+class StoryAnnouncementPinReq(BaseModel):
+    """작품공지 상단 고정(핀) 설정 요청"""
+    pinned: bool = Field(..., description="true면 상단 고정, false면 해제")
+
+
+def _sanitize_plain_text(value: str, *, max_len: int) -> str:
+    """텍스트만 허용(HTML 제거) + 길이 제한.
+
+    방어적 설계:
+    - 프론트가 잘못된 값을 보내도 서버에서 반드시 정규화한다.
+    """
+    try:
+        text = re.sub(r'<[^>]*>', '', str(value or '')).strip()
+    except Exception:
+        text = ''
+    if not text:
+        return ''
+    if max_len and len(text) > int(max_len):
+        return text[: int(max_len)]
+    return text
+
+
+def _normalize_story_announcements(raw) -> list[dict]:
+    """stories.announcements(JSON) 안전 정규화.
+
+    저장 구조:
+    - [{ id, title, content, pinned, created_at, updated_at }]
+    """
+    arr = raw if isinstance(raw, list) else []
+    cleaned: list[dict] = []
+    for it in arr:
+        if not isinstance(it, dict):
+            continue
+        try:
+            _id = str(it.get('id') or '').strip()
+            title = str(it.get('title') or '').strip()
+            content = str(it.get('content') or '').strip()
+            pinned = bool(it.get('pinned') or False)
+            created_at = str(it.get('created_at') or '').strip() or None
+            updated_at = str(it.get('updated_at') or '').strip() or None
+        except Exception:
+            continue
+        if not _id:
+            continue
+        if not title:
+            # 타이틀이 없으면 content 앞부분으로 보정
+            title = (content.splitlines()[0].strip() if content else '')[:60].strip() or '공지'
+        cleaned.append({
+            "id": _id,
+            "title": title[:80],
+            "content": content[:5000],
+            "pinned": pinned,
+            "created_at": created_at,
+            "updated_at": updated_at,
+        })
+    # pinned 먼저 + 최신( created_at desc ) 순 정렬(방어)
+    def _key(x: dict):
+        try:
+            ca = str(x.get("created_at") or "")
+        except Exception:
+            ca = ""
+        return (0 if x.get("pinned") else 1, "" if not ca else ("~" + ca))
+    # created_at은 ISO이므로 문자열 비교로도 대체로 안전. pinned가 우선이므로 2차는 reverse로 처리.
+    # pinned group 내부는 최신이 위로 오도록 reverse 정렬을 적용한다.
+    try:
+        cleaned.sort(key=lambda x: (0 if x.get("pinned") else 1, str(x.get("created_at") or "")), reverse=True)
+        # pinned를 앞에 두기 위해 pinned boolean을 다시 반전 정렬
+        cleaned.sort(key=lambda x: (0 if x.get("pinned") else 1, ), reverse=False)
+    except Exception:
+        pass
+    return cleaned
 
 async def _cleanup_origchat_entities_for_story(db: AsyncSession, story_id: uuid.UUID) -> dict:
     """
@@ -622,8 +706,166 @@ def _story_to_response(story: Story) -> StoryResponse:
         "created_at": story.created_at,
         "updated_at": story.updated_at,
         "tags": tag_slugs,
+        # ✅ 작품공지(작가 공지)
+        "announcements": _normalize_story_announcements(getattr(story, "announcements", None)),
     }
     return StoryResponse(**payload)
+
+
+@router.post("/{story_id}/announcements", status_code=status.HTTP_201_CREATED)
+async def create_story_announcement(
+    story_id: uuid.UUID,
+    payload: StoryAnnouncementCreateReq,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """작품공지 추가(크리에이터 전용)"""
+    story = await story_service.get_story_by_id(db, story_id)
+    if not story:
+        raise HTTPException(status_code=404, detail="스토리를 찾을 수 없습니다")
+    if story.creator_id != current_user.id:
+        raise HTTPException(status_code=403, detail="공지 작성 권한이 없습니다")
+
+    content = _sanitize_plain_text(payload.content, max_len=5000)
+    if not content:
+        raise HTTPException(status_code=400, detail="공지 내용을 입력해주세요")
+
+    # title은 첫 줄을 기본으로 사용(프론트 입력은 1개 textarea 요구사항)
+    first_line = ""
+    try:
+        for ln in content.splitlines():
+            t = str(ln or "").strip()
+            if t:
+                first_line = t
+                break
+    except Exception:
+        first_line = ""
+    title = (first_line[:60].strip() or content[:60].strip() or "공지")[:80]
+
+    now_iso = None
+    try:
+        from datetime import datetime, timezone
+        now_iso = datetime.now(timezone.utc).isoformat()
+    except Exception:
+        now_iso = None
+
+    item = {
+        "id": str(uuid.uuid4()),
+        "title": title,
+        "content": content,
+        "pinned": False,
+        "created_at": now_iso,
+        "updated_at": now_iso,
+    }
+    existing = _normalize_story_announcements(getattr(story, "announcements", None))
+    story.announcements = [item, *existing]
+    try:
+        await db.commit()
+        await db.refresh(story)
+    except Exception as e:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=f"공지 등록 실패: {e}")
+
+    return {"announcements": _normalize_story_announcements(getattr(story, "announcements", None))}
+
+
+@router.delete("/{story_id}/announcements/{announcement_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_story_announcement(
+    story_id: uuid.UUID,
+    announcement_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """작품공지 삭제(크리에이터 전용)"""
+    story = await story_service.get_story_by_id(db, story_id)
+    if not story:
+        raise HTTPException(status_code=404, detail="스토리를 찾을 수 없습니다")
+    if story.creator_id != current_user.id:
+        raise HTTPException(status_code=403, detail="공지 삭제 권한이 없습니다")
+    target = str(announcement_id or "").strip()
+    if not target:
+        raise HTTPException(status_code=400, detail="announcement_id가 필요합니다")
+
+    items = _normalize_story_announcements(getattr(story, "announcements", None))
+    before = len(items)
+    items2 = [x for x in items if str(x.get("id") or "") != target]
+    if len(items2) == before:
+        raise HTTPException(status_code=404, detail="공지를 찾을 수 없습니다")
+
+    story.announcements = items2
+    try:
+        await db.commit()
+    except Exception as e:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=f"공지 삭제 실패: {e}")
+    return None
+
+
+@router.post("/{story_id}/announcements/{announcement_id}/pin")
+async def pin_story_announcement(
+    story_id: uuid.UUID,
+    announcement_id: str,
+    payload: StoryAnnouncementPinReq,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """작품공지 상단 고정(핀) 설정(크리에이터 전용)
+
+    정책:
+    - pinned=true로 설정하면, 해당 공지만 pinned=true로 만들고 나머지는 false로 해제한다(단일 상단고정).
+    - pinned=false면 해당 공지만 해제한다.
+    """
+    story = await story_service.get_story_by_id(db, story_id)
+    if not story:
+        raise HTTPException(status_code=404, detail="스토리를 찾을 수 없습니다")
+    if story.creator_id != current_user.id:
+        raise HTTPException(status_code=403, detail="공지 고정 권한이 없습니다")
+    target = str(announcement_id or "").strip()
+    if not target:
+        raise HTTPException(status_code=400, detail="announcement_id가 필요합니다")
+
+    items = _normalize_story_announcements(getattr(story, "announcements", None))
+    found = False
+    want_pin = bool(payload.pinned)
+    next_items: list[dict] = []
+    for it in items:
+        _id = str(it.get("id") or "")
+        if _id == target:
+            found = True
+            it = { **it, "pinned": want_pin }
+            try:
+                from datetime import datetime, timezone
+                it["updated_at"] = datetime.now(timezone.utc).isoformat()
+            except Exception:
+                pass
+            next_items.append(it)
+        else:
+            # 단일 상단고정: 다른 공지는 해제
+            if want_pin and it.get("pinned"):
+                next_items.append({ **it, "pinned": False })
+            else:
+                next_items.append(it)
+    if not found:
+        raise HTTPException(status_code=404, detail="공지를 찾을 수 없습니다")
+
+    story.announcements = next_items
+    try:
+        await db.commit()
+        await db.refresh(story)
+    except Exception as e:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=f"공지 고정 설정 실패: {e}")
+
+    return {"announcements": _normalize_story_announcements(getattr(story, "announcements", None))}
 
 
 @router.post("/generate", response_model=StoryGenerationResponse)

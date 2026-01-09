@@ -6,6 +6,7 @@ import { Input } from './ui/input';
 import { Alert, AlertDescription } from './ui/alert';
 import { AlertCircle, Image as ImageIcon, X } from 'lucide-react';
 import { chaptersAPI, mediaAPI } from '../lib/api';
+import BlockingLoadingOverlay from './BlockingLoadingOverlay';
 
 const ChapterEditModal = ({ open, onClose, chapter, onAfterSave }) => {
   const [loading, setLoading] = useState(false);
@@ -121,8 +122,13 @@ const ChapterEditModal = ({ open, onClose, chapter, onAfterSave }) => {
   };
 
   return (
-    <Dialog open={open} onOpenChange={(v) => { if (!v) onClose?.(); }}>
-      <DialogContent className="sm:max-w-3xl max-h-[90vh] bg-gray-900 text-gray-100 border border-gray-700 overflow-hidden flex flex-col">
+    <Dialog open={open} onOpenChange={(v) => { if (!v) { if (loading) return; onClose?.(); } }}>
+      <DialogContent className="sm:max-w-3xl max-h-[90vh] bg-gray-900 text-gray-100 border border-gray-700 overflow-hidden flex flex-col relative">
+        <BlockingLoadingOverlay
+          open={loading}
+          title="회차를 저장하고 있어요"
+          description={'AI 분석(요약/등장인물 보강) 때문에 시간이 걸릴 수 있어요.\n완료될 때까지 페이지를 이동하지 말아주세요.'}
+        />
         <DialogHeader>
           <DialogTitle className="text-white">회차 수정</DialogTitle>
         </DialogHeader>

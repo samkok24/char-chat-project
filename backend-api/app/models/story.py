@@ -6,7 +6,7 @@ from sqlalchemy import Column, String, Text, Boolean, Integer, DateTime, Foreign
 from sqlalchemy.orm import relationship
 import uuid
 
-from app.core.database import Base, UUID
+from app.core.database import Base, UUID, JSON
 
 
 class Story(Base):
@@ -20,6 +20,11 @@ class Story(Base):
     content = Column(Text, nullable=False)
     summary = Column(Text)
     cover_url = Column(String(500))
+    # ✅ 작품 공지(작가 공지)
+    # - 배포 안정성 우선: 별도 테이블 대신 stories 테이블에 JSONB(운영)/JSON(SQLite) 컬럼 1개로 관리한다.
+    # - 구조(리스트):
+    #   [{ id, title, content, pinned, created_at, updated_at }]
+    announcements = Column(JSON, nullable=True, default=list)
     genre = Column(String(50))
     is_public = Column(Boolean, default=True, index=True)
     # 원작챗 여부(스토리 기반 대화용 플래그)

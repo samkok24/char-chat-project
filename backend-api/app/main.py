@@ -130,6 +130,15 @@ async def lifespan(app: FastAPI):
                     await conn.exec_driver_sql("ALTER TABLE users ADD COLUMN response_length_pref TEXT DEFAULT 'medium'")
                     logger.info("🛠️ users.response_length_pref 컬럼 추가")
 
+                # stories 테이블 컬럼 확인 (작품공지)
+                # - SQLite에서는 새 컬럼을 직접 ALTER로 보정해야 한다.
+                # - 운영(Postgres)은 postgres_migration.py에서 별도로 컬럼을 추가한다.
+                result = await conn.exec_driver_sql("PRAGMA table_info(stories)")
+                cols = {row[1] for row in result.fetchall()}
+                if "announcements" not in cols:
+                    await conn.exec_driver_sql("ALTER TABLE stories ADD COLUMN announcements TEXT")
+                    logger.info("🛠️ stories.announcements 컬럼 추가")
+
                 # chat_rooms 테이블 컬럼 확인 (summary)
                 result = await conn.exec_driver_sql("PRAGMA table_info(chat_rooms)")
                 cols = {row[1] for row in result.fetchall()}

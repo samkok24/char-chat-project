@@ -3,11 +3,12 @@ import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import AppLayout from '../components/layout/AppLayout';
 import { Button } from '../components/ui/button';
+import { Textarea } from '../components/ui/textarea';
 import { storiesAPI, chaptersAPI, origChatAPI, mediaAPI, charactersAPI } from '../lib/api';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
 import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogCancel, AlertDialogAction } from '../components/ui/alert-dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
-import { Heart, ArrowLeft, AlertCircle, MoreVertical, Copy, Trash2, Edit, MessageCircle, Eye, Image as ImageIcon, Check, Lock, Unlock } from 'lucide-react';
+import { Heart, ArrowLeft, AlertCircle, MoreVertical, Copy, Trash2, Edit, MessageCircle, Eye, Image as ImageIcon, Check, Lock, Unlock, Pin, Plus, X } from 'lucide-react';
 import { Avatar, AvatarFallback, AvatarImage } from '../components/ui/avatar';
 import { Badge } from '../components/ui/badge';
 import { Alert, AlertDescription } from '../components/ui/alert';
@@ -393,6 +394,16 @@ const StoryDetailPage = () => {
   const isAdmin = user && !!user?.is_admin;
   // ✅ 관리 가능 여부: 작성자 또는 관리자
   const canManageExtracted = !!(user && (story?.creator_id === user.id || user?.is_admin));
+
+  // ✅ 작품공지(작가 공지) - story 상세 응답에 포함되는 값을 SSOT로 사용
+  const storyAnnouncements = useMemo(() => {
+    try {
+      const arr = story?.announcements;
+      return Array.isArray(arr) ? arr : [];
+    } catch (_) {
+      return [];
+    }
+  }, [story?.announcements]);
   // 이어보기 진행 상황 (스토리 기준 localStorage 키 사용)
   const progressChapterNo = getReadingProgress(storyId);
   const [sortDesc, setSortDesc] = useState(false);
@@ -1167,6 +1178,27 @@ const StoryDetailPage = () => {
                 )}
               </section>
 
+              {/* ✅ 작품공지 (등장인물 밑, 회차 목록 위) */}
+              <section className="space-y-3">
+                <StoryAnnouncementsSection
+                  storyId={storyId}
+                  isOwner={!!isOwner}
+                  announcements={storyAnnouncements}
+                  onUpdate={(nextAnnouncements) => {
+                    // StoryDetailPage는 staleTime:Infinity 이므로, cache를 직접 갱신해 즉시 반영한다.
+                    try {
+                      queryClient.setQueryData(['story', storyId], (prev) => ({
+                        ...(prev || {}),
+                        announcements: Array.isArray(nextAnnouncements) ? nextAnnouncements : [],
+                      }));
+                    } catch (_) {}
+                  }}
+                  onToast={(t) => {
+                    try { setPageToast({ show: true, type: t?.type || 'success', message: t?.message || '' }); } catch (_) {}
+                  }}
+                />
+              </section>
+
               {/* 회차 섹션 (UI 우선) */}
               <section className="space-y-3">
                 <div className="flex items-center justify-between">
@@ -1427,6 +1459,284 @@ const StoryDetailPage = () => {
         </AlertDialogContent>
       </AlertDialog>
     </AppLayout>
+  );
+};
+
+const StoryAnnouncementsSection = ({ storyId, isOwner, announcements, onUpdate, onToast }) => {
+  const [createOpen, setCreateOpen] = useState(false);
+  const [draft, setDraft] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [expandedById, setExpandedById] = useState({}); // { [id]: boolean }
+  const [modalOpen, setModalOpen] = useState(false);
+  const [modalItem, setModalItem] = useState(null);
+
+  const normalized = useMemo(() => {
+    const arr = Array.isArray(announcements) ? announcements : [];
+    // pinned 우선 + 최신(created_at desc) 정렬(프론트 방어)
+    const copy = arr.slice();
+    try {
+      copy.sort((a, b) => {
+        const ap = !!a?.pinned;
+        const bp = !!b?.pinned;
+        if (ap !== bp) return ap ? -1 : 1;
+        const at = new Date(a?.created_at || 0).getTime();
+        const bt = new Date(b?.created_at || 0).getTime();
+        return bt - at;
+      });
+    } catch (_) {}
+    return copy;
+  }, [announcements]);
+
+  const openModal = (it) => {
+    setModalItem(it || null);
+    setModalOpen(true);
+  };
+
+  const toggleExpand = (id) => {
+    const key = String(id || '').trim();
+    if (!key) return;
+    setExpandedById((prev) => ({ ...(prev || {}), [key]: !prev?.[key] }));
+  };
+
+  const deriveTitle = (it) => {
+    try {
+      const t = String(it?.title || '').trim();
+      if (t) return t;
+      const c = String(it?.content || '').trim();
+      const first = c.split('\n').map((s) => s.trim()).filter(Boolean)[0] || '';
+      return (first || c || '공지').slice(0, 60);
+    } catch (_) {
+      return '공지';
+    }
+  };
+
+  const handleCreate = async () => {
+    if (!isOwner) return;
+    const text = String(draft || '').trim();
+    if (!text) {
+      onToast?.({ type: 'error', message: '공지 내용을 입력해주세요.' });
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await storiesAPI.createAnnouncement(storyId, { content: text });
+      const next = res?.data?.announcements;
+      onUpdate?.(Array.isArray(next) ? next : []);
+      setDraft('');
+      setCreateOpen(false);
+      onToast?.({ type: 'success', message: '공지 등록 완료' });
+    } catch (e) {
+      const msg = String(e?.response?.data?.detail || '').trim() || '공지 등록에 실패했습니다.';
+      onToast?.({ type: 'error', message: msg });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDelete = async (id) => {
+    if (!isOwner) return;
+    const ok = window.confirm('이 공지를 삭제할까요?');
+    if (!ok) return;
+    const aid = String(id || '').trim();
+    if (!aid) return;
+    setBusy(true);
+    try {
+      await storiesAPI.deleteAnnouncement(storyId, aid);
+      // 204라서 응답이 없을 수 있음 → 로컬에서 제거 후 반영
+      const next = (normalized || []).filter((x) => String(x?.id || '') !== aid);
+      onUpdate?.(next);
+      onToast?.({ type: 'success', message: '공지 삭제 완료' });
+    } catch (e) {
+      const msg = String(e?.response?.data?.detail || '').trim() || '공지 삭제에 실패했습니다.';
+      onToast?.({ type: 'error', message: msg });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handlePin = async (it) => {
+    if (!isOwner) return;
+    const aid = String(it?.id || '').trim();
+    if (!aid) return;
+    const nextPinned = !Boolean(it?.pinned);
+    setBusy(true);
+    try {
+      const res = await storiesAPI.pinAnnouncement(storyId, aid, nextPinned);
+      const next = res?.data?.announcements;
+      onUpdate?.(Array.isArray(next) ? next : []);
+      onToast?.({ type: 'success', message: nextPinned ? '공지 상단고정 완료' : '공지 고정 해제' });
+    } catch (e) {
+      const msg = String(e?.response?.data?.detail || '').trim() || '공지 고정 설정에 실패했습니다.';
+      onToast?.({ type: 'error', message: msg });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="bg-gray-800/30 border border-gray-700 rounded-md p-4">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2 min-w-0">
+          <h2 className="text-lg font-semibold text-white">작품공지</h2>
+          <span className="text-xs text-gray-400">{normalized.length ? `${normalized.length}개` : ''}</span>
+        </div>
+        {isOwner && (
+          <Button
+            variant="outline"
+            className="h-8 px-3 bg-white text-black border-gray-300 hover:bg-gray-100"
+            onClick={() => setCreateOpen((v) => !v)}
+            disabled={busy}
+          >
+            <Plus className="w-4 h-4 mr-1" />
+            공지 추가
+          </Button>
+        )}
+      </div>
+
+      {createOpen && isOwner && (
+        <div className="mt-3 space-y-2">
+          <Textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            rows={4}
+            placeholder="공지 내용을 입력하세요 (첫 줄은 공지 제목으로 사용됩니다)"
+            className="bg-gray-800 border-gray-700 text-gray-100 placeholder:text-gray-500"
+            disabled={busy}
+          />
+          <div className="flex items-center justify-end gap-2">
+            <Button
+              variant="outline"
+              className="bg-gray-800 border-gray-700 text-gray-200"
+              onClick={() => { setCreateOpen(false); setDraft(''); }}
+              disabled={busy}
+            >
+              취소
+            </Button>
+            <Button
+              className="bg-purple-600 hover:bg-purple-700 text-white"
+              onClick={handleCreate}
+              disabled={busy || !String(draft || '').trim()}
+            >
+              {busy ? '등록 중...' : '등록'}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {normalized.length === 0 ? (
+        <div className="mt-3 text-sm text-gray-400">등록된 작품공지가 없습니다.</div>
+      ) : (
+        <ul className="mt-3 space-y-2">
+          {normalized.map((it) => {
+            const id = String(it?.id || '');
+            const expanded = !!expandedById?.[id];
+            const title = deriveTitle(it);
+            const content = String(it?.content || '').trim();
+            const pinned = !!it?.pinned;
+            return (
+              <li key={id || title} className="bg-gray-900/40 border border-gray-700 rounded-md p-3">
+                <div className="flex items-start justify-between gap-2">
+                  <button
+                    type="button"
+                    className="text-left min-w-0 flex-1"
+                    onClick={() => openModal(it)}
+                    title="공지 상세 보기"
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      {pinned && (
+                        <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded bg-yellow-500/15 text-yellow-200 ring-1 ring-yellow-400/30 flex-shrink-0">
+                          <Pin className="w-3 h-3" />
+                          고정
+                        </span>
+                      )}
+                      <div className="font-semibold text-gray-100 truncate">{title}</div>
+                    </div>
+                  </button>
+
+                  {isOwner && (
+                    <div className="flex items-center gap-1 flex-shrink-0">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className={`h-8 w-8 ${pinned ? 'text-yellow-200 hover:text-yellow-100' : 'text-gray-300 hover:text-white'} hover:bg-gray-700/60`}
+                        onClick={() => handlePin(it)}
+                        disabled={busy}
+                        title={pinned ? '상단고정 해제' : '상단고정'}
+                      >
+                        <Pin className="w-4 h-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 text-red-300 hover:text-red-200 hover:bg-red-500/10"
+                        onClick={() => handleDelete(id)}
+                        disabled={busy}
+                        title="삭제"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </Button>
+                    </div>
+                  )}
+                </div>
+
+                {/* 3줄 미리보기 + 더보기/접기 */}
+                {content && (
+                  <div className="mt-2">
+                    <div
+                      className="text-sm text-gray-200 whitespace-pre-wrap leading-6"
+                      style={expanded ? {} : {
+                        display: '-webkit-box',
+                        WebkitLineClamp: 3,
+                        WebkitBoxOrient: 'vertical',
+                        overflow: 'hidden',
+                      }}
+                    >
+                      {content}
+                    </div>
+                    <div className="mt-2 flex justify-end">
+                      <button
+                        type="button"
+                        className="text-xs text-purple-300 hover:text-purple-200 underline underline-offset-2"
+                        onClick={() => toggleExpand(id)}
+                      >
+                        {expanded ? '접기' : '펼치기'}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      {/* 공지 상세 모달 */}
+      <Dialog open={modalOpen} onOpenChange={setModalOpen}>
+        <DialogContent className="sm:max-w-2xl max-h-[90vh] bg-gray-900 text-gray-100 border border-gray-700 overflow-hidden flex flex-col">
+          <DialogHeader>
+            <div className="flex items-center justify-between gap-3">
+              <DialogTitle className="text-white truncate pr-2">
+                {deriveTitle(modalItem)}
+              </DialogTitle>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 text-gray-300 hover:text-white hover:bg-gray-700"
+                onClick={() => setModalOpen(false)}
+                title="닫기"
+              >
+                <X className="w-4 h-4" />
+              </Button>
+            </div>
+          </DialogHeader>
+          <div className="flex-1 overflow-auto pr-1">
+            <div className="whitespace-pre-wrap leading-7 text-gray-200">
+              {String(modalItem?.content || '').trim() || '내용이 없습니다.'}
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
   );
 };
 
