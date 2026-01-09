@@ -1324,7 +1324,7 @@ const StoryDetailPage = () => {
                         <span className="text-xs text-gray-500 ml-auto">{new Date(c.created_at || Date.now()).toLocaleString()}</span>
                       </div>
                       <p className="text-sm whitespace-pre-wrap text-gray-200">{c.content}</p>
-                      {(isOwner || c.user_id === user?.id) && (
+                      {(c.user_id === user?.id || user?.is_admin) && (
                         <div className="flex justify-end mt-2">
                           <Button variant="ghost" size="sm" onClick={() => handleDeleteComment(c.id)} className="text-red-400">삭제</Button>
                         </div>

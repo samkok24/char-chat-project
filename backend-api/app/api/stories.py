@@ -2138,8 +2138,8 @@ async def delete_story_comment_endpoint(
             detail="댓글을 찾을 수 없습니다."
         )
     
-    # 작성자만 삭제 가능
-    if comment.user_id != current_user.id:
+    # 작성자/관리자만 삭제 가능
+    if comment.user_id != current_user.id and not getattr(current_user, "is_admin", False):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="이 댓글을 삭제할 권한이 없습니다."

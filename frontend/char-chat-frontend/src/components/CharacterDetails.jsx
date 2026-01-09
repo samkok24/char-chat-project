@@ -164,7 +164,7 @@ const CharacterDetails = ({ character, comments, commentText, setCommentText, ha
                 </div>
                 <p className="text-gray-300 mt-1">{comment.content}</p>
               </div>
-              {user && user.id === comment.user_id && (
+                {(user && (user.id === comment.user_id || user.is_admin)) && (
                 <Button variant="ghost" size="icon" onClick={() => handleDeleteComment(comment.id)}>
                   <Trash2 className="w-4 h-4 text-gray-500" />
                 </Button>
