@@ -10,11 +10,15 @@ import uuid
 import json
 
 from app.models.character import Character, CharacterSetting, CharacterExampleDialogue
-from app.models.chat import ChatRoom, ChatMessage
+from app.models.chat import ChatRoom, ChatMessage, ChatMessageEdit
 from app.models.tag import Tag, CharacterTag
 from app.models.user import User
 from app.models.like import CharacterLike
+from app.models.comment import CharacterComment
+from app.models.memory_note import MemoryNote
+from app.models.bookmark import CharacterBookmark
 from app.models.story import Story
+from app.models.story_extracted_character import StoryExtractedCharacter
 from app.schemas import (
     CharacterCreate, 
     CharacterUpdate, 
@@ -557,12 +561,77 @@ async def update_character_public_status(
 
 
 async def delete_character(db: AsyncSession, character_id: uuid.UUID) -> bool:
-    """캐릭터 삭제"""
+    """
+    캐릭터 삭제
+
+    배경/의도:
+    - Postgres(Supabase)에서는 FK 제약이 엄격하게 적용되어, `characters`를 먼저 DELETE 하면
+      `character_settings` 등 참조 테이블 때문에 IntegrityError가 발생할 수 있다.
+    - SQLite에서는 FK가 느슨해(또는 미활성) 개발 중에는 문제가 안 보일 수 있으므로,
+      운영 안전을 위해 "참조 데이터 선삭제 → 캐릭터 삭제" 순서를 보장한다.
+
+    동작:
+    - 캐릭터를 참조하는 하위 테이블 레코드를 멱등하게 정리한다.
+    - 마지막에 `characters`를 DELETE 한다.
+    """
+
+    # 1) 스토리 메인 연결은 스토리를 살리고, 캐릭터 연결만 끊는다(null 허용)
+    await db.execute(
+        update(Story)
+        .where(Story.character_id == character_id)
+        .values(character_id=None)
+    )
+
+    # 2) 원작챗 추출 캐릭터 매핑(등장인물 그리드) 정리
+    await db.execute(
+        delete(StoryExtractedCharacter).where(StoryExtractedCharacter.character_id == character_id)
+    )
+
+    # 3) 유저별 기억노트(캐릭터 참조) 제거
+    await db.execute(
+        delete(MemoryNote).where(MemoryNote.character_id == character_id)
+    )
+
+    # 4) 캐릭터 설정/예시대화/댓글/좋아요/태그 매핑/북마크 제거
+    await db.execute(
+        delete(CharacterSetting).where(CharacterSetting.character_id == character_id)
+    )
+    await db.execute(
+        delete(CharacterExampleDialogue).where(CharacterExampleDialogue.character_id == character_id)
+    )
+    await db.execute(
+        delete(CharacterComment).where(CharacterComment.character_id == character_id)
+    )
+    await db.execute(
+        delete(CharacterLike).where(CharacterLike.character_id == character_id)
+    )
+    await db.execute(
+        delete(CharacterBookmark).where(CharacterBookmark.character_id == character_id)
+    )
+    await db.execute(
+        delete(CharacterTag).where(CharacterTag.character_id == character_id)
+    )
+
+    # 5) 채팅 로그 정리
+    # - chat_message_edits → chat_messages → chat_rooms 순서로 제거해야 FK 충돌이 없다.
+    room_ids_subq = select(ChatRoom.id).where(ChatRoom.character_id == character_id)
+    msg_ids_subq = select(ChatMessage.id).where(ChatMessage.chat_room_id.in_(room_ids_subq))
+    await db.execute(
+        delete(ChatMessageEdit).where(ChatMessageEdit.message_id.in_(msg_ids_subq))
+    )
+    await db.execute(
+        delete(ChatMessage).where(ChatMessage.chat_room_id.in_(room_ids_subq))
+    )
+    await db.execute(
+        delete(ChatRoom).where(ChatRoom.character_id == character_id)
+    )
+
+    # 6) 최종: 캐릭터 삭제
     result = await db.execute(
         delete(Character).where(Character.id == character_id)
     )
     await db.commit()
-    return result.rowcount > 0
+    return (getattr(result, "rowcount", 0) or 0) > 0
 
 
 async def create_character_setting(
