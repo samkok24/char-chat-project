@@ -1297,7 +1297,7 @@ const StoryDetailPage = () => {
                           onChange={(e) => setCommentText(e.target.value)}
                           rows={3}
                           placeholder="댓글을 입력하세요"
-                          className="w-full rounded-md bg-gray-800 border border-gray-700 text-sm p-2 outline-none focus:ring-2 focus:ring-purple-600"
+                          className="w-full rounded-md bg-gray-800 border border-gray-700 text-sm p-2 outline-none text-gray-100 placeholder:text-gray-500 focus:ring-2 focus:ring-purple-600"
                         />
                         <div className="flex justify-end">
                           <Button

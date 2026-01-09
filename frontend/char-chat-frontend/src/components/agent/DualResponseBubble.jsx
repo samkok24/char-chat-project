@@ -89,7 +89,10 @@ function DualResponseBubble({ message, onSelect, canSelect = true }) {
           <div 
             ref={contentRef}
             className={`prose prose-sm whitespace-pre-wrap text-gray-100 transition-all duration-300 ${
-              expanded ? '' : 'max-h-[400px] overflow-hidden'
+              // ✅ UX: 두 박스 높이를 항상 동일하게 유지(버튼/툴박스 정렬 안정)
+              // - 이전에는 한쪽 내용이 짧으면 박스 높이가 줄어들어 좌/우 박스 크기가 달라 보였다.
+              // - 접힘 상태에서는 고정 높이로 통일하고, '펼치기' 시에만 제한을 해제한다.
+              expanded ? '' : 'h-[400px] overflow-hidden'
             }`}
           >
             {data.content || ''}

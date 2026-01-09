@@ -1400,13 +1400,40 @@ async def agent_simulate(
                     "- 다음이 궁금해지는 마무리"
                 )
 
+            # ✅ 응답 길이 선호도(LLM 시스템 지침) 정합
+            # - 기존: snap=short(1~2문장) / genre=medium(3~6문장)으로 고정되어,
+            #   snap(200~300자)·genre(500~800자) 캐릭터 프롬프트와 충돌 → 체감상 "너무 짧게" 생성되는 문제가 있었다.
+            # - 원칙: story_mode 지침(글자수)과 충돌하지 않도록 snap은 medium, genre는 long을 기본으로 둔다.
+            # - 예외: 프론트에서 '계속보기'는 "[이어서]"로 들어오고, '바꿔보기(리믹스)'는 "[리믹스 규칙"을 포함하므로
+            #   이 경우에는 과도한 장문을 피하기 위해 medium으로 완화한다.
+            response_length_pref = None
+            try:
+                response_length_pref = (payload.get("response_length_pref") or "").strip().lower() or None
+            except Exception:
+                response_length_pref = None
+            try:
+                hint = (content or "")
+                if "[리믹스 규칙" in hint:
+                    response_length_pref = response_length_pref or "medium"
+                elif "[이어서]" in hint:
+                    response_length_pref = response_length_pref or "medium"
+            except Exception:
+                pass
+            if not response_length_pref:
+                if story_mode == "snap":
+                    response_length_pref = "medium"
+                elif story_mode == "genre":
+                    response_length_pref = "long"
+                else:
+                    response_length_pref = "medium"
+
             text = await ai_service.get_ai_chat_response(
                 character_prompt=character_prompt,
                 user_message=content,
                 history=history,
                 preferred_model=preferred_model,
                 preferred_sub_model=preferred_sub_model,
-                response_length_pref="short" if story_mode == "snap" else "medium",
+                response_length_pref=response_length_pref,
             )
         
         # Vision 태그에서 이미지 요약 추출
