@@ -1321,7 +1321,8 @@ const HomePage = () => {
                   const id = char?.id;
                   const key = id || `daily-${idx}`;
                   const name = String(char?.name || '').trim() || '이름 없음';
-                  const title = String(char?.description || '').trim();
+                  const rawDesc = String(char?.description || '').trim();
+                  const title = replacePromptTokens(rawDesc, { assistantName: name || '캐릭터', userName: '당신' }).trim();
                   const baseImg = char?.avatar_url || char?.thumbnail_url || '';
                   const imgSrc =
                     getThumbnailUrl(baseImg, 240) ||
@@ -1406,7 +1407,8 @@ const HomePage = () => {
                   const id = char?.id;
                   const key = id || `daily-${idx}`;
                   const name = String(char?.name || '').trim() || '이름 없음';
-                  const title = String(char?.description || '').trim();
+                  const rawDesc = String(char?.description || '').trim();
+                  const title = replacePromptTokens(rawDesc, { assistantName: name || '캐릭터', userName: '당신' }).trim();
                   const baseImg = char?.avatar_url || char?.thumbnail_url || '';
                   const imgSrc =
                     getThumbnailUrl(baseImg, 240) ||

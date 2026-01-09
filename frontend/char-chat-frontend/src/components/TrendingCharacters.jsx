@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { rankingAPI } from '../lib/api';
 import { resolveImageUrl, getThumbnailUrl } from '../lib/images';
+import { replacePromptTokens } from '../lib/prompt';
 import { DEFAULT_SQUARE_URI } from '../lib/placeholder';
 import { MessageCircle, Heart, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
@@ -21,6 +22,17 @@ const TrendingItem = ({ character }) => {
   const username = character?.creator_username;
   const isWebNovel = character?.source_type === 'IMPORTED';
   const isOrigChat = !!(character?.origin_story_id || character?.is_origchat || character?.source === 'origchat');
+  const renderedDescription = (() => {
+    /**
+     * 카드(격자) 미리보기 텍스트에서는 템플릿 토큰을 그대로 노출하면 UX가 깨진다.
+     * - {{user}} → "당신"
+     * - {{character}}/{{assistant}} → 캐릭터명
+     */
+    const nm = character?.name || '캐릭터';
+    const rawDesc = character?.description || '';
+    const rendered = replacePromptTokens(rawDesc, { assistantName: nm, userName: '당신' }).trim();
+    return rendered || '설명이 없습니다.';
+  })();
 
   return (
     <li>
@@ -70,7 +82,7 @@ const TrendingItem = ({ character }) => {
             
             {/* 설명 */}
             <p className="text-xs text-gray-400 line-clamp-2 leading-relaxed min-h-[2.5rem]">
-              {character?.description || '설명이 없습니다.'}
+              {renderedDescription}
             </p>
             
             {/* 작성자 */}
