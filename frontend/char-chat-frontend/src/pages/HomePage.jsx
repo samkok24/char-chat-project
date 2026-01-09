@@ -1524,11 +1524,18 @@ const HomePage = () => {
       return (
         <ErrorBoundary>
           <section className="mt-8">
-            <div className="flex items-end justify-between mb-4">
+            <div className="flex items-center justify-between mb-4">
               <h2 className="text-xl font-bold text-white">{header}</h2>
-              <div className="text-xs text-gray-400">
-                {sortMode === 'random' ? '랜덤' : '대화/조회순'}
-              </div>
+              {/* ✅ 내부 CMS 설정값(랜덤/정렬모드)은 사용자에게 노출하지 않는다.
+               * 대신 "더보기"로 캐릭터 탭으로 랜딩해 탐색 동선을 제공한다.
+               */}
+              <Link
+                to="/dashboard?tab=character"
+                className="text-xs sm:text-sm text-gray-400 hover:text-white transition-colors"
+                aria-label="캐릭터 탭 더보기"
+              >
+                더보기
+              </Link>
             </div>
             <div className="relative">
               <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
