@@ -9,6 +9,9 @@ from decimal import Decimal
 import uuid
 from uuid import UUID
 import re
+from html.parser import HTMLParser
+from html import escape as _html_escape
+from urllib.parse import urlparse
 
 
 # 🔥 1단계: 기본 정보 스키마
@@ -20,6 +23,151 @@ def _sanitize_text(value: Optional[str], max_length: Optional[int] = None) -> Op
     if max_length is not None and len(text) > max_length:
         raise ValueError(f'최대 {max_length}자까지 입력할 수 있습니다.')
     return text or None
+
+
+# ✅ 크리에이터 코멘트 HTML 지원(자바스크립트 차단)
+# - 외부 라이브러리(bleach 등) 없이 표준 라이브러리로 "허용 태그만" 보존한다.
+# - script/iframe 등 위험 태그는 내용까지 제거하고, 이벤트 핸들러(onclick 등)·javascript: URL은 차단한다.
+_CREATOR_COMMENT_ALLOWED_TAGS = {
+    "b", "strong", "i", "em", "u", "s",
+    "br", "p", "ul", "ol", "li",
+    "blockquote", "code", "pre",
+    "a",
+}
+_CREATOR_COMMENT_VOID_TAGS = {"br"}
+_CREATOR_COMMENT_SKIP_TAGS = {"script", "style", "iframe", "object", "embed"}
+
+
+class _CreatorCommentHTMLSanitizer(HTMLParser):
+    """
+    크리에이터 코멘트(user_display_description)를 안전한 HTML로 정제한다.
+
+    동작/의도:
+    - 허용 태그만 유지하고, 나머지는 태그만 제거(텍스트는 유지)한다.
+    - <script>/<style>/<iframe> 등은 내용까지 제거한다.
+    - <a href="javascript:...">, on* 이벤트 속성은 제거한다.
+    - 출력은 "정제된 HTML 문자열"이며, 프론트에서 dangerouslySetInnerHTML로 렌더링 가능하다.
+    """
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self._out: List[str] = []
+        self._skip_stack: List[str] = []
+
+    @staticmethod
+    def _sanitize_href(raw: Optional[str]) -> Optional[str]:
+        if not raw:
+            return None
+        href = str(raw).strip()
+        if not href:
+            return None
+        # protocol-relative(//)는 의도치 않은 외부 이동이 될 수 있어 차단
+        if href.startswith("//"):
+            return None
+        try:
+            parsed = urlparse(href)
+            scheme = (parsed.scheme or "").lower()
+            if scheme in ("http", "https", "mailto"):
+                return href
+            if scheme == "":
+                # 상대 경로/앵커 허용
+                return href
+            # javascript:, data: 등 차단
+            return None
+        except Exception:
+            return None
+
+    def handle_starttag(self, tag, attrs):
+        t = (tag or "").lower()
+        if t in _CREATOR_COMMENT_SKIP_TAGS:
+            self._skip_stack.append(t)
+            return
+        if self._skip_stack:
+            return
+        if t not in _CREATOR_COMMENT_ALLOWED_TAGS:
+            return
+
+        safe_attrs = []
+        if t == "a":
+            attr_map = {str(k).lower(): v for (k, v) in (attrs or []) if k}
+            href = self._sanitize_href(attr_map.get("href"))
+            if href:
+                safe_attrs.append(("href", href))
+            title = attr_map.get("title")
+            if title:
+                safe_attrs.append(("title", str(title)))
+            target = str(attr_map.get("target") or "").strip().lower()
+            if target in ("_blank", "_self"):
+                safe_attrs.append(("target", target))
+                if target == "_blank":
+                    safe_attrs.append(("rel", "noopener noreferrer"))
+
+        attr_str = "".join([f' {k}="{_html_escape(str(v), quote=True)}"' for (k, v) in safe_attrs])
+        if t in _CREATOR_COMMENT_VOID_TAGS:
+            self._out.append(f"<{t}{attr_str} />")
+        else:
+            self._out.append(f"<{t}{attr_str}>")
+
+    def handle_endtag(self, tag):
+        t = (tag or "").lower()
+        if t in _CREATOR_COMMENT_SKIP_TAGS:
+            # 가장 가까운 skip 태그 하나를 종료 처리
+            if self._skip_stack:
+                while self._skip_stack:
+                    popped = self._skip_stack.pop()
+                    if popped == t:
+                        break
+            return
+        if self._skip_stack:
+            return
+        if t in _CREATOR_COMMENT_ALLOWED_TAGS and t not in _CREATOR_COMMENT_VOID_TAGS:
+            self._out.append(f"</{t}>")
+
+    def handle_startendtag(self, tag, attrs):
+        t = (tag or "").lower()
+        if t in _CREATOR_COMMENT_VOID_TAGS:
+            self.handle_starttag(tag, attrs)
+            return
+        self.handle_starttag(tag, attrs)
+        self.handle_endtag(tag)
+
+    def handle_data(self, data):
+        if self._skip_stack:
+            return
+        if data is None:
+            return
+        # 텍스트는 항상 escape해서 HTML 주입을 차단
+        self._out.append(_html_escape(str(data), quote=False))
+
+    def handle_comment(self, data):
+        # 주석은 제거(불필요/오해 소지)
+        return
+
+
+def _sanitize_creator_comment_html(value: Optional[str], max_length: Optional[int] = None) -> Optional[str]:
+    """
+    크리에이터 코멘트(user_display_description) 전용 sanitize.
+
+    주의:
+    - 일반 텍스트 필드와 달리 HTML 태그를 일부 허용하므로, XSS 방지를 위해 반드시 정제 후 저장한다.
+    - max_length는 "정제된 HTML 문자열 길이" 기준으로 검사한다.
+    """
+    if value is None:
+        return None
+    raw = str(value)
+    if not raw.strip():
+        return None
+    try:
+        parser = _CreatorCommentHTMLSanitizer()
+        parser.feed(raw)
+        parser.close()
+        cleaned = "".join(parser._out).strip()
+    except Exception:
+        # 방어: 파서가 깨지면 기존 텍스트 sanitize로 폴백(HTML은 보존 못하지만 저장 실패는 방지)
+        cleaned = _sanitize_text(raw, max_length) or ""
+    if max_length is not None and len(cleaned) > max_length:
+        raise ValueError(f'최대 {max_length}자까지 입력할 수 있습니다.')
+    return cleaned or None
 
 
 class IntroductionScene(BaseModel):
@@ -91,6 +239,8 @@ class CharacterBasicInfo(BaseModel):
             'world_setting': 5000,
             'user_display_description': 3000,
         }
+        if info.field_name == 'user_display_description':
+            return _sanitize_creator_comment_html(v, max_len_map.get(info.field_name))
         return _sanitize_text(v, max_len_map.get(info.field_name))
 
 

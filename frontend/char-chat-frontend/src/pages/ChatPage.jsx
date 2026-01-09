@@ -1364,6 +1364,21 @@ const ChatPage = () => {
             try { navigate('/dashboard', { replace: true }); } catch (_) { try { navigate('/', { replace: true }); } catch(__) {} }
             return;
           }
+          /**
+           * ✅ 일반 캐릭터챗: 삭제된 캐릭터(404) UX
+           *
+           * 요구사항:
+           * - 삭제된 캐릭터를 이전에 대화했던 유저가 접근할 때도, 일반 오류가 아니라
+           *   "삭제된 캐릭터입니다"로 명확하게 안내한다.
+           *
+           * 동작:
+           * - 404 + "캐릭터를 찾을 수 없습니다" → 토스트 안내 후 홈(또는 대시보드)로 이동
+           */
+          if (status === 404 && detail.includes('캐릭터를 찾을 수 없습니다')) {
+            try { showToastOnce({ key: `deleted-character:${characterId}:${chatRoomId || 'none'}`, type: 'error', message: '삭제된 캐릭터입니다' }); } catch (_) {}
+            try { navigate('/dashboard', { replace: true }); } catch (_) { try { navigate('/', { replace: true }); } catch(__) {} }
+            return;
+          }
         } catch (_) {}
 
         console.error('채팅 초기화 실패:', err);
@@ -3303,13 +3318,14 @@ const ChatPage = () => {
 
   if (error && !character) {
     const isDeletedWork = String(error || '').includes('삭제된 작품');
+    const isDeletedCharacter = String(error || '').includes('삭제된 캐릭터');
     const isPrivateWork = String(error || '').includes('비공개');
     return (
       <div className="min-h-screen bg-gradient-to-br from-purple-50 via-blue-50 to-indigo-50 flex items-center justify-center">
         <div className="text-center">
           <AlertCircle className="w-12 h-12 text-red-500 mx-auto mb-4" />
           <h3 className="text-lg font-medium text-gray-900 mb-2">
-            {isDeletedWork ? '삭제된 작품입니다' : (isPrivateWork ? '접근할 수 없습니다' : '오류가 발생했습니다')}
+            {isDeletedWork ? '삭제된 작품입니다' : (isDeletedCharacter ? '삭제된 캐릭터입니다' : (isPrivateWork ? '접근할 수 없습니다' : '오류가 발생했습니다'))}
           </h3>
           <p className="text-gray-600 mb-4">{error}</p>
           <Button onClick={() => navigate('/')} variant="outline">
@@ -4235,7 +4251,10 @@ const ChatPage = () => {
                       ? '서술/묘사로 입력하세요. 예) * 창밖에는 비가 내리고 있었다.'
                       : '대사입력 예) 반가워!')
                 }
-                className="w-full bg-transparent border-0 focus:border-0 focus:ring-0 outline-none text-sm p-0 pl-3 placeholder:text-gray-500 resize-none"
+                // ✅ iOS Safari(아이폰) 자동 확대(줌) 방지:
+                // - input/textarea font-size가 16px 미만이면 포커스 시 화면이 확대되며 하단 버튼이 잘리는 문제가 발생한다.
+                // - 모바일 입력창은 16px로 고정한다.
+                className="w-full bg-transparent border-0 focus:border-0 focus:ring-0 outline-none text-base p-0 pl-3 placeholder:text-gray-500 resize-none"
                 style={{ minHeight: 36 }}
                 rows={1}
               />

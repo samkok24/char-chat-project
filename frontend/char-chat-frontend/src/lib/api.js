@@ -642,6 +642,14 @@ export const storiesAPI = {
   // 원작챗 컨텍스트 워밍 상태
   getContextStatus: (storyId) => api.get(`/stories/${storyId}/context-status`),
 
+  // ✅ 작품공지(작가 공지)
+  createAnnouncement: (storyId, { content }) =>
+    api.post(`/stories/${storyId}/announcements`, { content }),
+  pinAnnouncement: (storyId, announcementId, pinned) =>
+    api.post(`/stories/${storyId}/announcements/${announcementId}/pin`, { pinned: !!pinned }),
+  deleteAnnouncement: (storyId, announcementId) =>
+    api.delete(`/stories/${storyId}/announcements/${announcementId}`),
+
   // Queue: cancel / status / patch
   cancelGenerateJob: (jobId) => api.delete(`/stories/generate/stream/${jobId}`),
   getGenerateJobStatus: (jobId) => api.get(`/stories/generate/stream/${jobId}/status`),

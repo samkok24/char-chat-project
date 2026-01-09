@@ -23,6 +23,9 @@ COLUMNS_TO_ADD = {
     "stories": [
         ("is_origchat", "BOOLEAN DEFAULT FALSE"),
         ("cover_url", "VARCHAR(500)"),
+        # ✅ 작품공지(작가 공지): JSONB 배열
+        # - Postgres 11+에서는 default 추가가 메타데이터 최적화로 빠르게 적용된다.
+        ("announcements", "JSONB DEFAULT '[]'::jsonb"),
     ],
     "characters": [
         ("comment_count", "INTEGER DEFAULT 0"),

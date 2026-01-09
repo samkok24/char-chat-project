@@ -3,7 +3,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
 import { Button } from './ui/button';
 import { mediaAPI, charactersAPI, storiesAPI } from '../lib/api';
 import { resolveImageUrl } from '../lib/images';
-import { Loader2, Trash2, X } from 'lucide-react';
+import { Loader2, Trash2 } from 'lucide-react';
 
 const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initialGallery }) => {
   // 단일 갤러리: 업로드/생성 결과를 모두 여기에 누적
@@ -625,14 +625,6 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
         className="bg-gray-900 text-white border border-gray-800 max-w-4xl flex flex-col max-h-[92svh] md:max-h-[85vh] overflow-y-auto md:overflow-hidden"
         aria-describedby="img-gen-insert-desc"
       >
-        <button
-          type="button"
-          onClick={handleDismiss}
-          aria-label="닫기"
-          className="absolute top-2 right-2 p-2 rounded-md bg-black/40 hover:bg-black/60 text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-500 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900"
-        >
-          <X className="w-4 h-4" />
-        </button>
         <DialogHeader>
           <DialogTitle>이미지 생성/삽입</DialogTitle>
           <div id="img-gen-insert-desc" className="sr-only">이미지를 업로드하거나 생성하여 갤러리에 추가하고 순서를 변경합니다.</div>

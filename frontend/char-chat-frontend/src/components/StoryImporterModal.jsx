@@ -234,22 +234,32 @@ export const StoryImporterModal = ({ isOpen, onClose, onApply }) => {
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-60 z-50 flex items-center justify-center p-4">
-      <div className="bg-white dark:bg-gray-900 rounded-lg shadow-2xl w-full max-w-4xl h-[90vh] flex flex-col">
-        <header className="p-4 border-b flex justify-between items-center">
-          <h2 className="text-xl font-bold flex items-center">
-            <Wand2 className="w-6 h-6 mr-3 text-purple-500" />
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-3 sm:p-6">
+      {/* ✅ CreateCharacterPage는 상위에서 text-white를 걸고 있어, 모달에서 명시적으로 텍스트 색을 고정해야 한다.
+          그렇지 않으면 bg-white 위에 글자가 흰색으로 렌더되어 “폰트가 안 보이는” 현상이 발생한다. */}
+      <div className="w-full max-w-[980px] max-h-[92vh] overflow-hidden rounded-2xl border border-gray-200/80 bg-white text-gray-900 shadow-2xl dark:border-gray-700/80 dark:bg-gray-900 dark:text-gray-100">
+        <header className="px-4 py-3 border-b border-gray-200/80 dark:border-gray-700/80 flex justify-between items-center gap-3">
+          <h2 className="text-base sm:text-xl font-bold flex items-center">
+            <Wand2 className="w-5 h-5 sm:w-6 sm:h-6 mr-2 sm:mr-3 text-purple-500" />
             AI로 스토리 분석하여 자동 완성
           </h2>
-          <Button variant="ghost" size="icon" onClick={onClose}>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            onClick={onClose}
+            aria-label="닫기"
+            title="닫기"
+            className="text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+          >
             <X className="h-5 w-5" />
           </Button>
         </header>
         
-        <div className="flex-grow overflow-y-auto p-6 space-y-6">
+        <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
           {/* 분석 전 UI */}
           {!analysisResult && (
-            <Card>
+            <Card className="bg-white text-gray-900 border border-gray-200/70 dark:bg-gray-900/60 dark:text-gray-100 dark:border-gray-700/80">
               <CardHeader>
                 <CardTitle>스토리 입력</CardTitle>
                 <CardDescription>
@@ -258,12 +268,12 @@ export const StoryImporterModal = ({ isOpen, onClose, onApply }) => {
               </CardHeader>
               <CardContent className="space-y-4">
                 <div>
-                  <label className="block text-sm font-medium mb-2">AI 모델 선택</label>
+                  <label className="block text-sm font-medium mb-2 text-gray-800 dark:text-gray-200">AI 모델 선택</label>
                   <Select value={selectedAiModel} onValueChange={setSelectedAiModel}>
-                    <SelectTrigger>
+                    <SelectTrigger className="w-full bg-white text-gray-900 border-gray-300 dark:bg-gray-950 dark:text-gray-100 dark:border-gray-700">
                       <SelectValue placeholder="AI 모델 선택" />
                     </SelectTrigger>
-                    <SelectContent>
+                    <SelectContent className="bg-white text-gray-900 border-gray-200 dark:bg-gray-950 dark:text-gray-100 dark:border-gray-700">
                       <SelectItem value="gemini">Gemini</SelectItem>
                       <SelectItem value="claude">Claude</SelectItem>
                     </SelectContent>
@@ -273,7 +283,7 @@ export const StoryImporterModal = ({ isOpen, onClose, onApply }) => {
                   value={storyText}
                   onChange={(e) => setStoryText(e.target.value)}
                   placeholder="이곳에 분석할 이야기를 붙여넣으세요..."
-                  className="min-h-[300px] text-base"
+                  className="min-h-[240px] sm:min-h-[320px] text-base bg-white text-gray-900 border-gray-300 placeholder:text-gray-400 dark:bg-gray-950 dark:text-gray-100 dark:border-gray-700 dark:placeholder:text-gray-500"
                   disabled={loading}
                 />
                 {error && (
@@ -282,7 +292,7 @@ export const StoryImporterModal = ({ isOpen, onClose, onApply }) => {
                     <AlertDescription>{error}</AlertDescription>
                   </Alert>
                 )}
-                <Button onClick={handleAnalyze} disabled={loading} className="w-full bg-purple-600 hover:bg-purple-700">
+                <Button onClick={handleAnalyze} disabled={loading} className="w-full bg-purple-600 hover:bg-purple-700 text-white">
                   {loading ? (
                     <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> 분석 중...</>
                   ) : (
@@ -290,7 +300,7 @@ export const StoryImporterModal = ({ isOpen, onClose, onApply }) => {
                   )}
                 </Button>
                 {loading && (
-                  <p className="text-sm text-center text-gray-500 mt-2">
+                  <p className="text-sm text-center text-gray-500 dark:text-gray-400 mt-2">
                     AI가 열심히 당신의 이야기를 읽고 있어요... (최대 1분 정도 소요될 수 있습니다)
                   </p>
                 )}

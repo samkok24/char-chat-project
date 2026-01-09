@@ -26,7 +26,7 @@ SheetTrigger,
 import { RadioGroup, RadioGroupItem } from '../components/ui/radio-group';
 import { useNavigate, Link, useLocation } from 'react-router-dom';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { storiesAPI, charactersAPI, chatAPI, rankingAPI, metricsAPI } from '../lib/api';
+import { storiesAPI, charactersAPI, chatAPI, rankingAPI, metricsAPI, tagsAPI, cmsAPI } from '../lib/api';
 // import { generationAPI } from '../lib/generationAPI'; // removed: use existing backend flow
 import { Switch } from '../components/ui/switch';
 import { DEFAULT_SQUARE_URI } from '../lib/placeholder';
@@ -42,6 +42,14 @@ import Composer from '../components/agent/Composer';
 import DualResponseBubble from '../components/agent/DualResponseBubble';
 import CharacterChatInline from '../components/CharacterChatInline';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuLabel } from '../components/ui/dropdown-menu';
+import { applyTagDisplayConfig } from '../lib/tagOrder';
+import {
+  CHARACTER_TAG_DISPLAY_CHANGED_EVENT,
+  CHARACTER_TAG_DISPLAY_STORAGE_KEY,
+  getCharacterTagDisplay,
+  setCharacterTagDisplay as persistCharacterTagDisplay,
+  isDefaultCharacterTagDisplayConfig,
+} from '../lib/cmsTagDisplay';
 
 const LS_SESSIONS = (userId) => `agent:sessions:${userId}`;
 const LS_MESSAGES_PREFIX = (userId) => `agent:messages:${userId}:`;
@@ -491,6 +499,11 @@ const suppressNextAutoScroll = useCallback((ms = 300) => {
 }, []);
 const stableMessages = useMemo(() => messages, [messages]);
 
+// ✅ 기능 스위치(요구사항): 하이라이트는 아직 서비스하지 않으므로 OFF
+// - ON으로 바꾸면 하이라이트 생성(API 호출) + UI 노출이 즉시 복구된다.
+// - OFF일 때는: (1) 하이라이트 메시지 생성/저장 자체를 하지 않고, (2) 기존 하이라이트 메시지도 UI에서 비노출한다.
+const STORY_HIGHLIGHTS_ENABLED = false;
+
 /**
  * ✅ 최신 dual_response만 선택 버튼을 노출한다.
  *
@@ -723,6 +736,14 @@ const [aiRecommendedTags, setAiRecommendedTags] = useState({}); // { messageId: 
 
 // Remix 선택 상태: messageId -> string[]
 const [remixSelected, setRemixSelected] = useState({});
+
+// ===== 장르 모드 태그칩(SSOT: 캐릭터탭 태그) =====
+const [agentAllTags, setAgentAllTags] = useState([]);
+const [agentCharacterTagDisplay, setAgentCharacterTagDisplay] = useState(() => {
+  try { return getCharacterTagDisplay(); } catch (_) { return {}; }
+});
+const [genreTagChipsExpanded, setGenreTagChipsExpanded] = useState(false);
+const GENRE_TAG_CHIP_LIMIT = 10;
 // 생성 중 경과 시간 표시용
 const [elapsedSeconds, setElapsedSeconds] = useState(0);
 // 태그 뷰 토글: 'auto'일 땐 현재 스토리 모드에 맞춰 시작, 아이콘으로 일시 토글
@@ -755,6 +776,39 @@ const toggleRemixTag = useCallback((msgId, tag) => {
     return { ...prev, [msgId]: next };
   });
 }, []);
+
+// ✅ 캐릭터탭과 동일한 태그 정렬(한글 우선 + CMS 숨김/우선순위 적용)
+const sortedTagsForAgentGenreChips = useMemo(() => {
+  const base = Array.isArray(agentAllTags) ? agentAllTags : [];
+  const getLabel = (t) => String(t?.name || t?.slug || '').trim();
+  const isHangulStart = (label) => {
+    const s = String(label || '').trim();
+    if (!s) return false;
+    const ch = s.codePointAt(0);
+    return (
+      (ch >= 0xAC00 && ch <= 0xD7A3) ||
+      (ch >= 0x1100 && ch <= 0x11FF) ||
+      (ch >= 0x3130 && ch <= 0x318F)
+    );
+  };
+  const collatorKo = new Intl.Collator('ko-KR', { numeric: true, sensitivity: 'base' });
+  const collatorEtc = new Intl.Collator('en', { numeric: true, sensitivity: 'base' });
+  const baseSorted = [...base].sort((a, b) => {
+    const la = getLabel(a);
+    const lb = getLabel(b);
+    const ha = isHangulStart(la);
+    const hb = isHangulStart(lb);
+    if (ha !== hb) return ha ? -1 : 1;
+    if (ha) return collatorKo.compare(la, lb);
+    return collatorEtc.compare(la, lb);
+  });
+  return applyTagDisplayConfig(baseSorted, agentCharacterTagDisplay);
+}, [agentAllTags, agentCharacterTagDisplay]);
+
+const visibleAgentGenreChips = useMemo(() => {
+  const list = Array.isArray(sortedTagsForAgentGenreChips) ? sortedTagsForAgentGenreChips : [];
+  return genreTagChipsExpanded ? list : list.slice(0, GENRE_TAG_CHIP_LIMIT);
+}, [sortedTagsForAgentGenreChips, genreTagChipsExpanded]);
 
 // 🆕 Dual response 선택 핸들러
 const handleSelectMode = useCallback((messageId, selectedMode) => {
@@ -815,7 +869,7 @@ const handleSelectMode = useCallback((messageId, selectedMode) => {
     }
   }
   
-  if (imageUrl) {
+  if (imageUrl && STORY_HIGHLIGHTS_ENABLED) {
     // 하이라이트 로딩 + 추천 메시지 추가
     const placeholderId = crypto.randomUUID();
     const withExtras = [
@@ -966,7 +1020,10 @@ const handleRemixGenerate = useCallback(async (msg, assistantText) => {
       '호러': '감각적 공포, 보이지 않는 위협, 불길한 전조',
       '느와르': '거친 사실주의, 냉소적 톤, 어두운 이미지'
     };
-    const tagDesc = selected.map(t => styleDict[t] || `${t} 느낌을 강하게`).join('; ');
+    // ✅ 기본값도 "중심 반영"이 되도록(캐릭터탭 태그 등 미등록 태그 방어)
+    const tagDesc = selected
+      .map(t => styleDict[t] || `태그 "${t}"의 장르/소재/세계관을 이야기의 핵심 사건/갈등/배경으로 반드시 반영`)
+      .join('; ');
     
     // 특수 태그 강화 노트 (밈스럽게, 위트있게, 빵터지게)
     let specialNotes = '';
@@ -981,12 +1038,61 @@ const handleRemixGenerate = useCallback(async (msg, assistantText) => {
     }
     
     const rules = selected.length > 0 ? `\n[리믹스 규칙 - 반드시 준수]\n- 선택 태그를 매우 강하게 반영: ${tags}\n- 태그 해석: ${tagDesc}${specialNotes}\n- 초안과 톤/어휘/리듬/문장 구조가 눈에 띄게 달라야 한다 (문장 유사 반복 최소화).\n- 사실/숫자/이미지 내 텍스트는 절대 변경하지 말 것.\n- 메타발언/설명 금지(예: "태그 반영" 같은 문구 금지).` : '';
-    const remixPrompt = `${rules}\n\n아래 초안을 같은 사실로 리믹스해줘. 스타일만 태그에 맞게 강하게 전환할 것:\n\n${assistantText}`.trim();
 
-    const assistantId = crypto.randomUUID();
-    const thinkingMsg = { id: assistantId, role: 'assistant', content: '', thinking: true, createdAt: nowIso(), storyMode: msg.storyMode || 'auto' };
-    setMessages(curr => [...curr, thinkingMsg]);
-    setGenState(activeSessionId, { status: GEN_STATE.PREVIEW_STREAMING });
+    // ✅ 요구사항: 새 말풍선 생성 금지 → 기존 말풍선에 덮어쓰기
+    const assistantId = msg?.id;
+    const currentSessionId = activeSessionIdRef.current || activeSessionId; // ✅ 시작 시점 세션 캡처
+    if (!assistantId || !currentSessionId) return;
+    const storageUserId = user?.id || 'guest';
+
+    const originalText = String(assistantText || '').toString();
+    const targetLen = (() => { try { return Math.max(0, originalText.length); } catch (_) { return 0; } })();
+    const tolerance = (() => { try { return Math.max(60, Math.round(targetLen * 0.08)); } catch (_) { return 60; } })();
+    const lengthRule = targetLen > 0
+      ? `\n\n[분량 규칙 - 반드시 준수]\n- 출력 분량은 원문과 동일한 수준으로: 약 ${targetLen}자 (±${tolerance}자)\n- 문단 수/줄바꿈 리듬도 가능하면 유지`
+      : '';
+    const remixPrompt = `${rules}${lengthRule}\n\n아래 초안을 같은 사실로 리믹스해줘. 스타일만 태그에 맞게 강하게 전환할 것:\n\n${originalText}`.trim();
+
+    const readSessionMessages = () => {
+      try {
+        if (isGuest) {
+          const s = sessionLocalMessagesRef.current.get(currentSessionId);
+          return Array.isArray(s) ? s : loadJson(LS_MESSAGES_PREFIX(storageUserId) + currentSessionId, []);
+        }
+        return loadJson(LS_MESSAGES_PREFIX(storageUserId) + currentSessionId, []);
+      } catch (_) {
+        return [];
+      }
+    };
+    const writeSessionMessages = (nextList) => {
+      try {
+        if (isGuest) {
+          // guest도 기존 코드 경로(loadJson)가 localStorage를 읽는 경우가 있어, localStorage에도 함께 저장한다(안전).
+          try { saveJson(LS_MESSAGES_PREFIX(storageUserId) + currentSessionId, nextList); } catch (_) {}
+          try { sessionLocalMessagesRef.current.set(currentSessionId, nextList); } catch (_) {}
+          try { sessionStorage.setItem(LS_MESSAGES_PREFIX(storageUserId) + currentSessionId, JSON.stringify(nextList)); } catch (_) {}
+          return;
+        }
+        saveJson(LS_MESSAGES_PREFIX(storageUserId) + currentSessionId, nextList);
+      } catch (e) {
+        console.error('[AgentPage] remix persist failed:', e);
+      }
+    };
+
+    // 1) 기존 말풍선 → thinking 상태로 전환(덮어쓰기 준비)
+    const baseBeforeRaw = readSessionMessages();
+    const baseBefore = (Array.isArray(baseBeforeRaw) && baseBeforeRaw.length > 0)
+      ? baseBeforeRaw
+      : (Array.isArray(messages) ? messages : []);
+    const withThinking = (Array.isArray(baseBefore) ? baseBefore : []).map((m) => (
+      (m?.id === assistantId)
+        ? { ...m, thinking: true, thinkingStartedAt: nowIso(), streaming: false, error: false, content: '', fullContent: originalText }
+        : m
+    ));
+    writeSessionMessages(withThinking);
+    if (activeSessionIdRef.current === currentSessionId) setMessages(withThinking);
+
+    setGenState(currentSessionId, { status: GEN_STATE.PREVIEW_STREAMING });
 
     const staged = [];
     if (imageUrl) staged.push({ type: 'image', url: imageUrl });
@@ -994,11 +1100,44 @@ const handleRemixGenerate = useCallback(async (msg, assistantText) => {
 
     const effectiveModeForRemix = (tagViewMode === 'auto' ? (msg.storyMode || 'auto') : tagViewMode);
     const response = await chatAPI.agentSimulate({ staged, mode: 'micro', storyMode: effectiveModeForRemix, model: storyModel, sub_model: storyModel });
-    const text = response.data?.assistant || '';
     const decidedMode = response.data?.story_mode || (msg.storyMode || 'auto');
-    // 타이핑 출력
-    const currentSessionId = activeSessionId; // ✅ 시작 시점 세션 캡처
-    setMessages(curr => curr.map(m => m.id === assistantId ? { ...m, content: '', thinking: false, streaming: true, storyMode: decidedMode } : m));
+
+    const normalizeText = (v) => {
+      try { return String(v ?? '').replace(/\r\n/g, '\n'); } catch (_) { return ''; }
+    };
+    const trimToTarget = (text, maxLen) => {
+      try {
+        const s = String(text || '');
+        if (s.length <= maxLen) return s;
+        const head = s.slice(0, maxLen);
+        const lastNl = head.lastIndexOf('\n');
+        const puncts = ['.', '!', '?', '。', '！', '？'];
+        let lastP = -1;
+        for (const p of puncts) lastP = Math.max(lastP, head.lastIndexOf(p));
+        const cut = Math.max(lastNl, lastP);
+        if (cut >= maxLen - 80) return head.slice(0, cut + 1).trimEnd();
+        return head.trimEnd();
+      } catch (_) {
+        return String(text || '').slice(0, maxLen);
+      }
+    };
+
+    let text = normalizeText(response.data?.assistant || '').trim();
+    // ✅ 분량 방어: 너무 길면 targetLen에 맞춰 잘라 박스 높이가 급변하지 않게 한다.
+    if (targetLen > 0 && text.length > targetLen + tolerance) {
+      text = trimToTarget(text, targetLen);
+    }
+
+    // 2) 같은 말풍선에서 스트리밍 시작
+    const initBaseRaw = readSessionMessages();
+    const initBase = (Array.isArray(initBaseRaw) && initBaseRaw.length > 0) ? initBaseRaw : withThinking;
+    const initList = (Array.isArray(initBase) ? initBase : []).map((m) => (
+      (m?.id === assistantId)
+        ? { ...m, content: '', fullContent: text, thinking: false, streaming: true, storyMode: decidedMode, error: false }
+        : m
+    ));
+    writeSessionMessages(initList);
+    if (activeSessionIdRef.current === currentSessionId) setMessages(initList);
 
     let idx = 0; 
     const total = text.length; 
@@ -1009,17 +1148,22 @@ const handleRemixGenerate = useCallback(async (msg, assistantText) => {
       idx = Math.min(total, idx + step);
       const slice = text.slice(0, idx);
       
-      // ✅ 저장소 항상 업데이트 (타이핑 중에도)
-      const saved = loadJson(LS_MESSAGES_PREFIX(user?.id) + currentSessionId, []);
-      const updated = saved.map(m => m.id === assistantId ? { 
-        ...m, 
-        content: slice,
-        fullContent: text, // 전체 텍스트는 항상 저장
-        streaming: idx < total,
-        thinking: false,
-        storyMode: decidedMode
-      } : m);
-      saveJson(LS_MESSAGES_PREFIX(user?.id) + currentSessionId, updated);
+      // ✅ 저장소 항상 업데이트 (타이핑 중에도) - guest 포함 안전 경로 사용
+      const saved = readSessionMessages();
+      const updated = (Array.isArray(saved) ? saved : []).map((m) => (
+        (m?.id === assistantId)
+          ? {
+              ...m,
+              content: slice,
+              fullContent: text, // 전체 텍스트는 항상 저장
+              streaming: idx < total,
+              thinking: false,
+              storyMode: decidedMode,
+              expanded: idx >= total,
+            }
+          : m
+      ));
+      writeSessionMessages(updated);
       
       // ✅ 현재 보고 있는 세션일 때만 UI 업데이트
       if (activeSessionIdRef.current === currentSessionId) {
@@ -1030,16 +1174,17 @@ const handleRemixGenerate = useCallback(async (msg, assistantText) => {
         clearInterval(timer);
         const timers = sessionTypingTimersRef.current.get(currentSessionId) || [];
         sessionTypingTimersRef.current.set(currentSessionId, timers.filter(t => t !== timer));
+        try { setGenState(currentSessionId, { status: GEN_STATE.IDLE }); } catch (_) {}
         
         // ✅ 하이라이트/추천 추가
-        if (imageUrl) {
-          const finalSaved = loadJson(LS_MESSAGES_PREFIX(user?.id) + currentSessionId, []);
+        if (imageUrl && STORY_HIGHLIGHTS_ENABLED) {
+          const finalSaved = loadJson(LS_MESSAGES_PREFIX(storageUserId) + currentSessionId, []);
           const placeholderId = crypto.randomUUID();
           const withExtras = [...finalSaved, 
             { id: placeholderId, type: 'story_highlights_loading', createdAt: nowIso() }, 
             { id: crypto.randomUUID(), role: 'assistant', type: 'recommendation', createdAt: nowIso() }
           ];
-          saveJson(LS_MESSAGES_PREFIX(user?.id) + currentSessionId, withExtras);
+          saveJson(LS_MESSAGES_PREFIX(storageUserId) + currentSessionId, withExtras);
           
           if (activeSessionIdRef.current === currentSessionId) {
             setMessages(withExtras);
@@ -1061,11 +1206,11 @@ const handleRemixGenerate = useCallback(async (msg, assistantText) => {
               const hiRes = await chatAPI.agentGenerateHighlights({ text, image_url: imageUrl, story_mode: decidedMode || 'auto',vision_tags: visionTags });
               const scenes = hiRes.data?.story_highlights || [];
               
-              const currentMsgs = loadJson(LS_MESSAGES_PREFIX(user?.id) + currentSessionId, []);
+              const currentMsgs = loadJson(LS_MESSAGES_PREFIX(storageUserId) + currentSessionId, []);
               const placeholder = currentMsgs.find(m => m.type === 'story_highlights_loading');
               if (!placeholder) return;
               
-              const savedAfterHL = loadJson(LS_MESSAGES_PREFIX(user?.id) + currentSessionId, []);
+              const savedAfterHL = loadJson(LS_MESSAGES_PREFIX(storageUserId) + currentSessionId, []);
               const updatedHL = savedAfterHL.map(mm => mm.id === placeholder.id ? { 
                 id: crypto.randomUUID(), 
                 type: 'story_highlights', 
@@ -1073,15 +1218,15 @@ const handleRemixGenerate = useCallback(async (msg, assistantText) => {
                 createdAt: nowIso() 
               } : mm);
               
-              saveJson(LS_MESSAGES_PREFIX(user?.id) + currentSessionId, updatedHL);
+              saveJson(LS_MESSAGES_PREFIX(storageUserId) + currentSessionId, updatedHL);
               
               if (activeSessionIdRef.current === currentSessionId) {
                 setMessages(updatedHL);
               }
             } catch (_) {
-              const savedErr = loadJson(LS_MESSAGES_PREFIX(user?.id) + currentSessionId, []);
+              const savedErr = loadJson(LS_MESSAGES_PREFIX(storageUserId) + currentSessionId, []);
               const filtered = savedErr.filter(mm => mm.type !== 'story_highlights_loading');
-              saveJson(LS_MESSAGES_PREFIX(user?.id) + currentSessionId, filtered);
+              saveJson(LS_MESSAGES_PREFIX(storageUserId) + currentSessionId, filtered);
               
               if (activeSessionIdRef.current === currentSessionId) {
                 setMessages(filtered);
@@ -1096,9 +1241,12 @@ const handleRemixGenerate = useCallback(async (msg, assistantText) => {
     sessionTypingTimersRef.current.set(currentSessionId, [...timers, timer]);
   } catch (e) {
     setMessages(curr => curr.map(m => m.thinking ? { ...m, content: '응답 생성에 실패했습니다. 다시 시도해주세요.', thinking: false, error: true } : m));
-    setGenState(activeSessionId, { status: GEN_STATE.IDLE });
+    try {
+      const sid = activeSessionIdRef.current || activeSessionId;
+      if (sid) setGenState(sid, { status: GEN_STATE.IDLE });
+    } catch (_) {}
   }
-}, [activeSessionId, messages, remixSelected, storyModel]);
+}, [activeSessionId, messages, remixSelected, storyModel, tagViewMode, isGuest, user?.id]);
 const assistantMessageIdRef = useRef(null);
 
 // 빠른 문장 템플릿 순환(넷플릭스/영화/드라마 → W5 복귀)
@@ -1139,15 +1287,96 @@ useEffect(() => { if (user?.id) saveJson(LS_IMAGES(user.id), images); }, [user?.
 useEffect(() => { if (user?.id) saveJson(LS_STORIES(user.id), storiesList); }, [user?.id, storiesList]);
 useEffect(() => { if (user?.id) saveJson(LS_CHARACTERS(user.id), charactersList); }, [user?.id, charactersList]);
 
+// ===== 운영 SSOT: 캐릭터탭 태그 노출/순서 설정 동기화 (스토리에이전트에서도 동일 적용) =====
+useEffect(() => {
+  const refresh = () => {
+    try { setAgentCharacterTagDisplay(getCharacterTagDisplay()); } catch (_) {}
+  };
+  const onStorage = (e) => {
+    try {
+      if (!e) return;
+      if (e.key === CHARACTER_TAG_DISPLAY_STORAGE_KEY) refresh();
+    } catch (_) {}
+  };
+  try { window.addEventListener(CHARACTER_TAG_DISPLAY_CHANGED_EVENT, refresh); } catch (_) {}
+  try { window.addEventListener('storage', onStorage); } catch (_) {}
+  refresh();
+  return () => {
+    try { window.removeEventListener(CHARACTER_TAG_DISPLAY_CHANGED_EVENT, refresh); } catch (_) {}
+    try { window.removeEventListener('storage', onStorage); } catch (_) {}
+  };
+}, []);
+
+// ✅ 홈을 거치지 않고 Agent로 직접 진입해도, 서버(CMS) SSOT 태그 설정을 적용한다.
+useEffect(() => {
+  let active = true;
+  (async () => {
+    try {
+      const res = await cmsAPI.getCharacterTagDisplay();
+      if (!active) return;
+      const cfg = (res && res.data && typeof res.data === 'object') ? res.data : null;
+      if (!cfg) return;
+      // ✅ 안전 전환: 서버가 기본값(미설정)이고 로컬에 값이 있으면(특히 관리자) 로컬을 보존
+      let skipApply = false;
+      try {
+        const hasLocal = !!localStorage.getItem(CHARACTER_TAG_DISPLAY_STORAGE_KEY);
+        const looksDefault = isDefaultCharacterTagDisplayConfig(cfg);
+        if (hasLocal && looksDefault) skipApply = true;
+      } catch (_) {}
+      if (!skipApply) {
+        try { persistCharacterTagDisplay(cfg); } catch (_) {}
+      }
+      try { setAgentCharacterTagDisplay(getCharacterTagDisplay()); } catch (_) {}
+    } catch (e) {
+      try { console.warn('[AgentPage] cmsAPI.getCharacterTagDisplay failed:', e); } catch (_) {}
+    }
+  })();
+  return () => { active = false; };
+}, []);
+
+// ✅ 스토리에이전트: 장르 태그칩의 SSOT는 "캐릭터탭 태그" (tagsAPI.getTags + CMS 정렬/숨김)
+useEffect(() => {
+  let active = true;
+  (async () => {
+    try {
+      const res = await tagsAPI.getTags();
+      const arr = res?.data || [];
+      const cleaned = Array.isArray(arr)
+        ? arr.filter(t => typeof t?.slug === 'string' && !String(t.slug).startsWith('cover:'))
+        : [];
+      if (!active) return;
+      setAgentAllTags(cleaned);
+    } catch (e) {
+      try { console.warn('[AgentPage] tagsAPI.getTags failed:', e); } catch (_) {}
+      if (!active) return;
+      setAgentAllTags([]);
+    }
+  })();
+  return () => { active = false; };
+}, []);
+
 // 생성 중 경과 시간 타이머
 useEffect(() => {
-  const thinkingMsg = stableMessages.find(m => m.thinking);
+  // ✅ 가장 최근 thinking 메시지를 기준으로 타이머를 계산한다.
+  // - 기존 메시지(덮어쓰기/재생성)에 thinking을 켜는 경우 createdAt이 과거일 수 있어,
+  //   별도 필드(thinkingStartedAt)가 있으면 그 값을 우선 사용한다.
+  const arr = Array.isArray(stableMessages) ? stableMessages : [];
+  let thinkingMsg = null;
+  for (let i = arr.length - 1; i >= 0; i--) {
+    const m = arr[i];
+    if (m && m.thinking) { thinkingMsg = m; break; }
+  }
   if (!thinkingMsg) {
     setElapsedSeconds(0);
     return;
   }
   setElapsedSeconds(0);
-  const startTime = new Date(thinkingMsg.createdAt).getTime();
+  const startRaw = thinkingMsg.thinkingStartedAt || thinkingMsg.createdAt;
+  const startTime = new Date(startRaw).getTime();
+  if (!Number.isFinite(startTime)) {
+    setElapsedSeconds(0);
+    return;
+  }
   const timer = setInterval(() => {
     const elapsed = Math.floor((Date.now() - startTime) / 1000);
     setElapsedSeconds(elapsed);
@@ -1513,7 +1742,7 @@ const handleRerun = useCallback(async (msg) => {
     if (isGuest) sessionLocalMessagesRef.current.set(sid, cleaned); else saveJson(LS_MESSAGES_PREFIX(user?.id) + sid, cleaned);
     if (activeSessionId === sid) setMessages(cleaned);
     // 3) 메시지를 스피너로 전환
-    updateMessageForSession(sid, msg.id, (m) => ({ ...m, thinking: true, streaming: false, content: '', fullContent: '' }));
+    updateMessageForSession(sid, msg.id, (m) => ({ ...m, thinking: true, thinkingStartedAt: nowIso(), streaming: false, content: '', fullContent: '' }));
     setGenState(sid, { status: GEN_STATE.PREVIEW_STREAMING, controller: null, assistantId: msg.id });
     // 4) 직전 사용자 입력(텍스트/이미지) 묶음 복원
     let userText = '';
@@ -1532,6 +1761,10 @@ const handleRerun = useCallback(async (msg) => {
     const assistantText = res?.data?.assistant || '';
     const decidedMode = res?.data?.story_mode || (msg.storyMode || 'auto');
     updateMessageForSession(sid, msg.id, (m) => ({ ...m, thinking: false, streaming: false, content: assistantText.slice(0,500), fullContent: assistantText }));
+
+    // ✅ 하이라이트 기능 OFF 시: 하이라이트/추천 추가 단계는 건너뛴다(스위치만 OFF)
+    if (!STORY_HIGHLIGHTS_ENABLED) return;
+
     // 6) 하이라이트 로딩 추가 → 생성 후 교체
     const loadingId = crypto.randomUUID();
     const afterText = isGuest ? (sessionLocalMessagesRef.current.get(sid) || []) : loadJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + sid, []);
@@ -2055,6 +2288,9 @@ const handleContinueInline = useCallback(async (msg) => {
         clearInterval(timer);
         const timers = sessionTypingTimersRef.current.get(currentSessionId) || [];
         sessionTypingTimersRef.current.set(currentSessionId, timers.filter(t => t !== timer));
+
+        // ✅ 하이라이트 기능 OFF 시: 재생성 단계는 건너뛴다(스위치만 OFF)
+        if (!STORY_HIGHLIGHTS_ENABLED) return;
 
         // ✅ 하이라이트 재생성
         const combinedText = startText + appended;
@@ -2708,6 +2944,16 @@ return (
                   {/* 하단 페이드아웃 그라데이션 - 타원 컨테이너로 향하는 블러 효과 */}
                   <div className="absolute bottom-0 left-0 right-0 h-32 bg-gradient-to-t from-gray-900/95 via-gray-900/75 to-transparent pointer-events-none z-10" />
                   {stableMessages.map((m) => {
+                      // ✅ 요구사항: '일상/장르' 선택 후 노출되던 추천 카드(캐릭터챗/원작챗, 웹소설 작품)는 비노출
+                      // - 주의: "일상/장르 선택 버튼(dual_response)" / "이어보기" / "태그칩+바꿔보기" 플로우는 유지해야 한다.
+                      if (m?.type === 'recommendation') {
+                        const sm = String(m?.storyMode || '').trim().toLowerCase();
+                        if (sm === 'snap' || sm === 'genre') return null;
+                      }
+                      // ✅ 하이라이트 비활성화(스위치 OFF): 기존/잔존 하이라이트 메시지도 UI에서 비노출
+                      if (!STORY_HIGHLIGHTS_ENABLED && (m?.type === 'story_highlights' || m?.type === 'story_highlights_loading')) {
+                        return null;
+                      }
                       const text = (m.content || '').toString();
                       const isStreaming = !!(m.streaming || m.thinking);
                       const truncated = text.length > 500 ? text.slice(0, 500) + '…' : text;
@@ -2730,9 +2976,9 @@ return (
                                   canSelect={String(m?.id || '') === String(latestDualResponseId || '')}
                                 />
                               ) : m.type === 'story_highlights' ? (
-                                <StoryHighlights highlights={m.scenes || []} username={user?.username || '게스트'} />
+                                STORY_HIGHLIGHTS_ENABLED ? <StoryHighlights highlights={m.scenes || []} username={user?.username || '게스트'} /> : null
                               ) : m.type === 'story_highlights_loading' ? (
-                                <StoryHighlights loading username={user?.username || '게스트'} />
+                                STORY_HIGHLIGHTS_ENABLED ? <StoryHighlights loading username={user?.username || '게스트'} /> : null
                               ) : m.type === 'recommendation' ? (
                                 <div data-section="recommendations">
                                   {m.storyMode === 'snap' ? (
@@ -3076,7 +3322,10 @@ return (
                                     // 계속보기 인라인 진행 중 또는 완료된 후에는 태그 숨김
                                     if (isStreaming || m.continued) return null;
                                     
-                                    const Chip = (tag, isAI = false, isPopular = false) => {
+                                    const Chip = (tagValue, label = null, isAI = false, isPopular = false) => {
+                                      const tag = String(tagValue || '').trim();
+                                      if (!tag) return null;
+                                      const shown = String(label || tag).trim() || tag;
                                       const selected = (remixSelected[m.id] || []).includes(tag);
                                       return (
                                         <button 
@@ -3093,30 +3342,38 @@ return (
                                                   : 'bg-gray-900/40 text-gray-200 ring-1 ring-purple-500/35 shadow-[0_0_10px_rgba(168,85,247,0.25)] hover:bg-gray-800/60'
                                           }`}
                                         >
-                                          #{tag}
+                                          #{shown}
                                         </button>
                                       );
                                     };
                                     
                                     if (effectiveMode === 'genre') {
-                                      // 장르 모드: AI 추천 5개 + 인기 3개
+                                      // ✅ 요구사항: 장르 모드 태그칩 = 캐릭터탭 태그(SSOT)로 교체
+                                      const list = Array.isArray(visibleAgentGenreChips) ? visibleAgentGenreChips : [];
+                                      const total = Array.isArray(sortedTagsForAgentGenreChips) ? sortedTagsForAgentGenreChips.length : 0;
                                       return (
-                                        <div className="flex flex-col items-center gap-3">
-                                          {/* 1줄: AI 추천 */}
-                                          <div className="flex flex-col items-center gap-1.5">
-                                            <div className="text-xs text-purple-300 font-medium">💡 추천</div>
-                                            <div className="flex flex-wrap items-center justify-center gap-2">
-                                              {AI_GENRE_TAGS.map(tag => Chip(tag, true, false))}
-                                            </div>
+                                        <div className="flex flex-col items-center gap-2">
+                                          <div className="flex flex-wrap items-center justify-center gap-2">
+                                            {list.length > 0 ? (
+                                              list.map((t) => Chip(t?.slug, t?.name || t?.slug, false, false))
+                                            ) : (
+                                              <div className="text-xs text-gray-400">태그 불러오는 중...</div>
+                                            )}
                                           </div>
-                                          
-                                          {/* 2줄: 인기 */}
-                                          <div className="flex flex-col items-center gap-1.5">
-                                            <div className="text-xs text-orange-300 font-medium">🔥 인기</div>
-                                            <div className="flex flex-wrap items-center justify-center gap-2">
-                                              {POPULAR_GENRE_TAGS.map(tag => Chip(tag, false, true))}
-                                            </div>
-                                          </div>
+
+                                          {total > GENRE_TAG_CHIP_LIMIT && (
+                                            <button
+                                              type="button"
+                                              onClick={() => setGenreTagChipsExpanded(v => !v)}
+                                              className={`mt-0.5 inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
+                                                genreTagChipsExpanded
+                                                  ? 'bg-gray-900/40 text-gray-200 border-gray-700/60 hover:bg-gray-800/60'
+                                                  : 'bg-purple-600/15 text-purple-200 border-purple-400/60 hover:bg-purple-600/25'
+                                              }`}
+                                            >
+                                              {genreTagChipsExpanded ? '접기' : '펼치기'}
+                                            </button>
+                                          )}
                                         </div>
                                       );
                                     } else {
@@ -3588,7 +3845,7 @@ return (
                         }
                         
                         // ✅ 하이라이트/추천 추가
-                        if (imageUrl) {
+                        if (imageUrl && STORY_HIGHLIGHTS_ENABLED) {
                           const finalSaved = loadJson(LS_MESSAGES_PREFIX(user?.id || 'guest') + currentSessionId, []);
                           const placeholderId = crypto.randomUUID();
                           const withExtras = [...finalSaved, 

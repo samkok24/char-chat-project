@@ -870,14 +870,7 @@ const StoryDiveNovelPage = () => {
                       🔄 다시 생성
                     </Button>
                     
-                    <Button
-                      onClick={handleNext}
-                      disabled={isGenerating}
-                      variant="outline"
-                      className="bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-700 px-6 py-3"
-                    >
-                      ➡️ 원문 엿보기
-                    </Button>
+                    {/* ✅ 요구사항: 스토리다이브에서 "원문 엿보기" 버튼은 비노출 */}
                     
                     <Button
                       onClick={handleErase}

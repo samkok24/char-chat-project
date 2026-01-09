@@ -5,6 +5,7 @@ CAVEDUCK 스타일: "Chat First, Story Later"
 
 from fastapi import FastAPI, HTTPException
 from fastapi.exceptions import ResponseValidationError
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -128,6 +129,15 @@ async def lifespan(app: FastAPI):
                 if "response_length_pref" not in cols:
                     await conn.exec_driver_sql("ALTER TABLE users ADD COLUMN response_length_pref TEXT DEFAULT 'medium'")
                     logger.info("🛠️ users.response_length_pref 컬럼 추가")
+
+                # stories 테이블 컬럼 확인 (작품공지)
+                # - SQLite에서는 새 컬럼을 직접 ALTER로 보정해야 한다.
+                # - 운영(Postgres)은 postgres_migration.py에서 별도로 컬럼을 추가한다.
+                result = await conn.exec_driver_sql("PRAGMA table_info(stories)")
+                cols = {row[1] for row in result.fetchall()}
+                if "announcements" not in cols:
+                    await conn.exec_driver_sql("ALTER TABLE stories ADD COLUMN announcements TEXT")
+                    logger.info("🛠️ stories.announcements 컬럼 추가")
 
                 # chat_rooms 테이블 컬럼 확인 (summary)
                 result = await conn.exec_driver_sql("PRAGMA table_info(chat_rooms)")
@@ -404,6 +414,41 @@ async def response_validation_error_handler(request, exc: ResponseValidationErro
         # 최후 방어: 로깅 실패가 서버를 더 망가뜨리지 않도록
         pass
     return JSONResponse(status_code=500, content={"detail": "response_validation_error"})
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_error_handler(request, exc: RequestValidationError):
+    """
+    요청 스키마 검증 실패(RequestValidationError) 로깅 강화.
+
+    배경/의도:
+    - FastAPI는 요청 body가 Pydantic 스키마에 맞지 않으면 자동으로 422를 반환한다.
+    - 운영/배포에서 422가 "ROLLBACK"만 남고 원인(loc/msg)이 안 보이면 디버깅이 매우 어렵다.
+    - 응답 포맷은 FastAPI 기본과 동일하게 유지하면서(=detail: errors()), 로그만 보강한다.
+    """
+    try:
+        path = getattr(request.url, "path", None) or str(getattr(request, "url", ""))
+        method = getattr(request, "method", "")
+        # errors()는 input 값을 포함할 수 있어 과도한 로그를 방지하기 위해 핵심만 남긴다.
+        try:
+            raw_errs = exc.errors()
+        except Exception as e:
+            raw_errs = [{"type": "errors_failed", "msg": str(e)}]
+        slim = []
+        for e in (raw_errs or []):
+            try:
+                slim.append({
+                    "loc": e.get("loc"),
+                    "msg": e.get("msg"),
+                    "type": e.get("type"),
+                })
+            except Exception:
+                continue
+        logger.warning(f"[RequestValidationError] {method} {path} errors={slim}")
+    except Exception:
+        pass
+    # ✅ 응답은 FastAPI 기본과 동일: detail에 errors() 배열
+    return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
 
 # @app.exception_handler(404)

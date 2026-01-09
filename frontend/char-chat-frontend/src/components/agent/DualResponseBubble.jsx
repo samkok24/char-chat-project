@@ -89,7 +89,10 @@ function DualResponseBubble({ message, onSelect, canSelect = true }) {
           <div 
             ref={contentRef}
             className={`prose prose-sm whitespace-pre-wrap text-gray-100 transition-all duration-300 ${
-              expanded ? '' : 'max-h-[400px] overflow-hidden'
+              // ✅ UX: 두 박스 높이를 항상 동일하게 유지(버튼/툴박스 정렬 안정)
+              // - 이전에는 한쪽 내용이 짧으면 박스 높이가 줄어들어 좌/우 박스 크기가 달라 보였다.
+              // - 접힘 상태에서는 고정 높이로 통일하고, '펼치기' 시에만 제한을 해제한다.
+              expanded ? '' : 'h-[400px] overflow-hidden'
             }`}
           >
             {data.content || ''}
@@ -148,50 +151,55 @@ function DualResponseBubble({ message, onSelect, canSelect = true }) {
   return (
     <div className="w-full my-4">
       {/* 2열 그리드 레이아웃 */}
+      {/* ✅ UX: 한쪽 박스만 길어져도 다른쪽 "선택 버튼"이 멀리 밀리지 않게,
+          각 컬럼 안에 (박스 + 버튼)을 함께 묶는다. */}
       <div className="grid grid-cols-2 gap-4">
-        <ResponseBox 
-          mode="snap" 
-          data={snapData} 
-          expanded={snapExpanded} 
-          setExpanded={setSnapExpanded}
-          needsExpand={snapNeedsExpand}
-          contentRef={snapRef}
-        />
-        <ResponseBox 
-          mode="genre" 
-          data={genreData} 
-          expanded={genreExpanded} 
-          setExpanded={setGenreExpanded}
-          needsExpand={genreNeedsExpand}
-          contentRef={genreRef}
-        />
-      </div>
-
-      {/* ✅ 선택 버튼: 듀얼 박스 "하단 푸터"에 고정 (최신 결과만 노출) */}
-      {bothComplete && canSelect && typeof onSelect === 'function' ? (
-        // ✅ 각 버튼을 "각 컬럼 기준"으로 가운데 정렬한다.
-        // - grid-cols-2로 분리하면, 버튼이 가운데로 몰려 보이는(치우쳐 보이는) UX를 방지할 수 있다.
-        <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-2">
-          <div className="flex justify-center">
-            <Button
-              type="button"
-              onClick={() => onSelect('snap')}
-              className="w-full sm:w-auto px-6 py-2 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white font-medium rounded-full shadow-lg shadow-purple-500/25 hover:shadow-xl hover:shadow-purple-500/40 transition-all duration-200"
-            >
-              일상으로 선택
-            </Button>
-          </div>
-          <div className="flex justify-center">
-            <Button
-              type="button"
-              onClick={() => onSelect('genre')}
-              className="w-full sm:w-auto px-6 py-2 bg-gradient-to-r from-purple-600 to-fuchsia-700 hover:from-purple-700 hover:to-fuchsia-800 text-white font-medium rounded-full shadow-lg shadow-purple-500/25 hover:shadow-xl hover:shadow-purple-500/40 transition-all duration-200"
-            >
-              장르로 선택
-            </Button>
-          </div>
+        <div className="flex flex-col self-start">
+          <ResponseBox 
+            mode="snap" 
+            data={snapData} 
+            expanded={snapExpanded} 
+            setExpanded={setSnapExpanded}
+            needsExpand={snapNeedsExpand}
+            contentRef={snapRef}
+          />
+          {/* ✅ 선택 버튼: 일상(좌) 박스 바로 아래에 붙도록 */}
+          {bothComplete && canSelect && typeof onSelect === 'function' ? (
+            <div className="mt-4 flex justify-center">
+              <Button
+                type="button"
+                onClick={() => onSelect('snap')}
+                className="w-full sm:w-auto px-6 py-2 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white font-medium rounded-full shadow-lg shadow-purple-500/25 hover:shadow-xl hover:shadow-purple-500/40 transition-all duration-200"
+              >
+                일상으로 선택
+              </Button>
+            </div>
+          ) : null}
         </div>
-      ) : null}
+
+        <div className="flex flex-col self-start">
+          <ResponseBox 
+            mode="genre" 
+            data={genreData} 
+            expanded={genreExpanded} 
+            setExpanded={setGenreExpanded}
+            needsExpand={genreNeedsExpand}
+            contentRef={genreRef}
+          />
+          {/* ✅ 선택 버튼: 장르(우) 박스 바로 아래에 붙도록 */}
+          {bothComplete && canSelect && typeof onSelect === 'function' ? (
+            <div className="mt-4 flex justify-center">
+              <Button
+                type="button"
+                onClick={() => onSelect('genre')}
+                className="w-full sm:w-auto px-6 py-2 bg-gradient-to-r from-purple-600 to-fuchsia-700 hover:from-purple-700 hover:to-fuchsia-800 text-white font-medium rounded-full shadow-lg shadow-purple-500/25 hover:shadow-xl hover:shadow-purple-500/40 transition-all duration-200"
+              >
+                장르로 선택
+              </Button>
+            </div>
+          ) : null}
+        </div>
+      </div>
     </div>
   );
 }

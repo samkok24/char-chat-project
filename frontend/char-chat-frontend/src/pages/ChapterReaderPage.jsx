@@ -160,8 +160,23 @@ const ChapterReaderPage = () => {
     }
     return imageUrl; // 단일 문자열인 경우 (하위 호환)
   };
-  const isWebtoon = !!getImageUrl(chapter?.image_url);
-  const isStoryWebtoon = !!story?.is_webtoon || isWebtoon;
+
+  /**
+   * ✅ 웹툰 판정(중요 UX)
+   *
+   * 의도:
+   * - 기존에는 "이미지 URL이 있으면 무조건 웹툰"으로 판정했는데,
+   *   이제는 웹소설 회차에 '삽입 이미지(일러스트/첨부)'를 넣을 수 있다.
+   * - 따라서 "이미지 + 텍스트" 회차는 웹소설로 렌더링(텍스트 먼저)해야 한다.
+   *
+   * 규칙:
+   * - story.is_webtoon === true → 무조건 웹툰(텍스트 숨김 유지)
+   * - 그 외에는 "이미지가 있고, 텍스트가 비어있을 때만" 웹툰 회차로 본다.
+   */
+  const chapterHasText = String(chapter?.content || '').trim().length > 0;
+  const isWebtoonChapter = !!getImageUrl(chapter?.image_url) && !chapterHasText;
+  const isWebtoon = !!story?.is_webtoon || isWebtoonChapter;
+  const isStoryWebtoon = isWebtoon;
   
   // 디버깅용 로그
   React.useEffect(() => {
@@ -262,7 +277,7 @@ const ChapterReaderPage = () => {
   if (isWebtoon && hasChapter) {
     return (
       <div className="min-h-screen bg-white w-full overflow-x-hidden">
-        <ChapterViewer chapter={chapter} />
+        <ChapterViewer chapter={chapter} webtoonOnly />
         {accessDeniedDialogEl}
         
         {/* 우측 하단 플로팅 버튼들 */}
@@ -415,7 +430,7 @@ const ChapterReaderPage = () => {
           {/* 웹툰 모드: 순수 이미지만 전체 화면 */}
           {isWebtoon ? (
             hasChapter ? (
-              <ChapterViewer chapter={chapter} />
+              <ChapterViewer chapter={chapter} webtoonOnly />
             ) : (
               <div className="flex items-center justify-center min-h-screen">
                 <p className="text-gray-400">회차를 불러오는 중...</p>
