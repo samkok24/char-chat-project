@@ -144,6 +144,7 @@ class StoryListResponse(BaseModel):
 class StoryWithDetails(StoryResponse):
     """상세 정보를 포함한 스토리 응답 스키마"""
     creator_username: str
+    creator_avatar_url: Optional[str] = None
     character_name: Optional[str]
     is_liked: Optional[bool] = False  # 현재 사용자가 좋아요를 눌렀는지
 

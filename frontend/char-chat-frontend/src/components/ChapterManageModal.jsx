@@ -5,10 +5,12 @@ import { Textarea } from './ui/textarea';
 import { Input } from './ui/input';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
 import { Alert, AlertDescription } from './ui/alert';
-import { AlertCircle, Edit, Menu, Trash2, Upload, Image as ImageIcon, X } from 'lucide-react';
-import { chaptersAPI, mediaAPI } from '../lib/api';
+import { AlertCircle, Edit, Menu, Trash2, Image as ImageIcon } from 'lucide-react';
+import { chaptersAPI } from '../lib/api';
+import { resolveImageUrl } from '../lib/images';
 import StoryChapterImporterModal from './StoryChapterImporterModal';
 import BlockingLoadingOverlay from './BlockingLoadingOverlay';
+import ImageGenerateInsertModal from './ImageGenerateInsertModal';
 
 const ChapterManageModal = ({ open, onClose, storyId, onAfterSave }) => {
   const [loading, setLoading] = React.useState(false);
@@ -21,10 +23,55 @@ const ChapterManageModal = ({ open, onClose, storyId, onAfterSave }) => {
   const [editingTitleId, setEditingTitleId] = React.useState(null);
   const [editingTitleDraft, setEditingTitleDraft] = React.useState('');
   const listEndRef = React.useRef(null);
+  const scrollWrapRef = React.useRef(null);
+  // ✅ 회차별 이미지 삽입 모달
+  const [imgModalFor, setImgModalFor] = React.useState(null); // episodeId
 
   const scrollToEnd = () => {
     try { listEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }); } catch (_) {}
   };
+
+  /**
+   * ✅ 모달 스크롤 잠김 방지(UX)
+   *
+   * 문제:
+   * - 큰 Textarea 위에서 휠을 굴리면, Textarea가 휠 이벤트를 소비하면서(내용이 짧아도)
+   *   바깥(모달) 스크롤로 "체인"이 안 되는 브라우저/상황이 있다.
+   * - 특히 이미지 삽입 후 모달 높이가 늘어나 스크롤이 필요해지면 "스크롤이 잠긴 것처럼" 느껴진다.
+   *
+   * 해결:
+   * - Textarea가 더 이상 스크롤할 수 없는 방향(상단에서 위로 / 하단에서 아래로)일 때는
+   *   모달 스크롤 컨테이너로 스크롤을 넘겨준다.
+   *
+   * 방어적:
+   * - 필요한 경우에만 preventDefault (기존 textarea 내부 스크롤은 유지)
+   */
+  const handleWheelCapture = React.useCallback((e) => {
+    try {
+      const target = e?.target;
+      if (!(target instanceof HTMLElement)) return;
+      const ta = target.closest('textarea');
+      if (!ta) return;
+
+      const dy = Number(e?.deltaY || 0);
+      if (!dy) return;
+
+      // textarea가 실제로 스크롤 가능한 경우에는 그대로 두고,
+      // 끝(상단/하단)에서 더 스크롤하려 할 때만 바깥으로 넘긴다.
+      const atTop = ta.scrollTop <= 0;
+      const atBottom = Math.ceil(ta.scrollTop + ta.clientHeight) >= Math.floor(ta.scrollHeight);
+      const shouldBubble = (dy < 0 && atTop) || (dy > 0 && atBottom);
+      if (!shouldBubble) return;
+
+      const wrap = scrollWrapRef.current;
+      if (!(wrap instanceof HTMLElement)) return;
+      const canScrollWrap = wrap.scrollHeight > wrap.clientHeight + 1;
+      if (!canScrollWrap) return;
+
+      wrap.scrollTop += dy;
+      e.preventDefault();
+    } catch (_) {}
+  }, []);
 
   React.useEffect(() => {
     if (!open) return;
@@ -38,9 +85,9 @@ const ChapterManageModal = ({ open, onClose, storyId, onAfterSave }) => {
         if (count === 0) {
           // 회차가 0개일 때는 1~3화 기본 슬롯을 미리 제공
           setEpisodes([
-            { id: crypto?.randomUUID?.() || `${Date.now()}-a`, title: '1화', content: '', expanded: true, image: null, imagePreview: null },
-            { id: crypto?.randomUUID?.() || `${Date.now()}-b`, title: '2화', content: '', expanded: true, image: null, imagePreview: null },
-            { id: crypto?.randomUUID?.() || `${Date.now()}-c`, title: '3화', content: '', expanded: true, image: null, imagePreview: null },
+            { id: crypto?.randomUUID?.() || `${Date.now()}-a`, title: '1화', content: '', expanded: true, imageAssets: [] },
+            { id: crypto?.randomUUID?.() || `${Date.now()}-b`, title: '2화', content: '', expanded: true, imageAssets: [] },
+            { id: crypto?.randomUUID?.() || `${Date.now()}-c`, title: '3화', content: '', expanded: true, imageAssets: [] },
           ]);
         } else {
           setEpisodes([]);
@@ -49,9 +96,9 @@ const ChapterManageModal = ({ open, onClose, storyId, onAfterSave }) => {
         setExistingCount(0);
         // API 실패 시에도 기본 3개 제공
         setEpisodes([
-          { id: crypto?.randomUUID?.() || `${Date.now()}-a`, title: '1화', content: '', expanded: true, image: null, imagePreview: null },
-          { id: crypto?.randomUUID?.() || `${Date.now()}-b`, title: '2화', content: '', expanded: true, image: null, imagePreview: null },
-          { id: crypto?.randomUUID?.() || `${Date.now()}-c`, title: '3화', content: '', expanded: true, image: null, imagePreview: null },
+          { id: crypto?.randomUUID?.() || `${Date.now()}-a`, title: '1화', content: '', expanded: true, imageAssets: [] },
+          { id: crypto?.randomUUID?.() || `${Date.now()}-b`, title: '2화', content: '', expanded: true, imageAssets: [] },
+          { id: crypto?.randomUUID?.() || `${Date.now()}-c`, title: '3화', content: '', expanded: true, imageAssets: [] },
         ]);
       } finally {
         setLoading(false);
@@ -61,30 +108,10 @@ const ChapterManageModal = ({ open, onClose, storyId, onAfterSave }) => {
 
   const addEpisode = () => {
     setEpisodes((prev) => {
-      const next = [...prev, { id: crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`, title: '', content: '', expanded: true, image: null, imagePreview: null }];
+      const next = [...prev, { id: crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`, title: '', content: '', expanded: true, imageAssets: [] }];
       setTimeout(scrollToEnd, 0);
       return next;
     });
-  };
-
-  // 이미지 선택 핸들러
-  const handleImageChange = (id, file) => {
-    if (!file) return;
-    if (!file.type.startsWith('image/')) {
-      setError('이미지 파일만 업로드 가능합니다.');
-      return;
-    }
-    const preview = URL.createObjectURL(file);
-    updateEpisode(id, { image: file, imagePreview: preview });
-  };
-
-  // 이미지 제거
-  const removeImage = (id) => {
-    const ep = episodes.find(e => e.id === id);
-    if (ep?.imagePreview) {
-      URL.revokeObjectURL(ep.imagePreview);
-    }
-    updateEpisode(id, { image: null, imagePreview: null });
   };
 
   const updateEpisode = (id, patch) => {
@@ -105,8 +132,7 @@ const ChapterManageModal = ({ open, onClose, storyId, onAfterSave }) => {
     title: (c.title || (c.no ? `${c.no}화` : '회차')).trim(),
     content: c.content || '',
     expanded: true,
-    image: null,  // 이미지 파일
-    imagePreview: null,  // 미리보기 URL
+    imageAssets: [],
   }));
 
   const handleImporterAppend = (parsed) => {
@@ -138,36 +164,26 @@ const ChapterManageModal = ({ open, onClose, storyId, onAfterSave }) => {
         const ep = valid[i];
         try { setSaveProgress({ current: i + 1, total: valid.length }); } catch (_) {}
         const title = (ep.title || `${no}화`).trim();
-        
-        // 1. 회차 생성 (텍스트)
-        const chapterRes = await chaptersAPI.create({ 
-          story_id: storyId, 
-          no, 
-          title, 
-          content: ep.content 
-        });
-        
-        // 2. 이미지가 있으면 업로드 후 image_url 업데이트
-        if (ep.image) {
+
+        // ✅ 회차별 이미지(웹툰용)는 이미지 삽입 모달에서 먼저 업로드되어 URL 목록으로 저장된다.
+        //    - 생성 API는 image_url(List[str])를 지원하므로, 여기서는 URL만 함께 전송한다.
+        const imageUrls = (() => {
           try {
-            const formData = new FormData();
-            formData.append('files', ep.image);
-            
-            // 기존 media API 사용
-            const uploadRes = await mediaAPI.upload(formData);
-            const imageUrl = uploadRes.data?.items?.[0]?.url;
-            
-            if (imageUrl && chapterRes.data?.id) {
-              // 회차에 image_url 업데이트
-              await chaptersAPI.update(chapterRes.data.id, {
-                image_url: imageUrl
-              });
-            }
-          } catch (imgErr) {
-            console.error('이미지 업로드 실패:', imgErr);
-            // 이미지 업로드 실패해도 회차는 저장됨 (텍스트만)
+            const arr = Array.isArray(ep?.imageAssets) ? ep.imageAssets : [];
+            return arr.map((x) => String(x?.url || '').trim()).filter(Boolean);
+          } catch (_) {
+            return [];
           }
-        }
+        })();
+
+        // 1. 회차 생성 (텍스트 + 이미지 URL들)
+        await chaptersAPI.create({
+          story_id: storyId,
+          no,
+          title,
+          content: ep.content,
+          ...(imageUrls.length ? { image_url: imageUrls } : {}),
+        });
         
         no += 1;
       }
@@ -186,7 +202,10 @@ const ChapterManageModal = ({ open, onClose, storyId, onAfterSave }) => {
 
   return (
     <Dialog open={open} onOpenChange={(v)=> { if (!v) { if (saving) return; onClose?.(); } }}>
-      <DialogContent className="sm:max-w-4xl max-h-[85vh] bg-gray-900 text-gray-100 border border-gray-700 overflow-hidden flex flex-col relative" aria-describedby="chapter-manage-desc">
+      <DialogContent
+        className="sm:max-w-4xl max-h-[92svh] md:max-h-[85vh] bg-gray-900 text-gray-100 border border-gray-700 overflow-y-auto md:overflow-hidden flex flex-col data-[state=open]:animate-none data-[state=closed]:animate-none"
+        aria-describedby="chapter-manage-desc"
+      >
         <BlockingLoadingOverlay
           open={saving}
           title="회차를 저장하고 있어요"
@@ -196,14 +215,18 @@ const ChapterManageModal = ({ open, onClose, storyId, onAfterSave }) => {
           <DialogTitle className="text-white">회차 등록</DialogTitle>
         </DialogHeader>
         <div id="chapter-manage-desc" className="sr-only">회차 등록 및 일괄 업로드 모달</div>
-        <div className="flex items-center justify-between px-1 pb-2">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-1 pb-2">
           <div className="text-sm text-gray-400">현재 등록된 회차: {existingCount.toLocaleString()}개</div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap justify-end">
             <Button onClick={() => setOpenImporter(true)}>txt로 일괄 업로드</Button>
             <Button variant="outline" onClick={addEpisode}>+ 회차 추가</Button>
           </div>
         </div>
-        <div className="flex-1 overflow-auto pr-1">
+        <div
+          ref={scrollWrapRef}
+          className="flex-1 min-h-0 overflow-visible md:overflow-auto pr-1"
+          onWheelCapture={handleWheelCapture}
+        >
           {error && (
             <div className="px-1">
               <Alert variant="destructive">
@@ -270,45 +293,41 @@ const ChapterManageModal = ({ open, onClose, storyId, onAfterSave }) => {
                           />
                         </div>
 
-                        {/* 이미지 업로드 (선택) */}
+                        {/* ✅ 이미지 삽입(선택) - 사진 아이콘 → 이미지 삽입 모달(미니 갤러리) */}
                         <div>
-                          <label className="block text-sm text-gray-300 mb-2">
-                            이미지 삽입 (선택사항)
-                          </label>
-                          {ep.imagePreview ? (
-                            // 이미지 미리보기
-                            <div className="relative">
-                              <img 
-                                src={ep.imagePreview} 
-                                alt="미리보기" 
-                                className="max-h-64 mx-auto rounded border border-gray-600" 
-                              />
-                              <Button
-                                type="button"
-                                size="sm"
-                                variant="destructive"
-                                className="absolute top-2 right-2"
-                                onClick={() => removeImage(ep.id)}
-                              >
-                                <X className="w-4 h-4" />
-                              </Button>
-                              <div className="mt-2 text-xs text-gray-400 text-center">
-                                이미지가 있으면 독자에게는 이미지만 표시됩니다
-                              </div>
-                            </div>
-                          ) : (
-                            // 업로드 버튼
-                            <label className="flex flex-col items-center justify-center h-32 border-2 border-dashed border-gray-600 rounded-lg cursor-pointer hover:border-gray-500 transition-colors">
-                              <ImageIcon className="w-8 h-8 text-gray-400 mb-2" />
-                              <span className="text-sm text-gray-400">클릭하여 이미지 삽입</span>
-                              <span className="text-xs text-gray-500 mt-1">이미지가 없으면 텍스트로 표시됩니다</span>
-                              <input
-                                type="file"
-                                accept="image/*"
-                                onChange={(e) => handleImageChange(ep.id, e.target.files?.[0])}
-                                className="hidden"
-                              />
+                          <div className="flex items-center justify-between gap-2">
+                            <label className="block text-sm text-gray-300">
+                              이미지 삽입 (선택사항)
+                              <span className="text-xs text-gray-500 ml-2">
+                                {(() => {
+                                  try { return `${(Array.isArray(ep?.imageAssets) ? ep.imageAssets.length : 0)}개`; } catch (_) { return '0개'; }
+                                })()}
+                              </span>
                             </label>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="h-9 w-9 text-gray-300 hover:text-white hover:bg-gray-700/60"
+                              onClick={() => setImgModalFor(ep.id)}
+                              title="이미지 삽입"
+                            >
+                              <ImageIcon className="w-5 h-5" />
+                            </Button>
+                          </div>
+                          {Array.isArray(ep?.imageAssets) && ep.imageAssets.length > 0 && (
+                            <div className="mt-2 grid grid-cols-3 sm:grid-cols-4 gap-2">
+                              {ep.imageAssets.map((it, ii) => {
+                                const raw = String(it?.url || '').trim();
+                                const src = resolveImageUrl(raw) || raw;
+                                if (!src) return null;
+                                return (
+                                  <div key={`${it?.id || 'img'}-${ii}`} className="border border-gray-700 rounded overflow-hidden bg-gray-800">
+                                    <img src={src} alt={`삽입 이미지 ${ii + 1}`} className="w-full h-24 object-cover object-top" />
+                                  </div>
+                                );
+                              })}
+                            </div>
                           )}
                         </div>
                       </div>
@@ -325,6 +344,28 @@ const ChapterManageModal = ({ open, onClose, storyId, onAfterSave }) => {
           <Button onClick={handleSaveAll} disabled={loading}>{loading ? '저장 중...' : '저장'}</Button>
         </div>
         <StoryChapterImporterModal open={openImporter} onClose={() => setOpenImporter(false)} onApplyAppend={handleImporterAppend} onApplyReplace={handleImporterReplace} />
+        {/* ✅ 회차별 이미지 삽입 모달 (엔티티 미부착: URL만 회차에 저장) */}
+        <ImageGenerateInsertModal
+          open={!!imgModalFor}
+          entityType={null}
+          entityId={null}
+          initialGallery={(() => {
+            try {
+              const ep = (Array.isArray(episodes) ? episodes : []).find((x) => x?.id === imgModalFor);
+              const g = Array.isArray(ep?.imageAssets) ? ep.imageAssets : [];
+              return g;
+            } catch (_) {
+              return [];
+            }
+          })()}
+          onClose={(payload) => {
+            const targetId = imgModalFor;
+            setImgModalFor(null);
+            if (!targetId) return;
+            const nextGallery = Array.isArray(payload?.gallery) ? payload.gallery : (Array.isArray(payload) ? payload : []);
+            updateEpisode(targetId, { imageAssets: Array.isArray(nextGallery) ? nextGallery : [] });
+          }}
+        />
       </DialogContent>
     </Dialog>
   );

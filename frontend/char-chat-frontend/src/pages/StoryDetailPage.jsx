@@ -5,10 +5,10 @@ import AppLayout from '../components/layout/AppLayout';
 import { Button } from '../components/ui/button';
 import { Textarea } from '../components/ui/textarea';
 import { storiesAPI, chaptersAPI, origChatAPI, mediaAPI, charactersAPI } from '../lib/api';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogTrigger } from '../components/ui/dialog';
 import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogCancel, AlertDialogAction } from '../components/ui/alert-dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
-import { Heart, ArrowLeft, AlertCircle, MoreVertical, Copy, Trash2, Edit, MessageCircle, Eye, Image as ImageIcon, Check, Lock, Unlock, Pin, Plus, X } from 'lucide-react';
+import { Heart, ArrowLeft, AlertCircle, MoreVertical, Copy, Trash2, Edit, MessageCircle, Eye, Image as ImageIcon, Check, Lock, Unlock, Pin, Plus } from 'lucide-react';
 import { Avatar, AvatarFallback, AvatarImage } from '../components/ui/avatar';
 import { Badge } from '../components/ui/badge';
 import { Alert, AlertDescription } from '../components/ui/alert';
@@ -38,6 +38,10 @@ const StoryDetailPage = () => {
   const [imgModalOpen, setImgModalOpen] = useState(false);
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [confirmRebuildOpen, setConfirmRebuildOpen] = useState(false);
+  // ✅ 회차 삭제(작성자 전용)
+  const [confirmChapterDeleteOpen, setConfirmChapterDeleteOpen] = useState(false);
+  const [chapterToDelete, setChapterToDelete] = useState(null);
+  const [chapterDeleting, setChapterDeleting] = useState(false);
   const [origModalOpen, setOrigModalOpen] = useState(false);
   const [preselectedCharacterId, setPreselectedCharacterId] = useState(null);
   const [editingChapter, setEditingChapter] = useState(null);
@@ -404,6 +408,46 @@ const StoryDetailPage = () => {
       return [];
     }
   }, [story?.announcements]);
+
+  /**
+   * ✅ 회차 삭제(작성자 전용)
+   *
+   * 요구사항:
+   * - 회차 목록에서 크리에이터가 회차를 삭제할 수 있어야 한다.
+   *
+   * 방어적:
+   * - 삭제 확인 모달을 통해 오조작(클릭 실수) 방지
+   * - 실패 시 콘솔 로그 + 토스트로 명확히 안내
+   */
+  const requestDeleteChapter = (ch) => {
+    try {
+      if (!isOwner) return;
+      if (!ch?.id) return;
+      setChapterToDelete(ch);
+      setConfirmChapterDeleteOpen(true);
+    } catch (_) {}
+  };
+  const confirmDeleteChapter = async () => {
+    if (!isOwner) return;
+    const cid = chapterToDelete?.id;
+    if (!cid) return;
+    if (chapterDeleting) return;
+    setChapterDeleting(true);
+    try {
+      await chaptersAPI.delete(cid);
+      setConfirmChapterDeleteOpen(false);
+      setChapterToDelete(null);
+      setPageToast({ show: true, type: 'success', message: '회차가 삭제되었습니다.' });
+      try { queryClient.invalidateQueries({ queryKey: ['chapters-by-story', storyId] }); } catch (_) {}
+      try { queryClient.invalidateQueries({ queryKey: ['story', storyId] }); } catch (_) {}
+    } catch (e) {
+      console.error('[StoryDetailPage] chapter delete failed:', e);
+      const msg = String(e?.response?.data?.detail || e?.message || '').trim() || '회차 삭제에 실패했습니다.';
+      setPageToast({ show: true, type: 'error', message: msg });
+    } finally {
+      setChapterDeleting(false);
+    }
+  };
   // 이어보기 진행 상황 (스토리 기준 localStorage 키 사용)
   const progressChapterNo = getReadingProgress(storyId);
   const [sortDesc, setSortDesc] = useState(false);
@@ -969,48 +1013,80 @@ const StoryDetailPage = () => {
 
               {/* 추출 캐릭터 격자 + 원작챗 모달 */}
               <section className="space-y-3" ref={extractedRef}>
-                <div className="flex items-center justify-between">
+                <div className="space-y-2">
                   <h2 className="text-lg font-semibold">이 작품의 등장인물</h2>
                   {isOwner && (
-                    <div className="flex items-center gap-2">
-                      {/* ✅ 추출 진행률/중지 버튼(요구: 전체 삭제 옆 배치) */}
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {/* ✅ 추출 진행률/중지 버튼(요구: 전체 삭제 옆 배치) */}
+                        {isExtractInProgress && (
+                          <div className="hidden sm:flex items-center gap-2 mr-1 text-xs text-blue-200">
+                            <svg className="animate-spin h-3.5 w-3.5 text-blue-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
+                            </svg>
+                            {(() => {
+                              try {
+                                const p = Number(extractJobInfo?.processed_windows || 0);
+                                const t = Number(extractJobInfo?.total_windows || 0);
+                                if (t > 0) return `추출중 ${p}/${t}`;
+                                return '추출중...';
+                              } catch (_) { return '추출중...'; }
+                            })()}
+                          </div>
+                        )}
+                        <Button
+                          variant="destructive"
+                          className="h-8 px-3"
+                          disabled={charactersLoading || isExtractInProgress || !!extractJobId}
+                          onClick={()=> setConfirmDeleteOpen(true)}
+                        >전체 삭제</Button>
+                        <Button
+                          variant="outline"
+                          className="h-8 px-3 bg-white text-black border-gray-300 hover:bg-gray-100"
+                          disabled={charactersLoading || isExtractInProgress || !!extractJobId}
+                          onClick={()=> setConfirmRebuildOpen(true)}
+                        >원작챗 일괄 생성</Button>
+                        <Button
+                          variant="outline"
+                          className={`h-8 px-3 ${isExtractInProgress ? 'bg-red-600 text-white border-red-500 hover:bg-red-700 hover:border-red-600' : 'bg-white text-black border-gray-300 hover:bg-gray-100'}`}
+                          disabled={!isExtractInProgress || extractCancelling || !extractJobId}
+                          onClick={cancelExtractJob}
+                          title={!isExtractInProgress ? '추출 중일 때만 중지할 수 있습니다.' : '추출 중지'}
+                        >
+                          {extractCancelling ? '중지중...' : '중지'}
+                        </Button>
+                      </div>
+
+                      {/* ✅ 모바일에서도 진행률이 보이도록(요구사항): 버튼 줄 아래에 작게 노출 */}
                       {isExtractInProgress && (
-                        <div className="hidden sm:flex items-center gap-2 mr-1 text-xs text-blue-200">
+                        <div className="sm:hidden flex items-center gap-2 text-xs text-blue-200">
                           <svg className="animate-spin h-3.5 w-3.5 text-blue-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
                           </svg>
-                          {(() => {
-                            try {
-                              const p = Number(extractJobInfo?.processed_windows || 0);
-                              const t = Number(extractJobInfo?.total_windows || 0);
-                              if (t > 0) return `추출중 ${p}/${t}`;
-                              return '추출중...';
-                            } catch (_) { return '추출중...'; }
-                          })()}
+                          <span className="flex-shrink-0">
+                            {(() => {
+                              try {
+                                const p = Number(extractJobInfo?.processed_windows || 0);
+                                const t = Number(extractJobInfo?.total_windows || 0);
+                                if (t > 0) return `추출중 ${p}/${t}`;
+                                return '추출중...';
+                              } catch (_) { return '추출중...'; }
+                            })()}
+                          </span>
+                          <span className="text-gray-400 truncate">
+                            {(() => {
+                              try {
+                                const st = String(extractJobInfo?.stage || '').trim();
+                                return st || '잠시만 기다려주세요.';
+                              } catch (_) {
+                                return '잠시만 기다려주세요.';
+                              }
+                            })()}
+                          </span>
                         </div>
                       )}
-                      <Button
-                        variant="destructive"
-                        className="h-8 px-3"
-                        disabled={charactersLoading || isExtractInProgress || !!extractJobId}
-                        onClick={()=> setConfirmDeleteOpen(true)}
-                      >전체 삭제</Button>
-                      <Button
-                        variant="outline"
-                        className="h-8 px-3 bg-white text-black border-gray-300 hover:bg-gray-100"
-                        disabled={charactersLoading || isExtractInProgress || !!extractJobId}
-                        onClick={()=> setConfirmRebuildOpen(true)}
-                      >원작챗 일괄 생성</Button>
-                      <Button
-                        variant="outline"
-                        className={`h-8 px-3 ${isExtractInProgress ? 'bg-red-600 text-white border-red-500 hover:bg-red-700 hover:border-red-600' : 'bg-white text-black border-gray-300 hover:bg-gray-100'}`}
-                        disabled={!isExtractInProgress || extractCancelling || !extractJobId}
-                        onClick={cancelExtractJob}
-                        title={!isExtractInProgress ? '추출 중일 때만 중지할 수 있습니다.' : '추출 중지'}
-                      >
-                        {extractCancelling ? '중지중...' : '중지'}
-                      </Button>
                     </div>
                   )}
                 </div>
@@ -1201,8 +1277,11 @@ const StoryDetailPage = () => {
 
               {/* 회차 섹션 (UI 우선) */}
               <section className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <h2 className="text-lg font-semibold">회차</h2>
+                <div className="flex items-center justify-between gap-3 flex-wrap">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <h2 className="text-lg font-semibold">회차목록</h2>
+                    <span className="text-xs text-gray-400">{`${Number(episodesSorted.length || 0).toLocaleString()}개`}</span>
+                  </div>
                   <div className="flex items-center gap-2">
                     {episodesSorted.length > 0 && (
                       <Button variant="outline" className="h-8 px-3 bg-white text-black border-gray-300 hover:bg-gray-100" onClick={() => setSortDesc((v)=>!v)}>{sortDesc ? '최신순' : '오름차순'}</Button>
@@ -1279,18 +1358,32 @@ const StoryDetailPage = () => {
                         )}
                         <div className="flex items-center gap-3 flex-shrink-0">
                           {isOwner && (
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-7 w-7 text-gray-400 hover:text-white hover:bg-gray-700"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setEditingChapter(ch);
-                              }}
-                              title="회차 수정"
-                            >
-                              <Edit className="w-4 h-4" />
-                            </Button>
+                            <div className="flex items-center gap-1">
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7 text-gray-400 hover:text-white hover:bg-gray-700"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setEditingChapter(ch);
+                                }}
+                                title="회차 수정"
+                              >
+                                <Edit className="w-4 h-4" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7 text-red-300 hover:text-red-200 hover:bg-red-500/10"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  requestDeleteChapter(ch);
+                                }}
+                                title="회차 삭제"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </Button>
+                            </div>
                           )}
                           <span className="inline-flex items-center gap-1 text-xs text-gray-500">
                             <Eye className="w-3 h-3" />
@@ -1458,6 +1551,36 @@ const StoryDetailPage = () => {
           </div>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* ✅ 회차 삭제 확인 모달 */}
+      <AlertDialog
+        open={confirmChapterDeleteOpen}
+        onOpenChange={(v) => {
+          // 삭제 중에는 닫기 방지(중복 요청/상태 꼬임 방지)
+          if (chapterDeleting) return;
+          setConfirmChapterDeleteOpen(v);
+          if (!v) setChapterToDelete(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>회차 삭제</AlertDialogTitle>
+            <AlertDialogDescription>
+              {`정말 이 회차를 삭제하시겠습니까?\n삭제된 회차는 복구할 수 없습니다.`}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="flex items-center justify-end gap-2">
+            <AlertDialogCancel disabled={chapterDeleting}>취소</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={confirmDeleteChapter}
+              disabled={chapterDeleting}
+              className="bg-red-600 hover:bg-red-700"
+            >
+              {chapterDeleting ? '삭제 중...' : '삭제'}
+            </AlertDialogAction>
+          </div>
+        </AlertDialogContent>
+      </AlertDialog>
     </AppLayout>
   );
 };
@@ -1466,7 +1589,8 @@ const StoryAnnouncementsSection = ({ storyId, isOwner, announcements, onUpdate, 
   const [createOpen, setCreateOpen] = useState(false);
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
-  const [expandedById, setExpandedById] = useState({}); // { [id]: boolean }
+  // ✅ 목록 펼치기/접기(요구사항): 기본 3개만 노출 → 펼치기 시 4개부터 전체 노출
+  const [listExpanded, setListExpanded] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [modalItem, setModalItem] = useState(null);
 
@@ -1492,12 +1616,6 @@ const StoryAnnouncementsSection = ({ storyId, isOwner, announcements, onUpdate, 
     setModalOpen(true);
   };
 
-  const toggleExpand = (id) => {
-    const key = String(id || '').trim();
-    if (!key) return;
-    setExpandedById((prev) => ({ ...(prev || {}), [key]: !prev?.[key] }));
-  };
-
   const deriveTitle = (it) => {
     try {
       const t = String(it?.title || '').trim();
@@ -1509,6 +1627,10 @@ const StoryAnnouncementsSection = ({ storyId, isOwner, announcements, onUpdate, 
       return '공지';
     }
   };
+
+  const MAX_VISIBLE = 3;
+  const hasMore = normalized.length > MAX_VISIBLE;
+  const visible = listExpanded ? normalized : normalized.slice(0, MAX_VISIBLE);
 
   const handleCreate = async () => {
     if (!isOwner) return;
@@ -1594,7 +1716,7 @@ const StoryAnnouncementsSection = ({ storyId, isOwner, announcements, onUpdate, 
       </div>
 
       {createOpen && isOwner && (
-        <div className="mt-3 space-y-2">
+        <div className="mt-3 space-y-2 rounded-md border border-gray-700 bg-gray-900/30 p-3">
           <Textarea
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
@@ -1626,40 +1748,41 @@ const StoryAnnouncementsSection = ({ storyId, isOwner, announcements, onUpdate, 
       {normalized.length === 0 ? (
         <div className="mt-3 text-sm text-gray-400">등록된 작품공지가 없습니다.</div>
       ) : (
-        <ul className="mt-3 space-y-2">
-          {normalized.map((it) => {
+        <div className="mt-3 border-t border-gray-800">
+          {/* ✅ 공지사항 페이지 스타일: 제목만 깔끔하게 (박스 중첩 제거) */}
+          <div className="divide-y divide-gray-800">
+          {visible.map((it) => {
             const id = String(it?.id || '');
-            const expanded = !!expandedById?.[id];
             const title = deriveTitle(it);
-            const content = String(it?.content || '').trim();
             const pinned = !!it?.pinned;
             return (
-              <li key={id || title} className="bg-gray-900/40 border border-gray-700 rounded-md p-3">
-                <div className="flex items-start justify-between gap-2">
-                  <button
-                    type="button"
-                    className="text-left min-w-0 flex-1"
-                    onClick={() => openModal(it)}
-                    title="공지 상세 보기"
-                  >
-                    <div className="flex items-center gap-2 min-w-0">
-                      {pinned && (
-                        <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded bg-yellow-500/15 text-yellow-200 ring-1 ring-yellow-400/30 flex-shrink-0">
-                          <Pin className="w-3 h-3" />
-                          고정
-                        </span>
-                      )}
-                      <div className="font-semibold text-gray-100 truncate">{title}</div>
-                    </div>
-                  </button>
-
+              <button
+                key={id || title}
+                type="button"
+                className="w-full text-left hover:bg-gray-800/40 transition-colors"
+                onClick={() => openModal(it)}
+                title="공지 상세 보기"
+              >
+                <div className="flex items-center justify-between gap-2 px-2 py-3">
+                  <div className="min-w-0 flex items-center gap-2">
+                    {pinned && (
+                      <span
+                        className="inline-flex items-center justify-center w-6 h-6 rounded bg-yellow-500/15 text-yellow-200 ring-1 ring-yellow-400/30 flex-shrink-0"
+                        title="상단고정"
+                        aria-label="상단고정"
+                      >
+                        <Pin className="w-3.5 h-3.5" />
+                      </span>
+                    )}
+                    <span className="text-sm sm:text-base text-gray-100 truncate">{title}</span>
+                  </div>
                   {isOwner && (
                     <div className="flex items-center gap-1 flex-shrink-0">
                       <Button
                         variant="ghost"
                         size="icon"
-                        className={`h-8 w-8 ${pinned ? 'text-yellow-200 hover:text-yellow-100' : 'text-gray-300 hover:text-white'} hover:bg-gray-700/60`}
-                        onClick={() => handlePin(it)}
+                        className={`h-9 w-9 ${pinned ? 'text-yellow-200 hover:text-yellow-100' : 'text-gray-300 hover:text-white'} hover:bg-gray-700/60`}
+                        onClick={(e) => { e.stopPropagation(); handlePin(it); }}
                         disabled={busy}
                         title={pinned ? '상단고정 해제' : '상단고정'}
                       >
@@ -1668,8 +1791,8 @@ const StoryAnnouncementsSection = ({ storyId, isOwner, announcements, onUpdate, 
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="h-8 w-8 text-red-300 hover:text-red-200 hover:bg-red-500/10"
-                        onClick={() => handleDelete(id)}
+                        className="h-9 w-9 text-red-300 hover:text-red-200 hover:bg-red-500/10"
+                        onClick={(e) => { e.stopPropagation(); handleDelete(id); }}
                         disabled={busy}
                         title="삭제"
                       >
@@ -1678,56 +1801,30 @@ const StoryAnnouncementsSection = ({ storyId, isOwner, announcements, onUpdate, 
                     </div>
                   )}
                 </div>
-
-                {/* 3줄 미리보기 + 더보기/접기 */}
-                {content && (
-                  <div className="mt-2">
-                    <div
-                      className="text-sm text-gray-200 whitespace-pre-wrap leading-6"
-                      style={expanded ? {} : {
-                        display: '-webkit-box',
-                        WebkitLineClamp: 3,
-                        WebkitBoxOrient: 'vertical',
-                        overflow: 'hidden',
-                      }}
-                    >
-                      {content}
-                    </div>
-                    <div className="mt-2 flex justify-end">
-                      <button
-                        type="button"
-                        className="text-xs text-purple-300 hover:text-purple-200 underline underline-offset-2"
-                        onClick={() => toggleExpand(id)}
-                      >
-                        {expanded ? '접기' : '펼치기'}
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </li>
+              </button>
             );
           })}
-        </ul>
+          </div>
+          {hasMore && (
+            <div className="pt-3 flex justify-end">
+              <button
+                type="button"
+                className="text-sm text-purple-300 hover:text-purple-200 underline underline-offset-2"
+                onClick={() => setListExpanded((v) => !v)}
+              >
+                {listExpanded ? '접기' : '펼치기'}
+              </button>
+            </div>
+          )}
+        </div>
       )}
 
       {/* 공지 상세 모달 */}
       <Dialog open={modalOpen} onOpenChange={setModalOpen}>
         <DialogContent className="sm:max-w-2xl max-h-[90vh] bg-gray-900 text-gray-100 border border-gray-700 overflow-hidden flex flex-col">
           <DialogHeader>
-            <div className="flex items-center justify-between gap-3">
-              <DialogTitle className="text-white truncate pr-2">
-                {deriveTitle(modalItem)}
-              </DialogTitle>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8 text-gray-300 hover:text-white hover:bg-gray-700"
-                onClick={() => setModalOpen(false)}
-                title="닫기"
-              >
-                <X className="w-4 h-4" />
-              </Button>
-            </div>
+            <DialogTitle className="text-white truncate pr-2">{deriveTitle(modalItem)}</DialogTitle>
+            <DialogDescription className="text-gray-400">작품공지 상세</DialogDescription>
           </DialogHeader>
           <div className="flex-1 overflow-auto pr-1">
             <div className="whitespace-pre-wrap leading-7 text-gray-200">
