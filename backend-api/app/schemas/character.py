@@ -255,7 +255,18 @@ class ImageDescription(BaseModel):
     @field_validator('description', mode='before')
     @classmethod
     def sanitize_desc(cls, v):
-        return _sanitize_text(v, 500)
+        """
+        이미지 설명(description) 정제(방어적).
+
+        문제/원인:
+        - `_sanitize_text()`는 빈 문자열/공백을 `None`으로 반환한다.
+        - 그런데 `description` 필드는 `str`(non-optional)이라, 클라이언트가 `description: ""`을 보내면
+          validator가 `None`을 반환 → Pydantic이 "Input should be a valid string" 422를 발생시킨다.
+
+        해결:
+        - 빈 값은 항상 빈 문자열("")로 정규화하여, 수정(Edit)에서도 422로 막히지 않도록 한다.
+        """
+        return _sanitize_text(v, 500) or ''
     
     @field_validator('keywords', mode='before')
     @classmethod
