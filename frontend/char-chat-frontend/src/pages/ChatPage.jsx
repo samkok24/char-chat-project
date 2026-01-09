@@ -11,6 +11,7 @@ import { charactersAPI, chatAPI, usersAPI, origChatAPI, mediaAPI, storiesAPI, us
 import { showToastOnce } from '../lib/toastOnce';
 import { resolveImageUrl, getCharacterPrimaryImage, buildPortraitSrcSet } from '../lib/images';
 import { getReadingProgress } from '../lib/reading';
+import { replacePromptTokens } from '../lib/prompt';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
@@ -3885,7 +3886,12 @@ const ChatPage = () => {
                 {character?.name}에게 첫 메시지를 보내보세요.
               </p>
               <p className={resolvedTheme === 'light' ? 'text-sm text-gray-500 mt-1' : 'text-sm text-gray-300 mt-1'}>
-                {character?.description}
+                {(() => {
+                  const nm = character?.name || '캐릭터';
+                  const raw = character?.description || '';
+                  const rendered = replacePromptTokens(raw, { assistantName: nm, userName: '당신' }).trim();
+                  return rendered || '';
+                })()}
               </p>
             </div>
           ) : (
