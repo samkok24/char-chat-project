@@ -32,8 +32,21 @@ const queryClient = new QueryClient({
 
 // React Query 캐시 영속화(localStorage)
 try {
+  // ✅ 인앱(WebView) 방어: localStorage 접근이 SecurityError로 터지는 환경이 있다.
+  // - 영속화는 "있으면 좋고, 없어도 앱이 살아야" 한다.
+  const safeStorage = {
+    getItem: (key) => {
+      try { return window?.localStorage?.getItem(key); } catch (_) { return null; }
+    },
+    setItem: (key, value) => {
+      try { window?.localStorage?.setItem(key, value); } catch (_) {}
+    },
+    removeItem: (key) => {
+      try { window?.localStorage?.removeItem(key); } catch (_) {}
+    },
+  };
   const persister = createSyncStoragePersister({
-    storage: window.localStorage,
+    storage: safeStorage,
   });
   persistQueryClient({
     queryClient,
