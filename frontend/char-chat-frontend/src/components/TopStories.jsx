@@ -10,7 +10,7 @@ import StoryExploreCard from './StoryExploreCard';
 const StoryItem = ({ story }) => {
   return (
     <li>
-      <StoryExploreCard story={story} variant="home" />
+      <StoryExploreCard story={story} variant="home" showLikeBadge={false} />
     </li>
   );
 };

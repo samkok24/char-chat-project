@@ -52,7 +52,7 @@ const StoryExploreCard = ({ story, compact = false, onClick, variant = 'explore'
         {/* 이미지 영역 + 오버레이 */}
         <div className="relative aspect-[3/4] overflow-hidden bg-gray-900">
           <div className="absolute top-2 left-2 z-10">
-            <Badge className="bg-blue-600 text-white hover:bg-blue-600">
+            <Badge className="bg-blue-600 text-white hover:bg-blue-600 px-1.5 py-0.5 text-[11px]">
               {story?.is_webtoon ? '웹툰' : '웹소설'}
             </Badge>
           </div>
@@ -138,7 +138,7 @@ const StoryExploreCard = ({ story, compact = false, onClick, variant = 'explore'
           <div className="absolute inset-0 bg-gray-900 flex items-center justify-center text-gray-500">NO COVER</div>
         )}
         <div className="absolute top-1 left-1">
-          <Badge className="bg-blue-600 text-white hover:bg-blue-600">
+            <Badge className="bg-blue-600 text-white hover:bg-blue-600 px-1.5 py-0.5 text-[11px]">
             {story.is_webtoon ? '웹툰' : '웹소설'}
           </Badge>
         </div>

@@ -48,6 +48,19 @@ export const CharacterCard = ({
   // - 좋아요도 0이면 굳이 표시하지 않는다(>0일 때만 노출).
   const likeCount = Number(character?.like_count ?? character?.likeCount ?? 0) || 0;
   const showLikeCount = likeCount > 0;
+  // ✅ NEW 배지(요구사항): 생성일 기준 48시간 동안 N 표시
+  const isNew = (() => {
+    try {
+      const raw = character?.created_at || character?.createdAt;
+      if (!raw) return false;
+      const t = new Date(raw).getTime();
+      if (!Number.isFinite(t) || t <= 0) return false;
+      const diff = Date.now() - t;
+      return diff >= 0 && diff <= 48 * 60 * 60 * 1000;
+    } catch (_) {
+      return false;
+    }
+  })();
 
   const handleCardClick = () => {
     if (onCardClick) {
@@ -218,6 +231,13 @@ export const CharacterCard = ({
               <Badge className="bg-purple-600 text-white hover:bg-purple-600 px-1.5 py-0.5 text-[11px]">캐릭터</Badge>
             )}
           </div>
+          {isNew ? (
+            <div className="absolute top-2 right-2 z-10 pointer-events-none select-none">
+              <div className="w-5 h-5 rounded-full bg-gradient-to-r from-orange-500 to-red-500 text-white text-[10px] font-extrabold flex items-center justify-center shadow-md">
+                N
+              </div>
+            </div>
+          ) : null}
 
           {/* 하단 오버레이(제목/설명/원작/좋아요) */}
           {/* ✅ z-index 보강 + position 정합성:
@@ -321,6 +341,13 @@ export const CharacterCard = ({
             <Badge className="bg-purple-600 text-white hover:bg-purple-600 px-1.5 py-0.5 text-[11px]">캐릭터</Badge>
           )}
         </div>
+        {isNew ? (
+          <div className="absolute top-1 right-1 z-10 pointer-events-none select-none">
+            <div className="w-5 h-5 rounded-full bg-gradient-to-r from-orange-500 to-red-500 text-white text-[10px] font-extrabold flex items-center justify-center shadow-md">
+              N
+            </div>
+          </div>
+        ) : null}
         {/* 채팅수/좋아요 바: 이미지 우하단 오버레이 */}
         {showLikeCount ? (
           <div className="absolute bottom-1 right-1 py-0.5 px-1.5 rounded bg-black/60 text-xs text-gray-100 flex items-center gap-2">
