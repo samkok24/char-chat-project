@@ -125,6 +125,10 @@ async def get_daily_rankings(
                 "origin_story_is_webtoon": getattr(getattr(c, "origin_story", None), "is_webtoon", None),
                 "chat_count": c.chat_count,
                 "like_count": c.like_count,
+                # ✅ NEW 배지(48h) / 캐시 버스터(avatar v=) 용 메타
+                # - 홈/랭킹 카드에서 N 배지가 "탐색만" 뜨는 문제는 랭킹 응답에 created_at이 없어서였다.
+                "created_at": c.created_at,
+                "updated_at": c.updated_at,
                 "creator_id": c.creator_id,
                 "creator_username": getattr(c.creator, "username", None),
                 "creator_avatar_url": getattr(c.creator, "avatar_url", None),

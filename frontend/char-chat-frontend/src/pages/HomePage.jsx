@@ -144,6 +144,54 @@ const HomePage = () => {
   const navigate = useNavigate();
   const location = useLocation();
 
+  // ===== Google tag (gtag.js) - 메인(홈) 페이지만 우선 적용 =====
+  // 배경/의도:
+  // - GTM(태그매니저)과는 다른 방식의 "직접 GA4 태그"다.
+  // - 운영 안정성을 위해, 우선 HomePage에서만 동적으로 로드한다(전역 index.html에는 추가하지 않음).
+  // - SPA 특성상 "각 페이지에 스니펫을 박는" 방식은 맞지 않으며,
+  //   전체 페이지 추적은 추후 라우트 변경 시 page_view를 쏘는 형태로 확장하면 된다.
+  useEffect(() => {
+    const GA_MEASUREMENT_ID = 'G-567FETFR8W';
+    try {
+      if (typeof window === 'undefined' || typeof document === 'undefined') return;
+
+      // ✅ gtag bootstrap (GTM이 이미 dataLayer를 쓰고 있어도 충돌 없이 공존)
+      window.dataLayer = window.dataLayer || [];
+      window.gtag = window.gtag || function gtag(){ window.dataLayer.push(arguments); };
+
+      // ✅ gtag.js 스크립트는 중복 삽입하지 않는다(리렌더/HMR/뒤로가기 방어)
+      const marker = `script[data-ga-gtag="${GA_MEASUREMENT_ID}"]`;
+      const exists = document.querySelector(marker);
+      if (!exists) {
+        const s = document.createElement('script');
+        s.async = true;
+        s.src = `https://www.googletagmanager.com/gtag/js?id=${encodeURIComponent(GA_MEASUREMENT_ID)}`;
+        s.setAttribute('data-ga-gtag', GA_MEASUREMENT_ID);
+        s.onerror = () => {
+          try { console.warn('[HomePage] gtag.js load failed:', GA_MEASUREMENT_ID); } catch (_) {}
+        };
+        document.head.appendChild(s);
+      }
+
+      // ✅ 메인(홈) 진입 시점만 기록(요구사항: 우선 메인만)
+      window.gtag('js', new Date());
+      window.gtag('config', GA_MEASUREMENT_ID, {
+        page_path: `${window.location.pathname}${window.location.search || ''}`,
+      });
+
+      // 개발 환경에서만 "중복 집계" 가능성 경고(운영 콘솔 노이즈 방지)
+      if (import.meta.env.DEV) {
+        const hasGtm = !!(window.google_tag_manager || document.querySelector('script[src*="gtm.js?id="]'));
+        if (hasGtm) {
+          // GTM 컨테이너에 GA4 태그를 또 추가하면 중복 집계될 수 있다.
+          console.warn('[HomePage] GTM is present. If GA4 is also configured inside GTM, analytics may be double-counted.');
+        }
+      }
+    } catch (e) {
+      try { console.warn('[HomePage] gtag bootstrap failed:', e?.message || e); } catch (_) {}
+    }
+  }, []);
+
   // ===== CMS 구좌 설정(순서/숨김/노출시간) =====
   // - HomePage는 구좌(섹션)를 렌더링하기 전에 로컬스토리지(CMS) 설정을 먼저 읽는다.
   // - 같은 탭 저장(HOME_SLOTS_CHANGED_EVENT) + 다른 탭 저장(storage event)을 구독하여 즉시 반영한다.
@@ -339,8 +387,10 @@ const HomePage = () => {
       const ids = Array.isArray(cmsVisibleCustomCharIds) ? cmsVisibleCustomCharIds : [];
       if (ids.length === 0) return;
 
-      // 이미 가져온 id는 스킵
-      const missing = ids.filter((id) => !cmsLiveCountsByCharId?.[id]);
+      // 이미 보강(hydrate)한 id는 스킵
+      // - 배포/핫픽스 직후, 이전 세션에서 {chat_count, like_count}만 저장된 값이 남아있을 수 있어
+      //   `__meta_hydrated` 플래그로 "created_at/updated_at까지 포함한 보강이 끝났는지"를 구분한다.
+      const missing = ids.filter((id) => !cmsLiveCountsByCharId?.[id]?.__meta_hydrated);
       if (missing.length === 0) return;
 
       // 너무 많은 병렬 호출은 피한다(홈 진입 시 급격한 트래픽 스파이크 방지)
@@ -362,7 +412,16 @@ const HomePage = () => {
             const c = res?.data || {};
             const chatCount = Number(c?.chat_count ?? c?.chatCount ?? 0) || 0;
             const likeCount = Number(c?.like_count ?? c?.likeCount ?? 0) || 0;
-            results[id] = { chat_count: chatCount, like_count: likeCount };
+            // ✅ NEW 배지(48h)도 커스텀 구좌에서 항상 뜨게: created_at/updated_at까지 같이 보강한다.
+            const createdAt = c?.created_at ?? c?.createdAt ?? null;
+            const updatedAt = c?.updated_at ?? c?.updatedAt ?? null;
+            results[id] = {
+              chat_count: chatCount,
+              like_count: likeCount,
+              ...(createdAt ? { created_at: createdAt } : {}),
+              ...(updatedAt ? { updated_at: updatedAt } : {}),
+              __meta_hydrated: true,
+            };
           } catch (e) {
             // 홈이 죽지 않도록 실패는 무시(보수적). 운영 디버깅용으로만 경고 로그를 남긴다.
             try { console.warn('[HomePage] cms custom slot count hydrate failed:', { id, error: e?.message || e }); } catch (_) {}
