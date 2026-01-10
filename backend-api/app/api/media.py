@@ -85,6 +85,20 @@ async def _sync_primary_to_entity(db: AsyncSession, entity_type: str, entity_id:
     q = select(MediaAsset).where(MediaAsset.entity_type == entity_type, MediaAsset.entity_id == entity_id).order_by(MediaAsset.is_primary.desc(), MediaAsset.order_index.asc(), MediaAsset.created_at.desc())
     asset = (await db.execute(q)).scalars().first()
     if not asset:
+        # ✅ 대표 이미지 삭제/분리 시 엔티티 대표 URL도 함께 비워야 한다.
+        # - MediaAsset이 0개가 되면 list_assets가 빈 배열을 반환하고,
+        #   프론트는 레거시(Story.cover_url / Character.avatar_url)로 폴백하여 "삭제가 안 된 것처럼" 보일 수 있다.
+        try:
+            if entity_type == "character" or entity_type == "origchat":
+                await db.execute(update(Character).where(Character.id == entity_id).values(avatar_url=None))
+            elif entity_type == "story":
+                await db.execute(update(Story).where(Story.id == entity_id).values(cover_url=None))
+            await db.commit()
+        except Exception:
+            try:
+                await db.rollback()
+            except Exception:
+                pass
         return
     # 캐시 버스트를 위해 버전 파라미터 추가
     new_url = asset.url
@@ -143,12 +157,24 @@ async def delete_asset(
     row = (await db.execute(select(MediaAsset).where(MediaAsset.id == asset_id))).scalars().first()
     if not row:
         return
+    # 삭제 이후 대표 URL 동기화를 위해 미리 엔티티 정보를 보관
+    entity_type = getattr(row, "entity_type", None)
+    entity_id = getattr(row, "entity_id", None)
     if row.entity_type and row.entity_id:
         await _assert_owner(db, current_user, row.entity_type, row.entity_id)
     elif row.user_id and row.user_id != str(current_user.id):
         raise HTTPException(status_code=403, detail="forbidden")
     await db.execute(delete(MediaAsset).where(MediaAsset.id == asset_id))
     await db.commit()
+    # ✅ 삭제 후 엔티티 대표 URL 동기화(마지막 자산 삭제 시 cover/avatar를 비움)
+    if entity_type and entity_id:
+        try:
+            await _sync_primary_to_entity(db, str(entity_type), str(entity_id))
+        except Exception as e:
+            try:
+                logger.warning(f"delete_asset sync_primary failed: entity_type={entity_type} entity_id={entity_id} err={e}")
+            except Exception:
+                pass
     return
 
 
@@ -538,13 +564,28 @@ async def bulk_delete_assets(
 ):
     # 권한 체크: 엔티티 부착된 경우 오너만
     rows = (await db.execute(select(MediaAsset).where(MediaAsset.id.in_(asset_ids)))).scalars().all()
+    affected_entities = set()
     for r in rows:
         if r.entity_type and r.entity_id:
             await _assert_owner(db, current_user, r.entity_type, r.entity_id)
+            try:
+                affected_entities.add((str(r.entity_type), str(r.entity_id)))
+            except Exception:
+                pass
         elif r.user_id and r.user_id != str(current_user.id):
             raise HTTPException(status_code=403, detail="forbidden")
     await db.execute(delete(MediaAsset).where(MediaAsset.id.in_(asset_ids)))
     await db.commit()
+    # ✅ 삭제 후 엔티티 대표 URL 동기화(마지막 자산 삭제 시 cover/avatar를 비움)
+    for (et, eid) in (affected_entities or set()):
+        try:
+            if et and eid:
+                await _sync_primary_to_entity(db, et, eid)
+        except Exception as e:
+            try:
+                logger.warning(f"bulk_delete_assets sync_primary failed: entity_type={et} entity_id={eid} err={e}")
+            except Exception:
+                pass
     return
 
 
@@ -556,9 +597,14 @@ async def detach_assets(
 ):
     # 권한: 부착된 엔티티가 있다면 오너만, 없으면 자신의 자산만
     rows = (await db.execute(select(MediaAsset).where(MediaAsset.id.in_(asset_ids)))).scalars().all()
+    affected_entities = set()
     for r in rows:
         if r.entity_type and r.entity_id:
             await _assert_owner(db, current_user, r.entity_type, r.entity_id)
+            try:
+                affected_entities.add((str(r.entity_type), str(r.entity_id)))
+            except Exception:
+                pass
         elif r.user_id and r.user_id != str(current_user.id):
             raise HTTPException(status_code=403, detail="forbidden")
     for r in rows:
@@ -567,6 +613,16 @@ async def detach_assets(
         r.is_primary = False
         r.order_index = 0
     await db.commit()
+    # ✅ 분리 후 엔티티 대표 URL 동기화(마지막 자산 분리 시 cover/avatar를 비움)
+    for (et, eid) in (affected_entities or set()):
+        try:
+            if et and eid:
+                await _sync_primary_to_entity(db, et, eid)
+        except Exception as e:
+            try:
+                logger.warning(f"detach_assets sync_primary failed: entity_type={et} entity_id={eid} err={e}")
+            except Exception:
+                pass
     return MediaAssetListResponse(items=[MediaAssetResponse.model_validate(r) for r in rows])
 
 

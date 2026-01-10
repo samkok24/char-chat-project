@@ -4,6 +4,39 @@
 
 import axios from 'axios';
 
+/**
+ * localStorage 안전 접근 유틸(인앱 WebView 방어)
+ *
+ * 배경:
+ * - 일부 인앱 브라우저/커스텀탭(WebView) 환경에서 localStorage 접근이 SecurityError로 터지는 케이스가 있다.
+ * - 우리 앱은 axios 인터셉터에서 localStorage를 읽는데, 여기서 예외가 나면 "모든 API 호출이 실패"처럼 보이며
+ *   홈 콘텐츠가 로딩되지 않는 문제로 이어질 수 있다.
+ *
+ * 원칙:
+ * - 토큰이 없어도 공개 API(홈/탐색)는 동작해야 한다(가용성 우선).
+ */
+const safeStorageGet = (key) => {
+  try {
+    return localStorage.getItem(key);
+  } catch (_) {
+    return null;
+  }
+};
+const safeStorageSet = (key, value) => {
+  try {
+    localStorage.setItem(key, value);
+  } catch (_) {
+    // noop
+  }
+};
+const safeStorageRemove = (key) => {
+  try {
+    localStorage.removeItem(key);
+  } catch (_) {
+    // noop
+  }
+};
+
 // ===== Helpers for token refresh & URL parsing =====
 const normalizePath = (rawUrl = '') => {
   try {
@@ -36,20 +69,20 @@ const isNotAuthenticatedDetail = (detail) => {
 let refreshInFlight = null;
 const runTokenRefresh = async (API_BASE_URL) => {
   if (refreshInFlight) return refreshInFlight;
-  const refreshToken = localStorage.getItem('refresh_token');
+  const refreshToken = safeStorageGet('refresh_token');
   if (!refreshToken) return Promise.reject(new Error('no refresh token'));
   refreshInFlight = axios.post(`${API_BASE_URL}/auth/refresh`, { refresh_token: refreshToken })
     .then((res) => {
       const { access_token, refresh_token: newRefreshToken } = res.data || {};
       if (!access_token) throw new Error('no access token');
-      localStorage.setItem('access_token', access_token);
-      if (newRefreshToken) localStorage.setItem('refresh_token', newRefreshToken);
+      safeStorageSet('access_token', access_token);
+      if (newRefreshToken) safeStorageSet('refresh_token', newRefreshToken);
       try { window.dispatchEvent(new CustomEvent('auth:tokenRefreshed', { detail: { access_token, refresh_token: newRefreshToken } })); } catch (_) {}
       return access_token;
     })
     .catch((err) => {
-      localStorage.removeItem('access_token');
-      localStorage.removeItem('refresh_token');
+      safeStorageRemove('access_token');
+      safeStorageRemove('refresh_token');
       try { window.dispatchEvent(new Event('auth:loggedOut')); } catch (_) {}
       if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) window.location.href = '/login';
       throw err;
@@ -117,6 +150,14 @@ const normalizeExplicitApiBaseUrl = (raw) => {
     const host = String(u.hostname || '').toLowerCase();
 
     if (import.meta.env.MODE === 'production') {
+      // ✅ 운영에서 https 페이지인데 API가 http로 지정되면(혼합 콘텐츠) 인앱/크롬에서 API 호출이 막힐 수 있다.
+      // 가능하면 https로 자동 승격(대부분의 운영 배포는 https가 정상).
+      try {
+        const curProto = String(window?.location?.protocol || '');
+        if (curProto === 'https:' && String(u.protocol || '') === 'http:') {
+          u.protocol = 'https:';
+        }
+      } catch (_) {}
       const badHosts = ['localhost', '127.0.0.1', '0.0.0.0', 'backend', 'backend-api'];
       if (badHosts.includes(host)) return '';
     }
@@ -205,8 +246,8 @@ const notifyAuthRequired = (detail = {}) => {
 
 const clearStoredTokens = () => {
   try {
-    localStorage.removeItem('access_token');
-    localStorage.removeItem('refresh_token');
+    safeStorageRemove('access_token');
+    safeStorageRemove('refresh_token');
   } catch (_) {
     // noop
   }
@@ -215,7 +256,7 @@ const clearStoredTokens = () => {
 // 요청 인터셉터 - 토큰 자동 추가
 api.interceptors.request.use(
   (config) => {
-    const token = localStorage.getItem('access_token');
+    const token = safeStorageGet('access_token');
     const isGet = (config.method || 'get').toLowerCase() === 'get';
     const path = normalizePath(config.url || '');
     // 개별 리소스 조회는 비공개일 수 있으므로 항상 토큰 포함
@@ -300,7 +341,7 @@ api.interceptors.response.use(
 
 // 사전 리프레시: 포커스/가시성/주기적으로 access_token 만료 임박 시 갱신
 const tryProactiveRefresh = async () => {
-  const token = localStorage.getItem('access_token');
+  const token = safeStorageGet('access_token');
   if (!token) return;
   if (isExpiringSoon(token, 300)) { try { await runTokenRefresh(API_BASE_URL); } catch (_) {} }
 };
@@ -653,7 +694,7 @@ export const storiesAPI = {
   // Experimental streaming API (SSE events)
   generateStoryStream: async (data, { onMeta, onPreview, onEpisode, onFinal, onError, onStageStart, onStageEnd, onStart } = {}) => {
     const endpoint = '/stories/generate/stream';
-    const token = localStorage.getItem('access_token');
+    const token = safeStorageGet('access_token');
     const headers = { 'Content-Type': 'application/json' };
     if (token) headers['Authorization'] = `Bearer ${token}`;
     const controller = new AbortController();
