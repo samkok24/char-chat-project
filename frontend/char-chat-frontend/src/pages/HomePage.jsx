@@ -1655,17 +1655,20 @@ const HomePage = () => {
               </Link>
             </div>
             <div className="relative">
-              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+              {/* ✅ 다른 홈 구좌(트렌딩/추천/원작챗/웹소설)와 동일한 그리드 규칙(사이즈 일치) */}
+              <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3 sm:gap-4">
                 {visible.map((x, idx) => {
                   const rid = String(x?.item?.id || '').trim();
                   const key = rid ? `${x.type}:${rid}` : `${x.type}:${idx}`;
                   if (x.type === 'story') {
-                    return <StoryExploreCard key={key} story={x.item} compact />;
+                    // ✅ CMS 커스텀 구좌는 "탐색 카드"가 아니라 홈 구좌(격자) 스타일로 노출해야 한다.
+                    return <StoryExploreCard key={key} story={x.item} compact variant="home" />;
                   }
                   // ✅ CMS 커스텀 구좌: 저장된 스냅샷(item)의 chat_count가 0/누락일 수 있어 최신 값으로 보정한다.
                   const live = rid ? cmsLiveCountsByCharId?.[rid] : null;
                   const merged = live ? { ...(x.item || {}), ...live } : x.item;
-                  return <CharacterCard key={key} character={merged} showOriginBadge />;
+                  // ✅ CMS 커스텀 구좌는 "탐색 카드"가 아니라 홈 구좌(격자) 스타일로 노출해야 한다.
+                  return <CharacterCard key={key} character={merged} showOriginBadge variant="home" />;
                 })}
               </div>
 
@@ -1891,7 +1894,7 @@ const HomePage = () => {
                           className="w-full h-11 rounded-xl bg-purple-600 hover:bg-purple-700 text-white shadow-sm shadow-purple-900/30"
                           onClick={() => openQuickMeet(onboardingSearchTerm || onboardingQueryRaw)}
                         >
-                          30초만에 캐릭터 만나기
+                          30초만에 캐릭터와 대화하기
                         </Button>
                       </div>
                       <div className="mt-2">
@@ -1901,7 +1904,7 @@ const HomePage = () => {
                           onClick={goToOrigSerialNovelTab}
                           className="w-full h-11 rounded-xl border-blue-500/40 bg-gray-900/30 text-blue-100 hover:bg-blue-500/10 hover:border-blue-400/60"
                         >
-                          웹소설 읽고 원작캐릭터 만나기
+                          무료로 웹소설 읽고 채팅하기
                         </Button>
                       </div>
                     </div>
@@ -1922,19 +1925,50 @@ const HomePage = () => {
           {/* 상단 필터 바 + 검색 */}
           <div className="mb-6">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex flex-wrap items-center gap-3">
-              <button
+              <div className="flex flex-wrap items-center gap-4 border-b border-gray-800/80">
+                {/* ✅ 탭 스타일(요구사항): 아이콘 없이 텍스트만 + 선택 탭 언더라인 강조 */}
+                <button
+                  type="button"
                   onClick={() => updateTab(null, null)}
-                  className={`h-8 px-3 text-[13px] sm:h-9 sm:px-4 sm:text-sm rounded-full border font-medium transition-colors ${sourceFilter === null ? 'bg-purple-600 text-white border-purple-500 shadow-sm shadow-purple-900/30' : 'bg-gray-800/60 text-gray-200 border-gray-700/80 hover:bg-gray-800'}`}
-              >전체</button>
-              <button
+                  className={[
+                    'relative -mb-px px-1 py-2 text-base sm:text-lg font-semibold transition-colors',
+                    'border-b-2',
+                    sourceFilter === null
+                      ? 'text-white border-purple-500'
+                      : 'text-gray-400 border-transparent hover:text-gray-200'
+                  ].join(' ')}
+                  aria-current={sourceFilter === null ? 'page' : undefined}
+                >
+                  추천
+                </button>
+                <button
+                  type="button"
                   onClick={() => updateTab('ORIGINAL', 'character')}
-                  className={`h-8 px-3 text-[13px] sm:h-9 sm:px-4 sm:text-sm rounded-full border font-medium transition-colors ${sourceFilter === 'ORIGINAL' ? 'bg-purple-600 text-white border-purple-500 shadow-sm shadow-purple-900/30' : 'bg-gray-800/60 text-gray-200 border-gray-700/80 hover:bg-gray-800'}`}
-                >캐릭터</button>
-              <button
+                  className={[
+                    'relative -mb-px px-1 py-2 text-base sm:text-lg font-semibold transition-colors',
+                    'border-b-2',
+                    sourceFilter === 'ORIGINAL'
+                      ? 'text-white border-purple-500'
+                      : 'text-gray-400 border-transparent hover:text-gray-200'
+                  ].join(' ')}
+                  aria-current={sourceFilter === 'ORIGINAL' ? 'page' : undefined}
+                >
+                  캐릭터
+                </button>
+                <button
+                  type="button"
                   onClick={() => updateTab('ORIGSERIAL', 'origserial')}
-                  className={`h-8 px-3 text-[13px] sm:h-9 sm:px-4 sm:text-sm rounded-full border font-medium transition-colors ${isOrigSerialTab ? 'bg-purple-600 text-white border-purple-500 shadow-sm shadow-purple-900/30' : 'bg-gray-800/60 text-gray-200 border-gray-700/80 hover:bg-gray-800'}`}
-                >원작연재</button>
+                  className={[
+                    'relative -mb-px px-1 py-2 text-base sm:text-lg font-semibold transition-colors',
+                    'border-b-2',
+                    isOrigSerialTab
+                      ? 'text-white border-purple-500'
+                      : 'text-gray-400 border-transparent hover:text-gray-200'
+                  ].join(' ')}
+                  aria-current={isOrigSerialTab ? 'page' : undefined}
+                >
+                  웹소설
+                </button>
 
                 {/* ✅ 검색 UI 비노출(요구사항): 전 탭에서 숨김 */}
                 {SEARCH_UI_ENABLED && (
@@ -1986,7 +2020,7 @@ const HomePage = () => {
                         : 'bg-gray-800 text-gray-200 border-gray-700'
                     }`}
                   >
-                    원작소설
+                    웹소설
                   </button>
                   <button
                     onClick={() => setOrigSerialTab('origchat')}
@@ -2349,7 +2383,7 @@ const HomePage = () => {
             {loading ? (
               <div className={gridColumnClasses}>
                 {Array.from({ length: 12 }).map((_, i) => (
-                  <CharacterCardSkeleton key={i} variant={isCharacterTab ? 'home' : 'explore'} />
+                  <CharacterCardSkeleton key={i} variant="home" />
                 ))}
               </div>
             ) : hasGridItems ? (
@@ -2366,13 +2400,13 @@ const HomePage = () => {
                       const showLabels = !isCharacterTab && !isOrigSerialTab;
                       if (!showLabels) {
                         return isStory ? (
-                          <StoryExploreCard key={key} story={item.data} />
+                          <StoryExploreCard key={key} story={item.data} variant="home" showLikeBadge={false} />
                         ) : (
                           <CharacterCard
                             key={key}
                             character={item.data}
                             showOriginBadge
-                            variant={isCharacterTab ? 'home' : 'explore'}
+                            variant="home"
                           />
                         );
                       }
@@ -2381,9 +2415,9 @@ const HomePage = () => {
                         <div key={key} className="relative">
                           {/* NOTE: 캐릭터 카드는 내부에서 이미 원작/기본 배지를 표시하므로, '캐릭터챗' 배지는 중복/겹침 이슈로 제거 */}
                           {isStory ? (
-                            <StoryExploreCard story={item.data} />
+                            <StoryExploreCard story={item.data} variant="home" showLikeBadge={false} />
                           ) : (
-                            <CharacterCard character={item.data} showOriginBadge />
+                            <CharacterCard character={item.data} showOriginBadge variant="home" />
                           )}
                         </div>
                       );

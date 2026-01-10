@@ -91,7 +91,21 @@ const normalizeExplicitApiBaseUrl = (raw) => {
    * 의도/동작:
    * - 절대 URL(https?://)만 신뢰한다. (상대경로는 런타임에서 origin 기반으로 처리)
    * - 운영에서는 localhost/127.0.0.1/backend 등 "브라우저에서 접근 불가능한 호스트"를 차단한다.
-   * - 경로가 무엇이든, 프론트의 baseURL은 `{origin}/api`로 정규화한다(배포 구조: Nginx가 /api를 백엔드로 프록시).
+   *
+   * ⚠️ 중요(로컬/운영 겸용):
+   * - 백엔드(FastAPI)는 기본 라우터가 `/auth`, `/characters` 처럼 `/api` 프리픽스 없이 등록되어 있다.
+   * - 운영 배포는 Nginx가 `/api/*` → 백엔드 `/*` 로 프록시(프리픽스 제거)하는 구조다.
+   * - 따라서 VITE_API_URL은 환경에 따라 아래처럼 달라질 수 있다.
+   *   - 로컬 개발(백엔드 직접 접속): `http://localhost:8000` (✅ /api 붙이면 404)
+   *   - 운영(동일 도메인 프록시): `https://your-domain.com` 또는 `https://your-domain.com/api`
+   *   - 운영(API 서브도메인 직결): `https://api.your-domain.com` (프록시 구조가 다르면 /api 미사용 가능)
+   *
+   * 최종 정책:
+   * - dev: 입력 URL을 가능한 그대로 사용(경로 포함 시 유지, 없으면 origin만)
+   * - production:
+   *   - 명시 경로가 있으면 그대로 사용(`/api`든 뭐든)
+   *   - 경로가 없고, 프론트와 같은 호스트면 `{origin}/api` 로 보정(기본 배포 구조)
+   *   - 경로가 없고, 다른 호스트면 origin 그대로 사용(API 서브도메인 직결 케이스)
    */
   if (!raw) return '';
   const s = String(raw || '').trim();
@@ -107,7 +121,27 @@ const normalizeExplicitApiBaseUrl = (raw) => {
       if (badHosts.includes(host)) return '';
     }
 
-    return `${u.protocol}//${u.host}/api`;
+    const origin = `${u.protocol}//${u.host}`;
+    // pathname은 항상 "/"로 시작한다. "/"만 온 경우는 "경로 없음"으로 본다.
+    const trimmedPath = String(u.pathname || '').replace(/\/+$/, '');
+
+    // ✅ dev: 입력값을 최대한 그대로 사용 (로컬 백엔드 직접 붙이는 케이스 지원)
+    if (import.meta.env.MODE !== 'production') {
+      return trimmedPath ? `${origin}${trimmedPath}` : origin;
+    }
+
+    // ✅ production: 경로가 명시되면 그대로 사용(사용자가 의도적으로 지정한 값)
+    if (trimmedPath) return `${origin}${trimmedPath}`;
+
+    // ✅ production: 경로가 비어 있고 "프론트와 같은 호스트"면 /api를 기본값으로 보정
+    // (배포 구조: Nginx가 /api를 백엔드로 프록시)
+    try {
+      const curHost = String(window?.location?.hostname || '').toLowerCase();
+      if (curHost && curHost === host) return `${origin}/api`;
+    } catch (_) {}
+
+    // ✅ production: 다른 호스트(API 서브도메인 직결 등)면 origin 그대로 사용
+    return origin;
   } catch (_) {
     return '';
   }

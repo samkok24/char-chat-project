@@ -6,13 +6,16 @@ import { Skeleton } from './ui/skeleton';
 import { getThumbnailUrl } from '../lib/images';
 import { resolveImageUrl } from '../lib/images';
 import { DEFAULT_SQUARE_URI } from '../lib/placeholder';
-import { MessageCircle, Heart } from 'lucide-react';
+import { Heart } from 'lucide-react';
 import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
 import { Badge } from './ui/badge';
 import { formatCount } from '../lib/format';
-import { storiesAPI } from '../lib/api';
+import { storiesAPI, charactersAPI } from '../lib/api';
 import { useAuth } from '../contexts/AuthContext';
 import { replacePromptTokens } from '../lib/prompt';
+
+// ✅ 홈 격자에서 태그 API를 매 카드마다 반복 호출하지 않도록 간단 캐시(메모리) 사용
+const _HOME_CHAR_TAGS_CACHE = new Map();
 
 /**
  * 캐릭터 카드(재사용 컴포넌트)
@@ -39,6 +42,12 @@ export const CharacterCard = ({
   const borderClass = isFromOrigChat ? 'border-orange-500/60' : (isWebNovel ? 'border-blue-500/40' : 'border-purple-500/40');
   const hoverBorderClass = isFromOrigChat ? 'hover:border-orange-500' : (isWebNovel ? 'hover:border-blue-500' : 'hover:border-purple-500');
   const [originTitle, setOriginTitle] = React.useState(character?.origin_story_title || '');
+  const [homeCharTags, setHomeCharTags] = React.useState([]);
+  // ✅ 초기 런칭 UX:
+  // - "대화수"는 초기엔 0이 많아 '사람 없음'으로 읽히기 쉬워 카드에서 아예 숨긴다.
+  // - 좋아요도 0이면 굳이 표시하지 않는다(>0일 때만 노출).
+  const likeCount = Number(character?.like_count ?? character?.likeCount ?? 0) || 0;
+  const showLikeCount = likeCount > 0;
 
   const handleCardClick = () => {
     if (onCardClick) {
@@ -82,6 +91,46 @@ export const CharacterCard = ({
     return () => { active = false; };
   }, [showOriginBadge, character?.origin_story_id, character?.origin_story_title]);
 
+  React.useEffect(() => {
+    /**
+     * 홈 격자 태그 로딩(방어적)
+     *
+     * 의도:
+     * - 캐릭터 목록 응답에는 tags가 포함되지 않아(백엔드 스키마), 별도 엔드포인트로 필요할 때만 보강한다.
+     * - 화면에 많이 노출되는 카드에서 네트워크 폭발을 막기 위해, 메모리 캐시로 1회만 로딩한다.
+     */
+    if (variant !== 'home') return;
+    const id = String(charId || '').trim();
+    if (!id) return;
+
+    try {
+      if (_HOME_CHAR_TAGS_CACHE.has(id)) {
+        setHomeCharTags(_HOME_CHAR_TAGS_CACHE.get(id) || []);
+        return;
+      }
+    } catch (_) {}
+
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const res = await charactersAPI.getCharacterTags(id);
+        const rows = Array.isArray(res?.data) ? res.data : [];
+        const tags = rows
+          .map((t) => String(t?.name || t?.slug || '').trim())
+          .filter(Boolean)
+          .slice(0, 6);
+        try { _HOME_CHAR_TAGS_CACHE.set(id, tags); } catch (_) {}
+        if (!cancelled) setHomeCharTags(tags);
+      } catch (e) {
+        // 태그는 부가 정보이므로 실패해도 카드/홈 UX는 깨지지 않게 한다.
+        try { _HOME_CHAR_TAGS_CACHE.set(id, []); } catch (_) {}
+        if (!cancelled) setHomeCharTags([]);
+      }
+    };
+    load();
+    return () => { cancelled = true; };
+  }, [variant, charId]);
+
   const avatarSrc = (() => {
     /**
      * ✅ 성능/UX(치명 포인트):
@@ -124,104 +173,126 @@ export const CharacterCard = ({
     return rendered || '설명이 없습니다.';
   })();
 
-  // ✅ 홈 메인 구좌 카드 스타일(요구사항): 캐릭터탭/원작챗탭에서 사용
+  // ✅ 홈 메인 구좌 카드 스타일(요구사항): "이미지 위 오버레이" 톤으로 통일
   if (variant === 'home') {
+    // ✅ 원작챗(=웹소설 원작 기반) 격자 UX:
+    // - 원작챗 카드는 "크리에이터 닉네임"보다 "어떤 웹소설의 원작인지"가 더 중요한 정보다.
+    // - 그래서 원작챗 격자에서는 크리에이터 닉네임 대신 "웹소설 원작 배지(원작 제목)"를 노출한다.
+    const originStoryId = String(character?.origin_story_id || '').trim();
+    const originBadgeText = String(character?.origin_story_title || originTitle || '').trim() || '웹소설 원작';
+
+    const creatorUsername = String(character?.creator_username || '').trim();
+    const creatorId = String(character?.creator_id || '').trim();
+    const showCreator = Boolean(creatorUsername && creatorId);
+    const showTags = Array.isArray(homeCharTags) && homeCharTags.length > 0;
+
     return (
       <div
         className="bg-gray-800/50 rounded-lg overflow-hidden border border-gray-700/50 group-hover:border-gray-600 transition-colors cursor-pointer group"
         onClick={handleCardClick}
       >
-        {/* 이미지 영역 */}
+        {/* 이미지 영역 + 오버레이(요구사항) */}
         <div className="relative aspect-[3/4] overflow-hidden bg-gray-900">
-          <LazyLoadImage
+          {/*
+           * ✅ 오버레이 안정성:
+           * - 일부 환경에서 LazyLoadImage(blur effect) 레이어/래퍼가 오버레이(텍스트)를 덮는 케이스가 있었다.
+           * - 홈 격자(variant="home")에서는 단순 <img loading="lazy">로 렌더링해 오버레이가 항상 보이도록 한다.
+           */}
+          <img
             alt={character?.name}
             src={getThumbnailUrl(avatarSrc, 400) || avatarSrc || DEFAULT_SQUARE_URI}
-            effect="blur"
             className="w-full h-full object-cover object-top group-hover:scale-105 transition-transform duration-300"
-            wrapperClassName="w-full h-full"
+            loading="lazy"
+            decoding="async"
+            draggable="false"
             onError={(e) => {
-              try {
-                // LazyLoadImage는 img와 달리 currentTarget이 wrapper일 수 있어 방어적으로 처리
-                const img = e?.target;
-                if (img && img.tagName === 'IMG') img.src = DEFAULT_SQUARE_URI;
-              } catch (_) {}
+              try { e.currentTarget.src = DEFAULT_SQUARE_URI; } catch (_) {}
             }}
           />
           <div className="absolute top-2 left-2 z-10">
             {isFromOrigChat ? (
-              <Badge className="bg-orange-400 text-black hover:bg-orange-400">원작챗</Badge>
+              <Badge className="bg-orange-400 text-black hover:bg-orange-400 px-1.5 py-0.5 text-[11px]">원작챗</Badge>
             ) : isWebNovel ? (
-              <Badge className="bg-blue-600 text-white hover:bg-blue-600">웹소설</Badge>
+              <Badge className="bg-blue-600 text-white hover:bg-blue-600 px-1.5 py-0.5 text-[11px]">웹소설</Badge>
             ) : (
-              <Badge className="bg-purple-600 text-white hover:bg-purple-600">캐릭터</Badge>
+              <Badge className="bg-purple-600 text-white hover:bg-purple-600 px-1.5 py-0.5 text-[11px]">캐릭터</Badge>
             )}
           </div>
-        </div>
 
-        {/* 텍스트 영역 */}
-        <div className="p-3 space-y-2">
-          {/* 원작 웹소설(파란 배지): 원작챗 캐릭터의 원작 제목 표시 */}
-          {showOriginBadge && isFromOrigChat && (character?.origin_story_title || originTitle) && (
-            <span
-              onClick={(e) => {
-                e.stopPropagation();
-                const sid = character?.origin_story_id;
-                if (sid) navigate(`/stories/${sid}`);
-              }}
-              className="block w-full"
-              role="link"
-              aria-label="원작 웹소설로 이동"
-            >
-              <Badge
-                title={character?.origin_story_title || originTitle}
-                className="bg-blue-600 text-white hover:bg-blue-500 inline-flex max-w-full truncate text-[10px] px-1.5 py-0.5 rounded-md justify-start text-left leading-[1.05] tracking-tight"
+          {/* 하단 오버레이(제목/설명/원작/좋아요) */}
+          {/* ✅ z-index 보강 + position 정합성:
+           * - `absolute`와 `relative`를 동시에 주면 Tailwind 유틸 우선순위로 `relative`가 이겨
+           *   오버레이가 아래로 밀리고(부모 overflow-hidden에 잘림) 텍스트가 안 보일 수 있다.
+           * - 오버레이는 반드시 absolute로 유지한다.
+           */}
+          <div className="absolute inset-x-0 bottom-0 z-20 p-3 pt-10 pb-9 bg-gradient-to-t from-black/90 via-black/40 to-transparent">
+            <div className="flex items-start justify-between gap-2">
+              <h4 className="text-white font-bold text-sm leading-tight line-clamp-1">
+                {character?.name}
+              </h4>
+              {showLikeCount ? (
+                <span className="inline-flex items-center gap-1 rounded bg-black/60 px-1.5 py-0.5 text-[11px] text-gray-100 shrink-0">
+                  <Heart className="w-3 h-3 text-red-400" />
+                  {formatCount(likeCount)}
+                </span>
+              ) : null}
+            </div>
+
+            <p className="mt-1 text-[11px] text-gray-200/80 line-clamp-2 leading-snug">
+              {renderedDescription}
+            </p>
+
+            {/* ✅ 태그 칩: 소개글(2줄) 아래, 크리에이터 닉네임 위에 작게 노출 */}
+            {showTags ? (
+              <div className="mt-2 flex items-center gap-1 overflow-x-auto pb-0.5 scrollbar-hide">
+                {homeCharTags.map((t) => (
+                  <span
+                    key={t}
+                    className="inline-flex items-center rounded-full border border-gray-700/70 bg-black/55 px-1.5 py-0.5 text-[10px] text-gray-100/90 whitespace-nowrap flex-shrink-0 max-w-[140px] truncate"
+                    title={t}
+                  >
+                    {t}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+
+            {isFromOrigChat ? (
+              originStoryId ? (
+                <Link
+                  to={`/stories/${originStoryId}`}
+                  onClick={(e) => e.stopPropagation()}
+                  className="mt-2 inline-flex max-w-full"
+                  aria-label="원작 웹소설 보기"
+                >
+                  <Badge
+                    title={originBadgeText}
+                    className="bg-blue-600 text-white hover:bg-blue-500 inline-flex max-w-full truncate text-[10px] px-1.5 py-0.5 rounded-md justify-start text-left leading-[1.05] tracking-tight"
+                  >
+                    {originBadgeText}
+                  </Badge>
+                </Link>
+              ) : (
+                <div className="mt-2 inline-flex max-w-full">
+                  <Badge
+                    title={originBadgeText}
+                    className="bg-blue-600 text-white hover:bg-blue-500 inline-flex max-w-full truncate text-[10px] px-1.5 py-0.5 rounded-md justify-start text-left leading-[1.05] tracking-tight"
+                  >
+                    {originBadgeText}
+                  </Badge>
+                </div>
+              )
+            ) : showCreator ? (
+              <Link
+                to={`/users/${creatorId}/creator`}
+                onClick={(e) => e.stopPropagation()}
+                className="absolute left-3 bottom-2 inline-flex max-w-[calc(100%-1.5rem)] items-center gap-1 rounded bg-black/40 px-1.5 py-0.5 text-[11px] text-gray-100/90 hover:text-white truncate"
+                aria-label="크리에이터 프로필 보기"
               >
-                {character?.origin_story_title || originTitle}
-              </Badge>
-            </span>
-          )}
-
-          <h4 className="text-white font-bold text-sm leading-tight line-clamp-1">{character?.name}</h4>
-
-          <div className="flex items-center gap-3 text-xs text-gray-400">
-            <span className="inline-flex items-center gap-1">
-              <MessageCircle className="w-3 h-3" />
-              {formatCount(character?.chat_count ?? 0)}
-            </span>
-            <span className="inline-flex items-center gap-1">
-              <Heart className="w-3 h-3" />
-              {formatCount(character?.like_count ?? 0)}
-            </span>
+                <span className="truncate">@{creatorUsername}</span>
+              </Link>
+            ) : null}
           </div>
-
-          <p className="text-xs text-gray-400 line-clamp-2 leading-relaxed min-h-[2.5rem]">
-            {renderedDescription}
-          </p>
-
-          {character?.creator_username && character?.creator_id && (
-            <Link
-              to={`/users/${character.creator_id}/creator`}
-              onClick={(e) => e.stopPropagation()}
-              className="inline-flex items-center gap-2 text-xs text-gray-100 bg-black/60 px-1.5 py-0.5 rounded hover:text-white cursor-pointer truncate"
-            >
-              <Avatar className="w-5 h-5">
-                <AvatarImage
-                  src={resolveImageUrl(
-                    character.creator_avatar_url
-                      ? `${character.creator_avatar_url}${
-                          character.creator_avatar_url.includes('?') ? '&' : '?'
-                        }v=${profileVersion}`
-                      : ''
-                  )}
-                  alt={character.creator_username}
-                />
-                <AvatarFallback className="text-[10px]">
-                  {character.creator_username?.charAt(0)?.toUpperCase() || 'U'}
-                </AvatarFallback>
-              </Avatar>
-              <span className="truncate max-w-[110px]">{character.creator_username}</span>
-            </Link>
-          )}
         </div>
       </div>
     );
@@ -243,18 +314,22 @@ export const CharacterCard = ({
         />
         <div className="absolute top-1 left-1">
           {isFromOrigChat ? (
-            <Badge className="bg-orange-400 text-black hover:bg-orange-400">원작챗</Badge>
+            <Badge className="bg-orange-400 text-black hover:bg-orange-400 px-1.5 py-0.5 text-[11px]">원작챗</Badge>
           ) : character?.source_type === 'IMPORTED' ? (
-            <Badge className="bg-blue-600 text-white hover:bg-blue-600">웹소설</Badge>
+            <Badge className="bg-blue-600 text-white hover:bg-blue-600 px-1.5 py-0.5 text-[11px]">웹소설</Badge>
           ) : (
-            <Badge className="bg-purple-600 text-white hover:bg-purple-600">캐릭터</Badge>
+            <Badge className="bg-purple-600 text-white hover:bg-purple-600 px-1.5 py-0.5 text-[11px]">캐릭터</Badge>
           )}
         </div>
         {/* 채팅수/좋아요 바: 이미지 우하단 오버레이 */}
-        <div className="absolute bottom-1 right-1 py-0.5 px-1.5 rounded bg-black/60 text-xs text-gray-100 flex items-center gap-2">
-          <span className="inline-flex items-center gap-0.5"><MessageCircle className="w-3 h-3" />{formatCount(character.chat_count || 0)}</span>
-          <span className="inline-flex items-center gap-0.5"><Heart className="w-3 h-3" />{formatCount(character.like_count || 0)}</span>
-        </div>
+        {showLikeCount ? (
+          <div className="absolute bottom-1 right-1 py-0.5 px-1.5 rounded bg-black/60 text-xs text-gray-100 flex items-center gap-2">
+            <span className="inline-flex items-center gap-0.5">
+              <Heart className="w-3 h-3" />
+              {formatCount(likeCount)}
+            </span>
+          </div>
+        ) : null}
       </div>
       
       {/* 캐릭터 정보 */}
@@ -319,11 +394,23 @@ export const CharacterCard = ({
  */
 export const CharacterCardSkeleton = ({ variant = 'explore' } = {}) => {
   const isHome = variant === 'home';
+  if (isHome) {
+    return (
+      <div className="bg-gray-800/50 rounded-lg overflow-hidden border border-gray-700/50">
+        <div className="relative aspect-[3/4] bg-gray-700">
+          <div className="absolute inset-x-0 bottom-0 p-3 space-y-2">
+            <Skeleton className="h-4 w-3/4 bg-gray-600/70" />
+            <Skeleton className="h-3 w-full bg-gray-600/60" />
+          </div>
+        </div>
+      </div>
+    );
+  }
   return (
-    <div className={isHome ? 'bg-gray-800/50 rounded-lg overflow-hidden border border-gray-700/50' : 'bg-gray-800 rounded-xl overflow-hidden border border-gray-700'}>
-      <Skeleton className={`${isHome ? 'aspect-[3/4]' : 'aspect-square'} bg-gray-700`} />
-      <div className={isHome ? 'p-3 space-y-2' : 'p-4 space-y-3'}>
-        <Skeleton className={`${isHome ? 'h-4' : 'h-5'} w-3/4 bg-gray-700`} />
+    <div className="bg-gray-800 rounded-xl overflow-hidden border border-gray-700">
+      <Skeleton className="aspect-square bg-gray-700" />
+      <div className="p-4 space-y-3">
+        <Skeleton className="h-5 w-3/4 bg-gray-700" />
         <Skeleton className="h-3 w-1/2 bg-gray-700" />
         <div className="space-y-1">
           <Skeleton className="h-3 w-full bg-gray-700" />

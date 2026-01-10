@@ -5,7 +5,7 @@ import { ko } from 'date-fns/locale';
 import { Skeleton } from './ui/skeleton';
 import { resolveImageUrl } from '../lib/images';
 import { DEFAULT_AVATAR_URI } from '../lib/placeholder';
-import { MessageCircle, MoreVertical, Heart, Pin, Trash2 } from 'lucide-react';
+import { MoreVertical, Heart, Pin, Trash2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
 import { Badge } from './ui/badge';
@@ -36,6 +36,9 @@ export const HistoryChatCard = ({ character, onClick, onPin, onDelete, displayTi
   const formatChatCount = (count) => formatCount(count);
   const isWebNovel = character?.source_type === 'IMPORTED';
   const isOrigChat = !!(character?.origin_story_id || character?.is_origchat || character?.source === 'origchat');
+  // ✅ 대화수는 비노출. 좋아요도 0이면 숨김.
+  const likeCount = Number(character?.like_count ?? character?.likeCount ?? 0) || 0;
+  const showLike = likeCount > 0;
 
   return (
     <div className="relative">
@@ -107,19 +110,15 @@ export const HistoryChatCard = ({ character, onClick, onPin, onDelete, displayTi
                   <Badge className="bg-purple-600 text-white hover:bg-purple-600">캐릭터</Badge>
                 ))}
               </div>
-              {/* 채팅 수 & 좋아요 수 표시 */}
-              <div className="absolute bottom-2.5 right-1 py-0.5 px-1.5 rounded bg-black bg-opacity-60 cursor-zoom-in" title="클릭하여 캐릭터 정보 보기">
-                <div className="flex items-center gap-x-2 text-gray-300">
-                  <div className="flex items-center gap-x-0.5">
-                    <MessageCircle className="w-2.5 h-2.5" />
-                    <span className="text-[10px] font-normal leading-none mb-[1px]">{formatChatCount(character.chat_count || 0)}</span>
-                  </div>
-                  <div className="flex items-center gap-x-0.5">
+              {/* 좋아요(>0)만 표시 */}
+              {showLike ? (
+                <div className="absolute bottom-2.5 right-1 py-0.5 px-1.5 rounded bg-black bg-opacity-60 cursor-zoom-in" title="클릭하여 캐릭터 정보 보기">
+                  <div className="flex items-center gap-x-0.5 text-gray-300">
                     <Heart className="w-2.5 h-2.5" />
-                    <span className="text-[10px] font-normal leading-none mb-[1px]">{formatChatCount(character.like_count || 0)}</span>
+                    <span className="text-[10px] font-normal leading-none mb-[1px]">{formatChatCount(likeCount)}</span>
                   </div>
                 </div>
-              </div>
+              ) : null}
             </div>
           </div>
 

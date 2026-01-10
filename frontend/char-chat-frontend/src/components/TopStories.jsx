@@ -1,82 +1,16 @@
 import React from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { rankingAPI } from '../lib/api';
-import { Link, useNavigate } from 'react-router-dom';
-import { resolveImageUrl } from '../lib/images';
-import { Eye, Heart, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 import ErrorBoundary from './ErrorBoundary';
-import { Badge } from './ui/badge';
 import { useIsMobile } from '../hooks/use-mobile';
+import StoryExploreCard from './StoryExploreCard';
 
 const StoryItem = ({ story }) => {
-  const navigate = useNavigate();
-  const storyId = story?.id;
-  const cover = story?.cover_url ? `${story.cover_url}${story.cover_url.includes('?') ? '&' : '?'}v=${Date.now()}` : '';
-  const coverSrc = resolveImageUrl(cover) || '';
-  const username = story?.creator_username;
-
   return (
     <li>
-      <Link 
-        to={storyId ? `/stories/${storyId}` : '#'} 
-        className="block group cursor-pointer" 
-        onClick={(e)=>{ if(!storyId){ e.preventDefault(); e.stopPropagation(); } }}
-      >
-        <div className="bg-gray-800/50 rounded-lg overflow-hidden border border-gray-700/50 group-hover:border-gray-600 transition-colors">
-          {/* 이미지 영역 */}
-          <div className="relative aspect-[3/4] overflow-hidden bg-gray-900">
-            <div className="absolute top-2 left-2 z-10">
-              <Badge className="bg-blue-600 text-white hover:bg-blue-600">웹소설</Badge>
-            </div>
-            {coverSrc ? (
-              <img
-                src={coverSrc}
-                alt={story?.title}
-                className="w-full h-full object-cover object-top group-hover:scale-105 transition-transform duration-300"
-                onError={(e) => { e.currentTarget.src = ''; }}
-                draggable="false"
-                loading="lazy"
-              />
-            ) : (
-              <div className="absolute inset-0 bg-gray-900 flex items-center justify-center text-gray-500 text-xs">NO COVER</div>
-            )}
-          </div>
-          
-          {/* 텍스트 영역 */}
-          <div className="p-3 space-y-2">
-            {/* 제목 */}
-            <h4 className="text-white font-bold text-sm leading-tight line-clamp-1">{story?.title || '제목 없음'}</h4>
-            
-            {/* 통계 */}
-            <div className="flex items-center gap-3 text-xs text-gray-400">
-              <span className="inline-flex items-center gap-1">
-                <Eye className="w-3 h-3" />
-                {Number(story?.view_count || 0).toLocaleString()}
-              </span>
-              <span className="inline-flex items-center gap-1">
-                <Heart className="w-3 h-3" />
-                {Number(story?.like_count || 0).toLocaleString()}
-              </span>
-            </div>
-            
-            {/* 설명 */}
-            <p className="text-xs text-gray-400 line-clamp-2 leading-relaxed min-h-[2.5rem]">
-              {story?.excerpt || story?.content || '설명이 없습니다.'}
-            </p>
-            
-            {/* 작성자 */}
-            {username && story?.creator_id && (
-              <div
-                onClick={(e) => { e.preventDefault(); e.stopPropagation(); navigate(`/users/${story.creator_id}/creator`); }}
-                className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-300 cursor-pointer pt-1"
-              >
-                <span>@</span>
-                <span className="truncate">{username}</span>
-              </div>
-            )}
-          </div>
-        </div>
-      </Link>
+      <StoryExploreCard story={story} variant="home" />
     </li>
   );
 };
@@ -85,16 +19,6 @@ const StorySkeleton = () => (
   <li className="animate-pulse">
     <div className="bg-gray-800/50 rounded-lg overflow-hidden border border-gray-700/50">
       <div className="aspect-[3/4] bg-gray-700" />
-      <div className="p-3 space-y-2">
-        <div className="h-4 bg-gray-700 rounded w-3/4" />
-        <div className="flex gap-3">
-          <div className="h-3 bg-gray-700 rounded w-12" />
-          <div className="h-3 bg-gray-700 rounded w-12" />
-        </div>
-        <div className="h-3 bg-gray-700 rounded w-full" />
-        <div className="h-3 bg-gray-700 rounded w-5/6" />
-        <div className="h-3 bg-gray-700 rounded w-20" />
-      </div>
     </div>
   </li>
 );

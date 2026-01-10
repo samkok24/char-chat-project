@@ -1,12 +1,13 @@
 import React from 'react';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import { Sheet, SheetContent } from '../ui/sheet';
 import { useIsMobile } from '../../hooks/use-mobile';
-import { Menu } from 'lucide-react';
+import { Menu, Home as HomeIcon } from 'lucide-react';
 
 const AppLayout = ({ children, SidebarComponent = Sidebar, sidebarProps, mobileHeaderRight }) => {
   const location = useLocation();
+  const navigate = useNavigate();
   const onAgentPage = location.pathname === '/agent';
   const isMobile = useIsMobile();
   const [mobileSidebarOpen, setMobileSidebarOpen] = React.useState(false);
@@ -58,15 +59,29 @@ const AppLayout = ({ children, SidebarComponent = Sidebar, sidebarProps, mobileH
           {SidebarComponent && (
             <div className="md:hidden flex-shrink-0 border-b border-gray-800 bg-gray-900/90 backdrop-blur">
               <div className="flex items-center justify-between gap-3 px-4 py-3">
-                <button
-                  type="button"
-                  onClick={() => setMobileSidebarOpen(true)}
-                  className="inline-flex items-center justify-center h-10 w-10 rounded-full border border-gray-700 bg-gray-800 text-gray-200 hover:bg-gray-700 transition-colors"
-                  aria-label="메뉴 열기"
-                  title="챕터8 - 캐릭터 ∞ 스토리"
-                >
-                  <Menu className="w-5 h-5" />
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setMobileSidebarOpen(true)}
+                    className="inline-flex items-center justify-center h-10 w-10 rounded-full border border-gray-700 bg-gray-800 text-gray-200 hover:bg-gray-700 transition-colors"
+                    aria-label="메뉴 열기"
+                    title="메뉴"
+                  >
+                    <Menu className="w-5 h-5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      // ✅ 모바일 헤더 홈 버튼: 언제든 메인 화면으로 복귀
+                      try { navigate('/dashboard'); } catch (_) {}
+                    }}
+                    className="inline-flex items-center justify-center h-10 w-10 rounded-full border border-gray-700 bg-gray-800 text-gray-200 hover:bg-gray-700 transition-colors"
+                    aria-label="메인 화면으로 이동"
+                    title="메인"
+                  >
+                    <HomeIcon className="w-5 h-5" />
+                  </button>
+                </div>
 
                 <div className="flex-1 min-w-0 text-center">
                   <span className="text-sm font-semibold text-gray-100 truncate">챕터8 - 캐릭터 ∞ 웹소설</span>
