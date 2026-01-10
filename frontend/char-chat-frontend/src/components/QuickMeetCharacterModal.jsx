@@ -15,7 +15,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
-import { charactersAPI, filesAPI, tagsAPI, api } from '../lib/api';
+import { charactersAPI, filesAPI, tagsAPI } from '../lib/api';
 import { resolveImageUrl } from '../lib/images';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
 import { Button } from './ui/button';
@@ -32,6 +32,29 @@ const dispatchToast = (type, message) => {
 
 const DEFAULT_SEED_PLACEHOLDER =
   '예) 무뚝뚝하지만 은근 다정한 경호원. 말투는 짧고 단호. 상황은 밤거리. 로맨스/긴장감.';
+
+/**
+ * ✅ 온보딩 필수 선택(메타) 옵션
+ *
+ * 의도:
+ * - 기존 캐릭터 생성/편집(CreateCharacterPage)에서 강제하는 기준과 동일하게,
+ *   온보딩 "30초만에 캐릭터 만나기"에서도 성향/이미지 스타일을 필수로 받는다.
+ * - 태그 slug는 백엔드 `/characters/:id/tags`에서 없으면 자동 생성되므로,
+ *   프론트는 slug만 보내면 된다(SSOT: 태그 연결은 백엔드).
+ */
+const REQUIRED_AUDIENCE_CHOICES = [
+  { slug: '남성향', label: '남성향', previewClass: 'bg-gradient-to-br from-slate-900 via-blue-900 to-purple-900' },
+  { slug: '여성향', label: '여성향', previewClass: 'bg-gradient-to-br from-rose-900 via-fuchsia-900 to-indigo-900' },
+  { slug: '전체', label: '전체', previewClass: 'bg-gradient-to-br from-emerald-900 via-slate-900 to-cyan-900' },
+];
+const REQUIRED_STYLE_CHOICES = [
+  { slug: '애니풍', label: '애니풍', previewClass: 'bg-gradient-to-br from-purple-600 via-indigo-600 to-blue-600' },
+  { slug: '실사풍', label: '실사풍', previewClass: 'bg-gradient-to-br from-zinc-900 via-gray-800 to-zinc-700' },
+  { slug: '반실사', label: '반실사', previewClass: 'bg-gradient-to-br from-slate-800 via-stone-700 to-neutral-800' },
+  { slug: '아트웤', label: '아트웤/디자인', previewClass: 'bg-gradient-to-br from-amber-700 via-orange-700 to-rose-700' },
+];
+const REQUIRED_AUDIENCE_SLUGS = REQUIRED_AUDIENCE_CHOICES.map((c) => c.slug);
+const REQUIRED_STYLE_SLUGS = REQUIRED_STYLE_CHOICES.map((c) => c.slug);
 
 export default function QuickMeetCharacterModal({
   open,
@@ -60,11 +83,28 @@ export default function QuickMeetCharacterModal({
   const [draft, setDraft] = useState(null); // CharacterCreateRequest 형태(초안)
   const [generating, setGenerating] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [createdCharacterId, setCreatedCharacterId] = useState(''); // 태그 저장 실패 시 중복 생성 방지용
 
   const selectedTagNames = useMemo(() => {
     const map = new Map((allTags || []).map((t) => [t.slug, t.name]));
     return (selectedTagSlugs || []).map((slug) => map.get(slug) || slug);
   }, [allTags, selectedTagSlugs]);
+
+  const selectedAudienceSlug = useMemo(() => {
+    try {
+      return (selectedTagSlugs || []).find((s) => REQUIRED_AUDIENCE_SLUGS.includes(s)) || '';
+    } catch (_) {
+      return '';
+    }
+  }, [selectedTagSlugs]);
+
+  const selectedStyleSlug = useMemo(() => {
+    try {
+      return (selectedTagSlugs || []).find((s) => REQUIRED_STYLE_SLUGS.includes(s)) || '';
+    } catch (_) {
+      return '';
+    }
+  }, [selectedTagSlugs]);
 
   const resetAll = () => {
     setStep('input');
@@ -75,6 +115,7 @@ export default function QuickMeetCharacterModal({
     setSelectedTagSlugs([]);
     setImageFile(null);
     setUploadedImageUrl('');
+    setCreatedCharacterId('');
     if (imagePreviewUrl) {
       try { URL.revokeObjectURL(imagePreviewUrl); } catch (_) {}
     }
@@ -90,6 +131,7 @@ export default function QuickMeetCharacterModal({
     setStep('input');
     setDraft(null);
     setUploadedImageUrl('');
+    setCreatedCharacterId('');
     (async () => {
       try {
         const res = await tagsAPI.getTags();
@@ -116,6 +158,7 @@ export default function QuickMeetCharacterModal({
       setError('');
       setDraft(null);
       setUploadedImageUrl('');
+      setCreatedCharacterId('');
       setImageFile(file || null);
       if (imagePreviewUrl) {
         try { URL.revokeObjectURL(imagePreviewUrl); } catch (_) {}
@@ -131,11 +174,58 @@ export default function QuickMeetCharacterModal({
     }
   };
 
+  /**
+   * ✅ toggleExclusiveTag
+   *
+   * 의도/동작:
+   * - "성향/스타일"처럼 서로 배타적인 태그 그룹에서 1개만 선택되도록 강제한다.
+   * - 기존 선택을 클릭하면 해제(빈 값)할 수 있지만, 생성 시 validate에서 다시 막는다.
+   */
+  const toggleExclusiveTag = (slug, groupSlugs) => {
+    try {
+      const s = String(slug || '').trim();
+      const group = Array.isArray(groupSlugs) ? groupSlugs : [];
+      if (!s || group.length === 0) return;
+      setSelectedTagSlugs((prev) => {
+        const arr = Array.isArray(prev) ? prev : [];
+        const had = arr.includes(s);
+        const filtered = arr.filter((x) => !group.includes(x));
+        const next = had ? filtered : [...filtered, s];
+        // 중복 방지
+        return Array.from(new Set(next));
+      });
+    } catch (e) {
+      try { console.error('[QuickMeetCharacterModal] toggleExclusiveTag failed:', e); } catch (_) {}
+    }
+  };
+
+  /**
+   * ✅ validateRequiredMeta
+   *
+   * 의도/동작:
+   * - 온보딩 30초 생성에서 "성향" + "이미지 스타일"을 필수로 강제한다.
+   * - 초안 생성 단계/최종 저장 단계 모두에서 재사용하여 우회/상태 꼬임을 방지한다.
+   */
+  const validateRequiredMeta = () => {
+    try {
+      const slugs = Array.isArray(selectedTagSlugs) ? selectedTagSlugs : [];
+      const audience = slugs.find((s) => REQUIRED_AUDIENCE_SLUGS.includes(s)) || '';
+      const style = slugs.find((s) => REQUIRED_STYLE_SLUGS.includes(s)) || '';
+      if (!audience) return '남성향/여성향/전체 중 하나를 선택해주세요.';
+      if (!style) return '애니풍/실사풍/반실사/아트웤(디자인) 중 하나를 선택해주세요.';
+      return '';
+    } catch (_) {
+      return '필수 선택값을 확인할 수 없습니다. 다시 시도해주세요.';
+    }
+  };
+
   const validateInput = () => {
     const n = String(name || '').trim();
     const s = String(seedText || '').trim();
     if (!n) return '캐릭터명을 입력해주세요.';
     if (!s) return '원하는 캐릭터 느낌을 입력해주세요.';
+    const metaMsg = validateRequiredMeta();
+    if (metaMsg) return metaMsg;
     if (!imageFile && !uploadedImageUrl) return '대표 이미지를 넣어주세요.';
     return '';
   };
@@ -209,24 +299,43 @@ export default function QuickMeetCharacterModal({
   const handleCreateAndNavigate = async (target) => {
     if (!draft) return;
     if (creating) return;
+    // ✅ 방어: preview 단계에서도 필수값이 누락되면 저장을 막는다.
+    const metaMsg = validateRequiredMeta();
+    if (metaMsg) {
+      setError(metaMsg);
+      setStep('input');
+      return;
+    }
     setCreating(true);
     setError('');
     try {
       let payload = ensurePublishPublic(draft);
       payload = ensureMedia(payload);
 
-      const res = await charactersAPI.createAdvancedCharacter(payload);
-      const createdId = res?.data?.id;
-      if (!createdId) throw new Error('created_id_missing');
+      // ✅ 방어: 태그 저장 단계에서 실패해도 중복 생성되지 않도록, 생성된 id를 기억하고 재시도 시 재사용한다.
+      let createdId = String(createdCharacterId || '').trim();
+      if (!createdId) {
+        const res = await charactersAPI.createAdvancedCharacter(payload);
+        createdId = String(res?.data?.id || '').trim();
+        if (!createdId) throw new Error('created_id_missing');
+        setCreatedCharacterId(createdId);
+      }
 
-      // 태그 연결(선택)
-      try {
-        if (Array.isArray(selectedTagSlugs) && selectedTagSlugs.length > 0) {
-          await api.put(`/characters/${createdId}/tags`, { tags: selectedTagSlugs });
+      // ✅ 태그 연결(필수/선택 포함): 필수 메타는 반드시 저장돼야 하므로 실패 시 사용자에게 안내하고 재시도 가능하게 한다.
+      if (Array.isArray(selectedTagSlugs) && selectedTagSlugs.length > 0) {
+        try {
+          await charactersAPI.setCharacterTags(createdId, selectedTagSlugs);
+        } catch (e) {
+          console.error('[QuickMeetCharacterModal] set tags failed:', e);
+          const detail = e?.response?.data?.detail || e?.message || '알 수 없는 오류';
+          dispatchToast('error', '태그 저장에 실패했습니다. 다시 시도해주세요.');
+          setError(
+            `캐릭터는 생성됐지만 태그 저장에 실패했습니다.\n` +
+            `- 다시 시도: "상세페이지 보기" 또는 "대화하러 가기"를 다시 눌러주세요.\n` +
+            `- 오류: ${detail}`
+          );
+          return; // ✅ 태그 저장이 완료되기 전에는 이동하지 않는다(필수값 보장).
         }
-      } catch (e) {
-        console.error('[QuickMeetCharacterModal] set tags failed:', e);
-        // 태그 실패는 치명적이지 않으므로 생성/이동은 계속
       }
 
       // 캐시 무효화(홈/목록 반영)
@@ -257,7 +366,7 @@ export default function QuickMeetCharacterModal({
   return (
     <>
       <Dialog open={open} onOpenChange={(v) => { if (!v) { onClose?.(); resetAll(); } }}>
-        <DialogContent className="bg-gray-900 text-white border border-gray-700 max-w-3xl rounded-2xl">
+        <DialogContent className="bg-gray-900 text-white border border-gray-700 max-w-3xl rounded-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="text-white text-xl font-semibold">30초만에 캐릭터 만나기</DialogTitle>
           </DialogHeader>
@@ -336,9 +445,74 @@ export default function QuickMeetCharacterModal({
                 />
               </div>
 
+              {/* ===== 필수 메타 선택: 성향/이미지 스타일 (모바일 최적화) ===== */}
+              <div className="rounded-xl border border-gray-800 bg-gray-950/20 p-3 space-y-4">
+                <div className="text-sm font-semibold text-white">필수 선택</div>
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-sm font-medium text-gray-200">
+                      성향 <span className="text-rose-400">*</span>
+                    </div>
+                    <div className="text-xs text-gray-500">1개 선택</div>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    {REQUIRED_AUDIENCE_CHOICES.map((opt) => {
+                      const selected = selectedAudienceSlug === opt.slug;
+                      return (
+                        <Button
+                          key={opt.slug}
+                          type="button"
+                          variant="outline"
+                          className={[
+                            'h-11 w-full rounded-xl border text-xs sm:text-sm px-2',
+                            selected
+                              ? `${opt.previewClass} border-transparent text-white shadow-sm shadow-black/20`
+                              : 'border-gray-700 bg-gray-800/40 text-gray-200 hover:bg-gray-800/60',
+                          ].join(' ')}
+                          onClick={() => toggleExclusiveTag(opt.slug, REQUIRED_AUDIENCE_SLUGS)}
+                        >
+                          {opt.label}
+                        </Button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-sm font-medium text-gray-200">
+                      이미지 스타일 <span className="text-rose-400">*</span>
+                    </div>
+                    <div className="text-xs text-gray-500">1개 선택</div>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    {REQUIRED_STYLE_CHOICES.map((opt) => {
+                      const selected = selectedStyleSlug === opt.slug;
+                      return (
+                        <Button
+                          key={opt.slug}
+                          type="button"
+                          variant="outline"
+                          className={[
+                            'h-11 w-full rounded-xl border text-xs sm:text-sm px-2',
+                            selected
+                              ? `${opt.previewClass} border-transparent text-white shadow-sm shadow-black/20`
+                              : 'border-gray-700 bg-gray-800/40 text-gray-200 hover:bg-gray-800/60',
+                          ].join(' ')}
+                          onClick={() => toggleExclusiveTag(opt.slug, REQUIRED_STYLE_SLUGS)}
+                        >
+                          {opt.label}
+                        </Button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+
               <div className="space-y-2">
                 <div className="flex items-center justify-between gap-2">
-                  <div className="text-sm font-medium text-gray-200">태그(선택)</div>
+                  <div className="text-sm font-medium text-gray-200">태그(추가 선택)</div>
                   <Button
                     type="button"
                     variant="outline"

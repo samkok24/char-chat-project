@@ -15,6 +15,7 @@ import { Loader2 } from 'lucide-react';
 import './App.css';
 import MediaEventsBridge from './components/MediaEventsBridge';
 import ToastEventsBridge from './components/ToastEventsBridge';
+import PresenceHeartbeatBridge from './components/PresenceHeartbeatBridge';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -295,6 +296,7 @@ function App() {
             <div className="App">
               <MediaEventsBridge />
               <ToastEventsBridge />
+              <PresenceHeartbeatBridge />
               <AppRouter />
             </div>
           </SocketProvider>

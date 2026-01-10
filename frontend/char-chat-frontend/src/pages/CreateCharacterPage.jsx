@@ -369,9 +369,10 @@ const CreateCharacterPage = () => {
       }
     }
 
-    // 2) ✅ 신규 필수 선택(메타) 검증 - 생성(Create)에서만 강제(기존 편집 안전)
+    // 2) ✅ 필수 선택(메타) 검증 - 생성/편집 모두 강제(요구사항)
+    // - 단, 원작챗 캐릭터는 이 페이지에서 해당 UI를 숨기므로 강제하지 않는다.
     try {
-      if (!isEditMode) {
+      if (!isOrigChatCharacter) {
         const audience = (selectedTagSlugs || []).find((s) => REQUIRED_AUDIENCE_SLUGS.includes(s)) || null;
         const style = (selectedTagSlugs || []).find((s) => REQUIRED_STYLE_SLUGS.includes(s)) || null;
         if (!audience) {
@@ -412,7 +413,7 @@ const CreateCharacterPage = () => {
     setFieldErrors(map);
     if (ok) return { success: true, data: result.success ? result.data : formData };
     return { success: false, errors: map };
-  }, [formData, validationSchema, isEditMode, selectedTagSlugs]);
+  }, [formData, validationSchema, isEditMode, selectedTagSlugs, isOrigChatCharacter]);
 
   // 입력 디바운스 검증
   useEffect(() => {
@@ -586,15 +587,17 @@ const CreateCharacterPage = () => {
       if (!String(formData.basic_info.description || '').trim()) errors.basic += 1;
       if (!String(formData.basic_info.world_setting || '').trim()) errors.basic += 1;
       if (!String(formData.basic_info.user_display_description || '').trim()) errors.basic += 1;
+    }
 
-      // 필수 태그(성향/스타일)
-      try {
+    // ✅ 필수 태그(성향/스타일): 생성/편집 모두 강제(요구사항), 단 원작챗 캐릭터 제외
+    try {
+      if (!isOrigChatCharacter) {
         const audience = (selectedTagSlugs || []).find((s) => REQUIRED_AUDIENCE_SLUGS.includes(s)) || null;
         const style = (selectedTagSlugs || []).find((s) => REQUIRED_STYLE_SLUGS.includes(s)) || null;
         if (!audience) errors.basic += 1;
         if (!style) errors.basic += 1;
-      } catch (_) {}
-    }
+      }
+    } catch (_) {}
 
     // 허용되지 않은 토큰 사용 검사
     const tokenFields = [
@@ -647,7 +650,7 @@ const CreateCharacterPage = () => {
 
     errors.total = errors.basic + errors.media + errors.dialogues + errors.affinity + errors.publish;
     return errors;
-  }, [formData, isEditMode, selectedTagSlugs]);
+  }, [formData, isEditMode, selectedTagSlugs, isOrigChatCharacter]);
 
   // 스크롤 스파이: 현재 섹션 추적
   useEffect(() => {
@@ -1714,13 +1717,13 @@ const CreateCharacterPage = () => {
         {!isOrigChatCharacter && (
           <div className="space-y-4">
             <div className="text-sm font-semibold text-gray-200">
-              필수 태그 {!isEditMode && <span className="text-red-400">*</span>}
+              필수 태그 <span className="text-red-400">*</span>
             </div>
             {/* 성향 */}
             <div>
               <div className="flex items-baseline justify-between">
                 <div className="text-sm font-semibold text-gray-200">
-                  남성향 / 여성향 / 전체 {!isEditMode && <span className="text-red-400">*</span>}
+                  남성향 / 여성향 / 전체 <span className="text-red-400">*</span>
                 </div>
                 <div className="text-xs text-gray-500">클릭하면 선택, 다시 클릭하면 해제</div>
               </div>
@@ -1754,7 +1757,7 @@ const CreateCharacterPage = () => {
             <div>
               <div className="flex items-baseline justify-between">
                 <div className="text-sm font-semibold text-gray-200">
-                  이미지 스타일 {!isEditMode && <span className="text-red-400">*</span>}
+                  이미지 스타일 <span className="text-red-400">*</span>
                 </div>
                 <div className="text-xs text-gray-500">레퍼런스 느낌을 선택하세요</div>
               </div>
