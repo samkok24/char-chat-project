@@ -1,4 +1,4 @@
-import { MessageCircle, MoreVertical, Heart, Edit, Trash2, Users, EyeOff } from 'lucide-react';
+import { MoreVertical, Heart, Edit, Trash2, Users, EyeOff } from 'lucide-react';
 import { formatCount } from '../lib/format';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
@@ -27,10 +27,6 @@ const CharacterInfoHeader = ({ character, likeCount, isLiked, handleLike, isOwne
           <div className="flex items-center space-x-2 text-sm text-gray-400">
             <Heart className="w-4 h-4 text-red-500" fill={isLiked ? 'currentColor' : 'none'} />
             <span>{likeCount.toLocaleString()}</span>
-          </div>
-          <div className="flex items-center space-x-2 text-sm text-gray-400">
-            <MessageCircle className="w-4 h-4" />
-            <span>{formatCount(character.chat_count || 0)}</span>
           </div>
         </div>
         {(isOwner || canTogglePublic) && (

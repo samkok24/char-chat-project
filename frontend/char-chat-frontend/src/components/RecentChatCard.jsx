@@ -5,7 +5,7 @@ import { DEFAULT_AVATAR_URI } from '../lib/placeholder';
 import { formatDistanceToNow } from 'date-fns';
 import { ko } from 'date-fns/locale';
 import { Skeleton } from './ui/skeleton';
-import { Heart, MessageCircle } from 'lucide-react';
+import { Heart } from 'lucide-react';
 import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
 import { formatCount } from '../lib/format';
 import { Badge } from './ui/badge';
@@ -24,6 +24,9 @@ export const RecentChatCard = ({ character, onClick, displayTitle }) => {
   // chat source 힌트 또는 쿼리 문자열이 전달되었는지 우선 확인하도록 보강
   const isOrigChat = !!(character?.origin_story_id || character?.is_origchat || character?.source === 'origchat');
   const borderClass = isOrigChat ? 'border-orange-500/60' : (isWebNovel ? 'border-blue-500/40' : 'border-purple-500/40');
+  // ✅ 대화수는 비노출. 좋아요도 0이면 숨김.
+  const likeCount = Number(character?.like_count ?? character?.likeCount ?? 0) || 0;
+  const showLike = likeCount > 0;
 
   return (
     <div 
@@ -66,19 +69,15 @@ export const RecentChatCard = ({ character, onClick, displayTitle }) => {
                     <Badge className="bg-purple-600 text-white hover:bg-purple-600">캐릭터</Badge>
                   ))}
                 </div>
-                {/* 인디케이터: 이미지 우하단에 항상 표시 */}
-                <div className="absolute bottom-1 right-1 py-0.5 px-1.5 rounded bg-black/60">
-                  <div className="flex items-center gap-x-2 text-gray-200">
-                    <div className="flex items-center gap-x-0.5">
-                      <MessageCircle className="w-3 h-3" />
-                      <span className="text-[10px] leading-none">{formatChatCount(character.chat_count ?? 0)}</span>
-                    </div>
-                    <div className="flex items-center gap-x-0.5">
+                {/* 인디케이터: 좋아요(>0)만 표시 */}
+                {showLike ? (
+                  <div className="absolute bottom-1 right-1 py-0.5 px-1.5 rounded bg-black/60">
+                    <div className="flex items-center gap-x-1 text-gray-200">
                       <Heart className="w-3 h-3" />
-                      <span className="text-[10px] leading-none">{formatChatCount(character.like_count ?? 0)}</span>
+                      <span className="text-[10px] leading-none">{formatChatCount(likeCount)}</span>
                     </div>
                   </div>
-                </div>
+                ) : null}
               </span>
 
               {/* 정보 영역 */}

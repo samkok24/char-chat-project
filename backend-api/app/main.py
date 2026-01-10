@@ -3,7 +3,7 @@ AI 캐릭터 챗 플랫폼 - FastAPI 메인 애플리케이션
 CAVEDUCK 스타일: "Chat First, Story Later"
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, APIRouter
 from fastapi.exceptions import ResponseValidationError
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -53,6 +53,7 @@ from app.api.notices import router as notices_router  # 📢 공지사항
 from app.api.faqs import router as faqs_router  # ❓ FAQ
 from app.api.faq_categories import router as faq_categories_router  # ❓ FAQ 카테고리
 from app.api.cms import router as cms_router  # 🧩 CMS(홈 배너/구좌 설정)
+from app.api.seo import router as seo_router  # 🔎 SEO (robots/sitemap)
 from app.models.tag import Tag
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
@@ -341,6 +342,7 @@ app.include_router(notices_router, prefix="/notices", tags=["📢 공지사항"]
 app.include_router(faqs_router, prefix="/faqs", tags=["❓ FAQ"])
 app.include_router(faq_categories_router, prefix="/faq-categories", tags=["❓ FAQ 카테고리"])
 app.include_router(cms_router, prefix="/cms", tags=["🧩 CMS 설정"])
+app.include_router(seo_router, tags=["🔎 SEO"])
 
 
 # ⏳ Phase 3: 콘텐츠 확장 API (향후 개발)
@@ -365,6 +367,48 @@ async def _snapshot_daily_ranking_job():
         await persist_daily_ranking(db, today_kst(), data)
 app.include_router(payment_router, prefix="/payment", tags=["⏳ 결제 (단순화 예정)"])
 app.include_router(point_router, prefix="/point", tags=["⏳ 포인트 (단순화 예정)"])
+
+# ============================================================
+# ✅ Compatibility alias: also accept /api/* routes (운영 방어)
+# ============================================================
+# 배경:
+# - 운영 배포는 일반적으로 Nginx가 `/api/*` → 백엔드 `/*` 로 프록시(프리픽스 제거)한다.
+# - 하지만 다음과 같은 실수/캐시/구버전 프론트가 섞이면, 백엔드에 `/api/...`가 그대로 들어와 404가 폭발할 수 있다.
+#   - Nginx proxy_pass 슬래시(/) 설정 실수
+#   - 모바일/인앱 브라우저에 남아있는 구버전 JS가 `/api`를 붙여 호출
+#   - 로컬에서 프론트 env가 `/api`를 강제로 붙이는 버그(이미 수정됨)
+#
+# 정책:
+# - 기존 라우트는 그대로 유지한다. (예: /auth/login)
+# - 동일 기능을 /api 프리픽스에서도 추가로 제공한다. (예: /api/auth/login)
+# - 이렇게 하면 "프리픽스가 붙어도/안 붙어도" 동작하여 운영 안정성이 올라간다.
+api_alias_router = APIRouter(prefix="/api")
+api_alias_router.include_router(chat_router, prefix="/chat", tags=["🔥 채팅 (최우선)"])
+api_alias_router.include_router(chat_read_router, tags=["📖 채팅 읽음 상태"])
+api_alias_router.include_router(auth_router, prefix="/auth", tags=["✅ 인증 (필수)"])
+api_alias_router.include_router(characters_router, prefix="/characters", tags=["✅ 캐릭터 (필수)"])
+api_alias_router.include_router(users_router, prefix="", tags=["✅ 유저 (필수)"])
+# api_alias_router.include_router(generation_router, prefix="/generate", tags=["✨ 생성 (신규)"])  # 임시 비활성화
+api_alias_router.include_router(story_importer_router, prefix="/story-importer", tags=["✨ 스토리 임포터 (신규)"])
+api_alias_router.include_router(memory_notes_router, prefix="/memory-notes", tags=["✨ 기억노트 (신규)"])
+api_alias_router.include_router(user_personas_router, prefix="/user-personas", tags=["👤 유저 페르소나 (신규)"])
+api_alias_router.include_router(agent_contents_router, prefix="/agent/contents", tags=["📦 에이전트 콘텐츠 (내 서랍)"])
+api_alias_router.include_router(storydive_router, prefix="/storydive", tags=["🏊 스토리 다이브"])
+api_alias_router.include_router(files_router, prefix="/files", tags=["🗂️ 파일"])
+api_alias_router.include_router(tags_router, prefix="/tags", tags=["🏷️ 태그"])
+api_alias_router.include_router(media_router, prefix="/media", tags=["🖼️ 미디어"])
+api_alias_router.include_router(metrics_router, prefix="/metrics", tags=["📈 메트릭 (임시)"])
+api_alias_router.include_router(notices_router, prefix="/notices", tags=["📢 공지사항"])
+api_alias_router.include_router(faqs_router, prefix="/faqs", tags=["❓ FAQ"])
+api_alias_router.include_router(faq_categories_router, prefix="/faq-categories", tags=["❓ FAQ 카테고리"])
+api_alias_router.include_router(cms_router, prefix="/cms", tags=["🧩 CMS 설정"])
+api_alias_router.include_router(seo_router, tags=["🔎 SEO"])
+api_alias_router.include_router(stories_router, prefix="/stories", tags=["📚 스토리"])
+api_alias_router.include_router(story_chapters_router, prefix="/chapters", tags=["📚 회차"])
+api_alias_router.include_router(rankings_router, prefix="/rankings", tags=["🏆 랭킹"])
+api_alias_router.include_router(payment_router, prefix="/payment", tags=["⏳ 결제 (단순화 예정)"])
+api_alias_router.include_router(point_router, prefix="/point", tags=["⏳ 포인트 (단순화 예정)"])
+app.include_router(api_alias_router)
 
 
 @app.get("/")
