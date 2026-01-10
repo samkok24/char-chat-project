@@ -164,6 +164,60 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
     } finally { setBusy(false); }
   };
 
+  /**
+   * 레거시(Story.cover_url / Character.avatar_url) 대표 이미지 제거
+   *
+   * 배경/의도:
+   * - MediaAsset 테이블이 비어있어도, 엔티티의 cover_url/avatar_url에는 값이 남아있을 수 있다.
+   * - 이 경우 모달이 레거시 URL로 폴백하며 "삭제가 안 된 것처럼" 보인다.
+   * - 운영 안정성을 위해, 레거시 URL도 모달에서 직접 삭제(=필드 null)할 수 있게 한다.
+   */
+  const clearLegacyPrimary = async () => {
+    if (!entityType || !entityId) return;
+    const et = String(entityType || '').trim().toLowerCase();
+    const eid = String(entityId || '').trim();
+    if (!eid) return;
+    setBusy(true);
+    try {
+      setStatusMessage('대표 이미지를 제거하는 중입니다...');
+      setErrorMessage('');
+      if (et === 'story') {
+        await storiesAPI.updateStory(eid, { cover_url: null });
+      } else if (et === 'character' || et === 'origchat') {
+        await charactersAPI.updateCharacter(eid, { avatar_url: null });
+      }
+      try { window.dispatchEvent(new CustomEvent('media:updated', { detail: { entityType: et, entityId: eid } })); } catch(_) {}
+      setStatusMessage('이미지를 삭제했습니다.');
+    } catch (err) {
+      console.error('레거시 대표 이미지 삭제 실패', err);
+      setErrorMessage('이미지를 삭제하지 못했습니다.');
+      dispatchToast('error', '이미지를 삭제하지 못했습니다.');
+      throw err;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDeleteGalleryItem = async (g) => {
+    const id = g?.id;
+    const sid = String(id || '');
+    // 1) 레거시(url:)는 엔티티 대표 URL을 비워야 진짜로 "삭제"가 된다.
+    if (sid.startsWith('url:')) {
+      await clearLegacyPrimary();
+      setGallery((prev) => (prev || []).filter((x) => x?.id !== id));
+      return;
+    }
+    // 2) 폼 임시 아이템(form:)은 서버 자산이 아니므로 로컬에서만 제거(불필요한 API 호출 방지)
+    if (sid.startsWith('form:')) {
+      setGallery((prev) => (prev || []).filter((x) => x?.id !== id));
+      setStatusMessage('이미지를 제거했습니다.');
+      setErrorMessage('');
+      return;
+    }
+    // 3) 일반 MediaAsset은 서버에서 삭제
+    await deleteOne(id);
+  };
+
   const loadGallery = async () => {
     if (!entityType || !entityId) return;
     try {
@@ -810,7 +864,13 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
                   type="button"
                   onMouseDown={(e)=> { e.stopPropagation(); e.preventDefault(); }}
                   onDragStart={(e)=> { e.stopPropagation(); e.preventDefault(); }}
-                  onClick={(e)=> { e.stopPropagation(); e.preventDefault(); if (!String(g.id).startsWith('url:')) deleteOne(g.id); }}
+                  onClick={async (e)=> {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    try {
+                      await handleDeleteGalleryItem(g);
+                    } catch (_) {}
+                  }}
                   className="absolute top-1 right-1 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition bg-black/60 hover:bg-black/80 text-white rounded p-1"
                   aria-label="이미지 삭제"
                 >
