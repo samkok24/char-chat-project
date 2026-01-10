@@ -199,6 +199,37 @@ try {
 const API_BASE_URL = EXPLICIT_API_BASE_URL
   || (import.meta.env.MODE === 'production' ? getDefaultProdApiBaseUrl() : 'http://localhost:8000');
 
+const getRuntimeFallbackApiBases = () => {
+  /**
+   * ✅ 인앱(WebView)에서의 "데이터만 안 뜨는" 케이스 방어
+   *
+   * 발생 패턴:
+   * - API_BASE_URL이 잘못되면(캐시된 구버전 JS / 프록시 설정 실수 / 혼합 콘텐츠 등),
+   *   API 요청이 index.html(HTML)로 떨어지거나 Network Error로 실패한다.
+   * - 이 경우 UI는 "빈 데이터"처럼 보여서, 인앱에서는 특히 디버깅이 매우 어렵다.
+   *
+   * 해결:
+   * - 런타임에서 (1) HTML 응답 감지 또는 (2) 네트워크 에러 감지 시,
+   *   가장 보수적인 후보 베이스(`/api`)로 1회 자동 재시도한다.
+   *
+   * 주의:
+   * - 안전을 위해 GET 요청에만 적용한다(POST/PUT 재시도는 부작용 위험).
+   */
+  try {
+    if (typeof window === 'undefined') return [];
+    const origin = String(window.location?.origin || '').trim();
+    const out = [];
+    if (origin) out.push(`${origin}/api`);
+    out.push('/api');
+    // 마지막 폴백: origin 루트 (일부 배포가 /api 프록시 없이 루트로 직접 노출하는 경우)
+    if (origin) out.push(origin);
+    // 중복 제거
+    return Array.from(new Set(out)).filter(Boolean);
+  } catch (_) {
+    return ['/api'];
+  }
+};
+
 /**
  * SOCKET URL(방어적)
  *
@@ -291,7 +322,65 @@ api.interceptors.request.use(
 
 // 응답 인터셉터 - 토큰 만료/권한 오류 처리(+경합 방지)
 api.interceptors.response.use(
-  (response) => {
+  async (response) => {
+    /**
+     * ✅ HTML 응답 감지(=API가 프론트로 잘못 라우팅된 경우)
+     *
+     * 증상:
+     * - axios는 200 OK로 성공 처리하지만, response.data가 HTML(string)이라
+     *   호출부에서 Array.isArray(...)가 false가 되어 빈 배열로 떨어진다.
+     * - 결과적으로 홈이 "콘텐츠 없음"처럼 보인다.
+     *
+     * 처리:
+     * - production + GET + API 경로 요청에서 HTML이면, /api 베이스로 1회 재시도한다.
+     */
+    try {
+      const cfg = response?.config || {};
+      const method = String(cfg.method || 'get').toLowerCase();
+      const isGet = method === 'get';
+      const path = normalizePath(cfg.url || '');
+      const ct = String(response?.headers?.['content-type'] || '').toLowerCase();
+      const looksHtml = ct.includes('text/html') || (typeof response?.data === 'string' && /<!doctype\s+html|<html/i.test(response.data));
+      const looksApiPath =
+        path.startsWith('/auth') ||
+        path.startsWith('/characters') ||
+        path.startsWith('/stories') ||
+        path.startsWith('/rankings') ||
+        path.startsWith('/tags') ||
+        path.startsWith('/cms') ||
+        path.startsWith('/notices') ||
+        path.startsWith('/faqs') ||
+        path.startsWith('/faq-categories') ||
+        path.startsWith('/storydive') ||
+        path.startsWith('/metrics') ||
+        path.startsWith('/media') ||
+        path.startsWith('/files') ||
+        path.startsWith('/users') ||
+        path.startsWith('/chapters') ||
+        path.startsWith('/payment') ||
+        path.startsWith('/point') ||
+        path.startsWith('/user-personas') ||
+        path.startsWith('/memory-notes') ||
+        path.startsWith('/agent/contents') ||
+        path.startsWith('/story-importer') ||
+        path.startsWith('/chat');
+
+      if (import.meta.env.MODE === 'production' && isGet && looksApiPath && looksHtml && !cfg.__fallbackRetried) {
+        const bases = getRuntimeFallbackApiBases();
+        for (const base of bases) {
+          try {
+            // 같은 베이스면 스킵
+            const curBase = String(cfg.baseURL || api.defaults.baseURL || '').trim();
+            if (base && curBase && base === curBase) continue;
+            const nextCfg = { ...cfg, baseURL: base, __fallbackRetried: true };
+            return await api.request(nextCfg);
+          } catch (_) {
+            // 다음 후보 시도
+          }
+        }
+      }
+    } catch (_) {}
+
     return response;
   },
   async (error) => {
@@ -334,6 +423,26 @@ api.interceptors.response.use(
         path,
       });
     }
+
+    // ✅ Network Error(응답 자체가 없음) 방어: production + GET 에서 /api 베이스로 1회 재시도
+    try {
+      const method = String(originalRequest.method || 'get').toLowerCase();
+      const isGet = method === 'get';
+      const noResponse = !error.response;
+      if (import.meta.env.MODE === 'production' && isGet && noResponse && !originalRequest.__fallbackRetried) {
+        const bases = getRuntimeFallbackApiBases();
+        for (const base of bases) {
+          try {
+            const curBase = String(originalRequest.baseURL || api.defaults.baseURL || '').trim();
+            if (base && curBase && base === curBase) continue;
+            const nextCfg = { ...originalRequest, baseURL: base, __fallbackRetried: true };
+            return await api.request(nextCfg);
+          } catch (_) {
+            // 다음 후보 시도
+          }
+        }
+      }
+    } catch (_) {}
 
     return Promise.reject(error);
   }
