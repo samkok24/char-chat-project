@@ -1662,7 +1662,7 @@ const HomePage = () => {
                   const key = rid ? `${x.type}:${rid}` : `${x.type}:${idx}`;
                   if (x.type === 'story') {
                     // ✅ CMS 커스텀 구좌는 "탐색 카드"가 아니라 홈 구좌(격자) 스타일로 노출해야 한다.
-                    return <StoryExploreCard key={key} story={x.item} compact variant="home" />;
+                      return <StoryExploreCard key={key} story={x.item} compact variant="home" showLikeBadge={false} />;
                   }
                   // ✅ CMS 커스텀 구좌: 저장된 스냅샷(item)의 chat_count가 0/누락일 수 있어 최신 값으로 보정한다.
                   const live = rid ? cmsLiveCountsByCharId?.[rid] : null;
