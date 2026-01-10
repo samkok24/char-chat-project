@@ -269,6 +269,123 @@ const HomePage = () => {
     return () => { active = false; };
   }, [refreshHomeSlots, isAdmin]);
 
+  // ===== CMS 커스텀 구좌: 대화수/좋아요수 보정(운영/UX 안정) =====
+  // 배경:
+  // - CMS 구좌의 contentPicks.item은 "선택 시점 스냅샷"을 저장한다.
+  // - 이 스냅샷에 chat_count가 없거나(구버전 데이터), 혹은 오래되어 0으로 보일 수 있어 홈 UX가 깨진다.
+  // - 홈 렌더 직전에, 화면에 실제로 보이는 캐릭터들의 최신 count만 가볍게 보정한다.
+  const [cmsLiveCountsByCharId, setCmsLiveCountsByCharId] = React.useState({});
+  const cmsVisibleCustomCharIds = React.useMemo(() => {
+    try {
+      // ⚠️ 주의: 이 블록은 파일 상단(초기 훅 구간)에서 실행되므로,
+      // 아래쪽에서 선언되는 `activeHomeSlots`를 직접 참조하면 TDZ(Temporal Dead Zone)로 런타임 에러가 날 수 있다.
+      // 따라서 여기서는 `homeSlots + isHomeSlotActive`로 동일한 계산을 로컬에서 수행한다.
+      const now = Date.now();
+      const allSlots = Array.isArray(homeSlots) ? homeSlots : [];
+      const slots = allSlots.filter((s) => {
+        try { return isHomeSlotActive(s, now); } catch (_) { return false; }
+      });
+      const seen = new Set();
+      const out = [];
+
+      for (const slot of slots) {
+        const sid = String(slot?.id || '').trim();
+        const slotType = String(slot?.slotType || '').trim().toLowerCase();
+        const rawPicks = Array.isArray(slot?.contentPicks) ? slot.contentPicks : [];
+        if (!(slotType === 'custom' || rawPicks.length > 0)) continue;
+
+        const items = rawPicks
+          .map((p) => {
+            const t = String(p?.type || '').trim().toLowerCase();
+            const it = p?.item;
+            if (!it) return null;
+            if (t === 'character') return { type: 'character', item: it };
+            if (t === 'story') return { type: 'story', item: it };
+            return null;
+          })
+          .filter(Boolean);
+
+        if (items.length === 0) continue;
+
+        // 홈 커스텀 구좌 렌더 정책과 동일(최대 24개, 모바일은 4개 페이징)
+        const MAX_ITEMS = 24;
+        const capped = items.slice(0, MAX_ITEMS);
+        const pageSize = isMobile ? MOBILE_SLOT_STEP : capped.length;
+        const pageCount = Math.max(1, Math.ceil(capped.length / Math.max(1, pageSize)));
+        const page = Number(slotPageById?.[sid] || 0) || 0;
+        const visible = isMobile
+          ? capped.slice(page * pageSize, page * pageSize + pageSize)
+          : capped;
+
+        for (const x of (visible || [])) {
+          if (x?.type !== 'character') continue;
+          const id = String(x?.item?.id || '').trim();
+          if (!id) continue;
+          if (seen.has(id)) continue;
+          seen.add(id);
+          out.push(id);
+        }
+      }
+
+      return out;
+    } catch (_) {
+      return [];
+    }
+  }, [homeSlots, isMobile, slotPageById]);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      const ids = Array.isArray(cmsVisibleCustomCharIds) ? cmsVisibleCustomCharIds : [];
+      if (ids.length === 0) return;
+
+      // 이미 가져온 id는 스킵
+      const missing = ids.filter((id) => !cmsLiveCountsByCharId?.[id]);
+      if (missing.length === 0) return;
+
+      // 너무 많은 병렬 호출은 피한다(홈 진입 시 급격한 트래픽 스파이크 방지)
+      const MAX_FETCH = 24;
+      const queue = missing.slice(0, MAX_FETCH);
+
+      const results = {};
+      let cursor = 0;
+      const concurrency = 4;
+
+      const worker = async () => {
+        while (!cancelled) {
+          const i = cursor;
+          cursor += 1;
+          if (i >= queue.length) break;
+          const id = queue[i];
+          try {
+            const res = await charactersAPI.getCharacter(id);
+            const c = res?.data || {};
+            const chatCount = Number(c?.chat_count ?? c?.chatCount ?? 0) || 0;
+            const likeCount = Number(c?.like_count ?? c?.likeCount ?? 0) || 0;
+            results[id] = { chat_count: chatCount, like_count: likeCount };
+          } catch (e) {
+            // 홈이 죽지 않도록 실패는 무시(보수적). 운영 디버깅용으로만 경고 로그를 남긴다.
+            try { console.warn('[HomePage] cms custom slot count hydrate failed:', { id, error: e?.message || e }); } catch (_) {}
+          }
+        }
+      };
+
+      try {
+        await Promise.all(Array.from({ length: concurrency }).map(() => worker()));
+      } catch (_) {
+        // ignore
+      }
+      if (cancelled) return;
+
+      const keys = Object.keys(results || {});
+      if (keys.length === 0) return;
+      setCmsLiveCountsByCharId((prev) => ({ ...(prev || {}), ...results }));
+    };
+
+    load();
+    return () => { cancelled = true; };
+  }, [cmsVisibleCustomCharIds, cmsLiveCountsByCharId]);
+
   // ===== 온보딩(메인 탭): 검색(성별+키워드) + 30초 생성 =====
   // 요구사항:
   // - 검색 기본값은 "전체"
@@ -1545,7 +1662,10 @@ const HomePage = () => {
                   if (x.type === 'story') {
                     return <StoryExploreCard key={key} story={x.item} compact />;
                   }
-                  return <CharacterCard key={key} character={x.item} showOriginBadge />;
+                  // ✅ CMS 커스텀 구좌: 저장된 스냅샷(item)의 chat_count가 0/누락일 수 있어 최신 값으로 보정한다.
+                  const live = rid ? cmsLiveCountsByCharId?.[rid] : null;
+                  const merged = live ? { ...(x.item || {}), ...live } : x.item;
+                  return <CharacterCard key={key} character={merged} showOriginBadge />;
                 })}
               </div>
 

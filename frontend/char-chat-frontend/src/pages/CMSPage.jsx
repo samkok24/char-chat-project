@@ -224,6 +224,9 @@ const CMSPage = () => {
   const [usersReloadKey, setUsersReloadKey] = React.useState(0);
   const [trafficLoading, setTrafficLoading] = React.useState(false);
   const [trafficSummary, setTrafficSummary] = React.useState(null);
+  const [onlineLoading, setOnlineLoading] = React.useState(false);
+  const [onlineSummary, setOnlineSummary] = React.useState(null);
+  const [onlineReloadKey, setOnlineReloadKey] = React.useState(0);
 
   // ===== 테스트 계정 생성(관리자) =====
   const [testUserOpen, setTestUserOpen] = React.useState(false);
@@ -557,6 +560,38 @@ const CMSPage = () => {
     loadTraffic();
     return () => { active = false; };
   }, [isAdmin, activeTab, usersReloadKey]);
+
+  // 실시간 온라인(접속) - Redis 하트비트 기반
+  React.useEffect(() => {
+    if (!isAdmin) return;
+    if (activeTab !== 'users') return;
+
+    let active = true;
+    let timer = null;
+
+    const loadOnline = async () => {
+      setOnlineLoading(true);
+      try {
+        const res = await metricsAPI.getOnlineNow({ window_sec: 60 });
+        if (!active) return;
+        setOnlineSummary(res?.data || null);
+      } catch (e) {
+        try { console.error('[CMSPage] metricsAPI.getOnlineNow failed:', e); } catch (_) {}
+        if (active) setOnlineSummary(null);
+      } finally {
+        if (active) setOnlineLoading(false);
+      }
+    };
+
+    loadOnline();
+    // 관리자 화면에서만 가볍게 폴링(10초)
+    try { timer = setInterval(() => { try { loadOnline(); } catch (_) {} }, 10 * 1000); } catch (_) {}
+
+    return () => {
+      active = false;
+      try { if (timer) clearInterval(timer); } catch (_) {}
+    };
+  }, [isAdmin, activeTab, usersReloadKey, onlineReloadKey]);
 
   if (!isAdmin) {
     return (
@@ -1743,6 +1778,59 @@ const CMSPage = () => {
                   )}
                   <div className="mt-2 text-xs text-gray-500">
                     주의: 현재 DAU/WAU/MAU는 “유저 발화(sender_type=user)” 기준입니다. 스토리 열람 DAU는 per-user 로그가 없어 추후 이벤트 로그가 필요합니다.
+                  </div>
+                </div>
+
+                {/* 실시간 온라인(접속) - 운영 배포 판단용 */}
+                <div className="rounded-lg border border-gray-800 bg-gray-950/30 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-sm font-semibold text-white">실시간 온라인(최근 60초)</div>
+                    <div className="flex items-center gap-2">
+                      <div className="text-xs text-gray-500">
+                        {onlineLoading ? '불러오는 중...' : (onlineSummary?.as_of ? new Date(onlineSummary.as_of).toLocaleTimeString('ko-KR') : '')}
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="h-8 px-3 bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
+                        onClick={() => setOnlineReloadKey((k) => (Number(k || 0) + 1))}
+                        disabled={onlineLoading}
+                        title="새로고침"
+                      >
+                        새로고침
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    <div className="rounded-md border border-gray-800 bg-gray-900/30 p-3">
+                      <div className="text-xs text-gray-500">온라인</div>
+                      <div className="text-lg font-bold text-white">
+                        {onlineLoading ? '...' : Number(onlineSummary?.online || 0).toLocaleString()}
+                      </div>
+                    </div>
+                    <div className="rounded-md border border-gray-800 bg-gray-900/30 p-3">
+                      <div className="text-xs text-gray-500">TTL</div>
+                      <div className="text-lg font-bold text-white">
+                        {Number(onlineSummary?.ttl_sec || 60).toLocaleString()}s
+                      </div>
+                    </div>
+                    <div className="rounded-md border border-gray-800 bg-gray-900/30 p-3">
+                      <div className="text-xs text-gray-500">활성</div>
+                      <div className="text-lg font-bold text-white">
+                        {(onlineSummary && onlineSummary.enabled === false) ? 'OFF' : 'ON'}
+                      </div>
+                    </div>
+                    <div className="rounded-md border border-gray-800 bg-gray-900/30 p-3">
+                      <div className="text-xs text-gray-500">소스</div>
+                      <div className="text-sm font-semibold text-white truncate" title={String(onlineSummary?.source || '')}>
+                        {String(onlineSummary?.source || '-')}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-2 text-xs text-gray-500">
+                    기준: 최근 60초 내 하트비트. 비로그인은 IP+UA 기반이라 오차가 있을 수 있습니다.
                   </div>
                 </div>
 

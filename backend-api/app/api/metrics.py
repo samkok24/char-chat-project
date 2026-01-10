@@ -2,8 +2,10 @@
 간단 메트릭 조회 API (베스트-에포트)
 - 목적: 실시간 관측 필요 전 임시 지표 확인
 """
-from fastapi import APIRouter, Query, Depends, HTTPException
+from fastapi import APIRouter, Query, Depends, HTTPException, Request
 from typing import Optional, Dict, Any, Tuple
+import os
+import hashlib
 import time
 import json
 import logging
@@ -14,12 +16,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, or_
 
 from app.core.database import get_db
-from app.core.security import get_current_user
+from app.core.security import get_current_user, get_current_user_optional
 from app.models.user import User
 from app.models.chat import ChatRoom, ChatMessage
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+# ===== 실시간 온라인(접속) 지표: Redis 하트비트 기반(베스트-에포트) =====
+# 운영 안전:
+# - 조회(집계)만 관리자에게 제공한다(외부 노출 방지).
+# - 하트비트는 실패해도 서비스 기능을 깨지 않도록 "best-effort"로 처리한다.
+_ONLINE_PRESENCE_ENABLED = os.getenv("ONLINE_PRESENCE_ENABLED", "1").strip() not in ("0", "false", "False")
+_ONLINE_PRESENCE_TTL_SEC = int(os.getenv("ONLINE_PRESENCE_TTL_SEC", "60") or 60)
+_ONLINE_PRESENCE_ZKEY = os.getenv("ONLINE_PRESENCE_ZKEY", "metrics:online:zset:v1").strip() or "metrics:online:zset:v1"
 
 
 def _ensure_admin(user: User) -> None:
@@ -43,6 +53,58 @@ def _parse_day_yyyymmdd(day: str) -> str:
     if not re.fullmatch(r"\d{8}", s):
         return ""
     return s
+
+
+def _client_ip(request: Optional[Request]) -> str:
+    """
+    클라이언트 IP 추출(프록시 환경 방어)
+    - Nginx/Cloudflare 환경에서는 X-Forwarded-For에 원 IP가 포함될 수 있다.
+    - 없으면 request.client.host로 폴백한다.
+    """
+    if request is None:
+        return ""
+    try:
+        xff = request.headers.get("x-forwarded-for") or request.headers.get("X-Forwarded-For") or ""
+        if xff:
+            # "client, proxy1, proxy2" 형태일 수 있으므로 첫 IP만 사용
+            ip = xff.split(",")[0].strip()
+            if ip:
+                return ip
+    except Exception:
+        pass
+    try:
+        return str(getattr(request.client, "host", "") or "")
+    except Exception:
+        return ""
+
+
+def _viewer_key(request: Optional[Request], user: Optional[User]) -> str:
+    """
+    온라인(하트비트) 용 고유 키 생성
+
+    의도/동작:
+    - 로그인 유저: user_id 기반(정확한 유니크)
+    - 비로그인: ip + user-agent 해시(대략 유니크)
+    """
+    try:
+        if user is not None and getattr(user, "id", None):
+            return f"u:{user.id}"
+    except Exception:
+        pass
+
+    ip = _client_ip(request)
+    try:
+        ua = request.headers.get("user-agent", "") if request is not None else ""
+    except Exception:
+        ua = ""
+    raw = f"{ip}|{ua}".strip()
+    if not raw:
+        raw = "unknown"
+    try:
+        h = hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest()[:16]
+    except Exception:
+        h = str(abs(hash(raw)))[:16]
+    return f"g:{h}"
 
 
 async def _scan_keys(pattern: str):
@@ -77,6 +139,104 @@ async def _read_float(key: str) -> float:
         return float(s)
     except Exception:
         return 0.0
+
+
+@router.post("/online/heartbeat")
+async def online_heartbeat(
+    request: Request,
+    current_user: Optional[User] = Depends(get_current_user_optional),  # type: ignore
+):
+    """
+    온라인 유저 하트비트(베스트-에포트)
+
+    의도:
+    - 운영 배포 전 "지금 접속자가 있나"를 빠르게 판단할 수 있게, Redis에 짧은 TTL의 온라인 키를 갱신한다.
+
+    주의:
+    - 실패해도 서비스 UX를 깨지 않도록 200 응답으로 폴백한다(로그만 남김).
+    """
+    ttl = max(10, int(_ONLINE_PRESENCE_TTL_SEC or 60))
+    if not _ONLINE_PRESENCE_ENABLED:
+        return {"ok": True, "enabled": False, "ttl_sec": ttl}
+
+    try:
+        from app.core.database import redis_client
+
+        now = int(time.time())
+        vkey = _viewer_key(request, current_user)
+
+        # ZSET: member=vkey, score=unix_ts
+        await redis_client.zadd(_ONLINE_PRESENCE_ZKEY, {vkey: now})
+        # TTL 윈도우 밖 제거
+        await redis_client.zremrangebyscore(_ONLINE_PRESENCE_ZKEY, 0, now - ttl)
+        # 사이트가 완전 유휴 상태일 때 메모리 누수 방지용 expire(베스트-에포트)
+        try:
+            await redis_client.expire(_ONLINE_PRESENCE_ZKEY, ttl * 2)
+        except Exception:
+            pass
+
+        return {"ok": True, "enabled": True, "ttl_sec": ttl}
+    except Exception as e:
+        try:
+            logger.warning(f"[metrics.online] heartbeat failed (ignored): {e}")
+        except Exception:
+            pass
+        return {"ok": False, "enabled": True, "ttl_sec": ttl}
+
+
+@router.get("/online")
+async def get_online_now(
+    current_user: User = Depends(get_current_user),
+    window_sec: Optional[int] = Query(None, ge=10, le=600, description="온라인으로 간주할 TTL(초)"),
+):
+    """
+    실시간 온라인 유저 수(관리자 전용)
+
+    정의:
+    - 최근 N초(기본: ONLINE_PRESENCE_TTL_SEC) 내에 하트비트를 보낸 유저를 '온라인'으로 간주한다.
+    """
+    _ensure_admin(current_user)
+
+    ttl = max(10, int(window_sec or _ONLINE_PRESENCE_TTL_SEC or 60))
+    if not _ONLINE_PRESENCE_ENABLED:
+        return {
+            "ok": True,
+            "enabled": False,
+            "ttl_sec": ttl,
+            "online": 0,
+            "as_of": datetime.now(timezone.utc).isoformat(),
+            "source": "disabled",
+        }
+
+    try:
+        from app.core.database import redis_client
+
+        now = int(time.time())
+        # 조회 시점에도 한번 정리(베스트-에포트)
+        await redis_client.zremrangebyscore(_ONLINE_PRESENCE_ZKEY, 0, now - ttl)
+        online = int(await redis_client.zcard(_ONLINE_PRESENCE_ZKEY) or 0)
+        return {
+            "ok": True,
+            "enabled": True,
+            "ttl_sec": ttl,
+            "online": online,
+            "as_of": datetime.now(timezone.utc).isoformat(),
+            "source": "redis_zset",
+        }
+    except Exception as e:
+        try:
+            logger.warning(f"[metrics.online] read failed: {e}")
+        except Exception:
+            pass
+        return {
+            "ok": False,
+            "enabled": True,
+            "ttl_sec": ttl,
+            "online": 0,
+            "as_of": datetime.now(timezone.utc).isoformat(),
+            "source": "error",
+            "error": str(e),
+        }
 
 
 @router.get("/summary")

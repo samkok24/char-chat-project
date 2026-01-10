@@ -80,7 +80,48 @@ const getDefaultProdApiBaseUrl = () => {
   return 'http://localhost:8000';
 };
 
-const API_BASE_URL = import.meta.env.VITE_API_URL
+const normalizeExplicitApiBaseUrl = (raw) => {
+  /**
+   * ✅ VITE_API_URL 방어 로직(운영 안정성)
+   *
+   * 문제:
+   * - 운영 빌드에서 VITE_API_URL이 `http://localhost:8000` 또는 Docker 내부 호스트(`backend:8000`)로
+   *   잘못 주입되면, 모바일/카카오 커스텀탭에서 API 호출이 전부 실패해 홈 화면이 "빈 깡통"처럼 보일 수 있다.
+   *
+   * 의도/동작:
+   * - 절대 URL(https?://)만 신뢰한다. (상대경로는 런타임에서 origin 기반으로 처리)
+   * - 운영에서는 localhost/127.0.0.1/backend 등 "브라우저에서 접근 불가능한 호스트"를 차단한다.
+   * - 경로가 무엇이든, 프론트의 baseURL은 `{origin}/api`로 정규화한다(배포 구조: Nginx가 /api를 백엔드로 프록시).
+   */
+  if (!raw) return '';
+  const s = String(raw || '').trim();
+  if (!s) return '';
+  if (!/^https?:\/\//i.test(s)) return '';
+
+  try {
+    const u = new URL(s);
+    const host = String(u.hostname || '').toLowerCase();
+
+    if (import.meta.env.MODE === 'production') {
+      const badHosts = ['localhost', '127.0.0.1', '0.0.0.0', 'backend', 'backend-api'];
+      if (badHosts.includes(host)) return '';
+    }
+
+    return `${u.protocol}//${u.host}/api`;
+  } catch (_) {
+    return '';
+  }
+};
+
+const EXPLICIT_API_BASE_URL = normalizeExplicitApiBaseUrl(import.meta.env.VITE_API_URL);
+try {
+  if (import.meta.env.MODE === 'production' && import.meta.env.VITE_API_URL && !EXPLICIT_API_BASE_URL) {
+    // 운영에서 잘못된 VITE_API_URL이 들어왔을 때 원인을 남긴다(가용성 우선: 자동 폴백)
+    console.warn('[api] invalid VITE_API_URL in production; fallback to window.origin/api', { VITE_API_URL: import.meta.env.VITE_API_URL });
+  }
+} catch (_) {}
+
+const API_BASE_URL = EXPLICIT_API_BASE_URL
   || (import.meta.env.MODE === 'production' ? getDefaultProdApiBaseUrl() : 'http://localhost:8000');
 
 /**
@@ -701,6 +742,11 @@ export const metricsAPI = {
   getContentCounts: (params = {}) => api.get('/metrics/content-counts', { params }),
   // 관리자용: 트래픽(채팅 기반) DAU/WAU/MAU
   getTraffic: (params = {}) => api.get('/metrics/traffic', { params }),
+  // ✅ 실시간 온라인(접속) - Redis 하트비트 기반(관리자/운영 판단용)
+  // - heartbeat: 유저가 접속 중임을 짧은 TTL로 갱신(실패해도 무시해도 됨)
+  onlineHeartbeat: () => api.post('/metrics/online/heartbeat'),
+  // - online: 최근 N초 내 하트비트 유저 수(관리자 전용)
+  getOnlineNow: (params = {}) => api.get('/metrics/online', { params }),
 };
 
 // 📖 회차(Chapters) API
