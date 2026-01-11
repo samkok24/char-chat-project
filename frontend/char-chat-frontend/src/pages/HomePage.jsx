@@ -1738,7 +1738,7 @@ const HomePage = () => {
                     type="button"
                     aria-label="이전"
                     onClick={() => shiftSlotPage(slotId, -1, pageCount)}
-                    className="absolute -left-3 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-gray-800/90 hover:bg-gray-700 text-white border border-gray-700 shadow-lg backdrop-blur flex items-center justify-center"
+                    className="absolute -left-3 top-1/2 -translate-y-1/2 z-30 w-10 h-10 rounded-full bg-gray-800/90 hover:bg-gray-700 text-white border border-gray-700 shadow-lg backdrop-blur flex items-center justify-center"
                   >
                     <ChevronLeft className="w-5 h-5" />
                   </button>
@@ -1746,7 +1746,7 @@ const HomePage = () => {
                     type="button"
                     aria-label="다음"
                     onClick={() => shiftSlotPage(slotId, 1, pageCount)}
-                    className="absolute -right-3 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-gray-800/90 hover:bg-gray-700 text-white border border-gray-700 shadow-lg backdrop-blur flex items-center justify-center"
+                    className="absolute -right-3 top-1/2 -translate-y-1/2 z-30 w-10 h-10 rounded-full bg-gray-800/90 hover:bg-gray-700 text-white border border-gray-700 shadow-lg backdrop-blur flex items-center justify-center"
                   >
                     <ChevronRight className="w-5 h-5" />
                   </button>
