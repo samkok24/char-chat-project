@@ -389,6 +389,23 @@ api.interceptors.response.use(
     const path = normalizePath(originalRequest.url || '');
     const detail = error.response?.data?.detail;
     const isGet = (originalRequest.method || 'get').toLowerCase() === 'get';
+    // ✅ 네트워크 에러(응답 없음) 로깅(운영 디버깅)
+    // - 브라우저에서 CORS/SSL/프록시/차단 이슈는 axios에선 "Network Error"로 뭉개지기 쉽다.
+    // - 원인 파악을 위해 최소한의 컨텍스트를 콘솔에 남긴다(중복 로그 방지).
+    try {
+      const noResponse = !error.response;
+      if (import.meta.env.MODE === 'production' && noResponse && !originalRequest.__loggedNetworkError) {
+        originalRequest.__loggedNetworkError = true;
+        console.error('[api] Network Error (no response)', {
+          method: String(originalRequest.method || 'get'),
+          url: String(originalRequest.url || ''),
+          baseURL: String(originalRequest.baseURL || api.defaults.baseURL || ''),
+          origin: String(window?.location?.origin || ''),
+          online: typeof navigator !== 'undefined' ? navigator.onLine : undefined,
+          ua: typeof navigator !== 'undefined' ? navigator.userAgent : undefined,
+        });
+      }
+    } catch (_) {}
     // 개별 리소스 조회는 비공개일 수 있으므로 공개 엔드포인트에서 제외
     const isIndividualResource = /^\/characters\/[0-9a-fA-F\-]+$/.test(path) || /^\/stories\/[0-9a-fA-F\-]+$/.test(path);
     // 목록 조회만 공개로 처리

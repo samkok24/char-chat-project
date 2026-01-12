@@ -392,6 +392,21 @@ class SocketController {
 
       try {
         const timeoutMs = 60000;
+        /**
+         * ✅ 성능/지연 측정 로그(스모크 테스트용)
+         *
+         * 의도:
+         * - "채팅이 느리다"는 체감 문제를 (1) socket 수신 → (2) backend 호출 → (3) 응답 수신 구간으로 쪼개서 본다.
+         * - 특히 일반 캐릭터챗은 chat-server가 backend `/chat/messages` 응답을 기다리는 시간이 대부분이므로,
+         *   이 구간(ms)을 정확히 남기면 원인(모델/DB/네트워크/타임아웃)을 빠르게 압축할 수 있다.
+         *
+         * 주의:
+         * - 개발/운영 모두에서 도움이 되지만, 로그 과다를 피하려면 운영에선 필요 시 샘플링/레벨 조절 가능.
+         */
+        const t0 = Date.now();
+        const contentLen = typeof content === 'string' ? content.length : 0;
+        const settingsKeys = settings_patch && typeof settings_patch === 'object' ? Object.keys(settings_patch) : [];
+        logger.info(`[chat] send_message -> backend start room=${roomId} user=${userId} char=${room?.characterId} len=${contentLen} type=${messageType} settingsKeys=${settingsKeys.join(',')}`);
         // 백엔드 API에서 AI 응답 생성 (이미 메시지 저장까지 처리함)
         const aiResponse = await axios.post(
           `${config.BACKEND_API_URL}/chat/messages`,
@@ -407,6 +422,10 @@ class SocketController {
             timeout: timeoutMs,            // ✅ 옵션2 필수: 서버 타임아웃 기준
           }
         );
+        const dt = Date.now() - t0;
+        const status = aiResponse?.status;
+        const aiLen = typeof aiResponse?.data?.ai_message?.content === 'string' ? aiResponse.data.ai_message.content.length : 0;
+        logger.info(`[chat] send_message <- backend done room=${roomId} user=${userId} status=${status} dtMs=${dt} aiLen=${aiLen}`);
 
         safeAck({ ok: true });
 
@@ -455,7 +474,12 @@ class SocketController {
         const status = apiError?.response?.status;
         safeAck({ ok: false, error: 'backend_failed', status });
 
-        logger.error('AI 응답 생성 오류:', apiError.response?.data || apiError.message);
+        try {
+          const detail = apiError?.response?.data?.detail;
+          logger.error(`[chat] send_message backend_failed room=${roomId} user=${userId} status=${status} detail=${typeof detail === 'string' ? detail : ''} msg=${apiError.message}`);
+        } catch (_) {
+          logger.error('AI 응답 생성 오류:', apiError.response?.data || apiError.message);
+        }
         io.to(roomId).emit('ai_typing_stop', { roomId });
 
         socket.emit('error', {

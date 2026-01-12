@@ -213,7 +213,30 @@ const NoticePage = () => {
       }
     },
     onError: (e) => {
-      const msg = e?.response?.data?.detail || e?.message || '공지 수정에 실패했습니다.';
+      /**
+       * 공지 수정 에러 메시지 정리(운영 디버깅 가독성)
+       *
+       * 배경:
+       * - FastAPI validation(422)은 detail이 배열로 내려와 그대로 String()하면 "[object Object]"가 된다.
+       * - 브라우저에서 "Network Error"처럼 뭉개지면 원인 파악이 어렵다.
+       */
+      const detail = e?.response?.data?.detail;
+      const msg = (() => {
+        try {
+          if (Array.isArray(detail)) {
+            const lines = detail
+              .map((it) => {
+                const loc = Array.isArray(it?.loc) ? it.loc.join('.') : '';
+                const m = String(it?.msg || '').trim();
+                return m ? (loc ? `${loc}: ${m}` : m) : '';
+              })
+              .filter(Boolean);
+            if (lines.length) return lines.join('\n');
+          }
+          if (typeof detail === 'string' && detail.trim()) return detail.trim();
+        } catch (_) {}
+        return e?.message || '공지 수정에 실패했습니다.';
+      })();
       setEditError(String(msg));
       try { console.error('[notices] update failed:', e); } catch (_) {}
     },

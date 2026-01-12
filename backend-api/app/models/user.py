@@ -27,8 +27,11 @@ class User(Base):
     bio = Column(String(1000))
     
     # AI 모델 설정
-    preferred_model = Column(String(50), default='gemini')  # gemini, claude, gpt, argo
-    preferred_sub_model = Column(String(50), default='gemini-2.5-pro')  # 세부 모델 버전
+    # ✅ 기본값(요구사항): Claude Haiku 4.5
+    # - 신규 가입/새 DB에서 "모델 설정을 건드리지 않은 유저"는 기본적으로 이 값으로 시작한다.
+    # - 주의: 스토리에이전트/원작챗의 모델 고정 정책과는 별개로, "일반 캐릭터챗 기본값"만 의미한다.
+    preferred_model = Column(String(50), default='claude')  # gemini, claude, gpt, argo
+    preferred_sub_model = Column(String(50), default='claude-haiku-4-5-20251001')  # 세부 모델 버전
     # AI 응답 길이 선호도: short|medium|long
     response_length_pref = Column(String(10), default='medium')
     

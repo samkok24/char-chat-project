@@ -8,7 +8,6 @@ import {
 } from './ui/dialog';
 import { Button } from './ui/button';
 import { Popover, PopoverTrigger, PopoverContent } from './ui/popover';
-import { Badge } from './ui/badge';
 import { Input } from './ui/input';
 import { Textarea } from './ui/textarea';
 import { Switch } from './ui/switch';
@@ -17,6 +16,7 @@ import {
   ChevronDown, 
   Check, 
   X, 
+  Menu,
 } from 'lucide-react';
 import {
   Collapsible,
@@ -27,13 +27,21 @@ import {
 const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, onModelChange, initialTab = 'model', characterName = '캐릭터', characterId, onUpdateChatSettings, isOrigChat = false }) => {
   // temperature 기본값: 백엔드 ai_service의 기본 temperature(0.7)와 정합
   const DEFAULT_TEMPERATURE = 0.7;
+  // UI 그룹(속도최적화/프로바이더)을 로컬로 기억해서, 모달을 닫았다가 열어도 체크 표시가 일관되게 보이도록 한다.
+  const MODEL_GROUP_KEY = 'cc:model-group:v1';
   // ✅ 채팅 화면에서는 아직 연동/지원하지 않는 모델(UX 혼란 방지용으로 비노출)
   const HIDDEN_CHAT_MODEL_IDS = new Set(['deepseek', 'short', 'caveduck']);
-  const [selectedModel, setSelectedModel] = useState(currentModel || 'gemini');
-  const [selectedSubModel, setSelectedSubModel] = useState(currentSubModel || 'gemini-2.5-pro');
+  // ✅ 요구사항 기본값: Claude Haiku 4.5
+  // - 서버에서 사용자 설정을 불러오기 전/초기 진입에서도 UX를 동일하게 유지한다.
+  const [selectedModel, setSelectedModel] = useState(currentModel || 'claude');
+  const [selectedSubModel, setSelectedSubModel] = useState(currentSubModel || 'claude-haiku-4-5-20251001');
+  // ✅ "큰 카테고리 체크"는 selectedUiGroup 기준으로 표시한다.
+  // - speed에서 선택하면 speed에 체크, provider에서 선택하면 provider에 체크.
+  const [selectedUiGroup, setSelectedUiGroup] = useState('speed');
   const [activeTab, setActiveTab] = useState(initialTab);
   const [expandedSections, setExpandedSections] = useState({
-    gemini: true,
+    speed: true,
+    gemini: false,
     claude: false,
     gpt: false
   });
@@ -71,21 +79,70 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
   const [editingPersona, setEditingPersona] = useState(null);
   const [activePersona, setActivePersona] = useState(null);
 
+  const SPEED_SUB_MODELS = [
+    // ✅ 요구사항 우선순위: Haiku 4.5 -> GPT-4o -> Gemini 2.5 Flash -> Gemini 3 Flash (Preview)
+    { id: 'speed:claude-haiku-4-5-20251001', targetModel: 'claude', targetSubModel: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', description: '초고속 응답에 강한 Haiku 라인', cost: 4 },
+    { id: 'speed:gpt-4o', targetModel: 'gpt', targetSubModel: 'gpt-4o', name: 'GPT-4o', description: '응답 속도/안정성 밸런스 (멀티모달)', cost: 10 },
+    { id: 'speed:gemini-2.5-flash', targetModel: 'gemini', targetSubModel: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', description: '빠른 응답에 최적화된 Flash 라인', cost: 2 },
+    { id: 'speed:gemini-3-flash-preview', targetModel: 'gemini', targetSubModel: 'gemini-3-flash-preview', name: 'Gemini 3 Flash (Preview)', description: '최신 Flash 프리뷰(변동 가능)', cost: 2 },
+  ];
+
+  /**
+   * ✅ Gemini 서브모델 레거시/중복 값 방어
+   * - 과거 저장값(예: gemini-3-flash, gemini-3-pro)이 남아있어도,
+   *   현재 SSOT(Preview 모델)로 자동 치환해서 "선택값 폴백/체크표시 꼬임"을 방지한다.
+   */
+  const normalizeGeminiSubModel = (subModelId) => {
+    try {
+      const s = String(subModelId || '').trim();
+      if (s === 'gemini-3-flash') return 'gemini-3-flash-preview';
+      if (s === 'gemini-3-pro') return 'gemini-3-pro-preview';
+      return s;
+    } catch (_) {
+      return subModelId;
+    }
+  };
+
+  const inferUiGroup = (m, s) => {
+    try {
+      const mm = String(m || '').trim();
+      const ss = String(s || '').trim();
+      if (SPEED_SUB_MODELS.some((it) => it.targetModel === mm && it.targetSubModel === ss)) return 'speed';
+      if (mm === 'gemini' || mm === 'gpt' || mm === 'claude') return mm;
+      return 'speed';
+    } catch (_) {
+      return 'speed';
+    }
+  };
+
   const models = {
+    // ⚡ 속도 최적화 모델 모음: 실제 저장은 각 provider(gpt/gemini/claude)로 저장한다.
+    // - 요구사항: 모달에 "햄버거 메뉴" 형태로 추가하고, 안에 빠른 모델들을 묶어서 보여준다.
+    // - 방어: 여기의 id는 UI용 그룹키이며, 실제 API 호출/저장에는 subModel의 targetModel/targetSubModel을 사용한다.
+    speed: {
+      name: '속도최적화 모델',
+      cost: 0,
+      subModels: SPEED_SUB_MODELS,
+    },
     gemini: {
       name: 'Gemini 모델',
       cost: 8,
       subModels: [
-        { id: 'gemini-3-flash', name: 'Gemini 3 Flash', description: '빠르면서 밀도 있는 AI', cost: 4, badge: '이벤트', badgeClass: 'bg-amber-500 text-black hover:bg-amber-500' },
-        { id: 'gemini-3-pro', name: 'Gemini 3 Pro', description: '상황 묘사와 플롯테이킹이 강한 최고 성능의 AI', cost: 8, badge: '이벤트', badgeClass: 'bg-amber-500 text-black hover:bg-amber-500' },
+        // ✅ speed에서 선택해도 "모달 재오픈 시 폴백"되지 않도록, provider 리스트에도 포함한다.
+        { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', description: '빠른 응답에 최적화된 Flash 라인', cost: 2 },
+        { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash (Preview)', description: '최신 Flash 프리뷰(변동 가능)', cost: 2 },
+        // ✅ SSOT: Gemini 3 Pro 정식 모델명은 gemini-3-pro-preview
+        { id: 'gemini-3-pro-preview', name: 'Gemini 3 Pro (Preview)', description: '상황 묘사와 플롯테이킹이 강한 최고 성능의 AI', cost: 8 },
         // ✅ 기존 기본값(gemini-2.5-pro) 유지: 백엔드 호환 + 기본 선택값 유지
-        { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro Standard', description: '비판적 사고, 냉철한 판단과 직설적 어조의 응답', cost: 8, badge: '인기', badgeClass: 'bg-pink-600 text-white hover:bg-pink-600' },
+        { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro Standard', description: '비판적 사고, 냉철한 판단과 직설적 어조의 응답', cost: 8 },
       ]
     },
     claude: {
       name: 'Claude 모델',
       cost: 10,
       subModels: [
+        // ✅ speed에서 선택해도 "모달 재오픈 시 폴백"되지 않도록, provider 리스트에도 포함한다.
+        { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', description: '초고속 응답에 강한 Haiku 라인', cost: 4 },
         // ✅ 최신 Claude(4.0+) 모델명 기준으로 정리 (백엔드에서도 동일 문자열로 호출)
         { id: 'claude-sonnet-4-20250514', name: 'Claude Sonnet 4', description: '빠르고 안정적인 올라운더', cost: 10, badge: '기본', badgeClass: 'bg-pink-600 text-white hover:bg-pink-600' },
         { id: 'claude-opus-4-1-20250805', name: 'Claude Opus 4.1', description: '더 깊은 추론/품질을 지향하는 플래그십', cost: 20, badge: '신규', badgeClass: 'bg-pink-600 text-white hover:bg-pink-600' },
@@ -99,6 +156,8 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
       subModels: [
         // ✅ 기존 사용자 설정 모델도 유지(호환)
         { id: 'gpt-4o', name: 'GPT-4o', description: 'OpenAI의 멀티모달 모델', cost: 10 },
+        // ✅ 기존 설정/테스트용으로는 유지(속도최적화 섹션에서는 "내림" 요구로 비노출)
+        { id: 'gpt-5-mini', name: 'GPT 5 mini', description: '속도/비용 최적화', cost: 3 },
         { id: 'gpt-5.1', name: 'GPT-5.1', description: '깊은 이해와 유연한 대화를 겸비한 GPT의 최상위 모델', cost: 10, badge: '신규', badgeClass: 'bg-pink-600 text-white hover:bg-pink-600' },
         { id: 'gpt-5.2', name: 'GPT-5.2', description: '차세대 추론/지식 강화 모델 (연동 준비 중)', cost: 10, badge: '신규', badgeClass: 'bg-pink-600 text-white hover:bg-pink-600' },
       ]
@@ -133,30 +192,65 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
       const rawModel = String(currentModel || '').trim();
       const isHiddenModel = HIDDEN_CHAT_MODEL_IDS.has(rawModel);
 
-      // 일반 캐릭터챗: 숨김 모델이 저장돼있어도 UI에서는 gemini로 안전 폴백
+      // 일반 캐릭터챗: 숨김 모델이 저장돼있어도 UI에서는 claude로 안전 폴백
       const safeModel =
         (!isOrigChat && isHiddenModel)
-          ? 'gemini'
-          : ((currentModel && models[currentModel]) ? currentModel : 'gemini');
+          ? 'claude'
+          : ((currentModel && models[currentModel]) ? currentModel : 'claude');
 
       if (!isOrigChat && isHiddenModel) {
-        console.warn('[ModelSelectionModal] hidden model is not exposed in chat UI, fallback to gemini:', rawModel);
+        console.warn('[ModelSelectionModal] hidden model is not exposed in chat UI, fallback to claude:', rawModel);
       } else if (currentModel && !models[currentModel]) {
-        console.warn('[ModelSelectionModal] unsupported model, fallback to gemini:', currentModel);
+        console.warn('[ModelSelectionModal] unsupported model, fallback to claude:', currentModel);
       }
       setSelectedModel(safeModel);
 
       const list = models[safeModel]?.subModels || [];
+      // ✅ Gemini 레거시/중복 서브모델 자동 치환
+      const normalizedCurrentSub =
+        safeModel === 'gemini'
+          ? normalizeGeminiSubModel(currentSubModel)
+          : currentSubModel;
       const safeSub =
-        (currentSubModel && list.some((s) => s.id === currentSubModel))
-          ? currentSubModel
-          : (list[0]?.id || 'gemini-2.5-pro');
+        (normalizedCurrentSub && list.some((s) => s.id === normalizedCurrentSub))
+          ? normalizedCurrentSub
+          : (list[0]?.id || 'claude-haiku-4-5-20251001');
       setSelectedSubModel(safeSub);
+
+      // ✅ UI 그룹 복원: (1) 로컬 저장된 그룹이 현재 모델/서브모델과 정합이면 사용, (2) 아니면 추론
+      try {
+        const raw = localStorage.getItem(MODEL_GROUP_KEY);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          const gm = String(parsed?.model || '').trim();
+          const gs = String(parsed?.sub_model || '').trim();
+          const gg = String(parsed?.group || '').trim();
+          if (gm === safeModel && gs === safeSub && ['speed', 'gemini', 'gpt', 'claude'].includes(gg)) {
+            setSelectedUiGroup(gg);
+            return;
+          }
+        }
+      } catch (_) {}
+      setSelectedUiGroup(inferUiGroup(safeModel, safeSub));
     } catch (_) {
-      setSelectedModel('gemini');
-      setSelectedSubModel('gemini-2.5-pro');
+      setSelectedModel('claude');
+      setSelectedSubModel('claude-haiku-4-5-20251001');
+      setSelectedUiGroup('speed');
     }
   }, [currentModel, currentSubModel, isOpen, isOrigChat]);
+
+  // ✅ 모달 오픈 시: "속도최적화"만 펼친 상태로 시작(요구사항)
+  useEffect(() => {
+    if (!isOpen) return;
+    try {
+      setExpandedSections({
+        speed: true,
+        gemini: false,
+        claude: false,
+        gpt: false,
+      });
+    } catch (_) {}
+  }, [isOpen]);
 
   // initialTab이 변경되면 activeTab 업데이트
   useEffect(() => {
@@ -370,6 +464,10 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
       if (activeTab === 'model') {
         await usersAPI.updateModelSettings(selectedModel, selectedSubModel, responseLength);
         onModelChange(selectedModel, selectedSubModel);
+        // ✅ UI 그룹 로컬 저장(모달 재오픈 체크 정합)
+        try {
+          localStorage.setItem(MODEL_GROUP_KEY, JSON.stringify({ group: selectedUiGroup, model: selectedModel, sub_model: selectedSubModel }));
+        } catch (_) {}
       } else if (activeTab === 'settings') {
         // 추가 설정 탭: 답변 길이 + 전역 UI 설정 로컬 저장
         await usersAPI.updateModelSettings(selectedModel, selectedSubModel, responseLength);
@@ -386,6 +484,10 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
         const ui = { schema_version: 2, fontSize: uiFontSize, letterSpacing: uiLetterSpacing, overlay: overlayClipped, fontFamily: uiFontFamily, colors: uiColors, theme: uiTheme, typingSpeed };
         localStorage.setItem('cc:ui:v1', JSON.stringify(ui));
         window.dispatchEvent(new CustomEvent('ui:settingsChanged', { detail: ui }));
+        // ✅ UI 그룹 로컬 저장(모달 재오픈 체크 정합)
+        try {
+          localStorage.setItem(MODEL_GROUP_KEY, JSON.stringify({ group: selectedUiGroup, model: selectedModel, sub_model: selectedSubModel }));
+        } catch (_) {}
       }
       // 페르소나 탭인 경우 별도 처리 필요 없음 (이미 개별적으로 저장됨)
       
@@ -519,8 +621,10 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
               <CollapsibleTrigger asChild>
                 <div className="w-full flex items-center justify-between p-3 bg-gray-800 text-white rounded-lg hover:bg-gray-700 transition-colors cursor-pointer">
                   <div className="flex items-center space-x-3">
+                    {modelId === 'speed' && <Menu className="w-4 h-4 text-gray-200" />}
                     <span className="font-medium">{model.name}</span>
-                    {selectedModel === modelId && (
+                    {/* ✅ 큰 카테고리 체크: UI 그룹 기준 */}
+                    {selectedUiGroup === modelId && (
                       <Check className="w-4 h-4 text-green-400" />
                     )}
                   </div>
@@ -530,10 +634,16 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
 
               <CollapsibleContent className="mt-2 space-y-2">
                 {model.subModels.map((subModel) => (
+                  (() => {
+                    // ✅ 속도최적화 그룹은 provider별로 저장되므로 targetModel/targetSubModel을 사용한다.
+                    const effModelId = modelId === 'speed' ? (subModel.targetModel || 'gemini') : modelId;
+                    const effSubId = modelId === 'speed' ? (subModel.targetSubModel || subModel.id) : subModel.id;
+                    const selected = isSelected(effModelId, effSubId);
+                    return (
                   <div
                     key={subModel.id}
                     className={`p-3 rounded-lg border transition-colors ${
-                      isSelected(modelId, subModel.id)
+                      selected
                         ? 'border-purple-500 bg-purple-50'
                         : (isOrigChat ? 'border-gray-200 bg-gray-50' : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50')
                     } ${isOrigChat ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}
@@ -541,7 +651,11 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
                     onClick={() => {
                       // ✅ 원작챗: 모델 선택 기능 준비중 → 클릭 비활성
                       if (isOrigChat) return;
-                      handleModelSelect(modelId, subModel.id);
+                      // ✅ speed 그룹에서 선택한 경우: UI 체크는 speed에 유지
+                      try {
+                        setSelectedUiGroup(modelId === 'speed' ? 'speed' : effModelId);
+                      } catch (_) {}
+                      handleModelSelect(effModelId, effSubId);
                     }}
                   >
                     <div className="flex items-center justify-between">
@@ -549,7 +663,7 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
                         <div>
                           <div className="flex items-center space-x-2">
                             <span className="font-medium">{subModel.name}</span>
-                            {isSelected(modelId, subModel.id) && (
+                            {selected && (
                               <Check className="w-4 h-4 text-purple-600" />
                             )}
                           </div>
@@ -558,6 +672,8 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
                       </div>
                     </div>
                   </div>
+                    );
+                  })()
                 ))}
               </CollapsibleContent>
             </Collapsible>
