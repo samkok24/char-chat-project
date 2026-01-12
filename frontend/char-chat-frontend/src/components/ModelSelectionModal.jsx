@@ -45,7 +45,8 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
     claude: false,
     gpt: false
   });
-  const [responseLength, setResponseLength] = useState('medium'); // short|medium|long
+  // ✅ 기본값(요구사항): 응답 길이 short(짧게)
+  const [responseLength, setResponseLength] = useState('short'); // short|medium|long
   // 원작챗 추가 설정 초기값 바인딩용 상태
   const [ppModeSel, setPpModeSel] = useState('first2'); // always|first2|off
   const [nextLenSel, setNextLenSel] = useState(1); // 1|2
@@ -262,7 +263,7 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
     const load = async () => {
       try {
         const r = await usersAPI.getModelSettings();
-        setResponseLength(r.data.response_length_pref || 'medium');
+        setResponseLength(r.data.response_length_pref || 'short');
       } catch (_) {}
       // 원작챗 추가 설정(로컬) 불러오기
       try {

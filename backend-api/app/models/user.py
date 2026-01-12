@@ -33,7 +33,9 @@ class User(Base):
     preferred_model = Column(String(50), default='claude')  # gemini, claude, gpt, argo
     preferred_sub_model = Column(String(50), default='claude-haiku-4-5-20251001')  # 세부 모델 버전
     # AI 응답 길이 선호도: short|medium|long
-    response_length_pref = Column(String(10), default='medium')
+    # ✅ 기본값(요구사항): short(짧게)
+    # - 신규 가입/새 DB에서 "길이 설정을 건드리지 않은 유저"는 짧게를 기본으로 시작한다.
+    response_length_pref = Column(String(10), default='short')
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

@@ -2317,7 +2317,8 @@ async def get_ai_chat_response(
     # - 유저 저장 설정이 없거나, 호출부가 preferred_model/sub_model을 넘기지 않는 경우의 안전 기본값.
     preferred_model: str = 'claude',
     preferred_sub_model: str = 'claude-haiku-4-5-20251001',
-    response_length_pref: str = 'medium',
+    # ✅ 기본값(요구사항): short(짧게)
+    response_length_pref: str = 'short',
     temperature: float = 0.7
 ) -> str:
     """사용자가 선택한 모델로 AI 응답 생성"""

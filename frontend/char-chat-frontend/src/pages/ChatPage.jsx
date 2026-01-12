@@ -251,7 +251,8 @@ const ChatPage = () => {
   // ✅ 데모 안정성 우선:
   // - postprocess(경량 재작성)는 "처음 본 대사"와 "재진입 시 로드된 대사"가 달라 보이는 문제를 만들 수 있어
   //   기본값은 off로 둔다. (필요하면 설정에서 다시 켤 수 있음)
-  const defaultChatSettings = { postprocess_mode: 'off', next_event_len: 1, response_length_pref: 'medium', prewarm_on_start: true, temperature: 0.7 };
+  // ✅ 기본값(요구사항): 응답 길이 short(짧게)
+  const defaultChatSettings = { postprocess_mode: 'off', next_event_len: 1, response_length_pref: 'short', prewarm_on_start: true, temperature: 0.7 };
   const [chatSettings, setChatSettings] = useState(defaultChatSettings);
   // ✅ 설정 동기화 플래그(최소 수정/안전):
   // - true: 현재 룸 메타(서버)에 이미 반영됐다고 가정 → 이후 메시지에는 settings_patch를 굳이 보내지 않음
@@ -760,6 +761,68 @@ const ChatPage = () => {
       lines.shift();
     }
     return lines.join('\n').replace(/^\s+/, '');
+  }, []);
+
+  /**
+   * 세이프티/정책 거절 응답 감지 + 한국어 안내 문구 렌더링용 변환
+   *
+   * 의도/동작:
+   * - 현재 일반 캐릭터챗은 "완성본"을 한 번에 받는 구조라, 모델이 정책 거절을 반환하면 그대로 화면에 노출된다.
+   * - UX 관점에서 영어 거절 템플릿이 그대로 보이면 이탈이 커서, 화면 표시용으로만 한국어 안내/대안을 제공한다.
+   * - 원본(message.content)은 변경하지 않는다(로그/디버깅/재생성/백엔드 저장 정합 보호).
+   *
+   * 방어적 설계:
+   * - 모델별 템플릿이 조금씩 달라서, 과도하게 넓지 않은 "대표 패턴"만 탐지한다.
+   * - 오탐을 줄이기 위해 2개 이상 키워드 매칭을 기본으로 한다.
+   */
+  const formatSafetyRefusalForDisplay = useCallback((text) => {
+    const s = String(text || '').trim();
+    if (!s) return s;
+
+    const lower = s.toLowerCase();
+    const hit = (re) => {
+      try { return re.test(s) || re.test(lower); } catch (_) { return false; }
+    };
+
+    // 영어/한국어에서 자주 보이는 "정책 거절" 템플릿 키워드들
+    const k1 = (
+      hit(/not able to continue/) ||
+      hit(/can't continue/) ||
+      hit(/cannot continue/) ||
+      hit(/i can(?:not|'t) help with/) ||
+      hit(/i can help you with/) ||
+      hit(/explicit sexual/) ||
+      hit(/sexual direction/) ||
+      hit(/content policy/) ||
+      hit(/policy/) ||
+      hit(/죄송하지만/) ||
+      hit(/성적(인|으로|인\s+)?/) ||
+      hit(/노골적/) ||
+      hit(/정책(상|에 의해|위반)/) ||
+      hit(/안전(상|정책)/)
+    );
+    // "거절/불가" 성격을 더 강하게 확인하는 보조 키워드
+    const k2 = (
+      hit(/not (?:able|allowed)/) ||
+      hit(/unable to/) ||
+      hit(/won't/) ||
+      hit(/cannot assist/) ||
+      hit(/refuse/) ||
+      hit(/진행할 수 없/) ||
+      hit(/도와드릴 수 없/) ||
+      hit(/제공할 수 없/)
+    );
+
+    // 오탐 방지: 길이가 짧은 일반 문장 하나는 통과, 키워드가 충분히 있을 때만 변환
+    const isRefusal = (k1 && k2) || (k1 && s.length > 120);
+    if (!isRefusal) return s;
+
+    // 표시용 한국어 안내(대체)
+    return [
+      '요청하신 내용은 수위가 높아 안전 정책상 진행할 수 없어요.',
+      '대신 감정선/로맨스/관계의 긴장감 같은 “비노골적” 방향으로는 이어갈 수 있어요.',
+      '원하시면 분위기(달달/집착/청춘/서늘함)랑 상황(장소/시간/갈등)을 한 줄로만 말해줘요.'
+    ].join('\n');
   }, []);
 
   // 설정 변경 적용 유틸(허용 키만 병합 + 저장 + 다음 턴 동기화 플래그)
@@ -2951,7 +3014,7 @@ const ChatPage = () => {
       : (
         isUser
           ? (message.isNarration ? (rawContent.startsWith('*') ? rawContent : `* ${rawContent}`) : rawContent)
-          : sanitizeAiText(rawContent)
+          : formatSafetyRefusalForDisplay(sanitizeAiText(rawContent))
       );
     const bubbleRef = isLast ? messagesEndRef : null;
 
