@@ -45,10 +45,26 @@ class NoticeUpdate(BaseModel):
     @field_validator("title", "content", mode="before")
     @classmethod
     def sanitize_update_fields(cls, v, info):
+        """
+        공지 수정 입력 방어 정리(중요)
+        
+        의도:
+        - 업데이트는 Optional 필드라서, validator가 빈 값을 None으로 바꾸면
+          '필드 미전달'로 간주되어 DB 업데이트가 조용히 스킵될 수 있다.
+        - 운영에서 "저장했는데 내용이 안 바뀜"으로 보이는 가장 흔한 원인 중 하나라,
+          업데이트에서는 '실제 입력이 있었는데 결과가 빈 값'이면 명확히 422를 내려준다.
+        """
         if v is None:
             return None
         max_map = {"title": 200, "content": 20000}
-        return _sanitize_notice_text(v, max_map.get(info.field_name))
+        sanitized = _sanitize_notice_text(v, max_map.get(info.field_name))
+        if sanitized is None:
+            # 사용자에게 원인을 명확히 전달(422)
+            if info.field_name == "title":
+                raise ValueError("제목을 입력해주세요.")
+            if info.field_name == "content":
+                raise ValueError("내용을 입력해주세요.")
+        return sanitized
 
 
 class NoticeResponse(BaseModel):

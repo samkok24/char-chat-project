@@ -1290,6 +1290,14 @@ async def get_gemini_completion(prompt: str, temperature: float = 0.7, max_token
             if mt and mt < 1600:
                 max_tokens = 1600
 
+        # ✅ 실제 호출(시도) 로그: Gemini는 SDK가 내부적으로 HTTP를 수행하므로, 여기서는 모델/파라미터만 남긴다.
+        # - 프롬프트/대사 내용은 절대 로그에 남기지 않는다.
+        try:
+            if getattr(settings, "DEBUG", False) or getattr(settings, "ENVIRONMENT", "") != "production":
+                logger.info(f"[ai] http_call provider=gemini sdk=google-genai model={model_norm} max_tokens={max_tokens} temp={temperature}")
+        except Exception:
+            pass
+
         gemini_model = genai.GenerativeModel(model)
         
         # GenerationConfig를 사용하여 JSON 모드 등을 활성화할 수 있음 (향후 확장)
@@ -1546,6 +1554,14 @@ async def get_claude_completion(
         if sys_text:
             kwargs["system"] = sys_text
 
+        # ✅ 실제 호출(시도) 로그: Anthropic SDK가 내부적으로 https://api.anthropic.com/v1/messages 를 호출한다.
+        # - 프롬프트/대사 내용은 절대 로그에 남기지 않는다.
+        try:
+            if getattr(settings, "DEBUG", False) or getattr(settings, "ENVIRONMENT", "") != "production":
+                logger.info(f"[ai] http_call provider=claude sdk=anthropic.messages.create model={model} max_tokens={max_tokens} temp={temperature}")
+        except Exception:
+            pass
+
         message = await claude_client.messages.create(**kwargs)
 
         # 1) SDK가 Message 객체를 돌려주는 일반적인 경우
@@ -1631,6 +1647,13 @@ async def get_openai_completion(
     try:
         from openai import AsyncOpenAI
         client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+        # ✅ 실제 호출(시도) 로그: OpenAI는 모델에 따라 responses/chat.completions로 분기된다.
+        # - 프롬프트/대사 내용은 절대 로그에 남기지 않는다.
+        try:
+            if getattr(settings, "DEBUG", False) or getattr(settings, "ENVIRONMENT", "") != "production":
+                logger.info(f"[ai] http_call provider=openai enter model={model} max_tokens={max_tokens} temp={temperature}")
+        except Exception:
+            pass
 
         def _supports_responses_api(_client: object) -> bool:
             """현재 설치된 OpenAI Python SDK가 Responses API를 지원하는지 확인한다.
@@ -1889,6 +1912,11 @@ async def get_openai_completion(
             effort = _reasoning_effort_for_model(model)
             if _supports_responses_api(client):
                 try:
+                    if getattr(settings, "DEBUG", False) or getattr(settings, "ENVIRONMENT", "") != "production":
+                        logger.info(f"[ai] http_call provider=openai api=responses sdk model={model}")
+                except Exception:
+                    pass
+                try:
                     sp = (system_prompt or "").strip()
                 except Exception:
                     sp = ""
@@ -1911,6 +1939,11 @@ async def get_openai_completion(
 
             # ✅ SDK 미지원 폴백: REST(/v1/responses)
             try:
+                if getattr(settings, "DEBUG", False) or getattr(settings, "ENVIRONMENT", "") != "production":
+                    logger.info(f"[ai] http_call provider=openai api=responses rest model={model}")
+            except Exception:
+                pass
+            try:
                 sp = (system_prompt or "").strip()
             except Exception:
                 sp = ""
@@ -1927,6 +1960,11 @@ async def get_openai_completion(
             return "OpenAI 응답을 생성했지만 텍스트를 추출하지 못했습니다. 잠시 후 다시 시도해 주세요."
 
         # GPT-4 계열(기존): Chat Completions 유지
+        try:
+            if getattr(settings, "DEBUG", False) or getattr(settings, "ENVIRONMENT", "") != "production":
+                logger.info(f"[ai] http_call provider=openai api=chat.completions sdk model={model}")
+        except Exception:
+            pass
         try:
             sp = (system_prompt or "").strip()
         except Exception:
@@ -2275,8 +2313,10 @@ async def get_ai_chat_response(
     character_prompt: str, 
     user_message: str, 
     history: list, 
-    preferred_model: str = 'gemini',
-    preferred_sub_model: str = 'gemini-2.5-pro',
+    # ✅ 기본값(요구사항): Claude Haiku 4.5
+    # - 유저 저장 설정이 없거나, 호출부가 preferred_model/sub_model을 넘기지 않는 경우의 안전 기본값.
+    preferred_model: str = 'claude',
+    preferred_sub_model: str = 'claude-haiku-4-5-20251001',
     response_length_pref: str = 'medium',
     temperature: float = 0.7
 ) -> str:
@@ -2383,7 +2423,8 @@ async def get_ai_chat_response(
     # 모델별 처리
     if preferred_model == 'gemini':
         # NOTE:
-        # - 프론트(ModelSelectionModal)에서는 "gemini-3-flash", "gemini-3-pro" 같은 UI용 id를 저장한다.
+        # - 프론트(ModelSelectionModal)에서는 "gemini-3-flash-preview", "gemini-3-pro-preview" 같은 UI용 id를 저장한다.
+        #   (레거시 값: gemini-3-flash / gemini-3-pro도 방어적으로 허용)
         # - 실제 Gemini 호출은 genai.GenerativeModel(<실제 모델명>)에 들어갈 문자열이 필요하므로 여기서 매핑한다.
         # - 기존 기본값(gemini-2.5-pro)은 그대로 유지한다. (요청: 2.5-pro는 가만히)
         try:
@@ -2401,6 +2442,19 @@ async def get_ai_chat_response(
         else:
             # gemini-2.5-pro(기본) 포함: 알 수 없는 값은 기존 안정 기본값으로 폴백
             model_name = "gemini-2.5-pro"
+        # ✅ 모델 선택 로깅(프롬프트/대사 내용 제외)
+        try:
+            if getattr(settings, "DEBUG", False) or getattr(settings, "ENVIRONMENT", "") != "production":
+                logger.info(f"[ai] model_selected provider=gemini sub_model={model_name} (raw={preferred_sub_model}) max_tokens={max_tokens} temp={t}")
+        except Exception:
+            pass
+        # ✅ 실제 호출(시도) 로그: Gemini도 "실제로 어떤 모델 문자열로 호출했는지"를 다른 provider와 동일 포맷으로 남긴다.
+        # - SDK 내부 HTTP 디테일까지는 숨겨질 수 있으므로, 최소한 resolved model_name을 SSOT로 보장한다.
+        try:
+            if getattr(settings, "DEBUG", False) or getattr(settings, "ENVIRONMENT", "") != "production":
+                logger.info(f"[ai] http_call provider=gemini sdk=google-generativeai call=generate_content_async model={model_name} max_tokens={max_tokens} temp={t}")
+        except Exception:
+            pass
         return await get_gemini_completion(full_prompt, temperature=t, model=model_name, max_tokens=max_tokens)
         
     elif preferred_model == 'claude':
@@ -2413,6 +2467,8 @@ async def get_ai_chat_response(
             'claude-sonnet-4-5-20250929': 'claude-sonnet-4-5-20250929',
             'claude-opus-4-1-20250805': 'claude-opus-4-1-20250805',
             'claude-opus-4-5-20251101': 'claude-opus-4-5-20251101',
+            # ✅ 속도 최적화(요구사항): Haiku 4.5
+            'claude-haiku-4-5-20251001': 'claude-haiku-4-5-20251001',
 
             # ✅ UI/저장값 호환(별칭/레거시) → 스냅샷으로 변환
             'claude-sonnet-4': 'claude-sonnet-4-20250514',
@@ -2434,6 +2490,12 @@ async def get_ai_chat_response(
         except Exception:
             sub = ""
         model_name = claude_mapping.get(sub, claude_default)
+        # ✅ 모델 선택 로깅(프롬프트/대사 내용 제외)
+        try:
+            if getattr(settings, "DEBUG", False) or getattr(settings, "ENVIRONMENT", "") != "production":
+                logger.info(f"[ai] model_selected provider=claude sub_model={model_name} (raw={preferred_sub_model}) max_tokens={max_tokens} temp={t}")
+        except Exception:
+            pass
         return await get_claude_completion(
             user_prompt,
             temperature=t,
@@ -2458,6 +2520,12 @@ async def get_ai_chat_response(
         else:
             # 알 수 없는 값은 기존 안정 기본값으로 폴백
             model_name = 'gpt-4o'
+        # ✅ 모델 선택 로깅(프롬프트/대사 내용 제외)
+        try:
+            if getattr(settings, "DEBUG", False) or getattr(settings, "ENVIRONMENT", "") != "production":
+                logger.info(f"[ai] model_selected provider=gpt sub_model={model_name} (raw={preferred_sub_model}) max_tokens={max_tokens} temp={t}")
+        except Exception:
+            pass
         return await get_openai_completion(
             user_prompt,
             temperature=t,

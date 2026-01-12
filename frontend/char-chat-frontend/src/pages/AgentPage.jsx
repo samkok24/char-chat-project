@@ -23,6 +23,10 @@ SheetHeader,
 SheetTitle,
 SheetTrigger,
 } from '../components/ui/sheet';
+import {
+  Dialog,
+  DialogContent,
+} from '../components/ui/dialog';
 import { RadioGroup, RadioGroupItem } from '../components/ui/radio-group';
 import { useNavigate, Link, useLocation } from 'react-router-dom';
 import { useVirtualizer } from '@tanstack/react-virtual';
@@ -691,6 +695,10 @@ const [firstFrameOpen, setFirstFrameOpen] = useState(false);
 const [firstFrameUrl, setFirstFrameUrl] = useState('');
 const openFirstFramePicker = useCallback(() => setFirstFrameOpen(true), []);
 const clearFirstFrame = useCallback(() => setFirstFrameUrl(''), []);
+// ✅ 이미지 클릭 미리보기 모달(스토리에이전트)
+// - 이미지 삽입은 되었는데, 클릭해도 크게 보는 모달이 없어 “모달에 안 떠요”로 보일 수 있다.
+const [imagePreviewOpen, setImagePreviewOpen] = useState(false);
+const [imagePreviewUrl, setImagePreviewUrl] = useState('');
 const [insertTargetImage, setInsertTargetImage] = useState(null);
 const [insertKind, setInsertKind] = useState('gallery'); // 'cover' | 'gallery'
 const [selectedStoryId, setSelectedStoryId] = useState(null);
@@ -2967,7 +2975,25 @@ return (
                             </div>
                               )}
                               {m.type === 'image' ? (
-                              <img src={m.url} alt="img" className={`block h-auto w-auto max-w-full md:max-w-[420px] rounded-2xl shadow-lg ${m.role === 'user' ? 'ml-auto' : 'mr-auto'}`} />
+                              <button
+                                type="button"
+                                className={`${m.role === 'user' ? 'ml-auto' : 'mr-auto'} block`}
+                                onClick={() => {
+                                  try {
+                                    const u = (m?.url || '').toString().trim();
+                                    if (!u) return;
+                                    setImagePreviewUrl(u);
+                                    setImagePreviewOpen(true);
+                                  } catch (_) {}
+                                }}
+                                title="이미지 크게 보기"
+                              >
+                                <img
+                                  src={m.url}
+                                  alt="img"
+                                  className="block h-auto w-auto max-w-full md:max-w-[420px] rounded-2xl shadow-lg hover:opacity-95 transition"
+                                />
+                              </button>
                               ) : m.type === 'dual_response' ? (
                                 <DualResponseBubble
                                   message={m}
@@ -3937,6 +3963,31 @@ return (
                        </div>
                 </div>
        )}
+
+    {/* ✅ 이미지 미리보기 모달 */}
+    <Dialog open={imagePreviewOpen} onOpenChange={setImagePreviewOpen}>
+      <DialogContent className="max-w-[96vw] max-h-[90vh] p-0 bg-transparent border-none shadow-none">
+        {(() => {
+          const src = (imagePreviewUrl || '').toString().trim();
+          if (!src) {
+            return (
+              <div className="w-[90vw] h-[70vh] bg-black/60 rounded-lg flex items-center justify-center text-white text-sm">
+                이미지가 없습니다.
+              </div>
+            );
+          }
+          return (
+            <div className="relative">
+              <img
+                src={src}
+                alt="preview"
+                className="w-full h-full object-contain max-h-[90vh] rounded-lg"
+              />
+            </div>
+          );
+        })()}
+      </DialogContent>
+    </Dialog>
 
     {/* 시트: 이미지 보관함 전체 */}
     <Sheet open={showImagesSheet} onOpenChange={setShowImagesSheet}>

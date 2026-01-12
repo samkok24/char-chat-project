@@ -1293,32 +1293,15 @@ async def agent_simulate(
         ui_model = (payload.get("model") or "").lower()
         ui_sub = (payload.get("sub_model") or ui_model or "").lower()
 
-        # UI 모델명을 ai_service 기대 형식으로 매핑
-        # [임시] GPT와 Gemini 비활성화 - 모든 요청을 Claude로 강제 전환
+        """
+        ✅ 스토리에이전트(AgentPage) 정책: Claude 단일 모델 고정
+        - 대표님 요구사항: 스토리에이전트는 모델 선택 UI가 없으며, 운영에서는 항상 Claude Primary로만 호출되어야 한다.
+        - 따라서 payload(model/sub_model) 및 user.preferred_model 설정은 이 엔드포인트에서 무시한다.
+        - (일반 캐릭터챗 /chat/message 흐름에는 영향을 주지 않는다)
+        """
         from app.services.ai_service import CLAUDE_MODEL_PRIMARY
         preferred_model = "claude"
         preferred_sub_model = CLAUDE_MODEL_PRIMARY
-        # from app.services.ai_service import GPT_MODEL_PRIMARY
-        # preferred_model = "gpt"  # Claude → GPT 전환
-        # preferred_sub_model = GPT_MODEL_PRIMARY
-
-        
-        # 원래 로직 (임시 비활성화)
-        # if "claude" in ui_model or "claude" in ui_sub:
-        #     preferred_model = "claude"
-        #     preferred_sub_model = CLAUDE_MODEL_PRIMARY
-        # elif "gpt-4.1" in ui_model or "gpt-4.1" in ui_sub:
-        #     preferred_model = "gpt"
-        #     preferred_sub_model = "gpt-4.1"
-        # elif "gpt-4o" in ui_model or "gpt-4o" in ui_sub or "gpt" in ui_model:
-        #     preferred_model = "gpt"
-        #     preferred_sub_model = "gpt-4o"
-        # elif "gemini-2.5-flash" in ui_model or "flash" in ui_sub:
-        #     preferred_model = "gemini"
-        #     preferred_sub_model = "gemini-2.5-flash"
-        # else:
-        #     preferred_model = "gemini"
-        #     preferred_sub_model = "gemini-2.5-pro"
 
         # 이미지가 있으면 이미지 그라운딩 집필 사용
         generated_image_url = None
@@ -2088,6 +2071,35 @@ async def send_message(
     db: AsyncSession = Depends(get_db),
 ):
     """메시지 전송 - 핵심 채팅 기능"""
+    """
+    ⏱️ 채팅 성능(지연) 측정 로그 (스모크 테스트용, 방어적)
+
+    의도:
+    - "채팅이 느리다"를 감(체감)으로 보지 않고, 아래 3구간으로 나눠 수치(ms)로 확인한다.
+      1) DB/전처리(룸/캐릭터/설정/히스토리/메모리/페르소나)
+      2) 프롬프트 구성(문자열 조립 + 히스토리 배열 구성)
+      3) 모델 호출(ai_service.get_ai_chat_response)
+    - 운영에서도 유효하지만, 과도한 로깅을 피하려면 필요 시 레벨/샘플링으로 조정 가능.
+    """
+    _t0 = time.perf_counter()
+    _marks: Dict[str, float] = {}
+    try:
+        _content_len = len(request.content or "")
+    except Exception:
+        _content_len = 0
+
+    def _mark(name: str) -> None:
+        try:
+            _marks[name] = time.perf_counter()
+        except Exception:
+            pass
+
+    def _ms(a: float, b: float) -> int:
+        try:
+            return int((b - a) * 1000)
+        except Exception:
+            return -1
+
     # 1. 채팅방 및 캐릭터 정보 조회 (room_id 우선)
     if getattr(request, "room_id", None):
         room = await chat_service.get_chat_room_by_id(db, request.room_id)
@@ -2104,6 +2116,7 @@ async def send_message(
 
     # ✅ 비공개 캐릭터/작품 접근 차단(요구사항: 기존 방도 포함)
     await _ensure_private_content_access(db, current_user, character=character)
+    _mark("room_character_loaded")
 
     # ✅ 토큰 치환용 사용자명: 페르소나(활성+scope) 우선, 없으면 닉네임 폴백
     # - DB에는 토큰 원문을 보존하고, "프롬프트/첫 인사" 생성 시점에만 렌더링한다(SSOT).
@@ -2159,6 +2172,7 @@ async def send_message(
             await _set_room_meta(room.id, patch_data)
     except Exception:
         pass
+    _mark("settings_loaded")
 
 
     # 2. 사용자 메시지 저장 (continue 모드면 저장하지 않음)
@@ -2173,6 +2187,7 @@ async def send_message(
         user_message = None
 
     await db.flush()  # ← 즉시 커밋
+    _mark("user_saved_flush")
 
     # 3. AI 응답 생성 (CAVEDUCK 스타일 최적화)
     # ✅ 최근 대화 윈도우(기본 50개)를 사용해야 "방금까지의 맥락"을 유지할 수 있다.
@@ -2198,6 +2213,7 @@ async def send_message(
     active_memories = await get_active_memory_notes_by_character(
         db, current_user.id, character.id
     )
+    _mark("history_loaded")
     
     # 캐릭터 프롬프트 구성 (모든 정보 포함)
     character_prompt = f"""당신은 '{char_name}'입니다.
@@ -2375,6 +2391,7 @@ async def send_message(
             response_length_pref=response_length,
             temperature=temperature
         )
+        _mark("ai_done")
 
         # ✅ 붕괴 멘트 방어(저장 직전 1회 필터링)
         # - 프롬프트 금지에도 간헐적으로 출력될 수 있어 UX를 보호한다.
@@ -2393,9 +2410,38 @@ async def send_message(
             db, room.id, "assistant", ai_response_text
         )
         await db.commit()
+        _mark("db_committed")
     except Exception:
         await db.rollback()
         raise HTTPException(status_code=503, detail="AiUnavailable")
+
+    # ✅ 성능 로그 요약(성공 케이스만)
+    # - prompt/history는 길이만 기록(민감 데이터 노출 방지)
+    try:
+        _t_end = time.perf_counter()
+        prompt_len = len(character_prompt or "")
+        hist_len = len(history_for_ai or [])
+        logger.info(
+            "[send_message] perf room=%s user=%s char=%s contentLen=%s promptLen=%s histLen=%s "
+            "model=%s/%s dtTotalMs=%s dtRoomMs=%s dtSettingsMs=%s dtUserSaveMs=%s dtHistoryMs=%s dtAiMs=%s dtCommitMs=%s",
+            str(getattr(room, "id", "") or ""),
+            str(getattr(current_user, "id", "") or ""),
+            str(getattr(character, "id", "") or ""),
+            _content_len,
+            prompt_len,
+            hist_len,
+            str(getattr(current_user, "preferred_model", "") or ""),
+            str(getattr(current_user, "preferred_sub_model", "") or ""),
+            _ms(_t0, _t_end),
+            _ms(_t0, _marks.get("room_character_loaded", _t0)),
+            _ms(_marks.get("room_character_loaded", _t0), _marks.get("settings_loaded", _t0)),
+            _ms(_marks.get("settings_loaded", _t0), _marks.get("user_saved_flush", _t0)),
+            _ms(_marks.get("user_saved_flush", _t0), _marks.get("history_loaded", _t0)),
+            _ms(_marks.get("history_loaded", _t0), _marks.get("ai_done", _t0)),
+            _ms(_marks.get("ai_done", _t0), _marks.get("db_committed", _t0)),
+        )
+    except Exception:
+        pass
         
     # 5. 캐릭터 채팅 수 증가 (사용자 메시지 기준으로 1회만 증가)
     from app.services import character_service

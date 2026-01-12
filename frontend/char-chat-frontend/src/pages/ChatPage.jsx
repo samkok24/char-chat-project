@@ -183,8 +183,10 @@ const ChatPage = () => {
   const [accessDeniedModal, setAccessDeniedModal] = useState({ open: false, message: '' });
   const [showModelModal, setShowModelModal] = useState(false);
   const [modalInitialTab, setModalInitialTab] = useState('model');
-  const [currentModel, setCurrentModel] = useState('gemini');
-  const [currentSubModel, setCurrentSubModel] = useState('gemini-2.5-pro');
+  // ✅ 기본 모델(요구사항): Claude Haiku 4.5
+  // - 서버에서 사용자 설정을 불러오기 전까지 UI 기본값으로 사용한다.
+  const [currentModel, setCurrentModel] = useState('claude');
+  const [currentSubModel, setCurrentSubModel] = useState('claude-haiku-4-5-20251001');
   const [editingMessageId, setEditingMessageId] = useState(null);
   const [editText, setEditText] = useState('');
   // ✅ 메시지 피드백(추천/비추천) "눌림" 상태: 이 채팅방은 사용자 단일 소유이므로 로컬 UI 상태로도 충분히 UX를 보강할 수 있다.
@@ -2695,8 +2697,9 @@ const ChatPage = () => {
     const loadUserModelSettings = async () => {
       try {
         const response = await usersAPI.getModelSettings();
-        setCurrentModel(response.data.preferred_model || 'gemini');
-        setCurrentSubModel(response.data.preferred_sub_model || 'gemini-2.5-pro');
+        // ✅ 사용자 저장값이 없거나 비정상일 때는 요구사항 기본값(Claude Haiku 4.5)로 폴백
+        setCurrentModel(response.data.preferred_model || 'claude');
+        setCurrentSubModel(response.data.preferred_sub_model || 'claude-haiku-4-5-20251001');
       } catch (error) {
         console.error('모델 설정 로드 실패:', error);
       }
