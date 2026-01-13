@@ -881,6 +881,60 @@ const HomePage = () => {
     [characters]
   );
 
+  /**
+   * ✅ 원작연재 > 원작챗 탭 전용 목록(중요)
+   *
+   * 배경/원인:
+   * - 기존 구현은 `/characters?skip=0&limit=12` "섞인 목록"에서 origchat만 필터링했다.
+   * - 운영 데이터가 많아지면 첫 페이지에 origchat이 0개일 수 있고,
+   *   이때 UI가 "없음" 분기로 들어가면서 무한스크롤 센티넬/더보기가 렌더링되지 않아
+   *   실제로 origchat이 존재해도 영원히 0개처럼 보이는 데드락이 발생했다.
+   *
+   * 해결:
+   * - 원작챗 탭에서는 백엔드 지원 파라미터 `only=origchat`로 "전용 목록"을 직접 가져온다.
+   * - 다른 탭(메인/캐릭터/웹소설)에는 영향 주지 않는다(최소 수정).
+   */
+  const ORIGCHAT_TAB_PAGE_LIMIT = 20;
+  const {
+    data: origChatCharacterPages,
+    isLoading: origChatCharactersLoading,
+    isFetchingNextPage: isFetchingNextOrigChatCharacters,
+    hasNextPage: hasNextOrigChatCharacters,
+    fetchNextPage: fetchNextOrigChatCharacters,
+  } = useInfiniteQuery({
+    queryKey: ['characters', 'origchat', 'infinite', searchQuery],
+    enabled: isOrigSerialTab && origSerialTab === 'origchat',
+    queryFn: async ({ pageParam = 0 }) => {
+      try {
+        const params2 = {
+          skip: pageParam,
+          limit: ORIGCHAT_TAB_PAGE_LIMIT,
+          sort: 'likes',
+          only: 'origchat',
+        };
+        const trimmed = searchQuery?.trim();
+        if (trimmed) params2.search = trimmed;
+        const res = await charactersAPI.getCharacters(params2);
+        const items = res?.data || [];
+        return {
+          items,
+          nextSkip: (Array.isArray(items) && items.length === ORIGCHAT_TAB_PAGE_LIMIT)
+            ? pageParam + ORIGCHAT_TAB_PAGE_LIMIT
+            : null,
+        };
+      } catch (e) {
+        console.error('[HomePage] origchat characters load failed:', e);
+        return { items: [], nextSkip: null };
+      }
+    },
+    getNextPageParam: (lastPage) => lastPage?.nextSkip,
+    staleTime: 30 * 1000,
+    cacheTime: 10 * 60 * 1000,
+  });
+  const origChatCharacters = React.useMemo(() => {
+    return (origChatCharacterPages?.pages || []).flatMap((p) => p?.items || []);
+  }, [origChatCharacterPages]);
+
   // 원작연재 탭용 스토리 무한스크롤
   const STORY_LIMIT = 20;
   const {
@@ -1133,8 +1187,17 @@ const HomePage = () => {
    *
    * 원리:
    * - 하단 센티넬이 보이면 다음 페이지(fetchNextPage)를 자동 호출한다.
-   * - `origSerialCharacters`는 `characters`에서 필터링되므로, 다음 페이지가 로드되면 자동으로 격자가 확장된다.
+   * - 원작챗 탭은 `only=origchat` 전용 목록을 쓰므로, 센티넬은 그 전용 쿼리에 연결한다.
    */
+  const handleLoadMoreOrigChatCharacters = React.useCallback(async () => {
+    if (!hasNextOrigChatCharacters || isFetchingNextOrigChatCharacters) return;
+    try {
+      await fetchNextOrigChatCharacters();
+    } catch (e) {
+      console.error('[HomePage] origchat tab load more failed:', e);
+    }
+  }, [hasNextOrigChatCharacters, isFetchingNextOrigChatCharacters, fetchNextOrigChatCharacters]);
+
   useEffect(() => {
     if (!isOrigSerialTab || origSerialTab !== 'origchat') return;
     if (!supportsIntersectionObserver) return;
@@ -1148,10 +1211,10 @@ const HomePage = () => {
         if (cancelled) return;
         const first = entries?.[0];
         if (!first?.isIntersecting) return;
-        if (!hasNextPage || isFetchingNextPage) return;
+        if (!hasNextOrigChatCharacters || isFetchingNextOrigChatCharacters) return;
         if (origChatAutoScrollLockRef.current) return;
         origChatAutoScrollLockRef.current = true;
-        Promise.resolve(handleLoadMoreCharacters())
+        Promise.resolve(handleLoadMoreOrigChatCharacters())
           .catch((e) => {
             try { console.error('[홈] 원작챗 탭 자동 로드 실패:', e); } catch (_) {}
           })
@@ -1171,9 +1234,9 @@ const HomePage = () => {
     origSerialTab,
     supportsIntersectionObserver,
     isMobile,
-    hasNextPage,
-    isFetchingNextPage,
-    handleLoadMoreCharacters
+    hasNextOrigChatCharacters,
+    isFetchingNextOrigChatCharacters,
+    handleLoadMoreOrigChatCharacters
   ]);
 
   const handleSearch = (e) => {
@@ -2019,14 +2082,65 @@ const HomePage = () => {
                   onClick={() => updateTab('ORIGSERIAL', 'origserial')}
                   className={[
                     'relative -mb-px px-1 py-2 text-base sm:text-lg font-semibold transition-colors',
-                    'border-b-2',
                     isOrigSerialTab
-                      ? 'text-white border-purple-500'
-                      : 'text-gray-400 border-transparent hover:text-gray-200'
+                      ? 'text-white'
+                      : 'text-gray-400 hover:text-gray-200'
                   ].join(' ')}
                   aria-current={isOrigSerialTab ? 'page' : undefined}
                 >
-                  웹소설
+                  <span className="inline-flex items-center">
+                    <span className={[
+                      'relative -mb-px border-b-2',
+                      isOrigSerialTab
+                        ? 'border-purple-500'
+                        : 'border-transparent'
+                    ].join(' ')}>웹소설</span>
+                    <span
+                      className={[
+                        // ✅ 모바일 최적화:
+                        // - 긴 문구는 작은 화면에서 탭 줄바꿈을 유발해 "웹소설 탭이 내려앉는" UX를 만든다.
+                        // - 그래서 sm 미만에서는 짧은 배지로 대체한다.
+                        'ml-2 relative hidden sm:inline-flex items-center',
+                        'whitespace-nowrap',
+                        'px-2.5 py-1 rounded-full',
+                        'text-[11px] font-semibold leading-none',
+                        'border',
+                        'cc-float-2',
+                        // ✅ 다크 배경 가독성: 따뜻한 톤(프로모션) + 과한 채도 방지
+                        isOrigSerialTab
+                          ? 'bg-amber-400/15 border-amber-300/40 text-amber-100'
+                          : 'bg-amber-400/10 border-amber-300/25 text-amber-200',
+                      ].join(' ')}
+                    >
+                      {/* 말풍선 꼬리(좌측) */}
+                      <span
+                        aria-hidden="true"
+                        className={[
+                          'pointer-events-none absolute -left-[6px] top-1/2 -translate-y-1/2',
+                          'w-0 h-0',
+                          'border-y-[6px] border-y-transparent border-r-[6px]',
+                          isOrigSerialTab ? 'border-r-amber-400/15' : 'border-r-amber-400/10',
+                        ].join(' ')}
+                      />
+                      지금 웹소설 작품 등록만 해도 5000원 지급
+                    </span>
+                    {/* ✅ 모바일(좁은 화면)용 축약 배지: 탭 줄바꿈 방지 */}
+                    <span
+                      className={[
+                        'ml-2 relative inline-flex sm:hidden items-center',
+                        'whitespace-nowrap',
+                        'px-2 py-1 rounded-full',
+                        'text-[11px] font-semibold leading-none',
+                        'border',
+                        'cc-float-2',
+                        isOrigSerialTab
+                          ? 'bg-amber-400/15 border-amber-300/40 text-amber-100'
+                          : 'bg-amber-400/10 border-amber-300/25 text-amber-200',
+                      ].join(' ')}
+                    >
+                      작품 등록시 5000원
+                    </span>
+                  </span>
                 </button>
 
                 {/* ✅ 검색 UI 비노출(요구사항): 전 탭에서 숨김 */}
@@ -2160,41 +2274,41 @@ const HomePage = () => {
               {/* 원작챗 탭: 캐릭터 격자 */}
               {origSerialTab === 'origchat' && (
                 <>
-                  {loading ? (
+                  {origChatCharactersLoading ? (
                     <div className={gridColumnClasses}>
                       {Array.from({ length: 12 }).map((_, i) => (
                         <CharacterCardSkeleton key={i} variant="home" />
               ))}
             </div>
-                  ) : origSerialCharacters.length > 0 ? (
+                  ) : origChatCharacters.length > 0 ? (
                     <>
                       <div className={gridColumnClasses}>
-                        {origSerialCharacters.map((c) => (
+                        {origChatCharacters.map((c) => (
                           <CharacterCard key={c.id} character={c} showOriginBadge variant="home" />
                         ))}
                       </div>
                       {/* ✅ 원작챗 탭: 무한스크롤(센티넬) / IO 미지원 fallback: 더보기 버튼 */}
                       {supportsIntersectionObserver ? (
-                        hasNextPage ? (
+                        hasNextOrigChatCharacters ? (
                           <div ref={origChatTabSentinelRef} className="mt-6 h-10" aria-hidden="true" />
                         ) : null
-                      ) : hasNextPage ? (
+                      ) : hasNextOrigChatCharacters ? (
                         <div className="mt-8 flex justify-center">
                           <button
                             type="button"
-                            onClick={handleLoadMoreCharacters}
-                            disabled={!hasNextPage || isFetchingNextPage}
+                            onClick={handleLoadMoreOrigChatCharacters}
+                            disabled={!hasNextOrigChatCharacters || isFetchingNextOrigChatCharacters}
                             className="inline-flex items-center gap-2 rounded-full border border-gray-700/70 bg-gray-800/60 px-6 py-2.5 text-sm text-gray-200 shadow-lg transition-colors hover:bg-gray-800 hover:border-gray-600 disabled:opacity-50 disabled:cursor-not-allowed"
                             aria-label="원작챗 더보기"
                           >
                             <span className="font-medium">더보기</span>
-                            {isFetchingNextPage && (
+                            {isFetchingNextOrigChatCharacters && (
                               <Loader2 className="w-4 h-4 animate-spin text-gray-300" />
                             )}
                           </button>
                         </div>
                       ) : null}
-                      {isFetchingNextPage && (
+                      {isFetchingNextOrigChatCharacters && (
                         <div className={`${gridColumnClasses} mt-3`}>
                           {Array.from({ length: 6 }).map((_, i) => (
                             <CharacterCardSkeleton key={`sk-${i}`} variant="home" />

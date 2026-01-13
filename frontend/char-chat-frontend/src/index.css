@@ -33,6 +33,27 @@
       opacity: 0;
     }
   }
+
+  /* 탭 프로모션 말풍선: 둥둥 떠다니는 애니메이션 */
+  @keyframes cc-float {
+    0%, 100% { transform: translate3d(0, 0, 0); }
+    50% { transform: translate3d(0, -6px, 0); }
+  }
+  .cc-float {
+    animation: cc-float 2.8s ease-in-out infinite;
+    will-change: transform;
+  }
+  .cc-float-2 {
+    animation: cc-float 3.4s ease-in-out infinite;
+    animation-delay: .35s;
+    will-change: transform;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .cc-float,
+    .cc-float-2 {
+      animation: none !important;
+    }
+  }
   
   /* 다크 테마 세련된 스크롤바 */
   .scrollbar-dark {
