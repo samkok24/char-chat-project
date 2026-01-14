@@ -35,7 +35,7 @@ const RecommendedCharacters = ({ title } = {}) => {
   const MIX_PATTERN = ['regular', 'regular', 'origchat'];
 
   const { data = [], isLoading, isError } = useQuery({
-    queryKey: ['recommended-characters-home', 'likes', 'mixed', 'regular+origchat'],
+    queryKey: ['recommended-characters-home', 'likes', 'mixed', 'regular+origchat', isMobile ? 'm' : 'd'],
     queryFn: async () => {
       /**
        * 추천 캐릭터 데이터 구성(방어적으로 동작)
@@ -164,7 +164,7 @@ const RecommendedCharacters = ({ title } = {}) => {
         )}
       </div>
       <div className="relative">
-        <ul className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-3 sm:gap-4">
+        <ul className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3 sm:gap-4">
           {isLoading && Array.from({ length: skeletonCount }).map((_, idx) => (
             <RecommendedSkeleton key={idx} />
           ))}

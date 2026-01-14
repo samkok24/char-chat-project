@@ -1,6 +1,6 @@
 import React from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { rankingAPI } from '../lib/api';
+import { rankingAPI, charactersAPI } from '../lib/api';
 import { Link } from 'react-router-dom';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import ErrorBoundary from './ErrorBoundary';
@@ -26,11 +26,41 @@ const TopOrigChat = ({ title } = {}) => {
   const pageSize = isMobile ? 4 : 14;
   const [page, setPage] = React.useState(0);
   const { data = [], isLoading, isError, refetch } = useQuery({
-    queryKey: ['top-origchat-daily'],
+    queryKey: ['top-origchat-daily', isMobile ? 'm' : 'd'],
     queryFn: async () => {
+      /**
+       * ✅ PC에서는 "항상 2줄(=14개)"을 채우기 위해, 부족하면 추가로 더 가져온다.
+       *
+       * 원칙:
+       * - 격자(2/4/7열) 디자인은 유지한다(카드 크기 불변).
+       * - 랭킹 데이터가 부족하면 origchat 캐릭터 목록에서 chats 기준으로 보강한다.
+       */
+      const target = isMobile ? 4 : 14;
+
       const res = await rankingAPI.getDaily({ kind: 'origchat' });
-      const items = Array.isArray(res.data?.items) ? res.data.items : [];
-      return items;
+      const baseItems = Array.isArray(res.data?.items) ? res.data.items : [];
+      if (isMobile || baseItems.length >= target) return baseItems;
+
+      try {
+        const extraRes = await charactersAPI.getCharacters({
+          sort: 'chats',
+          limit: 60,
+          only: 'origchat',
+        });
+        const extraItems = Array.isArray(extraRes?.data) ? extraRes.data : [];
+        const seen = new Set(baseItems.map((x) => String(x?.id || '')));
+        const merged = [...baseItems];
+        for (const it of extraItems) {
+          const id = String(it?.id || '').trim();
+          if (!id || seen.has(id)) continue;
+          seen.add(id);
+          merged.push(it);
+          if (merged.length >= target) break;
+        }
+        return merged;
+      } catch (_) {
+        return baseItems;
+      }
     },
     staleTime: 0,
     refetchOnWindowFocus: true,
@@ -85,7 +115,7 @@ const TopOrigChat = ({ title } = {}) => {
       </div>
       <ErrorBoundary>
         <div className="relative">
-          <ul className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-3 sm:gap-4">
+          <ul className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3 sm:gap-4">
             {isLoading && Array.from({ length: skeletonCount }).map((_, idx) => (
               <OrigChatSkeleton key={idx} />
             ))}
