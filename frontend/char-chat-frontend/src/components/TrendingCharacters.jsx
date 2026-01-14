@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { rankingAPI } from '../lib/api';
+import { rankingAPI, charactersAPI } from '../lib/api';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { useIsMobile } from '../hooks/use-mobile';
@@ -24,10 +24,43 @@ const TrendingCharacters = ({ title } = {}) => {
   const isMobile = useIsMobile();
 
   const { data = [], isLoading, isError } = useQuery({
-    queryKey: ['trending-characters-daily'],
+    queryKey: ['trending-characters-daily', isMobile ? 'm' : 'd'],
     queryFn: async () => {
-      const res = await rankingAPI.getDaily({ kind: 'character' });
-      return Array.isArray(res.data?.items) ? res.data.items : [];
+      /**
+       * ✅ PC에서는 "항상 2줄(=14개)"을 채우기 위해, 부족하면 추가로 더 가져온다.
+       *
+       * 원칙:
+       * - 격자(2/4/7열) 디자인은 유지한다(카드 크기 불변).
+       * - 데이터가 부족할 때만 'chats' 정렬의 일반 캐릭터로 보강한다.
+       */
+      const target = isMobile ? 4 : 14;
+
+      const baseRes = await rankingAPI.getDaily({ kind: 'character' });
+      const baseItems = Array.isArray(baseRes.data?.items) ? baseRes.data.items : [];
+
+      if (isMobile || baseItems.length >= target) return baseItems;
+
+      try {
+        const extraRes = await charactersAPI.getCharacters({
+          sort: 'chats',
+          limit: 60,
+          only: 'regular',
+          source_type: 'ORIGINAL',
+        });
+        const extraItems = Array.isArray(extraRes?.data) ? extraRes.data : [];
+        const seen = new Set(baseItems.map((x) => String(x?.id || '')));
+        const merged = [...baseItems];
+        for (const it of extraItems) {
+          const id = String(it?.id || '').trim();
+          if (!id || seen.has(id)) continue;
+          seen.add(id);
+          merged.push(it);
+          if (merged.length >= target) break;
+        }
+        return merged;
+      } catch (_) {
+        return baseItems;
+      }
     },
     staleTime: 0,
     refetchOnWindowFocus: true,
@@ -106,7 +139,7 @@ const TrendingCharacters = ({ title } = {}) => {
         </div>
       </div>
       <div className="relative">
-        <ul className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-3 sm:gap-4">
+        <ul className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3 sm:gap-4">
           {isLoading && Array.from({ length: skeletonCount }).map((_, idx) => (
             <TrendingSkeleton key={idx} />
           ))}
