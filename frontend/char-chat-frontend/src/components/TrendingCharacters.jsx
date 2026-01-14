@@ -106,7 +106,7 @@ const TrendingCharacters = ({ title } = {}) => {
         </div>
       </div>
       <div className="relative">
-        <ul className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3 sm:gap-4">
+        <ul className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-3 sm:gap-4">
           {isLoading && Array.from({ length: skeletonCount }).map((_, idx) => (
             <TrendingSkeleton key={idx} />
           ))}
