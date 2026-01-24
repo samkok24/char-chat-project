@@ -193,12 +193,18 @@ class CharacterBasicInfo(BaseModel):
     greeting: Optional[str] = Field(None, max_length=500)
 
     # 세계관 설정
-    world_setting: Optional[str] = Field(None, max_length=5000)
+    # ✅ 프롬프트 상향(운영 합의): 6000자까지 허용
+    world_setting: Optional[str] = Field(None, max_length=6000)
     user_display_description: Optional[str] = Field(None, max_length=3000)
     use_custom_description: bool = False
 
     # 도입부 시스템
     introduction_scenes: List[IntroductionScene] = Field(default_factory=list)
+
+    # ✅ 시작 세트(도입부+첫대사) - 일반 캐릭터챗 전용 확장(SSOT)
+    # - 기존 greeting/introduction_scenes를 재편하지 않고, 신규 UI에서만 사용하는 JSON 저장소.
+    # - 저장 시에는 start_sets가 SSOT이고, 선택된 1개 세트를 greeting/introduction_scenes에 미러링한다(호환성).
+    start_sets: Optional[Dict[str, Any]] = None
 
     # 레거시 호환 및 기타 필드
     background_story: Optional[str] = Field(None, max_length=5000, description="world_setting으로 대체됨")
@@ -206,7 +212,10 @@ class CharacterBasicInfo(BaseModel):
     is_public: bool = True
     
     # 캐릭터 타입 및 언어
-    character_type: str = Field(default="roleplay", pattern="^(roleplay|simulator)$")
+    # ✅ 요구사항: 프롬프트 단계에서 "커스텀(수동)" 모드를 허용한다.
+    # - 저장/응답 스키마에서 검증이 막히면 프론트에서 선택해도 400이 나므로 허용값에 추가한다.
+    # - 채팅 로직은 simulator만 특수 처리하고 그 외는 roleplay 기본 흐름으로 동작하므로 안전하다.
+    character_type: str = Field(default="roleplay", pattern="^(roleplay|simulator|custom)$")
     base_language: str = Field(default="ko", max_length=10)
     
     tags: Optional[List[str]] = Field(default_factory=list)
@@ -236,7 +245,8 @@ class CharacterBasicInfo(BaseModel):
             'personality': 2000,
             'speech_style': 2000,
             'greeting': 500,
-            'world_setting': 5000,
+            # ✅ 프롬프트 상향(운영 합의): 6000자까지 허용
+            'world_setting': 6000,
             'user_display_description': 3000,
         }
         if info.field_name == 'user_display_description':
@@ -434,6 +444,9 @@ class CharacterDetailResponse(BaseModel):
     
     # 도입부 (JSON 형태로 저장된 데이터)
     introduction_scenes: Optional[List[Dict[str, Any]]]
+
+    # 시작 세트(도입부+첫대사) - SSOT (일반 캐릭터챗 UI용)
+    start_sets: Optional[Dict[str, Any]] = None
     
     # 캐릭터 타입
     character_type: str

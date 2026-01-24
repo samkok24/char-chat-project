@@ -16,13 +16,28 @@ import {
 } from "./ui/dropdown-menu";
 import { useAuth } from '../contexts/AuthContext';
 
-const CharacterInfoHeader = ({ character, likeCount, isLiked, handleLike, isOwner, canTogglePublic = false, onEdit, onDelete, onTogglePublic, isWebNovel = false, workId = null, tags = [] }) => {
+const CharacterInfoHeader = ({
+  character,
+  likeCount,
+  isLiked,
+  handleLike,
+  isOwner,
+  canTogglePublic = false,
+  onEdit,
+  onDelete,
+  onTogglePublic,
+  isWebNovel = false,
+  workId = null,
+  tags = [],
+  compact = false,
+}) => {
   const navigate = useNavigate();
   const { profileVersion } = useAuth();
+  const isCompact = !!compact;
 
   return (
     <div className="space-y-4">
-      <div className="flex items-start sm:items-center justify-between gap-3">
+      <div className={`flex items-start ${isCompact ? '' : 'sm:items-center'} justify-between gap-3`}>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 min-w-0">
           <div className="flex items-center space-x-2 text-sm text-gray-400">
             <Heart className="w-4 h-4 text-red-500" fill={isLiked ? 'currentColor' : 'none'} />
@@ -75,7 +90,7 @@ const CharacterInfoHeader = ({ character, likeCount, isLiked, handleLike, isOwne
       </div>
 
       <div className="flex items-start justify-between gap-3">
-        <h1 className="text-2xl sm:text-4xl font-bold break-words min-w-0">
+        <h1 className={`${isCompact ? 'text-2xl' : 'text-2xl sm:text-4xl'} font-bold break-words min-w-0`}>
           {character.name}
         </h1>
         <Button onClick={handleLike} variant="ghost" size="icon" className="flex-shrink-0">
@@ -83,14 +98,13 @@ const CharacterInfoHeader = ({ character, likeCount, isLiked, handleLike, isOwne
         </Button>
       </div>
 
-      {/* 원작챗 상세에서는 이름 아래 배지를 표시하지 않음 (이미지 위 배지만 유지) */}
-      {!character?.origin_story_id && (
+      {/* ✅ 뱃지(이름 아래)는 공간만 차지해서 일반 캐릭터챗에서는 숨김.
+       * - 원작챗: 기존대로 비노출(이미지 위 배지만 유지)
+       * - 웹소설(IMPORTED): 필요 시에만 유지
+       */}
+      {!character?.origin_story_id && (isWebNovel || character?.source_type === 'IMPORTED') && (
         <div className="flex items-center gap-2">
-          {(isWebNovel || character?.source_type === 'IMPORTED') ? (
-            <Badge className="bg-blue-600 text-white hover:bg-blue-600">웹소설</Badge>
-          ) : (
-            <Badge className="bg-purple-600 text-white hover:bg-purple-600">캐릭터</Badge>
-          )}
+          <Badge className="bg-blue-600 text-white hover:bg-blue-600">웹소설</Badge>
         </div>
       )}
 
@@ -98,7 +112,7 @@ const CharacterInfoHeader = ({ character, likeCount, isLiked, handleLike, isOwne
         <div className="mt-1">
           <Link
             to={`/users/${character.creator_id}/creator`}
-            className="inline-flex items-center gap-2 text-base sm:text-lg text-gray-300 hover:text-white max-w-full"
+            className={`inline-flex items-center gap-2 ${isCompact ? 'text-base' : 'text-base sm:text-lg'} text-gray-300 hover:text-white max-w-full`}
           >
             <Avatar className="w-6 h-6">
               <AvatarImage src={resolveImageUrl(character.creator_avatar_url ? `${character.creator_avatar_url}${character.creator_avatar_url.includes('?') ? '&' : '?'}v=${profileVersion}` : '')} alt={character.creator_username} />
@@ -115,17 +129,6 @@ const CharacterInfoHeader = ({ character, likeCount, isLiked, handleLike, isOwne
         {' '}|{' '}
         <span>수정일 {new Date(character.updated_at).toLocaleDateString()}</span>
       </div>
-      
-      {Array.isArray(tags) && tags.length > 0 && (
-        <div className="flex flex-wrap gap-2">
-          {tags.map((t) => (
-            <Badge key={t.id || t.slug || t.name} variant="secondary" className="bg-gray-700 hover:bg-gray-600 text-white inline-flex items-center gap-1">
-              {/* <span>{t.emoji || '🏷️'}</span> */}
-              <span>{t.name}</span>
-            </Badge>
-          ))}
-        </div>
-      )}
       
       {/* 하단 중복 표시는 제거됨 */}
     </div>

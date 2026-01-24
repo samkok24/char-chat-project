@@ -66,6 +66,35 @@ export const CharacterCard = ({
     if (onCardClick) {
       onCardClick(charId);
     } else {
+      /**
+       * ✅ PC 홈(대시보드) 전용: 일반 캐릭터챗 클릭 시 "모바일 상세 모달" 오픈
+       *
+       * 배경/의도:
+       * - 홈에는 Trending/Recommended/CMS 구좌 등 여러 컴포넌트가 `CharacterCard(variant="home")`를 직접 렌더링한다.
+       * - 모든 호출부에 onCardClick을 일일이 전달하면 수정 범위가 커지므로,
+       *   홈(/dashboard)에서만 동작하는 이벤트 훅으로 최소 수정/안정적으로 모달 프리뷰 UX를 제공한다.
+       *
+       * 동작 조건:
+       * - variant === 'home'
+       * - 현재 경로가 /dashboard (홈)
+       * - PC 화면(모바일은 기존 랜딩 유지)
+       * - 일반 캐릭터챗만(원작챗/웹소설 제외)
+       */
+      try {
+        const isHomeVariant = variant === 'home';
+        const path = typeof window !== 'undefined' ? String(window.location?.pathname || '') : '';
+        const isDashboard = path === '/dashboard';
+        const isMobileViewport = typeof window !== 'undefined' ? (window.matchMedia && window.matchMedia('(max-width: 1023px)').matches) : false;
+        // ✅ PC 홈 모달 프리뷰 대상:
+        // - 일반 캐릭터챗 + 원작챗(요청: 원작챗도 모달 프리뷰)
+        // - 단, "원작이 아닌 IMPORTED(웹소설/연재 기반)"는 기존대로 상세 페이지 랜딩 유지
+        const isEligibleForHomePcModal = isFromOrigChat || (!isFromOrigChat && !isWebNovel);
+        if (isHomeVariant && isDashboard && !isMobileViewport && isEligibleForHomePcModal && charId) {
+          window.dispatchEvent(new CustomEvent('home:pc-mobile-detail', { detail: { characterId: String(charId) } }));
+          return;
+        }
+      } catch (_) {}
+
       if (charId) navigate(`/characters/${charId}`);
     }
   };

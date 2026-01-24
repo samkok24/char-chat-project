@@ -7,6 +7,7 @@ ADD COLUMN world_setting TEXT,
 ADD COLUMN user_display_description TEXT,
 ADD COLUMN use_custom_description BOOLEAN DEFAULT FALSE,
 ADD COLUMN introduction_scenes JSONB,
+ADD COLUMN start_sets JSONB,
 ADD COLUMN character_type VARCHAR(50) DEFAULT 'roleplay',
 ADD COLUMN base_language VARCHAR(10) DEFAULT 'ko',
 ADD COLUMN image_descriptions JSONB,
@@ -136,6 +137,7 @@ COMMENT ON TABLE world_settings IS '재사용 가능한 세계관 설정 - 여�
 COMMENT ON TABLE custom_modules IS '고급 사용자용 커스텀 프롬프트 및 로어북 모듈';
 
 COMMENT ON COLUMN characters.introduction_scenes IS '도입부 시나리오 JSON 배열 - [{"title": "제목", "content": "내용", "secret": "비밀정보"}]';
+COMMENT ON COLUMN characters.start_sets IS '시작 세트(도입부+첫대사) SSOT JSON - {"selectedId":"...","items":[{"id":"...","title":"...","intro":"...","firstLine":"..."}]}';
 COMMENT ON COLUMN characters.affinity_stages IS '호감도 단계 JSON 배열 - [{"min": 0, "max": 100, "description": "반응"}]';
 COMMENT ON COLUMN characters.image_descriptions IS '이미지 설명 JSON 배열 - [{"description": "설명", "url": "URL"}]';
 COMMENT ON COLUMN characters.voice_settings IS '음성 설정 JSON - {"voice_id": "id", "style": "style", "enabled": true}';

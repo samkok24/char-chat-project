@@ -3,7 +3,7 @@
  * CAVEDUCK 스타일: API 캐싱으로 성능 최적화
  */
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../contexts/AuthContext';
@@ -15,6 +15,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
 import { Avatar, AvatarFallback, AvatarImage } from '../components/ui/avatar';
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '../components/ui/dialog';
 // 15번째 줄 수정: 이미지 썸네일 사이즈 파라미터 추가
 import { resolveImageUrl, getThumbnailUrl } from '../lib/images';
 import { replacePromptTokens } from '../lib/prompt';
@@ -68,6 +69,7 @@ import TopStories from '../components/TopStories';
 import TopOrigChat from '../components/TopOrigChat';
 import WebNovelSection from '../components/WebNovelSection';
 import QuickMeetCharacterModal from '../components/QuickMeetCharacterModal';
+import CharacterMobileDetailModal from '../components/CharacterMobileDetailModal';
 import { useIsMobile } from '../hooks/use-mobile';
 import {
   HOME_SLOTS_STORAGE_KEY,
@@ -77,6 +79,16 @@ import {
   isHomeSlotActive,
   isDefaultHomeSlotsConfig,
 } from '../lib/cmsSlots';
+import {
+  HOME_POPUPS_STORAGE_KEY,
+  HOME_POPUPS_CHANGED_EVENT,
+  getHomePopupsConfig,
+  setHomePopupsConfig as persistHomePopupsConfig,
+  isDefaultHomePopupsConfig,
+  getActiveHomePopups,
+  isPopupDismissed,
+  dismissPopup,
+} from '../lib/cmsPopups';
 
 const CHARACTER_PAGE_SIZE = 40;
 
@@ -143,6 +155,68 @@ const HomePage = () => {
   const requireAuth = useRequireAuth();
   const navigate = useNavigate();
   const location = useLocation();
+
+  // ✅ PC 홈: 일반 캐릭터챗 카드 클릭 시 "모바일 상세 모달"로 프리뷰(요구사항)
+  const [pcMobileDetailOpen, setPcMobileDetailOpen] = useState(false);
+  const [pcMobileDetailCharacterId, setPcMobileDetailCharacterId] = useState('');
+  const isEligibleHomePcModal = React.useCallback((c) => {
+    try {
+      if (!c) return false;
+      const isFromOrigChat = !!(c?.origin_story_id || c?.is_origchat || c?.source === 'origchat');
+      const st = String(c?.source_type || '').trim().toUpperCase();
+      // ✅ 원작챗은 모달 프리뷰 허용(요청)
+      if (isFromOrigChat) return true;
+      // ✅ 원작이 아닌 IMPORTED(웹소설/연재 기반)는 기존대로 상세 페이지 랜딩 유지
+      if (st === 'IMPORTED') return false;
+      return true; // 일반 캐릭터챗
+    } catch (_) {
+      return false;
+    }
+  }, []);
+  const openPcMobileDetail = React.useCallback((c) => {
+    try {
+      const id = String(c?.id || c?.character_id || c?.characterId || '').trim();
+      if (!id) return;
+      // 모바일/태블릿에서는 기존대로 페이지 랜딩(UX/호환 유지)
+      // - CharacterCard 내부 이벤트 가드는 (max-width: 1023px) 기준을 사용하므로 여기서도 동일 기준으로 통일한다.
+      const isNarrowViewport = (() => {
+        try { return !!window.matchMedia?.('(max-width: 1023px)')?.matches; } catch (_) { return false; }
+      })();
+      if (isMobile || isNarrowViewport) {
+        navigate(`/characters/${id}`);
+        return;
+      }
+      // PC에서만, 허용 대상만 모달 프리뷰
+      if (!isEligibleHomePcModal(c)) {
+        navigate(`/characters/${id}`);
+        return;
+      }
+      setPcMobileDetailCharacterId(id);
+      setPcMobileDetailOpen(true);
+    } catch (_) {}
+  }, [isMobile, isEligibleHomePcModal, navigate]);
+
+  // ✅ 홈(PC) 어디서든(트렌딩/추천/CMS 포함) "home:pc-mobile-detail" 이벤트로 모달을 열 수 있게 한다.
+  useEffect(() => {
+    const handler = (e) => {
+      try {
+        const isNarrowViewport = (() => {
+          try { return !!window.matchMedia?.('(max-width: 1023px)')?.matches; } catch (_) { return false; }
+        })();
+        if (isMobile || isNarrowViewport) return;
+        const id = String(e?.detail?.characterId || '').trim();
+        if (!id) return;
+        setPcMobileDetailCharacterId(id);
+        setPcMobileDetailOpen(true);
+      } catch (_) {}
+    };
+    try {
+      window.addEventListener('home:pc-mobile-detail', handler);
+      return () => window.removeEventListener('home:pc-mobile-detail', handler);
+    } catch (_) {
+      return undefined;
+    }
+  }, [isMobile]);
 
   // ===== Google tag (gtag.js) - 메인(홈) 페이지만 우선 적용 =====
   // 배경/의도:
@@ -316,6 +390,109 @@ const HomePage = () => {
     load();
     return () => { active = false; };
   }, [refreshHomeSlots, isAdmin]);
+
+  // ===== CMS 홈 팝업 설정(운영 SSOT + 유저 로컬 "N일간 안보기") =====
+  const [homePopupsConfig, setHomePopupsConfigState] = useState(() => {
+    try { return getHomePopupsConfig(); } catch (_) { return { maxDisplayCount: 1, items: [] }; }
+  });
+  const refreshHomePopupsConfig = React.useCallback(() => {
+    try { setHomePopupsConfigState(getHomePopupsConfig()); } catch (e) {
+      try { console.error('[HomePage] getHomePopupsConfig failed:', e); } catch (_) {}
+      setHomePopupsConfigState({ maxDisplayCount: 1, items: [] });
+    }
+  }, []);
+
+  useEffect(() => {
+    const onCustom = () => refreshHomePopupsConfig();
+    const onStorage = (e) => {
+      try {
+        if (!e) return;
+        if (e.key === HOME_POPUPS_STORAGE_KEY) refreshHomePopupsConfig();
+      } catch (_) {}
+    };
+    try { window.addEventListener(HOME_POPUPS_CHANGED_EVENT, onCustom); } catch (_) {}
+    try { window.addEventListener('storage', onStorage); } catch (_) {}
+    return () => {
+      try { window.removeEventListener(HOME_POPUPS_CHANGED_EVENT, onCustom); } catch (_) {}
+      try { window.removeEventListener('storage', onStorage); } catch (_) {}
+    };
+  }, [refreshHomePopupsConfig]);
+
+  useEffect(() => {
+    let active = true;
+    const load = async () => {
+      try {
+        const res = await cmsAPI.getHomePopups();
+        if (!active) return;
+        const cfg = (res && res.data && typeof res.data === 'object') ? res.data : null;
+        if (!cfg) return;
+
+        // ✅ 안전 전환: 배포 직후 서버 SSOT가 기본값(빈 목록)일 수 있다.
+        // - 관리자에게는 로컬 편집값이 덮여 사라지지 않게 보호한다.
+        let skipApply = false;
+        try {
+          const hasLocal = !!localStorage.getItem(HOME_POPUPS_STORAGE_KEY);
+          const looksDefault = isDefaultHomePopupsConfig(cfg);
+          if (isAdmin && hasLocal && looksDefault) skipApply = true;
+        } catch (_) {}
+
+        if (!skipApply) {
+          try { persistHomePopupsConfig(cfg); } catch (_) {}
+        }
+        refreshHomePopupsConfig();
+      } catch (e) {
+        try { console.warn('[HomePage] cmsAPI.getHomePopups failed:', e); } catch (_) {}
+      }
+    };
+    load();
+    return () => { active = false; };
+  }, [isAdmin, refreshHomePopupsConfig]);
+
+  const [homePopupQueue, setHomePopupQueue] = React.useState([]);
+  const [homePopupIdx, setHomePopupIdx] = React.useState(0);
+  const [homePopupOpen, setHomePopupOpen] = React.useState(false);
+  const homePopupsShownRef = React.useRef(false);
+
+  React.useEffect(() => {
+    const deviceKey = isMobile ? 'mobile' : 'pc';
+    const cfg = (homePopupsConfig && typeof homePopupsConfig === 'object') ? homePopupsConfig : { maxDisplayCount: 1, items: [] };
+    const maxCnt = Math.max(0, Math.min(10, Math.floor(Number(cfg.maxDisplayCount ?? 1) || 0)));
+
+    if (maxCnt <= 0) return;
+    if (homePopupsShownRef.current) return;
+
+    const activePopups = getActiveHomePopups(Date.now(), deviceKey);
+    const candidates = (Array.isArray(activePopups) ? activePopups : []).filter((p) => !isPopupDismissed(p?.id));
+    const queue = candidates.slice(0, maxCnt);
+    if (queue.length === 0) return;
+
+    homePopupsShownRef.current = true;
+    setHomePopupQueue(queue);
+    setHomePopupIdx(0);
+    setHomePopupOpen(true);
+  }, [homePopupsConfig, isMobile]);
+
+  const currentHomePopup = (Array.isArray(homePopupQueue) && homePopupQueue.length > 0)
+    ? (homePopupQueue[homePopupIdx] || null)
+    : null;
+
+  const closeHomePopupAndNext = React.useCallback((dismissMode = 'session') => {
+    const p = currentHomePopup;
+    if (p?.id) {
+      const days = (dismissMode === 'days') ? Number(p.dismissDays ?? 1) : 0;
+      try { dismissPopup(p.id, days); } catch (_) {}
+    }
+
+    setHomePopupIdx((prev) => {
+      const next = Number(prev || 0) + 1;
+      const total = Array.isArray(homePopupQueue) ? homePopupQueue.length : 0;
+      if (next >= total) {
+        setHomePopupOpen(false);
+        return prev;
+      }
+      return next;
+    });
+  }, [currentHomePopup, homePopupQueue]);
 
   // ===== CMS 커스텀 구좌: 대화수/좋아요수 보정(운영/UX 안정) =====
   // 배경:
@@ -1310,8 +1487,69 @@ const HomePage = () => {
 
   const createCharacter = () => {
     if (!requireAuth('캐릭터 생성')) return;
+    // ✅ 경쟁사 UX: 임시저장된 캐릭터 생성 초안이 있으면 "불러오기" 모달을 먼저 띄운다.
+    try {
+      if (hasCreateCharacterDraft()) {
+        setDraftPromptOpen(true);
+        return;
+      }
+    } catch (_) {}
     navigate('/characters/create');
   };
+
+  /**
+   * ✅ 캐릭터 생성(신규) 임시저장 존재 여부(SSOT: localStorage)
+   *
+   * 의도/원리:
+   * - 홈에서 "캐릭터 생성"을 눌렀을 때, 임시저장 데이터가 있으면 바로 이동하지 않고
+   *   사용자가 "새로 만들기/불러오기"를 선택할 수 있게 한다(경쟁사 UX).
+   */
+  const DRAFT_KEY_NEW = 'cc_draft_new';
+  const DRAFT_KEY_NEW_MANUAL = 'cc_draft_new_manual';
+  const hasCreateCharacterDraft = useCallback(() => {
+    try {
+      const raw = localStorage.getItem(DRAFT_KEY_NEW);
+      if (!raw) return false;
+      // ✅ 방어: 일부 브라우저에서 localStorage 접근은 되지만 parse가 실패할 수 있다.
+      // - 홈에서는 "존재"만 확인하면 충분하고, 실제 복원은 CreateCharacterPage에서 담당한다.
+      const trimmed = String(raw).trim();
+      if (trimmed.length <= 2) return false;
+      // manual 플래그가 없어도(레거시/운영 데이터) 초안이 존재하면 모달을 띄우는 편이 UX가 낫다.
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }, []);
+
+  // ✅ 홈 모달: 임시저장 불러오기(캐릭터 생성)
+  const [draftPromptOpen, setDraftPromptOpen] = useState(false);
+  const handleCreateCharacterClick = useCallback((e) => {
+    try { e?.preventDefault?.(); } catch (_) {}
+    if (!requireAuth('캐릭터 생성')) return;
+    try {
+      if (hasCreateCharacterDraft()) {
+        setDraftPromptOpen(true);
+        return;
+      }
+    } catch (_) {}
+    navigate('/characters/create');
+  }, [requireAuth, navigate, hasCreateCharacterDraft]);
+
+  const handleDraftStartFresh = useCallback(() => {
+    // 새로 만들기: 임시저장 삭제 후 생성 페이지로 이동
+    try {
+      localStorage.removeItem(DRAFT_KEY_NEW);
+      localStorage.removeItem(DRAFT_KEY_NEW_MANUAL);
+    } catch (_) {}
+    try { setDraftPromptOpen(false); } catch (_) {}
+    try { navigate('/characters/create'); } catch (_) {}
+  }, [navigate]);
+
+  const handleDraftLoad = useCallback(() => {
+    // 불러오기: 임시저장 유지한 채 생성 페이지로 이동(페이지에서 자동 복원 로직이 담당)
+    try { setDraftPromptOpen(false); } catch (_) {}
+    try { navigate('/characters/create'); } catch (_) {}
+  }, [navigate]);
 
   const viewCharacterDetail = (characterId) => {
     navigate(`/characters/${characterId}`);
@@ -1790,7 +2028,15 @@ const HomePage = () => {
                   const live = rid ? cmsLiveCountsByCharId?.[rid] : null;
                   const merged = live ? { ...(x.item || {}), ...live } : x.item;
                   // ✅ CMS 커스텀 구좌는 "탐색 카드"가 아니라 홈 구좌(격자) 스타일로 노출해야 한다.
-                  return <CharacterCard key={key} character={merged} showOriginBadge variant="home" />;
+                  return (
+                    <CharacterCard
+                      key={key}
+                      character={merged}
+                      showOriginBadge
+                      variant="home"
+                      onCardClick={() => openPcMobileDetail(merged)}
+                    />
+                  );
                 })}
               </div>
 
@@ -1828,6 +2074,111 @@ const HomePage = () => {
   return (
     <AppLayout mobileHeaderRight={mobileHeaderRight}>
       <div className="min-h-full bg-gray-900 text-gray-200">
+        {/* ✅ PC 홈: 일반 캐릭터챗 카드 클릭 시 모바일 상세 모달 */}
+        {pcMobileDetailOpen ? (
+          <CharacterMobileDetailModal
+            open={pcMobileDetailOpen}
+            onOpenChange={(v) => {
+              setPcMobileDetailOpen(Boolean(v));
+              if (!v) setPcMobileDetailCharacterId('');
+            }}
+            characterId={pcMobileDetailCharacterId}
+          />
+        ) : null}
+        {/* ===== 홈 팝업(CMS) ===== */}
+        <Dialog
+          open={!!homePopupOpen && !!currentHomePopup}
+          onOpenChange={(v) => {
+            // 사용자가 바깥 클릭/ESC로 닫아도 "이번 세션만" 숨김 처리(재노출 방지)
+            if (!v) closeHomePopupAndNext('session');
+          }}
+        >
+          <DialogContent className="bg-gray-950 border border-gray-800 text-gray-100 max-w-[520px]">
+            <DialogHeader>
+              <DialogTitle className="text-white">
+                {String(currentHomePopup?.title || '').trim() || '안내'}
+              </DialogTitle>
+            </DialogHeader>
+
+            {(() => {
+              const p = currentHomePopup || {};
+              const img = (isMobile ? (p.mobileImageUrl || p.imageUrl) : (p.imageUrl || p.mobileImageUrl)) || '';
+              const url = String(img || '').trim();
+              const href = String(p.linkUrl || '').trim();
+              const clickable = !!href;
+              if (!url) return null;
+              return (
+                <button
+                  type="button"
+                  className={`w-full rounded-lg overflow-hidden border border-gray-800 ${clickable ? 'hover:border-gray-700' : ''}`}
+                  onClick={() => {
+                    if (!clickable) return;
+                    const openInNewTab = !!p.openInNewTab || /^https?:\/\//i.test(href);
+                    try {
+                      if (openInNewTab) window.open(href, '_blank', 'noopener,noreferrer');
+                      else navigate(href);
+                    } catch (_) {}
+                    closeHomePopupAndNext('session');
+                  }}
+                  disabled={!clickable}
+                >
+                  <img
+                    src={resolveImageUrl(url) || url}
+                    alt={String(p.title || 'popup')}
+                    className="w-full h-auto object-cover"
+                    loading="eager"
+                  />
+                </button>
+              );
+            })()}
+
+            {String(currentHomePopup?.message || '').trim() ? (
+              <div className="text-sm text-gray-200 whitespace-pre-wrap">
+                {String(currentHomePopup?.message || '')}
+              </div>
+            ) : null}
+
+            <DialogFooter className="flex flex-col sm:flex-row gap-2 sm:justify-end">
+              {String(currentHomePopup?.linkUrl || '').trim() ? (
+                <Button
+                  type="button"
+                  className="bg-purple-600 hover:bg-purple-700 text-white"
+                  onClick={() => {
+                    const href = String(currentHomePopup?.linkUrl || '').trim();
+                    if (!href) return;
+                    const openInNewTab = !!currentHomePopup?.openInNewTab || /^https?:\/\//i.test(href);
+                    try {
+                      if (openInNewTab) window.open(href, '_blank', 'noopener,noreferrer');
+                      else navigate(href);
+                    } catch (_) {}
+                    closeHomePopupAndNext('session');
+                  }}
+                >
+                  자세히 보기
+                </Button>
+              ) : null}
+              <Button
+                type="button"
+                variant="outline"
+                className="bg-gray-900 border-gray-800 text-gray-200 hover:bg-gray-800"
+                onClick={() => closeHomePopupAndNext('days')}
+              >
+                {Number(currentHomePopup?.dismissDays ?? 1) > 0
+                  ? `${Math.max(1, Number(currentHomePopup?.dismissDays ?? 1))}일간 보지 않기`
+                  : '이번 세션 보지 않기'}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="bg-gray-900 border-gray-800 text-gray-200 hover:bg-gray-800"
+                onClick={() => closeHomePopupAndNext('session')}
+              >
+                닫기
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
         {/* 메인 컨텐츠 */}
         <main className="px-4 sm:px-8 py-4 sm:py-6">
           {/* 상단 탭 (Agent와 동일 스타일) */}
@@ -2166,9 +2517,7 @@ const HomePage = () => {
                   <Link
                     to="/characters/create"
                     onClick={(e) => {
-                      if (!requireAuth('캐릭터 생성')) {
-                        e.preventDefault();
-                      }
+                      handleCreateCharacterClick(e);
                     }}
                     className="flex w-full sm:w-auto items-center justify-center px-4 py-2.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors font-medium text-sm shadow-lg"
                   >
@@ -2284,7 +2633,13 @@ const HomePage = () => {
                     <>
                       <div className={gridColumnClasses}>
                         {origChatCharacters.map((c) => (
-                          <CharacterCard key={c.id} character={c} showOriginBadge variant="home" />
+                          <CharacterCard
+                            key={c.id}
+                            character={c}
+                            showOriginBadge
+                            variant="home"
+                            onCardClick={() => openPcMobileDetail(c)}
+                          />
                         ))}
                       </div>
                       {/* ✅ 원작챗 탭: 무한스크롤(센티넬) / IO 미지원 fallback: 더보기 버튼 */}
@@ -2580,6 +2935,7 @@ const HomePage = () => {
                             character={item.data}
                             showOriginBadge
                             variant="home"
+                            onCardClick={() => openPcMobileDetail(item.data)}
                           />
                         );
                       }
@@ -2590,7 +2946,12 @@ const HomePage = () => {
                           {isStory ? (
                             <StoryExploreCard story={item.data} variant="home" showLikeBadge={false} />
                           ) : (
-                            <CharacterCard character={item.data} showOriginBadge variant="home" />
+                            <CharacterCard
+                              character={item.data}
+                              showOriginBadge
+                              variant="home"
+                              onCardClick={() => openPcMobileDetail(item.data)}
+                            />
                           )}
                         </div>
                       );
@@ -2703,9 +3064,7 @@ const HomePage = () => {
                   <Link
                     to="/characters/create"
                     onClick={(e) => {
-                      if (!requireAuth('캐릭터 생성')) {
-                        e.preventDefault();
-                      }
+                      handleCreateCharacterClick(e);
                     }}
                     className="flex items-center justify-center px-4 py-2.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors font-medium text-sm shadow-lg"
                   >
@@ -2716,6 +3075,42 @@ const HomePage = () => {
             )}
           </section>
           )}
+
+      {/* ✅ 경쟁사 UX: 임시저장 불러오기 모달 (홈에서 표시) */}
+      <Dialog open={draftPromptOpen} onOpenChange={setDraftPromptOpen}>
+        <DialogContent className="bg-[#111111] border border-purple-500/70 text-white max-w-[340px] rounded-2xl">
+          <DialogHeader>
+            <DialogTitle className="text-center text-white text-base font-semibold">
+              임시저장된 설정이 있는데
+              <br />
+              불러올까요?
+            </DialogTitle>
+          </DialogHeader>
+          <div className="mt-2 space-y-3">
+            <button
+              type="button"
+              onClick={handleDraftStartFresh}
+              className="w-full h-11 rounded-md bg-purple-700 text-white font-semibold hover:bg-purple-800 transition-colors"
+            >
+              새로 만들기
+            </button>
+            <button
+              type="button"
+              onClick={handleDraftLoad}
+              className="w-full h-11 rounded-md bg-purple-600 text-white font-semibold hover:bg-purple-700 transition-colors"
+            >
+              불러오기
+            </button>
+            <button
+              type="button"
+              onClick={() => setDraftPromptOpen(false)}
+              className="w-full h-11 rounded-md bg-purple-900/60 text-white font-semibold hover:bg-purple-900/80 transition-colors"
+            >
+              취소
+            </button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       </main>
       </div>

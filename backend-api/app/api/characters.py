@@ -39,7 +39,23 @@ from app.schemas.character import (
     CharacterSettingCreate,  # 추가
     CharacterSettingUpdate   # 추가
 )
-from app.schemas.quick_character import QuickCharacterGenerateRequest
+from app.schemas.quick_character import (
+    QuickCharacterGenerateRequest,
+    QuickPromptGenerateRequest,
+    QuickPromptGenerateResponse,
+    QuickFirstStartGenerateRequest,
+    QuickFirstStartGenerateResponse,
+    QuickDetailGenerateRequest,
+    QuickDetailGenerateResponse,
+    QuickSecretGenerateRequest,
+    QuickSecretGenerateResponse,
+    QuickTurnEventsGenerateRequest,
+    QuickTurnEventsGenerateResponse,
+    QuickEndingDraftGenerateRequest,
+    QuickEndingDraftGenerateResponse,
+    QuickEndingEpilogueGenerateRequest,
+    QuickEndingEpilogueGenerateResponse,
+)
 from app.schemas.comment import (
     CommentCreate,
     CommentUpdate, 
@@ -68,7 +84,18 @@ from app.services.character_service import (
     update_character_public_status, # 서비스 함수 임포트 추가
     increment_character_chat_count,
 )
-from app.services.quick_character_service import generate_quick_character_draft
+from app.services.quick_character_service import (
+    generate_quick_character_draft,
+    generate_quick_simulator_prompt,
+    generate_quick_roleplay_prompt,
+    generate_quick_first_start,
+    generate_quick_detail,
+    generate_quick_secret_info,
+    generate_quick_stat_draft,
+    generate_quick_turn_events,
+    generate_quick_ending_draft,
+    generate_quick_ending_epilogue,
+)
 from app.schemas.tag import CharacterTagsUpdate, TagResponse
 from app.models.tag import Tag, CharacterTag
 from app.models.story_extracted_character import StoryExtractedCharacter
@@ -149,6 +176,293 @@ async def quick_generate_character_draft(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"quick_generate_failed: {str(e)}"
+        )
+
+
+@router.post("/quick-generate-prompt", response_model=QuickPromptGenerateResponse)
+async def quick_generate_prompt(
+    payload: QuickPromptGenerateRequest,
+    current_user: User = Depends(get_current_active_user),
+):
+    """
+    위저드(일반 캐릭터) '프롬프트' 단계 자동 생성.
+
+    현재:
+    - simulator 모드만 지원(요구사항)
+    - DB 저장은 하지 않는다(SSOT: 실제 저장은 /characters/advanced)
+    """
+    try:
+        mode = getattr(payload, "mode", None) or "simulator"
+        max_turns = getattr(payload, "max_turns", None) or 200
+        allow_infinite_mode = bool(getattr(payload, "allow_infinite_mode", False))
+        if mode == "simulator":
+            prompt_text = await generate_quick_simulator_prompt(
+                name=payload.name,
+                description=payload.description,
+                max_turns=max_turns,
+                allow_infinite_mode=allow_infinite_mode,
+                tags=getattr(payload, "tags", []) or [],
+                ai_model=getattr(payload, "ai_model", None) or "gemini",
+            )
+            stats = await generate_quick_stat_draft(
+                name=payload.name,
+                description=payload.description,
+                world_setting=prompt_text,
+                tags=getattr(payload, "tags", []) or [],
+                ai_model=getattr(payload, "ai_model", None) or "gemini",
+            )
+        elif mode == "roleplay":
+            prompt_text = await generate_quick_roleplay_prompt(
+                name=payload.name,
+                description=payload.description,
+                max_turns=max_turns,
+                allow_infinite_mode=allow_infinite_mode,
+                tags=getattr(payload, "tags", []) or [],
+                ai_model=getattr(payload, "ai_model", None) or "gemini",
+            )
+            stats = []
+        else:
+            raise HTTPException(status_code=400, detail="mode_not_supported")
+
+        return QuickPromptGenerateResponse(prompt=prompt_text, stats=stats or [])
+    except HTTPException:
+        raise
+    except Exception as e:
+        try:
+            logger.exception(f"[characters.quick-generate-prompt] failed: {e}")
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"quick_generate_prompt_failed: {str(e)}"
+        )
+
+
+@router.post("/quick-generate-first-start", response_model=QuickFirstStartGenerateResponse)
+async def quick_generate_first_start(
+    payload: QuickFirstStartGenerateRequest,
+    current_user: User = Depends(get_current_active_user),
+):
+    """
+    위저드(일반 캐릭터) '첫시작(도입부+첫대사)' 자동 생성.
+
+    조건:
+    - 프롬프트(world_setting)가 작성되어 있어야 한다.
+    - 300~1000자(도입부+첫대사 합산)로 생성한다.
+    """
+    try:
+        intro, first_line = await generate_quick_first_start(
+            name=payload.name,
+            description=payload.description,
+            world_setting=payload.world_setting,
+            tags=getattr(payload, "tags", []) or [],
+            ai_model=getattr(payload, "ai_model", None) or "gemini",
+        )
+        return QuickFirstStartGenerateResponse(intro=intro, first_line=first_line)
+    except Exception as e:
+        try:
+            logger.exception(f"[characters.quick-generate-first-start] failed: {e}")
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"quick_generate_first_start_failed: {str(e)}"
+        )
+
+
+@router.post("/quick-generate-detail", response_model=QuickDetailGenerateResponse)
+async def quick_generate_detail(
+    payload: QuickDetailGenerateRequest,
+    current_user: User = Depends(get_current_active_user),
+):
+    """
+    위저드(일반 캐릭터) '디테일' 자동 생성.
+
+    조건:
+    - 프롬프트(world_setting)가 작성되어 있어야 한다(요구사항).
+    - 관심사/좋아하는 것/싫어하는 것: 키워드 3개씩.
+    """
+    try:
+        out = await generate_quick_detail(
+            name=payload.name,
+            description=payload.description,
+            world_setting=payload.world_setting,
+            tags=getattr(payload, "tags", []) or [],
+            ai_model=getattr(payload, "ai_model", None) or "gemini",
+        )
+        return QuickDetailGenerateResponse(**out)
+    except Exception as e:
+        try:
+            logger.exception(f"[characters.quick-generate-detail] failed: {e}")
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"quick_generate_detail_failed: {str(e)}"
+        )
+
+
+@router.post("/quick-generate-secret", response_model=QuickSecretGenerateResponse)
+async def quick_generate_secret(
+    payload: QuickSecretGenerateRequest,
+    current_user: User = Depends(get_current_active_user),
+):
+    """
+    위저드(일반 캐릭터) '비밀정보(secret)' 자동 생성.
+
+    조건:
+    - 프롬프트(world_setting)가 작성되어 있어야 한다(요구사항).
+    - 유저에게 노출되면 안 되는 비밀 설정을 200~600자 수준으로 생성한다.
+    """
+    try:
+        secret_text = await generate_quick_secret_info(
+            name=payload.name,
+            description=payload.description,
+            world_setting=payload.world_setting,
+            tags=getattr(payload, "tags", []) or [],
+            ai_model=getattr(payload, "ai_model", None) or "gemini",
+        )
+        if not secret_text:
+            raise HTTPException(status_code=500, detail="quick_generate_secret_failed: empty_secret")
+        return QuickSecretGenerateResponse(secret=secret_text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        try:
+            logger.exception(f"[characters.quick-generate-secret] failed: {e}")
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"quick_generate_secret_failed: {str(e)}"
+        )
+
+
+@router.post("/quick-generate-turn-events", response_model=QuickTurnEventsGenerateResponse)
+async def quick_generate_turn_events(
+    payload: QuickTurnEventsGenerateRequest,
+    current_user: User = Depends(get_current_active_user),
+):
+    """
+    위저드(일반 캐릭터) '턴수별 사건' 자동 생성.
+
+    요구사항:
+    - 진행 턴수(max_turns)에 따라 생성 개수 상한을 강제한다(50/100/200/300/커스텀).
+    - 초반부 사건 빈도를 높게 생성한다.
+    - DB 저장은 하지 않는다(SSOT: 실제 저장은 /characters/advanced).
+    """
+    try:
+        events = await generate_quick_turn_events(
+            name=payload.name,
+            description=payload.description,
+            world_setting=payload.world_setting,
+            opening_intro=payload.opening_intro,
+            opening_first_line=payload.opening_first_line,
+            max_turns=getattr(payload, "max_turns", None) or 200,
+            tags=getattr(payload, "tags", []) or [],
+            ai_model=getattr(payload, "ai_model", None) or "gemini",
+        )
+        return QuickTurnEventsGenerateResponse(turn_events=events or [])
+    except Exception as e:
+        try:
+            logger.exception(f"[characters.quick-generate-turn-events] failed: {e}")
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"quick_generate_turn_events_failed: {str(e)}"
+        )
+
+
+@router.post("/quick-generate-ending-draft", response_model=QuickEndingDraftGenerateResponse)
+async def quick_generate_ending_draft(
+    payload: QuickEndingDraftGenerateRequest,
+    current_user: User = Depends(get_current_active_user),
+):
+    """
+    위저드(일반 캐릭터) '엔딩 제목/기본조건' 자동 생성.
+
+    원칙:
+    - DB 저장은 하지 않는다(SSOT: 실제 저장은 /characters/advanced).
+    - 프론트 입력 필드(start_sets.items[].ending_settings.endings[])에 채울 "초안 데이터"만 생성한다.
+    """
+    try:
+        d = await generate_quick_ending_draft(
+            name=payload.name,
+            description=payload.description,
+            world_setting=payload.world_setting,
+            opening_intro=getattr(payload, "opening_intro", "") or "",
+            opening_first_line=getattr(payload, "opening_first_line", "") or "",
+            max_turns=getattr(payload, "max_turns", None) or 200,
+            min_turns=getattr(payload, "min_turns", None) or 30,
+            tags=getattr(payload, "tags", []) or [],
+            ai_model=getattr(payload, "ai_model", None) or "gemini",
+        )
+        title = str((d or {}).get("title") or "").strip()
+        base_condition = str((d or {}).get("base_condition") or "").strip()
+        hint = str((d or {}).get("hint") or "").strip()
+        suggested_turn = int((d or {}).get("suggested_turn") or 0)
+        if not title or not base_condition:
+            raise HTTPException(status_code=500, detail="quick_generate_ending_draft_failed: empty_fields")
+        return QuickEndingDraftGenerateResponse(
+            title=title[:20],
+            base_condition=base_condition[:500],
+            hint=hint[:20],
+            suggested_turn=max(0, suggested_turn),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        try:
+            logger.exception(f"[characters.quick-generate-ending-draft] failed: {e}")
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"quick_generate_ending_draft_failed: {str(e)}"
+        )
+
+
+@router.post("/quick-generate-ending-epilogue", response_model=QuickEndingEpilogueGenerateResponse)
+async def quick_generate_ending_epilogue(
+    payload: QuickEndingEpilogueGenerateRequest,
+    current_user: User = Depends(get_current_active_user),
+):
+    """
+    위저드(일반 캐릭터) '엔딩 내용(에필로그)' 자동 생성.
+
+    원칙:
+    - DB 저장은 하지 않는다(SSOT: 실제 저장은 /characters/advanced).
+    - 프론트 입력 필드(start_sets.ending_settings.endings[].epilogue)에 채울 초안 텍스트만 생성한다.
+    """
+    try:
+        ep = await generate_quick_ending_epilogue(
+            name=payload.name,
+            description=payload.description,
+            world_setting=payload.world_setting,
+            opening_intro=getattr(payload, "opening_intro", "") or "",
+            opening_first_line=getattr(payload, "opening_first_line", "") or "",
+            ending_title=payload.ending_title,
+            base_condition=payload.base_condition,
+            hint=getattr(payload, "hint", "") or "",
+            extra_conditions=getattr(payload, "extra_conditions", None) or [],
+            tags=getattr(payload, "tags", []) or [],
+            ai_model=getattr(payload, "ai_model", None) or "gemini",
+        )
+        ep = (ep or "").strip()
+        if not ep:
+            raise HTTPException(status_code=500, detail="quick_generate_ending_epilogue_failed: empty_epilogue")
+        return QuickEndingEpilogueGenerateResponse(epilogue=ep[:1000])
+    except HTTPException:
+        raise
+    except Exception as e:
+        try:
+            logger.exception(f"[characters.quick-generate-ending-epilogue] failed: {e}")
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"quick_generate_ending_epilogue_failed: {str(e)}"
         )
 
 @router.post("/advanced", response_model=CharacterDetailResponse, status_code=status.HTTP_201_CREATED)
@@ -268,6 +582,7 @@ async def convert_character_to_detail_response(character: Character, db: AsyncSe
             imgs = [img for img in imgs if not (isinstance(img, dict) and str(img.get('url','')).startswith('cover:'))]
         intro = _parse_json(getattr(character, 'introduction_scenes', None)) or []
         voice = _parse_json(getattr(character, 'voice_settings', None)) or None
+        start_sets = _parse_json(getattr(character, 'start_sets', None)) or None
 
         return CharacterDetailResponse(
             id=character.id,
@@ -282,6 +597,7 @@ async def convert_character_to_detail_response(character: Character, db: AsyncSe
             user_display_description=getattr(character, 'user_display_description', None),
             use_custom_description=bool(getattr(character, 'use_custom_description', False)),
             introduction_scenes=intro,
+            start_sets=start_sets,
             character_type=getattr(character, 'character_type', 'roleplay'),
             base_language=getattr(character, 'base_language', 'ko'),
             avatar_url=getattr(character, 'avatar_url', None),
@@ -325,6 +641,7 @@ async def convert_character_to_detail_response(character: Character, db: AsyncSe
         user_display_description=getattr(character, 'user_display_description', None),
         use_custom_description=getattr(character, 'use_custom_description', False),
         introduction_scenes=getattr(character, 'introduction_scenes', []),
+        start_sets=getattr(character, 'start_sets', None),
         character_type=getattr(character, 'character_type', 'roleplay'),
         base_language=getattr(character, 'base_language', 'ko'),
         avatar_url=character.avatar_url,

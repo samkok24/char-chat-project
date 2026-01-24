@@ -12,6 +12,8 @@ import { showToastOnce } from '../lib/toastOnce';
 import { resolveImageUrl, getCharacterPrimaryImage, buildPortraitSrcSet } from '../lib/images';
 import { getReadingProgress } from '../lib/reading';
 import { replacePromptTokens } from '../lib/prompt';
+import { parseAssistantBlocks } from '../lib/assistantBlocks';
+import { imageCodeIdFromUrl } from '../lib/imageCode';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
@@ -42,7 +44,8 @@ import {
   ChevronRight,
   Pin,
   PinOff,
-  FileText
+  FileText,
+  Sparkles
 } from 'lucide-react';
 import { Textarea } from '../components/ui/textarea'; // Textarea 추가
 import {
@@ -65,12 +68,15 @@ import {
   DropdownMenuTrigger,
 } from '../components/ui/dropdown-menu';
 import ModelSelectionModal from '../components/ModelSelectionModal';
+import { useLoginModal } from '../contexts/LoginModalContext';
+import { consumePostLoginDraft, setPostLoginRedirect } from '../lib/postLoginRedirect';
 
 const ChatPage = () => {
   const { characterId } = useParams();
   const location = useLocation();
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, isAuthenticated } = useAuth();
+  const { openLoginModal } = useLoginModal();
   const { 
     socket,
     connected, 
@@ -168,6 +174,23 @@ const ChatPage = () => {
       cancelled = true;
     };
   }, [isOrigChatFromUrl, chatRoomId]);
+
+  useEffect(() => {
+    /**
+     * ✅ 로그인 후 복귀 시 draft 복원
+     *
+     * - 게스트 상태에서 메시지를 입력하고 "전송"을 눌렀다가 로그인한 경우,
+     *   동일 URL에 입력 텍스트를 복원한다.
+     */
+    if (!isAuthenticated) return;
+    try {
+      const url = `${location.pathname}${location.search || ''}`;
+      const draft = consumePostLoginDraft(url);
+      if (draft) setNewMessage(draft);
+    } catch (_) {}
+    // 의도: 로그인 전환 시점에만 1회
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthenticated]);
   
   // 채팅방 입장 시 읽음 처리
   useEffect(() => {
@@ -200,6 +223,17 @@ const ChatPage = () => {
   // ✅ 재생성 진행 상태(대상 말풍선에만 ... 로딩 표시)
   const [regenBusyId, setRegenBusyId] = useState(null);
   const [newMessage, setNewMessage] = useState('');
+  // ✅ 요술봉 모드(경쟁사 UX): AI 답변 직후 3개 선택지 자동 제안
+  const [magicMode, setMagicMode] = useState(false);
+  const [magicChoices, setMagicChoices] = useState([]); // [{id,label}]
+  const [magicLoading, setMagicLoading] = useState(false);
+  // ✅ A안(일반챗): 요술봉 선택지 1→2→3 점진 노출
+  const [magicRevealCount, setMagicRevealCount] = useState(0); // 0~3
+  const magicRevealTimerRef = useRef(null);
+  const magicRevealCancelSeqRef = useRef(0);
+  const lastMagicSeedRef = useRef('');
+  const magicModeHydratedRef = useRef(false);
+  const magicChoicesHydratedRef = useRef(false);
   // 이미지 캐러셀 상태
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
   const [characterImages, setCharacterImages] = useState([]);
@@ -226,6 +260,27 @@ const ChatPage = () => {
   // ✅ 새로고침 후에도 "... 로딩 말풍선"을 유지하기 위한 최소 상태(세션)
   // - 소켓 aiTyping/origTurnLoading은 새로고침 시 초기화되므로, "응답 대기 중" 플래그를 룸 단위로 보존한다.
   const [persistedTypingTs, setPersistedTypingTs] = useState(null); // number(ms) | null
+  // ✅ A안(가짜 스트리밍/타이핑 효과): UI에서만 "천천히 출력" (서버/DB 데이터 불변)
+  //
+  // 의도/동작:
+  // - 일반 캐릭터챗에서 새로 도착한 AI 말풍선을 "점진적으로" 보여준다.
+  // - 입력창/요술봉/전송 등은 "AI 출력이 끝난 뒤"에만 활성화(운영 버그/동시 입력 방지).
+  //
+  // 방어적:
+  // - 히스토리 로드(초기/재동기화/페이지네이션)로 세팅된 기존 메시지는 스트리밍하지 않는다.
+  // - 스트리밍은 '마지막 메시지(=바닥에 새로 붙은 AI)'에만 적용하고, 새 메시지가 오면 즉시 취소/교체한다.
+  const [uiStream, setUiStream] = useState({ id: '', full: '', shown: '' }); // { id, full, shown }
+  const uiStreamTimerRef = useRef(null);
+  const uiStreamCancelSeqRef = useRef(0);
+  const uiStreamHydratedRef = useRef(false); // 초기 히스토리 로드 1회 가드
+  const uiStreamPrevLastIdRef = useRef(''); // 마지막(바닥) non-system 메시지 id 기억
+  const uiStreamDoneByIdRef = useRef({}); // { [messageId]: true }
+  // ✅ A안(일반챗): 오프닝(도입부 intro)도 점진 출력 (신규 대화 시작 시 1회)
+  const [uiIntroStream, setUiIntroStream] = useState({ id: '', full: '', shown: '' }); // { id, full, shown }
+  const uiIntroTimerRef = useRef(null);
+  const uiIntroCancelSeqRef = useRef(0);
+  const uiIntroDoneByIdRef = useRef({}); // { [messageId]: true }
+  const [uiOpeningStage, setUiOpeningStage] = useState('idle'); // idle|intro|greeting|done
   // 이미지 확대 모달
   const [imageModalOpen, setImageModalOpen] = useState(false);
   const [imageModalSrc, setImageModalSrc] = useState('');
@@ -915,15 +970,34 @@ const ChatPage = () => {
         let baseImages = [];
         try {
           const main = data?.avatar_url ? [data.avatar_url] : [];
-          const gallery = Array.isArray(data?.image_descriptions)
-            ? data.image_descriptions.map((d) => d?.url).filter(Boolean)
+          /**
+           * ✅ 상황이미지 공개/비공개(요구사항)
+           *
+           * - 기본값은 공개.
+           * - 비공개 이미지는 "다른 유저"에게 채팅방/미니갤러리에 보이지 않아야 한다.
+           * - 크리에이터(소유자)/관리자는 모두 볼 수 있다.
+           */
+          const canSeePrivate = (() => {
+            try {
+              if (!isAuthenticated) return false;
+              const uid = user?.id;
+              if (uid && data?.creator_id && uid === data.creator_id) return true;
+              if (user?.is_admin) return true;
+              return false;
+            } catch (_) {
+              return false;
+            }
+          })();
+          const safeDescriptions = Array.isArray(data?.image_descriptions)
+            ? data.image_descriptions.filter((d) => canSeePrivate || d?.is_public !== false)
             : [];
+          const gallery = safeDescriptions.map((d) => d?.url).filter(Boolean);
           const fallback = !main.length && !gallery.length && data?.thumbnail_url ? [data.thumbnail_url] : [];
           baseImages = [...main, ...gallery, ...fallback];
           
           // 🎯 키워드 트리거용 이미지 데이터 저장
-          if (Array.isArray(data?.image_descriptions)) {
-            setImageKeywords(data.image_descriptions.map((d, idx) => ({
+          if (safeDescriptions.length > 0) {
+            setImageKeywords(safeDescriptions.map((d, idx) => ({
               url: d?.url || '',
               keywords: Array.isArray(d?.keywords) ? d.keywords : [],
               index: main.length ? idx + 1 : idx  // avatar_url이 있으면 +1
@@ -958,6 +1032,101 @@ const ChatPage = () => {
             setCharacterImages(baseImages);
             setCurrentImageIndex(0);
           }
+        }
+
+        /**
+         * ✅ 게스트 모드(요구사항)
+         *
+         * - 게스트는 채팅 화면까지는 진입 가능
+         * - 하지만 방 생성/세션 조회/소켓 조인 등 "인증 필요" 작업은 수행하지 않는다.
+         * - 전송 버튼을 누르는 순간에만 로그인 모달을 띄운다(handleSendMessage).
+         */
+        // ✅ URL 파라미터: 유저가 선택한 오프닝(start_set) 우선 적용
+        const openingParam = (() => {
+          try {
+            const p = new URLSearchParams(location.search || '');
+            return String(p.get('opening') || '').trim();
+          } catch (_) {
+            return '';
+          }
+        })();
+
+        if (!isAuthenticated) {
+          /**
+           * ✅ 게스트 진입 시 "도입부/첫대사(인사말)" 미리보기 노출(요구사항)
+           *
+           * 원리:
+           * - 게스트는 인증이 없어 방 생성/히스토리 로드(서버 SSOT)를 할 수 없다.
+           * - 대신 캐릭터 공개 데이터(start_sets/intro+firstLine, 또는 레거시 greeting/introduction_scenes)를
+           *   프론트에서 1회 메시지처럼 렌더링한다.
+           *
+           * 주의:
+           * - 이 메시지들은 DB에 저장되지 않는다(프리뷰).
+           * - 전송/요술봉 등 액션은 handleSendMessage/handleToggleMagicMode에서 로그인 모달로 유도한다.
+           */
+          const extractFirstStart = (characterData) => {
+            // 우선순위: start_sets(SSOT) → introduction_scenes[0] + greeting(레거시)
+            try {
+              const ss = characterData?.start_sets;
+              const items = Array.isArray(ss?.items) ? ss.items : [];
+              const selectedId = String(ss?.selectedId || ss?.selected_id || '').trim();
+              const pickedByOpening = openingParam
+                ? (items.find((x) => String(x?.id || '').trim() === openingParam) || null)
+                : null;
+              const picked = pickedByOpening
+                || items.find((x) => String(x?.id || '').trim() === selectedId)
+                || items[0]
+                || null;
+              const intro = String(picked?.intro || '').trim();
+              const firstLine = String(picked?.firstLine || picked?.first_line || '').trim();
+              if (intro || firstLine) return { intro, firstLine };
+            } catch (_) {}
+            try {
+              const scenes = Array.isArray(characterData?.introduction_scenes) ? characterData.introduction_scenes : [];
+              const intro = String(scenes?.[0]?.content || '').trim();
+              const greeting = String(characterData?.greeting || (Array.isArray(characterData?.greetings) ? characterData.greetings[0] : '') || '').trim();
+              return { intro, firstLine: greeting };
+            } catch (_) {
+              return { intro: '', firstLine: '' };
+            }
+          };
+
+          const { intro, firstLine } = extractFirstStart(data);
+          const nm = data?.name || '캐릭터';
+          const preview = [];
+          const nowIso = new Date().toISOString();
+          try {
+            const introText = intro ? replacePromptTokens(intro, { assistantName: nm, userName: '당신' }).trim() : '';
+            if (introText) {
+              preview.push({
+                id: `guest-intro-${characterId}`,
+                roomId: null,
+                senderType: 'assistant',
+                sender_type: 'assistant',
+                content: introText,
+                created_at: nowIso,
+                message_metadata: { kind: 'intro' },
+              });
+            }
+          } catch (_) {}
+          try {
+            const firstLineText = firstLine ? replacePromptTokens(firstLine, { assistantName: nm, userName: '당신' }).trim() : '';
+            if (firstLineText) {
+              preview.push({
+                id: `guest-firstline-${characterId}`,
+                roomId: null,
+                senderType: 'assistant',
+                sender_type: 'assistant',
+                content: firstLineText,
+                created_at: nowIso,
+              });
+            }
+          } catch (_) {}
+
+          try { setChatRoomId(null); } catch (_) {}
+          try { setMessages(preview); } catch (_) {}
+          try { setLoading(false); } catch (_) {}
+          return;
         }
 
         // 2. 🔥 채팅방 정보 가져오기 또는 생성
@@ -1251,7 +1420,7 @@ const ChatPage = () => {
           } else {
             if (forceNew) {
               // 중복 방 방지: 같은 세션(new=1)에서 이미 만든 방이 있으면 재사용
-              const guardKey = buildNewGuardKey(characterId, null);
+              const guardKey = buildNewGuardKey(characterId, openingParam || null);
               let reused = false;
               try {
                 const saved = sessionStorage.getItem(guardKey);
@@ -1271,7 +1440,10 @@ const ChatPage = () => {
 
               if (!reused) {
                 // ✅ 새 대화는 반드시 새 방 생성 (/chat/start-new)
-                const roomResponse = await startChatWithRetry(() => chatAPI.startNewChat(characterId), 'chat-new');
+                const roomResponse = await startChatWithRetry(
+                  () => chatAPI.startNewChat(characterId, (openingParam ? { opening_id: openingParam } : null)),
+                  'chat-new'
+                );
                 roomId = roomResponse.data.id;
                 try { sessionStorage.setItem(guardKey, JSON.stringify({ roomId, ts: Date.now() })); } catch (_) {}
               }
@@ -1733,6 +1905,24 @@ const ChatPage = () => {
       if (existing[msgId]) continue;
 
       const content = String(m?.content || '');
+      const hasInlineImageCode = (() => {
+        /**
+         * ✅ 인라인 이미지 코드 감지(신규 UX)
+         *
+         * 의도/원리:
+         * - 경쟁사처럼 크리에이터가 텍스트 안에 "이미지 코드"를 넣으면, 이미지가 말풍선/지문 박스 "도중"에 렌더된다.
+         * - 이 경우 기존 "말풍선 아래 트리거 이미지"는 중복이 되므로, 자동 트리거 이미지는 적용하지 않는다.
+         */
+        try {
+          return /\[\[\s*img\s*:|\{\{\s*img\s*:/.test(content);
+        } catch (_) {
+          return false;
+        }
+      })();
+      if (hasInlineImageCode) {
+        processed += 1;
+        continue;
+      }
 
       // 1) suggested_image_index 우선 (백엔드)
       let idx = m?.meta?.suggested_image_index ?? m?.suggested_image_index ?? -1;
@@ -2110,6 +2300,41 @@ const ChatPage = () => {
       try { if (raf) window.cancelAnimationFrame(raf); } catch (_) {}
     };
   }, [aiTyping, isOrigChat, origTurnLoading]);
+
+  useEffect(() => {
+    /**
+     * ✅ 선택지 UI 표시/해제 시 스크롤 바닥 유지
+     *
+     * 배경:
+     * - 요술봉 선택지/원작 선택지는 `messages` 배열 밖에서 렌더되거나(요술봉),
+     *   메시지 추가 없이 상태만 바뀌는 경우가 있어(선택지 표시/해제),
+     *   기존 `useEffect([messages])`만으로는 바닥이 유지되지 않을 수 있다.
+     *
+     * 동작:
+     * - 사용자가 이미 바닥에 있던 상태(autoScrollRef.current=true)일 때만
+     *   선택지 표시/해제 시 맨 아래로 유지한다.
+     */
+    if (!autoScrollRef.current) return;
+    const magicLen = Array.isArray(magicChoices) ? magicChoices.length : 0;
+    const pendingLen = Array.isArray(pendingChoices) ? pendingChoices.length : 0;
+    const shouldKeepBottom = (
+      (!isOrigChat && magicMode && (magicLoading || magicLen > 0)) ||
+      (isOrigChat && pendingLen > 0)
+    );
+    if (!shouldKeepBottom) return;
+
+    let raf = 0;
+    try {
+      raf = window.requestAnimationFrame(() => {
+        try { scrollToBottom(); } catch (_) {}
+      });
+    } catch (_) {
+      try { scrollToBottom(); } catch (_) {}
+    }
+    return () => {
+      try { if (raf) window.cancelAnimationFrame(raf); } catch (_) {}
+    };
+  }, [isOrigChat, magicMode, magicLoading, magicChoices, pendingChoices]);
   
   useEffect(() => {
     // 과거 메시지 로드 후 스크롤 위치 복원
@@ -2343,10 +2568,37 @@ const ChatPage = () => {
   }, [isOrigChat, hasMoreMessages, historyLoading, getMessageHistory, chatRoomId, currentPage]);
 
 
-  const handleSendMessage = async (e) => {
-    e.preventDefault();
+  const handleSendMessage = async (e, overrideText = null) => {
+    try { e?.preventDefault?.(); } catch (_) {}
+    const draft = (overrideText !== null && overrideText !== undefined) ? String(overrideText || '') : String(newMessage || '');
+    if (!draft.trim()) return;
+
+    /**
+     * ✅ 게스트 전송 UX(요구사항)
+     *
+     * - 채팅방 진입은 허용
+     * - "전송" 시점에 로그인 모달을 띄움
+     * - 로그인 성공 시 메인(/dashboard) → 동일 URL로 자동 복귀
+     */
+    if (!isAuthenticated) {
+      try {
+        const url = `${location.pathname}${location.search || ''}`;
+        setPostLoginRedirect({ url, draft });
+      } catch (err) {
+        try { console.error('[ChatPage] setPostLoginRedirect failed:', err); } catch (_) {}
+      }
+      try {
+        openLoginModal({ initialTab: 'login', reason: 'send_message' });
+      } catch (err) {
+        try { console.error('[ChatPage] openLoginModal failed:', err); } catch (_) {}
+        // 최후 폴백: 로그인 페이지로 이동
+        try { navigate('/login'); } catch (_) {}
+      }
+      return;
+    }
+
     // 원작챗은 소켓 연결 여부와 무관하게 HTTP로 턴을 보냄
-    if (!newMessage.trim() || !chatRoomId || (!isOrigChat && !connected)) return;
+    if (!chatRoomId || (!isOrigChat && !connected)) return;
     // 방어적: 원작챗은 한 턴씩 순차 처리(중복 전송/경합 방지)
     if (isOrigChat && origTurnLoading) {
       showToastOnce({ key: `orig-busy:${chatRoomId}`, type: 'info', message: '응답 생성 중입니다. 잠시만 기다려 주세요.' });
@@ -2354,7 +2606,7 @@ const ChatPage = () => {
     }
     // 선택지 노출 중에는 next_event(자동진행)만 제한하고, 일반 입력은 허용(요구사항 반영 시 UI로 전환)
 
-    const messageContentRaw = newMessage.trim();
+    const messageContentRaw = draft.trim();
     // ✅ 나레이션은 "* " (별표+공백/개행)으로만 판별: "**" 또는 "*abc*" 같은 인라인 강조로 말풍선 전체가 이탤릭 되는 오작동 방지
     const isNarration = /^\*\s/.test(messageContentRaw);
     const messageContent = isNarration ? messageContentRaw.replace(/^\*\s*/, '') : messageContentRaw;
@@ -2480,6 +2732,10 @@ const ChatPage = () => {
       return;
     } else {
       // Send message via socket (낙관적 추가 + ack 기반 롤백)
+      // ✅ 요술봉 모드: 전송 시 기존 선택지는 즉시 비움(다음 AI 응답 후 다시 생성)
+      if (magicMode) {
+        try { setMagicChoices([]); } catch (_) {}
+      }
       const tempId = `temp-user-${Date.now()}`;
       const tempUserMessage = {
         id: tempId,
@@ -2529,6 +2785,153 @@ const ChatPage = () => {
       }
     }
   };
+
+  /**
+   * ✅ 요술봉 선택지 생성 요청
+   *
+   * 의도/동작:
+   * - 요술봉 ON 상태에서 "AI 메시지가 끝났을 때" 자동으로 3개 선택지를 받아온다.
+   * - 유저가 수동 입력을 하더라도, ON이면 다음 AI 응답 후 다시 선택지가 뜬다.
+   *
+   * 방어:
+   * - 원작챗(isOrigChat)에는 적용하지 않는다(기존 선택지 시스템과 충돌 방지).
+   * - 로그인 전에는 호출하지 않는다(백엔드 인증 필요).
+   * - 같은 seed(마지막 AI 메시지 id)로 중복 호출하지 않는다.
+   */
+  const requestMagicChoices = useCallback(async ({ seedMessageId = '', seedHint = '' } = {}) => {
+    if (isOrigChat) return;
+    if (!magicMode) return;
+    if (!isAuthenticated) return;
+    if (!chatRoomId) return;
+    if (magicLoading) return;
+
+    const seed = String(seedMessageId || '').trim();
+    if (seed && lastMagicSeedRef.current === seed) return;
+
+    try {
+      setMagicLoading(true);
+      const res = await chatAPI.getMagicChoices(chatRoomId, { n: 3, seed_message_id: seed || undefined, seed_hint: seedHint || undefined });
+      const items = Array.isArray(res?.data?.choices) ? res.data.choices : [];
+      const filtered = items.filter((c) => c && typeof c.label === 'string' && String(c.label).trim());
+      setMagicChoices(filtered);
+      if (seed) lastMagicSeedRef.current = seed;
+      // ✅ 재접속/뒤로가기 복원을 위해 마지막 선택지를 룸 단위로 캐시(SSOT는 서버, UX 캐시는 클라이언트)
+      try {
+        if (chatRoomId && seed && filtered.length) {
+          const k = `cc:chat:magicChoices:v1:${chatRoomId}`;
+          localStorage.setItem(k, JSON.stringify({ seed, choices: filtered, ts: Date.now() }));
+        }
+      } catch (_) {}
+    } catch (e) {
+      console.error('[ChatPage] magic choices failed:', e);
+      // 실패해도 채팅 흐름은 유지(UX만 보조 기능)
+      showToastOnce({ key: `magic-choices-fail:${chatRoomId}`, type: 'error', message: '선택지 생성에 실패했습니다. 잠시 후 다시 시도해주세요.' });
+    } finally {
+      setMagicLoading(false);
+    }
+  }, [isOrigChat, magicMode, isAuthenticated, chatRoomId, magicLoading]);
+
+  /**
+   * ✅ 요술봉 모드 복원(재접속/뒤로가기/대화내역 진입 대응)
+   *
+   * 요구사항:
+   * - 요술봉을 켠 상태에서 채팅방을 나갔다가(뒤로가기/재접속),
+   *   다시 같은 채팅방에 들어오면 "요술봉 ON 상태"가 유지되어야 한다.
+   *
+   * 구현:
+   * - 선택지 자체를 저장하지 않고(서버 SSOT 불가), "ON 상태"만 룸 단위로 localStorage에 저장한다.
+   * - 재진입 시 마지막 AI 메시지를 seed로 선택지를 다시 생성한다(기존 자동 생성 useEffect가 담당).
+   */
+  useEffect(() => {
+    if (isOrigChat) return;
+    if (!chatRoomId) return;
+    // 같은 룸에서 중복 복원 방지
+    if (magicModeHydratedRef.current) return;
+    magicModeHydratedRef.current = true;
+
+    try {
+      const k = `cc:chat:magicMode:v1:${chatRoomId}`;
+      const v = localStorage.getItem(k);
+      const next = v === '1';
+      setMagicMode(next);
+      // 재진입 시 선택지는 "캐시에서 복원"하거나, 없으면 자동 생성(useEffect)에서 생성된다.
+      try { setMagicChoices([]); } catch (_) {}
+      try { lastMagicSeedRef.current = ''; } catch (_) {}
+      try { magicChoicesHydratedRef.current = false; } catch (_) {}
+    } catch (_) {
+      // 로컬스토리지 접근 실패 시 무시(UX만 보조 기능)
+    }
+  }, [isOrigChat, chatRoomId]);
+
+  // 룸이 바뀌면 다시 복원 가능하도록 reset
+  useEffect(() => {
+    if (!chatRoomId) return;
+    magicModeHydratedRef.current = false;
+    magicChoicesHydratedRef.current = false;
+  }, [chatRoomId]);
+
+  /**
+   * ✅ 요술봉 토글(공통 핸들러)
+   *
+   * 의도/동작:
+   * - 데스크톱/모바일 입력 UI가 다르더라도, 요술봉 토글 로직은 1곳에서 SSOT로 유지한다.
+   * - ON으로 켜질 때는 즉시 1회 선택지 생성(가능하면 최근 AI 메시지 seed 사용).
+   */
+  const handleToggleMagicMode = useCallback(() => {
+    if (isOrigChat) return;
+    // 로그인 전에는 사용 불가(선택지 생성 API는 인증 필요)
+    if (!isAuthenticated) {
+      // ✅ 게스트 UX: 요술봉 클릭 시 로그인 모달을 띄운다.
+      // - 선택지 생성은 인증이 필요하므로, 토스트만 띄우면 "버튼이 안 눌리는" 것처럼 느껴진다.
+      try {
+        const url = `${location.pathname}${location.search || ''}`;
+        setPostLoginRedirect({ url, draft: '' });
+      } catch (err) {
+        try { console.error('[ChatPage] setPostLoginRedirect(magic) failed:', err); } catch (_) {}
+      }
+      try {
+        openLoginModal({ initialTab: 'login', reason: 'magic' });
+      } catch (err) {
+        try { console.error('[ChatPage] openLoginModal(magic) failed:', err); } catch (_) {}
+        try { navigate('/login'); } catch (_) {}
+      }
+      showToastOnce({ key: 'magic-login-required', type: 'info', message: '요술봉 선택지는 로그인 후 사용할 수 있습니다.' });
+      return;
+    }
+    setMagicMode((v) => {
+      const next = !v;
+      // 룸 단위로 ON 상태 저장(재접속 복원용)
+      try {
+        if (chatRoomId) {
+          const k = `cc:chat:magicMode:v1:${chatRoomId}`;
+          localStorage.setItem(k, next ? '1' : '0');
+        }
+      } catch (_) {}
+      if (next) {
+        try { setMagicChoices([]); } catch (_) {}
+        try { lastMagicSeedRef.current = ''; } catch (_) {}
+        try {
+          const arr = Array.isArray(messages) ? messages : [];
+          let lastAi = null;
+          for (let i = arr.length - 1; i >= 0; i--) {
+            const t = String(arr[i]?.senderType || arr[i]?.sender_type || '').toLowerCase();
+            if (t === 'system') continue;
+            if (t === 'assistant' || t === 'ai' || t === 'character') { lastAi = arr[i]; break; }
+            break;
+          }
+          const seedId = String(lastAi?.id || lastAi?._id || '').trim();
+          if (seedId) {
+            setTimeout(() => { try { requestMagicChoices({ seedMessageId: seedId, seedHint: 'toggle_on' }); } catch (_) {} }, 0);
+          } else {
+            setTimeout(() => { try { requestMagicChoices({ seedHint: 'toggle_on_no_seed' }); } catch (_) {} }, 0);
+          }
+        } catch (_) {}
+      } else {
+        try { setMagicChoices([]); } catch (_) {}
+      }
+      return next;
+    });
+  }, [isOrigChat, isAuthenticated, chatRoomId, messages, requestMagicChoices]);
 
   const handleSelectChoice = async (choice) => {
     if (!chatRoomId) return;
@@ -2825,7 +3228,8 @@ const ChatPage = () => {
   }, [currentImageIndex]);
 
   // 원작챗은 소켓 연결 없이도 전송 가능
-  const canSend = Boolean(newMessage.trim()) && (isOrigChat ? true : connected);
+  // ✅ 게스트 UX: 전송 버튼을 누르는 순간 로그인 모달을 띄우기 위해, 게스트도 "전송 가능" 상태로 둔다.
+  const canSend = Boolean(newMessage.trim()) && (!isAuthenticated ? true : (isOrigChat ? true : connected));
   // ✅ 원작챗 생성 중에는 입력/전송을 UI에서도 잠가, "눌렀는데 왜 안 보내져?" 혼란을 방지한다.
   const isOrigBusy = Boolean(isOrigChat && origTurnLoading);
   // ✅ 새로고침 방어:
@@ -2858,9 +3262,526 @@ const ChatPage = () => {
     Number.isFinite(persistedTypingTs) &&
     (Date.now() - persistedTypingTs) <= TYPING_PERSIST_TTL_MS
   );
-  // ✅ 원작챗은 HTTP 호출이므로, 소켓의 aiTyping 대신 origTurnLoading을 타이핑 상태로 취급한다.
-  const aiTypingEffective = Boolean(aiTyping || (isOrigChat && origTurnLoading) || isAwaitingAiByPersist || isAwaitingAiByHistory);
+  // ✅ "서버 응답 대기" 상태(점 3개 말풍선용)
+  // - 원작챗은 HTTP 호출이므로, 소켓 aiTyping 대신 origTurnLoading을 포함한다.
+  const aiWaitingServer = Boolean(aiTyping || (isOrigChat && origTurnLoading) || isAwaitingAiByPersist || isAwaitingAiByHistory);
+  // ✅ UI 가짜 스트리밍 중(입력 잠금/요술봉 생성 지연)
+  const uiStreamingActive = Boolean(uiStream?.id && uiStream?.full && uiStream?.shown !== uiStream?.full);
+  const uiIntroStreamingActive = Boolean(uiIntroStream?.id && uiIntroStream?.full && uiIntroStream?.shown !== uiIntroStream?.full);
+  // ✅ 입력 잠금 최종값: "응답 대기" + "가짜 스트리밍"(AI) + "오프닝 스트리밍"(intro)
+  const aiTypingEffective = Boolean(aiWaitingServer || uiStreamingActive || uiIntroStreamingActive);
   const textSizeClass = uiFontSize==='sm' ? 'text-sm' : uiFontSize==='lg' ? 'text-lg' : uiFontSize==='xl' ? 'text-xl' : 'text-base';
+
+  // ✅ 룸 전환 시 스트리밍 상태 초기화(상태 누수 방지)
+  useEffect(() => {
+    try {
+      uiStreamCancelSeqRef.current += 1;
+      if (uiStreamTimerRef.current) clearInterval(uiStreamTimerRef.current);
+      uiStreamTimerRef.current = null;
+    } catch (_) {}
+    try { setUiStream({ id: '', full: '', shown: '' }); } catch (_) {}
+    try { uiStreamHydratedRef.current = false; } catch (_) {}
+    try { uiStreamPrevLastIdRef.current = ''; } catch (_) {}
+    try { uiStreamDoneByIdRef.current = {}; } catch (_) {}
+    // intro 스트리밍도 초기화
+    try {
+      uiIntroCancelSeqRef.current += 1;
+      if (uiIntroTimerRef.current) clearInterval(uiIntroTimerRef.current);
+      uiIntroTimerRef.current = null;
+    } catch (_) {}
+    try { setUiIntroStream({ id: '', full: '', shown: '' }); } catch (_) {}
+    try { uiIntroDoneByIdRef.current = {}; } catch (_) {}
+    try { setUiOpeningStage('idle'); } catch (_) {}
+    // 선택지 점진 노출 초기화
+    try {
+      magicRevealCancelSeqRef.current += 1;
+      if (magicRevealTimerRef.current) clearInterval(magicRevealTimerRef.current);
+      magicRevealTimerRef.current = null;
+    } catch (_) {}
+    try { setMagicRevealCount(0); } catch (_) {}
+  }, [chatRoomId, isOrigChat]);
+
+  /**
+   * ✅ A안(가짜 스트리밍): "새로 도착한 마지막 AI 메시지"만 점진 출력
+   *
+   * 의도/원리:
+   * - 소켓/REST 구조를 바꾸지 않고, UI에서만 텍스트를 단계적으로 보여준다.
+   * - 입력은 출력 완료 후에만 허용(요술봉 선택지 생성 타이밍도 동일).
+   *
+   * 방어:
+   * - 초기 히스토리 로드/재동기화에서 들어온 기존 메시지는 스트리밍하지 않는다.
+   * - 마지막 메시지 id가 바뀐 경우만 "새 메시지"로 간주한다(페이지네이션 prepend는 제외됨).
+   */
+  useEffect(() => {
+    if (isOrigChat) return;
+    if (!chatRoomId) return;
+
+    const arr = Array.isArray(messages) ? messages : [];
+    // 마지막 non-system 메시지 찾기
+    let last = null;
+    for (let i = arr.length - 1; i >= 0; i -= 1) {
+      const t = String(arr[i]?.senderType || arr[i]?.sender_type || '').toLowerCase();
+      if (t === 'system') continue;
+      last = arr[i];
+      break;
+    }
+    const lastId = String(last?.id || last?._id || '').trim();
+
+    // ✅ 최초 1회(히스토리 로드 직후)는 스트리밍 금지(경쟁사처럼 "과거는 즉시 표시")
+    if (!uiStreamHydratedRef.current) {
+      uiStreamHydratedRef.current = true;
+      uiStreamPrevLastIdRef.current = lastId;
+      return;
+    }
+
+    const prevLastId = String(uiStreamPrevLastIdRef.current || '').trim();
+    uiStreamPrevLastIdRef.current = lastId;
+    if (!lastId || lastId === prevLastId) return;
+
+    // ✅ 마지막 말풍선이 AI가 아니면 스킵(유저 전송/시스템 메시지 등)
+    if (!isAssistantMessage(last)) return;
+
+    // ✅ intro(도입부) 같은 특수 메시지는 제외(추후 HTML 렌더/정책 별도)
+    const metaKind = (() => {
+      try { return String(last?.message_metadata?.kind || '').toLowerCase(); } catch (_) { return ''; }
+    })();
+    if (metaKind === 'intro') return;
+
+    // ✅ 재생성 진행 중인 메시지는 별도 로딩('...')을 이미 처리하므로 스트리밍 금지
+    if (regenBusyId && String(regenBusyId) === String(lastId)) return;
+
+    // ✅ 이미 스트리밍 완료한 메시지는 재진입/재동기화에서 재스트리밍 금지
+    if (uiStreamDoneByIdRef.current && uiStreamDoneByIdRef.current[lastId]) return;
+
+    const raw = (typeof last?.content === 'string') ? last.content : '';
+    const fullForDisplay = formatSafetyRefusalForDisplay(sanitizeAiText(raw));
+    if (!String(fullForDisplay || '').trim()) {
+      uiStreamDoneByIdRef.current[lastId] = true;
+      return;
+    }
+
+    // ✅ 기존 스트리밍 취소 + 새 메시지로 시작
+    try {
+      uiStreamCancelSeqRef.current += 1;
+      const token = uiStreamCancelSeqRef.current;
+      if (uiStreamTimerRef.current) {
+        clearInterval(uiStreamTimerRef.current);
+        uiStreamTimerRef.current = null;
+      }
+      setUiStream({ id: lastId, full: fullForDisplay, shown: '' });
+
+      // 속도(방어적 클램프): 너무 길면 지루하고, 너무 짧으면 "스트리밍 느낌"이 없다.
+      const full = String(fullForDisplay);
+      const intervalMs = 33; // ~30fps
+      const totalMs = Math.max(700, Math.min(2600, Math.round(full.length * 18)));
+      const steps = Math.max(1, Math.ceil(totalMs / intervalMs));
+      const chunk = Math.max(1, Math.ceil(full.length / steps));
+      let idx = 0;
+      let tick = 0;
+
+      uiStreamTimerRef.current = setInterval(() => {
+        if (uiStreamCancelSeqRef.current !== token) {
+          try { clearInterval(uiStreamTimerRef.current); } catch (_) {}
+          uiStreamTimerRef.current = null;
+          return;
+        }
+        idx = Math.min(full.length, idx + chunk);
+        const nextShown = full.slice(0, idx);
+        setUiStream((prev) => {
+          if (!prev || String(prev.id || '') !== String(lastId)) return prev;
+          return { ...prev, shown: nextShown };
+        });
+
+        // ✅ 스크롤 안정: 유저가 바닥 근처일 때만 가끔 따라가기(매 tick 강제 X)
+        tick += 1;
+        if (autoScrollRef.current && (tick % 3 === 0 || idx >= full.length)) {
+          try {
+            window.requestAnimationFrame(() => {
+              try { scrollToBottom(); } catch (_) {}
+            });
+          } catch (_) {
+            try { scrollToBottom(); } catch (_) {}
+          }
+        }
+
+        if (idx >= full.length) {
+          try { clearInterval(uiStreamTimerRef.current); } catch (_) {}
+          uiStreamTimerRef.current = null;
+          try { uiStreamDoneByIdRef.current[lastId] = true; } catch (_) {}
+          // 마지막 글자가 보인 뒤 다음 프레임에서 스트리밍 상태를 해제(입력/요술봉 활성화)
+          try {
+            window.setTimeout(() => {
+              setUiStream((prev) => (prev && String(prev.id || '') === String(lastId)) ? { id: '', full: '', shown: '' } : prev);
+            }, 0);
+          } catch (_) {
+            setUiStream((prev) => (prev && String(prev.id || '') === String(lastId)) ? { id: '', full: '', shown: '' } : prev);
+          }
+        }
+      }, intervalMs);
+    } catch (e) {
+      // 실패해도 채팅 기능은 유지(UX 보조 기능)
+      try { console.error('[ChatPage] ui fake streaming start failed:', e); } catch (_) {}
+      try { uiStreamDoneByIdRef.current[lastId] = true; } catch (_) {}
+      try { setUiStream({ id: '', full: '', shown: '' }); } catch (_) {}
+    }
+  }, [isOrigChat, chatRoomId, messages, regenBusyId, isAssistantMessage, sanitizeAiText, formatSafetyRefusalForDisplay]);
+
+  // ✅ 언마운트 시 스트리밍 타이머 정리(메모리/중복 타이머 방지)
+  useEffect(() => {
+    return () => {
+      try {
+        uiStreamCancelSeqRef.current += 1;
+        if (uiStreamTimerRef.current) clearInterval(uiStreamTimerRef.current);
+        uiStreamTimerRef.current = null;
+      } catch (_) {}
+    };
+  }, []);
+
+  /**
+   * ✅ A안(일반챗): 오프닝(도입부 intro + 첫 AI 답변)도 점진 출력 (new=1 진입 시 1회)
+   *
+   * 의도/원리:
+   * - "새로 대화 시작"으로 들어온 경우(new=1), 오프닝은 경쟁사처럼 타이핑 느낌으로 보여준다.
+   * - 재진입/대화내역에서는 다시 스트리밍하지 않도록 룸 단위로 1회만 실행한다.
+   */
+  useEffect(() => {
+    if (isOrigChat) return;
+    if (!chatRoomId) return;
+
+    // ✅ new=1 일 때만(보수적으로) 오프닝 스트리밍을 켠다: 재진입 UX 흔들림 방지
+    const isNewChat = (() => {
+      try {
+        const params = new URLSearchParams(location.search || '');
+        return String(params.get('new') || '').trim() === '1';
+      } catch (_) {
+        return false;
+      }
+    })();
+    if (!isNewChat) return;
+
+    const k = `cc:chat:openingStreamed:v1:${chatRoomId}`;
+    try {
+      if (localStorage.getItem(k) === '1') return;
+    } catch (_) {}
+
+    // 서버 응답 대기/다른 스트리밍 중에는 시작하지 않는다.
+    if (aiWaitingServer || uiStreamingActive || uiIntroStreamingActive) return;
+
+    const arr = Array.isArray(messages) ? messages : [];
+    if (!arr.length) return;
+
+    const pickIntro = () => {
+      for (const m of arr) {
+        const kind = (() => { try { return String(m?.message_metadata?.kind || '').toLowerCase(); } catch (_) { return ''; } })();
+        if (kind !== 'intro') continue;
+        const txt = (typeof m?.content === 'string') ? m.content : '';
+        const id = String(m?.id || m?._id || '').trim();
+        if (id && txt.trim()) return { id, text: txt };
+      }
+      return null;
+    };
+    const pickGreeting = () => {
+      // intro 다음에 오는 첫 assistant를 찾는 게 가장 자연스럽다.
+      for (let i = 0; i < arr.length; i += 1) {
+        if (!isAssistantMessage(arr[i])) continue;
+        const kind = (() => { try { return String(arr[i]?.message_metadata?.kind || '').toLowerCase(); } catch (_) { return ''; } })();
+        if (kind === 'intro') continue;
+        const raw = (typeof arr[i]?.content === 'string') ? arr[i].content : '';
+        const id = String(arr[i]?.id || arr[i]?._id || '').trim();
+        if (id && String(raw).trim()) return { id, text: raw };
+      }
+      return null;
+    };
+
+    const startIntroStream = (id, full) => {
+      try {
+        uiIntroCancelSeqRef.current += 1;
+        const token = uiIntroCancelSeqRef.current;
+        if (uiIntroTimerRef.current) {
+          clearInterval(uiIntroTimerRef.current);
+          uiIntroTimerRef.current = null;
+        }
+        setUiIntroStream({ id, full, shown: '' });
+
+        const intervalMs = 33;
+        const totalMs = Math.max(650, Math.min(2200, Math.round(full.length * 16)));
+        const steps = Math.max(1, Math.ceil(totalMs / intervalMs));
+        const chunk = Math.max(1, Math.ceil(full.length / steps));
+        let idx = 0;
+        let tick = 0;
+
+        uiIntroTimerRef.current = setInterval(() => {
+          if (uiIntroCancelSeqRef.current !== token) {
+            try { clearInterval(uiIntroTimerRef.current); } catch (_) {}
+            uiIntroTimerRef.current = null;
+            return;
+          }
+          idx = Math.min(full.length, idx + chunk);
+          const nextShown = full.slice(0, idx);
+          setUiIntroStream((prev) => {
+            if (!prev || String(prev.id || '') !== String(id)) return prev;
+            return { ...prev, shown: nextShown };
+          });
+          tick += 1;
+          if (autoScrollRef.current && (tick % 3 === 0 || idx >= full.length)) {
+            try { window.requestAnimationFrame(() => { try { scrollToBottom(); } catch (_) {} }); } catch (_) {}
+          }
+          if (idx >= full.length) {
+            try { clearInterval(uiIntroTimerRef.current); } catch (_) {}
+            uiIntroTimerRef.current = null;
+            try { uiIntroDoneByIdRef.current[id] = true; } catch (_) {}
+            try { setUiIntroStream({ id: '', full: '', shown: '' }); } catch (_) {}
+            try { setUiOpeningStage('greeting'); } catch (_) {}
+          }
+        }, intervalMs);
+      } catch (e) {
+        try { console.error('[ChatPage] opening intro stream failed:', e); } catch (_) {}
+        try { setUiIntroStream({ id: '', full: '', shown: '' }); } catch (_) {}
+      }
+    };
+
+    const startGreetingStream = (id, fullForDisplay) => {
+      try {
+        uiStreamCancelSeqRef.current += 1;
+        const token = uiStreamCancelSeqRef.current;
+        if (uiStreamTimerRef.current) {
+          clearInterval(uiStreamTimerRef.current);
+          uiStreamTimerRef.current = null;
+        }
+        // auto-stream effect의 초기 가드와 충돌하지 않게 "초기화 완료"로 간주
+        uiStreamHydratedRef.current = true;
+        uiStreamPrevLastIdRef.current = id;
+        setUiStream({ id, full: fullForDisplay, shown: '' });
+
+        const full = String(fullForDisplay);
+        const intervalMs = 33;
+        const totalMs = Math.max(650, Math.min(2400, Math.round(full.length * 18)));
+        const steps = Math.max(1, Math.ceil(totalMs / intervalMs));
+        const chunk = Math.max(1, Math.ceil(full.length / steps));
+        let idx = 0;
+        let tick = 0;
+
+        uiStreamTimerRef.current = setInterval(() => {
+          if (uiStreamCancelSeqRef.current !== token) {
+            try { clearInterval(uiStreamTimerRef.current); } catch (_) {}
+            uiStreamTimerRef.current = null;
+            return;
+          }
+          idx = Math.min(full.length, idx + chunk);
+          const nextShown = full.slice(0, idx);
+          setUiStream((prev) => {
+            if (!prev || String(prev.id || '') !== String(id)) return prev;
+            return { ...prev, shown: nextShown };
+          });
+          tick += 1;
+          if (autoScrollRef.current && (tick % 3 === 0 || idx >= full.length)) {
+            try { window.requestAnimationFrame(() => { try { scrollToBottom(); } catch (_) {} }); } catch (_) {}
+          }
+          if (idx >= full.length) {
+            try { clearInterval(uiStreamTimerRef.current); } catch (_) {}
+            uiStreamTimerRef.current = null;
+            try { uiStreamDoneByIdRef.current[id] = true; } catch (_) {}
+            try { setUiStream({ id: '', full: '', shown: '' }); } catch (_) {}
+            try {
+              localStorage.setItem(k, '1');
+            } catch (_) {}
+            try { setUiOpeningStage('done'); } catch (_) {}
+          }
+        }, intervalMs);
+      } catch (e) {
+        try { console.error('[ChatPage] opening greeting stream failed:', e); } catch (_) {}
+        try { setUiStream({ id: '', full: '', shown: '' }); } catch (_) {}
+      }
+    };
+
+    // 단계 진행
+    if (uiOpeningStage === 'idle') {
+      const intro = pickIntro();
+      if (intro && !uiIntroDoneByIdRef.current[intro.id]) {
+        setUiOpeningStage('intro');
+        startIntroStream(intro.id, String(intro.text));
+        return;
+      }
+      setUiOpeningStage('greeting');
+      return;
+    }
+    if (uiOpeningStage === 'intro') {
+      // intro 스트리밍 완료 후 setUiOpeningStage('greeting')로 넘어감
+      return;
+    }
+    if (uiOpeningStage === 'greeting') {
+      const g = pickGreeting();
+      if (!g) return;
+      if (uiStreamDoneByIdRef.current && uiStreamDoneByIdRef.current[g.id]) {
+        try { localStorage.setItem(k, '1'); } catch (_) {}
+        setUiOpeningStage('done');
+        return;
+      }
+      const display = formatSafetyRefusalForDisplay(sanitizeAiText(String(g.text || '')));
+      if (!String(display || '').trim()) {
+        try { localStorage.setItem(k, '1'); } catch (_) {}
+        setUiOpeningStage('done');
+        return;
+      }
+      startGreetingStream(g.id, display);
+    }
+  }, [
+    isOrigChat,
+    chatRoomId,
+    location.search,
+    messages,
+    aiWaitingServer,
+    uiStreamingActive,
+    uiIntroStreamingActive,
+    uiOpeningStage,
+    isAssistantMessage,
+    sanitizeAiText,
+    formatSafetyRefusalForDisplay,
+  ]);
+
+  /**
+   * ✅ A안(일반챗): 요술봉 선택지 점진 노출(1→2→3)
+   */
+  useEffect(() => {
+    if (isOrigChat) return;
+    if (!magicMode) {
+      try { setMagicRevealCount(0); } catch (_) {}
+      return;
+    }
+    // 답변 출력/오프닝 출력이 끝나야 선택지가 보이므로, 그 전에는 카운트도 초기화
+    if (aiTypingEffective) {
+      try { setMagicRevealCount(0); } catch (_) {}
+      return;
+    }
+    if (magicLoading) {
+      try { setMagicRevealCount(0); } catch (_) {}
+      return;
+    }
+    const arr = Array.isArray(magicChoices) ? magicChoices : [];
+    const total = Math.min(3, arr.length);
+    if (total <= 0) {
+      try { setMagicRevealCount(0); } catch (_) {}
+      return;
+    }
+
+    try {
+      magicRevealCancelSeqRef.current += 1;
+      const token = magicRevealCancelSeqRef.current;
+      if (magicRevealTimerRef.current) {
+        clearInterval(magicRevealTimerRef.current);
+        magicRevealTimerRef.current = null;
+      }
+      setMagicRevealCount(1);
+      let shown = 1;
+      magicRevealTimerRef.current = setInterval(() => {
+        if (magicRevealCancelSeqRef.current !== token) {
+          try { clearInterval(magicRevealTimerRef.current); } catch (_) {}
+          magicRevealTimerRef.current = null;
+          return;
+        }
+        shown += 1;
+        if (shown >= total) {
+          setMagicRevealCount(total);
+          try { clearInterval(magicRevealTimerRef.current); } catch (_) {}
+          magicRevealTimerRef.current = null;
+          return;
+        }
+        setMagicRevealCount(shown);
+      }, 180);
+    } catch (e) {
+      try { console.error('[ChatPage] magic reveal failed:', e); } catch (_) {}
+      try { setMagicRevealCount(total); } catch (_) {}
+    }
+  }, [isOrigChat, magicMode, aiTypingEffective, magicLoading, magicChoices]);
+
+  /**
+   * ✅ 요술봉 선택지 복원(캐시)
+   *
+   * 요구사항:
+   * - 뒤로가기/재접속으로 같은 채팅방에 들어왔을 때,
+   *   "마지막 AI 메시지"가 동일하면 선택지를 다시 생성하지 말고 그대로 보여줘야 한다.
+   *
+   * 방어:
+   * - seed(마지막 AI 메시지 id)가 다르면 캐시를 쓰지 않는다(새 맥락이므로 새 선택지가 맞음).
+   */
+  useEffect(() => {
+    if (isOrigChat) return;
+    if (!magicMode) return;
+    if (!isAuthenticated) return;
+    if (!chatRoomId) return;
+    if (aiTypingEffective) return;
+    // 이미 UI에 선택지가 있으면 복원/재생성 불필요
+    if (Array.isArray(magicChoices) && magicChoices.length > 0) return;
+    // 같은 진입에서 캐시 복원은 1회만 시도
+    if (magicChoicesHydratedRef.current) return;
+    magicChoicesHydratedRef.current = true;
+
+    // 현재 seed(마지막 AI 메시지 id) 계산
+    const arr = Array.isArray(messages) ? messages : [];
+    let lastAi = null;
+    for (let i = arr.length - 1; i >= 0; i--) {
+      const t = String(arr[i]?.senderType || arr[i]?.sender_type || '').toLowerCase();
+      if (t === 'system') continue;
+      if (t === 'assistant' || t === 'ai' || t === 'character') { lastAi = arr[i]; break; }
+      break;
+    }
+    const seedId = String(lastAi?.id || lastAi?._id || '').trim();
+    if (!seedId) return;
+
+    // 캐시 조회
+    try {
+      const k = `cc:chat:magicChoices:v1:${chatRoomId}`;
+      const raw = localStorage.getItem(k);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      const seed = String(parsed?.seed || '').trim();
+      const choices = Array.isArray(parsed?.choices) ? parsed.choices : [];
+      if (!seed || seed !== seedId) return;
+      const safe = choices.filter((c) => c && typeof c.label === 'string' && String(c.label).trim()).slice(0, 3);
+      if (!safe.length) return;
+      setMagicChoices(safe);
+      lastMagicSeedRef.current = seedId;
+    } catch (_) {
+      // 캐시 실패 시 무시하고 아래 자동 생성(useEffect)이 담당
+    }
+  }, [isOrigChat, magicMode, isAuthenticated, chatRoomId, aiTypingEffective, messages, magicChoices]);
+
+  // ✅ 요술봉 ON + AI 응답 완료 후 자동으로 선택지 생성
+  // (중요) aiTypingEffective 선언 이후에 둬야 TDZ 크래시를 막을 수 있다.
+  useEffect(() => {
+    if (isOrigChat) return;
+    if (!magicMode) return;
+    if (!isAuthenticated) return;
+    if (!chatRoomId) return;
+    if (aiTypingEffective) return;
+    // ✅ 이미 동일 seed의 선택지를 갖고 있으면 재생성하지 않음(재접속/복원 시 리젠 방지)
+    if (Array.isArray(magicChoices) && magicChoices.length > 0) {
+      const arr0 = Array.isArray(messages) ? messages : [];
+      let lastAi0 = null;
+      for (let i = arr0.length - 1; i >= 0; i--) {
+        const t = String(arr0[i]?.senderType || arr0[i]?.sender_type || '').toLowerCase();
+        if (t === 'system') continue;
+        if (t === 'assistant' || t === 'ai' || t === 'character') { lastAi0 = arr0[i]; break; }
+        break;
+      }
+      const seedId0 = String(lastAi0?.id || lastAi0?._id || '').trim();
+      if (seedId0 && lastMagicSeedRef.current === seedId0) return;
+    }
+
+    // 가장 최근 AI 메시지 기준으로 seed를 잡는다.
+    const arr = Array.isArray(messages) ? messages : [];
+    let lastAi = null;
+    for (let i = arr.length - 1; i >= 0; i--) {
+      const t = String(arr[i]?.senderType || arr[i]?.sender_type || '').toLowerCase();
+      if (t === 'system') continue;
+      if (t === 'assistant' || t === 'ai' || t === 'character') { lastAi = arr[i]; break; }
+      // 마지막이 user면(방금 보낸 직후) 아직 AI가 안 왔으니 스킵
+      break;
+    }
+    const seedId = String(lastAi?.id || lastAi?._id || '').trim();
+    if (!seedId) return;
+    requestMagicChoices({ seedMessageId: seedId });
+  }, [isOrigChat, magicMode, isAuthenticated, chatRoomId, aiTypingEffective, messages, requestMagicChoices, magicChoices]);
 
   /**
    * 모바일/모달에서 사용할 "오너 등록 이미지" 리스트를 정규화한다.
@@ -3009,12 +3930,20 @@ const ChatPage = () => {
         return false;
       }
     })();
+    // ✅ A안(가짜 스트리밍): 마지막 AI 말풍선은 UI에서만 점진 출력
+    // - 서버 저장값(message.content)은 변경하지 않는다(SSOT/디버깅/재생성 정합).
+    const assistantDisplayFull = (!isUser && !isRegenPending)
+      ? formatSafetyRefusalForDisplay(sanitizeAiText(rawContent))
+      : '';
+    const assistantDisplayStreamed = (!isUser && !isRegenPending && uiStream?.id && String(uiStream.id) === String(message?.id || ''))
+      ? String(uiStream.shown || '')
+      : null;
     const displayText = isRegenPending
       ? '...'
       : (
         isUser
           ? (message.isNarration ? (rawContent.startsWith('*') ? rawContent : `* ${rawContent}`) : rawContent)
-          : formatSafetyRefusalForDisplay(sanitizeAiText(rawContent))
+          : (assistantDisplayStreamed !== null ? assistantDisplayStreamed : assistantDisplayFull)
       );
     const bubbleRef = isLast ? messagesEndRef : null;
 
@@ -3066,6 +3995,97 @@ const ChatPage = () => {
       if (cursor < s.length) out.push(s.slice(cursor));
       return out.length ? out : s;
     };
+
+    /**
+     * ✅ 이미지 코드 → 인라인 이미지 렌더
+     *
+     * 요구사항(확정):
+     * - 채팅은 `[[img:...]]` / `{{img:...}}` 형태만 인식한다.
+     * - `...`는 "이미지 고유 id"를 우선으로 사용한다(오프닝/순서 변경에도 안전).
+     * - 구버전 호환을 위해 숫자(`[[img:1]]`)도 동일 포맷 안에서 허용한다.
+     *
+     * 주의:
+     * - URL 직접 주입은 허용하지 않는다(보안/SSOT). 반드시 "캐릭터에 등록된 이미지"에서만 선택된다.
+     */
+    const renderTextWithInlineImages = (text) => {
+      const srcText = String(text ?? '');
+      if (!srcText) return srcText;
+      const TOKEN_RE = /(\[\[\s*img\s*:\s*([^\]]+?)\s*\]\]|\{\{\s*img\s*:\s*([^}]+?)\s*\}\})/gi;
+      if (!TOKEN_RE.test(srcText)) return renderInlineItalics(srcText);
+      // re-test는 lastIndex를 소비하므로 초기화
+      TOKEN_RE.lastIndex = 0;
+
+      const resolveBySpec = (rawSpec) => {
+        try {
+          const spec = String(rawSpec ?? '').trim();
+          if (!spec) return '';
+          // 1) 숫자(구버전): characterImages(1-based)
+          if (/^\d+$/.test(spec)) {
+            const n = Number(spec);
+            if (!Number.isFinite(n)) return '';
+            const idx = Math.max(0, Math.floor(n) - 1);
+            const url = (Array.isArray(characterImages) && idx >= 0 && idx < characterImages.length)
+              ? characterImages[idx]
+              : '';
+            return url ? resolveImageUrl(url) : '';
+          }
+          // 2) 고유 id: 캐릭터 이미지 목록에서 URL→id로 역매핑
+          const want = spec.toLowerCase();
+          for (const u of (Array.isArray(characterImages) ? characterImages : [])) {
+            const id = imageCodeIdFromUrl(u);
+            if (id && id.toLowerCase() === want) {
+              const resolved = resolveImageUrl(u);
+              return resolved || '';
+            }
+          }
+          return '';
+        } catch (_) {
+          return '';
+        }
+      };
+
+      const nodes = [];
+      let last = 0;
+      let keySeq = 0;
+      let m = null;
+      while ((m = TOKEN_RE.exec(srcText)) !== null) {
+        const full = m[1] || '';
+        const spec = (m[2] != null ? m[2] : m[3]) || '';
+        const start = m.index ?? 0;
+        const end = start + full.length;
+        if (start > last) {
+          const chunk = srcText.slice(last, start);
+          nodes.push(<React.Fragment key={`txt-${mid || 'x'}-${keySeq++}`}>{renderInlineItalics(chunk)}</React.Fragment>);
+        }
+        const resolved = resolveBySpec(spec);
+        if (resolved) {
+          nodes.push(
+            <span key={`img-${mid || 'x'}-${keySeq++}`} className="block my-2">
+              <img
+                src={resolved}
+                alt=""
+                className="block w-full h-auto rounded-xl cursor-zoom-in border border-white/10"
+                onClick={() => {
+                  try {
+                    setImageViewerSrc(resolved);
+                    setImageViewerOpen(true);
+                  } catch (_) {}
+                }}
+              />
+            </span>
+          );
+        } else {
+          // 매칭 실패 시: 코드를 그대로 노출(디버깅/운영 대응)
+          nodes.push(<span key={`bad-${mid || 'x'}-${keySeq++}`} className="text-xs text-gray-400">{full}</span>);
+        }
+        last = end;
+      }
+      if (last < srcText.length) {
+        const tail = srcText.slice(last);
+        nodes.push(<React.Fragment key={`tail-${mid || 'x'}-${keySeq++}`}>{renderInlineItalics(tail)}</React.Fragment>);
+      }
+      return nodes;
+    };
     
     /**
      * 인라인 이탤릭 토큰 페어 존재 여부
@@ -3095,36 +4115,155 @@ const ChatPage = () => {
     };
     const shouldApplyNarrationBubbleStyle = Boolean(isNarrationMessage && !hasInlineItalicPair(displayText));
 
+    // ✅ 일반 챗(가독성 개선): 캐릭터 응답에서 "서술/지문"을 대사와 분리해 중앙 박스로 렌더
+    // - 원문을 바꾸지 않고(displayText 기반), UI에서만 블록화한다.
+    const assistantBlocks = (!isUser && !isRegenPending && editingMessageId !== message.id)
+      ? parseAssistantBlocks(displayText)
+      : [];
+
+    // assistantBlocks 사용 시: message 단위 렌더 대신 "블록" 단위로 렌더한다.
+    const shouldRenderAssistantAsBlocks = (!isUser && !isRegenPending && editingMessageId !== message.id)
+      ? (Array.isArray(assistantBlocks) && assistantBlocks.length > 0 && assistantBlocks.some((b) => b && b.kind === 'narration'))
+      : false;
+
+    if (shouldRenderAssistantAsBlocks) {
+      return (
+        <div ref={bubbleRef} className="mt-4 mb-1 flex flex-col">
+          {(Array.isArray(assistantBlocks) ? assistantBlocks : []).map((b, bi) => {
+            const kind = String(b?.kind || 'narration');
+            const txt = String(b?.text || '');
+            if (!txt.trim()) return null;
+            if (kind === 'dialogue') {
+              return (
+                <div key={`ab-${mid || 'x'}-${bi}-d`} className="flex flex-col">
+                  <div className="flex items-center gap-2 mt-0 mb-1">
+                    <Avatar className="size-10 rounded-full">
+                      <AvatarImage className="object-cover object-top" src={getCharacterPrimaryImage(character)} alt={character?.name} />
+                      <AvatarFallback className="bg-gradient-to-r from-purple-500 to-blue-500 text-white">
+                        {character?.name?.charAt(0) || <Bot className="w-4 h-4" />}
+                      </AvatarFallback>
+                    </Avatar>
+                    <span className="text-sm text-gray-300">{character?.name}</span>
+                  </div>
+                  <div
+                    className={`relative max-w-full sm:max-w-[85%] px-3 py-2 rounded-2xl shadow-md overflow-hidden rounded-tl-none ${
+                      resolvedTheme === 'light' ? 'bg-white border border-gray-300' : 'bg-white/10 lg:bg-white/10'
+                    }`}
+                    style={{ color: resolvedTheme === 'light' ? '#0b0b0b' : uiColors.charSpeech }}
+                  >
+                    <p
+                      className="whitespace-pre-wrap break-words select-text"
+                      style={{ wordBreak: 'break-word', overflowWrap: 'break-word', hyphens: 'auto' }}
+                    >
+                      {renderTextWithInlineImages(txt)}
+                      {message.isStreaming && <span className="streaming-cursor"></span>}
+                    </p>
+                  </div>
+                </div>
+              );
+            }
+
+            // narration
+            return (
+              <div key={`ab-${mid || 'x'}-${bi}-n`} className="mt-2 flex justify-center">
+                <div className="max-w-full sm:max-w-[85%]">
+                  <div
+                    className={`whitespace-pre-line break-words rounded-md px-3 py-2 text-center text-sm ${
+                      resolvedTheme === 'light'
+                        ? 'bg-gray-100 text-gray-900 border border-gray-200'
+                        : 'bg-[#363636]/80 text-white border border-white/10'
+                    }`}
+                  >
+                    {renderTextWithInlineImages(txt)}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+
+          {/* 🎯 AI 말풍선 아래 트리거 이미지 */}
+          {triggerImageUrl && (
+            <div className="mt-2 max-w-full sm:max-w-[85%]">
+              <img 
+                src={triggerImageUrl} 
+                alt="" 
+                className="block w-full h-auto rounded-xl cursor-zoom-in"
+                onLoad={() => {
+                  if (!autoScrollRef.current) return;
+                  try {
+                    window.requestAnimationFrame(() => {
+                      try { scrollToBottom(); } catch (_) {}
+                    });
+                  } catch (_) {
+                    try { scrollToBottom(); } catch (_) {}
+                  }
+                }}
+                onClick={() => {
+                  setImageViewerSrc(triggerImageUrl);
+                  setImageViewerOpen(true);
+                }}
+              />
+            </div>
+          )}
+
+          {/* 말풍선 바깥 하단 툴바 (AI 메시지 전용) */}
+          <div className="mt-1 max-w-full sm:max-w-[85%]">
+            <div className="flex items-center gap-2 text-[var(--app-fg)]">
+              <Tooltip><TooltipTrigger asChild>
+                <button onClick={()=>handleCopy(message.content)} className="p-1.5 rounded hover:bg-[var(--hover-bg)] text-[var(--app-fg)]"><Copy className="w-4 h-4"/></button>
+              </TooltipTrigger><TooltipContent>복사</TooltipContent></Tooltip>
+              <Tooltip><TooltipTrigger asChild>
+                <button
+                  onClick={()=>handleFeedback(message,'up')}
+                  className={`p-1.5 rounded transition-colors ${
+                    selectedFeedback === 'up'
+                      ? 'bg-emerald-500/20 text-emerald-300 ring-1 ring-emerald-400/30'
+                      : 'hover:bg-[var(--hover-bg)] text-[var(--app-fg)]'
+                  }`}
+                  title={selectedFeedback === 'up' ? '추천됨' : '추천'}
+                >
+                  <ThumbsUp className="w-4 h-4"/>
+                </button>
+              </TooltipTrigger><TooltipContent>추천</TooltipContent></Tooltip>
+              <Tooltip><TooltipTrigger asChild>
+                <button
+                  onClick={()=>handleFeedback(message,'down')}
+                  className={`p-1.5 rounded transition-colors ${
+                    selectedFeedback === 'down'
+                      ? 'bg-rose-500/20 text-rose-300 ring-1 ring-rose-400/30'
+                      : 'hover:bg-[var(--hover-bg)] text-[var(--app-fg)]'
+                  }`}
+                  title={selectedFeedback === 'down' ? '비추천됨' : '비추천'}
+                >
+                  <ThumbsDown className="w-4 h-4"/>
+                </button>
+              </TooltipTrigger><TooltipContent>비추천</TooltipContent></Tooltip>
+              <Tooltip><TooltipTrigger asChild>
+                <button onClick={()=>openRegenerate(message)} className="p-1.5 rounded hover:bg-[var(--hover-bg)] text-[var(--app-fg)]"><RefreshCcw className="w-4 h-4"/></button>
+              </TooltipTrigger><TooltipContent>재생성</TooltipContent></Tooltip>
+              <Tooltip><TooltipTrigger asChild>
+                <button onClick={()=>startEdit(message)} className="p-1.5 rounded hover:bg-[var(--hover-bg)] text-[var(--app-fg)]"><Pencil className="w-4 h-4"/></button>
+              </TooltipTrigger><TooltipContent>수정</TooltipContent></Tooltip>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div ref={bubbleRef} className={`mt-4 mb-1 ${isUser ? 'flex flex-col items-end' : 'flex flex-col'}`}>
-        <div className={`flex items-center gap-2 ${isUser ? 'justify-end' : ''} mt-0 mb-1`}>
-          {!isUser && (
-            <>
-              <Avatar className="size-10 rounded-full">
-                <AvatarImage className="object-cover object-top" src={getCharacterPrimaryImage(character)} alt={character?.name} />
+        {/* ✅ 일반챗 유저 말풍선: 아바타/이름 비노출(프리뷰 방식으로 통일) */}
+        {!isUser && (
+          <div className="flex items-center gap-2 mt-0 mb-1">
+            <Avatar className="size-10 rounded-full">
+              <AvatarImage className="object-cover object-top" src={getCharacterPrimaryImage(character)} alt={character?.name} />
               <AvatarFallback className="bg-gradient-to-r from-purple-500 to-blue-500 text-white">
                 {character?.name?.charAt(0) || <Bot className="w-4 h-4" />}
               </AvatarFallback>
-              </Avatar>
-              <span className="text-sm text-gray-300">{character?.name}</span>
-            </>
-          )}
-          {isUser && (
-            <>
-              <span className="text-sm text-gray-300">{user?.username || '나'}</span>
-              <Avatar className="size-10 rounded-full">
-                <AvatarImage
-                  className="object-cover object-top"
-                  src={resolveImageUrl(user?.avatar_url || '')}
-                  alt={user?.username || 'user'}
-                />
-                <AvatarFallback className="bg-gradient-to-r from-emerald-500 to-cyan-500 text-white">
-                  {(user?.username && String(user.username).charAt(0)) || <User className="w-4 h-4" />}
-                </AvatarFallback>
-              </Avatar>
-            </>
-          )}
-        </div>
+            </Avatar>
+            <span className="text-sm text-gray-300">{character?.name}</span>
+          </div>
+        )}
 
         <div
           className={`relative max-w-full sm:max-w-[85%] px-3 py-2 rounded-2xl shadow-md overflow-hidden ${isUser ? 'rounded-tr-none' : 'rounded-tl-none'}
@@ -3156,23 +4295,59 @@ const ChatPage = () => {
             </div>
           ) : (
             <>
-              <p
-                className="whitespace-pre-wrap break-words select-text"
-                style={{
-                  wordBreak: 'break-word',
-                  overflowWrap: 'break-word',
-                  hyphens: 'auto',
-                  ...(shouldApplyNarrationBubbleStyle
-                    ? { color: resolvedTheme === 'light' ? '#6b7280' : '#d1d5db', fontStyle: 'italic' }
-                    : {})
-                }}
-              >
-                {renderInlineItalics(displayText)}
-            {message.isStreaming && <span className="streaming-cursor"></span>}
-          </p>
-              <p className={`text-xs mt-1 text-right ${isUser ? 'text-gray-500' : 'text-gray-400'}`}>
-            {new Date(message.created_at || message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-          </p>
+              {(() => {
+                /**
+                 * ✅ 경쟁사 UX 정합(검수 포인트)
+                 *
+                 * 요구사항:
+                 * - 유저 말풍선에서 "대사 1줄(흰색) + 지문 1줄(분홍색)"이 유지되어야 한다.
+                 *
+                 * 원리:
+                 * - 요술봉 선택지는 `대사\n* 지문` 형태로 전송된다.
+                 * - 메시지 렌더에서 2줄 구조를 감지하면, 2번째 줄만 분홍색으로 렌더링한다.
+                 *
+                 * 방어:
+                 * - 정확히 2줄 + 2번째 줄이 `*`로 시작하는 경우에만 적용해 기존 메시지 스타일을 깨지 않는다.
+                 */
+                const raw = String(displayText ?? '');
+                const lines = raw.split('\n');
+                const l1 = String(lines[0] || '').trim();
+                const l2raw = String(lines[1] || '').trim();
+                const isTwoLineNarration = Boolean(lines.length === 2 && l1 && l2raw && l2raw.startsWith('*'));
+                if (!isTwoLineNarration) {
+                  return (
+                    <p
+                      className="whitespace-pre-wrap break-words select-text"
+                      style={{
+                        wordBreak: 'break-word',
+                        overflowWrap: 'break-word',
+                        hyphens: 'auto',
+                        ...(shouldApplyNarrationBubbleStyle
+                          ? { color: resolvedTheme === 'light' ? '#6b7280' : '#d1d5db', fontStyle: 'italic' }
+                          : {})
+                      }}
+                    >
+                      {renderInlineItalics(displayText)}
+                      {message.isStreaming && <span className="streaming-cursor"></span>}
+                    </p>
+                  );
+                }
+
+                // 2번째 줄: "* " 제거 후 표시(색은 분홍, 스타일은 기존대로 유지)
+                const l2 = l2raw.replace(/^\*\s*/, '').trim();
+                return (
+                  <div className="space-y-1">
+                    <p className={`whitespace-pre-wrap break-words select-text ${isUser ? 'text-black' : ''}`}>{l1}</p>
+                    <p
+                      className={`whitespace-pre-wrap break-words select-text italic ${isUser ? 'text-black' : ''}`}
+                    >
+                      {l2}
+                      {message.isStreaming && <span className="streaming-cursor"></span>}
+                    </p>
+                  </div>
+                );
+              })()}
+              {/* ✅ 말풍선 시간 비노출(요구사항): 일반캐릭터챗/원작챗 공통 */}
               {/* 툴바는 말풍선 바깥으로 이동 (아래에서 렌더) */}
             </>
           )}
@@ -3748,11 +4923,7 @@ const ChatPage = () => {
           ) : (
             <div className="w-full h-full bg-[var(--app-bg)]" />
           )}
-          <div
-            className="absolute inset-0 pointer-events-none"
-            style={{ backgroundColor: `rgba(31,41,55,${mobileStageOverlayAlpha})` }}
-          />
-          <div className="absolute inset-0 pointer-events-none bg-gradient-to-b from-black/10 via-transparent to-black/40" />
+          {/* ✅ 모바일: 배경 위 회색 딤/그라데이션 레이어 제거(윤곽선 밖으로 튀어나오는 현상 방지) */}
         </div>
 
         {/* ✅ 높이 고정(calc) 제거: footer(입력바) 높이만큼 좌측 미니갤러리가 잘리는 문제 방지 */}
@@ -3965,22 +5136,22 @@ const ChatPage = () => {
               {messages.map((m, index) => {
                 const isIntro = (m.message_metadata && (m.message_metadata.kind === 'intro')) || false;
                 if (isIntro) {
+                  const introId = String(m?.id || m?._id || '').trim();
+                  const introText = (introId && uiIntroStream?.id && String(uiIntroStream.id) === introId)
+                    ? String(uiIntroStream.shown || '')
+                    : m.content;
                   return (
-                    <div key={`intro-${m.id || index}`} className="flex items-start space-x-3">
-                      <Avatar className="w-8 h-8 flex-shrink-0">
-                        <AvatarImage className="object-cover object-top" src={getCharacterPrimaryImage(character)} alt={character?.name} />
-                        <AvatarFallback className="bg-gradient-to-r from-purple-500 to-blue-500 text-white">
-                          {character?.name?.charAt(0) || <Bot className="w-4 h-4" />}
-                        </AvatarFallback>
-                      </Avatar>
-                      <div
-                        className={`max-w-xs lg:max-w-md px-4 py-3 rounded-lg shadow-md border text-sm whitespace-pre-wrap ${
-                          resolvedTheme === 'light'
-                            ? 'bg-gray-100 text-gray-900 border-gray-200'
-                            : 'bg-white/10 text-white border-white/10'
-                        }`}
-                      >
-                        {m.content}
+                    <div key={`intro-${m.id || index}`} className="mt-3 flex justify-center">
+                      <div className="max-w-full sm:max-w-[85%]">
+                        <div
+                          className={`whitespace-pre-line break-words rounded-md px-3 py-2 text-center text-sm ${
+                            resolvedTheme === 'light'
+                              ? 'bg-gray-100 text-gray-900 border border-gray-200'
+                              : 'bg-[#363636]/80 text-white border border-white/10'
+                          }`}
+                        >
+                          {introText}
+                        </div>
                       </div>
                     </div>
                   );
@@ -4042,12 +5213,104 @@ const ChatPage = () => {
                   </div>
                 </div>
               )}
+
+              {/* ✅ 요술봉 선택지(일반챗): "채팅창(스크롤) 안" 맨 아래에 표시 */}
+              {!isOrigChat && magicMode && !aiTypingEffective && (magicChoices.length > 0 || magicLoading) && (
+                <div className="mt-3">
+                  {/* ✅ 로딩 중 UI: 선택지 3개 자리에서 각각 "... 말풍선"으로 표시 */}
+                  {magicLoading && (!Array.isArray(magicChoices) || magicChoices.length === 0) ? (
+                    <div className="flex flex-col items-end">
+                      {/* ✅ 로딩 말풍선 우측 정렬: w-full을 쓰면 좌측처럼 보이므로, 폭을 제한하고 ml-auto로 밀어준다 */}
+                      <div className="w-full max-w-[85%] space-y-2">
+                        {['loading-1', 'loading-2', 'loading-3'].map((id) => (
+                          <div
+                            key={id}
+                            className={`ml-auto w-full px-4 py-3 rounded-2xl border ${
+                              resolvedTheme === 'light'
+                                ? 'bg-white border-gray-200'
+                                : 'bg-black/40 border-white/10'
+                            }`}
+                            title="선택지 생성 중"
+                            aria-busy="true"
+                          >
+                            {/* 캐릭터 타이핑 말풍선의 점 애니메이션과 동일한 형태 */}
+                            <div className="flex space-x-1">
+                              <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
+                              <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
+                              <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col items-end">
+                      <div className="w-full sm:max-w-[85%]">
+                        <div className="space-y-2">
+                          {(Array.isArray(magicChoices) ? magicChoices : []).slice(0, Math.max(0, Math.min(3, magicRevealCount || 0))).map((c) => (
+                            <button
+                              key={c.id}
+                              type="button"
+                              disabled={magicLoading || !c?.label}
+                              onClick={() => {
+                                const dialogue = String(c?.dialogue || '').trim();
+                                const narrationRaw = String(c?.narration || '').trim();
+                                const label = String(c?.label || '').trim();
+                                const base = label || [dialogue, narrationRaw].filter(Boolean).join('\n');
+                                if (!base) return;
+                                const parts = base.split('\n').map((p) => String(p || '').trim()).filter(Boolean);
+                                const out = (parts.length >= 2)
+                                  ? `${parts[0]}\n${parts[1].startsWith('*') ? parts[1] : `* ${parts[1]}`}`
+                                  : base;
+                                // ✅ 게스트 UX: 요술봉 선택지도 "전송 액션"이므로 로그인 모달을 띄운다.
+                                // - 게스트가 눌렀을 때 선택지가 곧바로 전송/입력 반영되는 것을 방지한다.
+                                if (!isAuthenticated) {
+                                  try { handleSendMessage({ preventDefault: () => {} }, out); } catch (_) {}
+                                  return;
+                                }
+                                try { setNewMessage(out); } catch (_) {}
+                                try { handleSendMessage({ preventDefault: () => {} }, out); } catch (_) {}
+                              }}
+                              className={`w-full text-left px-4 py-3 rounded-2xl border transition ${
+                                magicLoading ? 'opacity-70 cursor-wait' : 'hover:bg-white/10'
+                              } ${
+                                resolvedTheme === 'light'
+                                  ? 'bg-white border-gray-200 text-gray-900'
+                                  : 'bg-black/40 border-white/10 text-gray-100'
+                              }`}
+                              title="클릭하면 전송"
+                            >
+                              {(() => {
+                                const d = String(c?.dialogue || '').trim();
+                                const nrr = String(c?.narration || '').trim();
+                                const label = String(c?.label || '').trim();
+                                const parts = label ? label.split('\n').map((p) => String(p || '').trim()).filter(Boolean) : [];
+                                const line1 = d || parts[0] || label;
+                                const line2 = nrr || parts[1] || '';
+                                return (
+                                  <div className="space-y-1">
+                                    <div className={`text-sm leading-6 ${resolvedTheme === 'light' ? 'text-gray-900' : 'text-white'}`}>{line1}</div>
+                                  {line2 ? (
+                                    <div className={`text-sm leading-6 italic ${resolvedTheme === 'light' ? 'text-purple-700' : 'text-purple-300'}`}>{line2}</div>
+                                  ) : null}
+                                  </div>
+                                );
+                              })()}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
               {/* 완결 안내 토스트 + 내레이터 말풍선 */}
               {isOrigChat && lastOrigTurnPayload && messages.length > 0 && (() => {
                 const last = messages[messages.length - 1];
                 return null;
               })()}
-              {aiTypingEffective && (
+              {/* ✅ 점 3개 말풍선은 "서버 응답 대기"에만 노출(가짜 스트리밍 중엔 중복 노출 방지) */}
+              {aiWaitingServer && (
                 <div className="mt-4 mb-1 flex items-start space-x-3">
                   <Avatar className="w-8 h-8 flex-shrink-0">
                     <AvatarImage className="object-cover object-top" src={getCharacterPrimaryImage(character)} alt={character?.name} />
@@ -4081,6 +5344,7 @@ const ChatPage = () => {
       {/* 입력 폼 */}
       <footer className="bg-[var(--footer-bg)] text-[var(--app-fg)] border-t border-gray-800 md:p-1 pb-[env(safe-area-inset-bottom)]">
         <ErrorBoundary>
+        {/* ✅ PC 정렬 안정화: 본문 그리드(480px_560px)와 footer 그리드를 동일하게 맞춰 "삐뚤어짐" 방지 */}
         <div className="hidden lg:grid lg:grid-cols-[480px_560px] lg:justify-center lg:mx-auto lg:items-center">
           {/* 왼쪽: 빈 공간 (미니 갤러리는 이미지 아래로 이동) */}
           <div className="w-[480px]"></div>
@@ -4088,37 +5352,87 @@ const ChatPage = () => {
           {/* 오른쪽: 채팅 입력 컨테이너 (채팅 메시지 영역 아래) */}
           <div className="w-full">
           <ErrorBoundary>
-          <form onSubmit={handleSendMessage} className="flex w-full items-center gap-2">
+          <form id="chat-send-form" onSubmit={handleSendMessage} className="flex w-full items-center gap-2">
             {/* 모델 선택 버튼 */}
             <Button
               type="button"
-              disabled={isOrigBusy}
-              className="h-10 w-12 rounded-xl bg-white text-black px-2 leading-tight"
-              onClick={() => { setModalInitialTab('model'); setShowModelModal(true); }}
+              disabled={aiTypingEffective}
+              className="h-9 w-9 rounded-xl bg-transparent text-[#ddd] p-0 flex items-center justify-center hover:bg-white/5 hover:text-white"
+              onClick={() => {
+                // ✅ 게스트 UX: 설정(모델 선택)은 로그인 후에만.
+                // - 게스트가 눌렀을 때 "로그인 모달 + 설정 모달"이 동시에 뜨는 것을 방지한다.
+                if (!isAuthenticated) {
+                  try { setShowModelModal(false); } catch (_) {}
+                  openLoginModal();
+                  return;
+                }
+                setModalInitialTab('model');
+                setShowModelModal(true);
+              }}
+              aria-label="모델 선택"
+              title="모델 선택"
             >
-              <span className="block text-[11px] leading-4 text-center">모델<br/>선택</span>
+              <Settings className="size-5" />
             </Button>
 
-            {/* 입력 컨테이너 */}
-            <div className="relative flex min-h-[44px] w-full lg:w-[70%] items-center rounded-2xl py-1 shadow-md"
-                 style={{ backgroundColor: 'var(--input-bg)', border: '1px solid var(--input-border)' }}>
-            <Textarea
-              ref={inputRef}
-              value={newMessage}
-              onChange={(e) => setNewMessage(e.target.value)}
-              onKeyDown={handleKeyDown}
-              disabled={isOrigBusy}
-                placeholder={
-                  (isOrigChat && showSituation)
-                    ? '상황 입력 모드: 여기에 쓰고 전송하면 바로 반영돼요.'
-                    : (isOrigChat && (origMeta?.narrator_mode || origMeta?.mode==='parallel' && false)
-                      ? '서술/묘사로 입력하세요. 예) * 창밖에는 비가 내리고 있었다.'
-                      : '대사입력 예) 반가워!')
-                }
-                className="w-full bg-transparent border-0 focus:border-0 focus:ring-0 outline-none text-sm p-0 pl-3 placeholder:text-gray-500 resize-none"
-                style={{ minHeight: 36 }}
-              rows={1}
-            />
+            {/* 입력 컨테이너(경쟁사 스타일): textarea + 우측 버튼 영역(absolute) */}
+            <div className="relative w-[70%]">
+              <div className="w-full rounded-2xl border border-[#DDD] bg-[rgba(99,99,99,0.3)] backdrop-blur-[0.8px] shadow-md">
+                <Textarea
+                  ref={inputRef}
+                  value={newMessage}
+                  onChange={(e) => setNewMessage(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  disabled={aiTypingEffective}
+                  placeholder={
+                    (isOrigChat && showSituation)
+                      ? '상황 입력 모드: 여기에 쓰고 전송하면 바로 반영돼요.'
+                      : (isOrigChat && (origMeta?.narrator_mode || origMeta?.mode==='parallel' && false)
+                        ? '서술/묘사로 입력하세요. 예) * 창밖에는 비가 내리고 있었다.'
+                        : '메시지 보내기')
+                  }
+                  className="w-full min-h-0 bg-transparent border-0 focus:border-0 focus:ring-0 outline-none text-[13px] leading-[18px] px-4 py-[0.30rem] text-white caret-white placeholder:text-[#ddd]/70 resize-none"
+                  style={{ height: 32, maxHeight: 32, scrollbarWidth: 'none', lineHeight: '18px', paddingRight: 96 }}
+                  rows={1}
+                />
+              </div>
+
+              {/* ✅ 버튼 3개 영역(요술봉/나레이션/전송) - DOM은 분리, UI는 입력창 안처럼 보이게 */}
+              <div className="absolute bottom-0 right-3 flex items-center h-[32px]">
+                {!isOrigChat && (
+                  <button
+                    type="button"
+                    onClick={handleToggleMagicMode}
+                    disabled={aiTypingEffective}
+                    aria-pressed={magicMode}
+                    className={`inline-flex items-center justify-center w-7 h-7 rounded-full transition ${
+                      magicMode
+                        ? 'bg-black text-white shadow-[0_6px_18px_rgba(0,0,0,0.25)] hover:bg-black/80'
+                        : 'bg-transparent text-[#ddd] hover:bg-white/5 hover:text-white'
+                    }`}
+                    title={magicMode ? '요술봉 ON (선택지 자동 생성)' : '요술봉 OFF'}
+                  >
+                    {magicLoading ? <Loader2 className="size-5 animate-spin" /> : <Sparkles className="size-5" />}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setNewMessage(prev => (prev.startsWith('*') ? prev : (`* ${prev || ''}`).trimEnd()))}
+                  disabled={aiTypingEffective}
+                  className="inline-flex items-center justify-center w-8 h-8 rounded-xs -ml-1 text-[#ddd] transition-colors hover:text-white"
+                  title="나레이션(지문) 시작"
+                >
+                  <Asterisk className="size-5" />
+                </button>
+                <button
+                  type="submit"
+                  disabled={!canSend || aiTypingEffective}
+                  className="ml-1 flex size-7 items-center justify-center rounded-full bg-purple-600 text-white transition-colors hover:bg-purple-700 disabled:opacity-50 disabled:pointer-events-none"
+                  title="전송"
+                >
+                  {aiTypingEffective ? <Loader2 className="size-5 animate-spin" /> : <Send className="size-5 relative -left-px top-px" />}
+                </button>
+              </div>
             </div>
             {/* AI 연속 응답 힌트 */}
             {aiThinking && (
@@ -4137,7 +5451,7 @@ const ChatPage = () => {
               <Button
                 type="button"
                 onClick={() => setShowSituation((v)=>!v)}
-                disabled={isOrigBusy}
+                disabled={aiTypingEffective}
                 className={`rounded-full w-10 h-10 p-0 flex-shrink-0 ${
                   showSituation ? 'bg-blue-600 text-white' : 'bg-white text-black'
                 }`}
@@ -4148,35 +5462,7 @@ const ChatPage = () => {
               </Button>
             )}
 
-            {/* 애스터리스크 버튼: 입력 컨테이너 밖 (우측) */}
-            <Button
-              type="button"
-              onClick={() => setNewMessage(prev => (prev.startsWith('*') ? prev : (`* ${prev || ''}`).trimEnd()))}
-              disabled={isOrigBusy}
-              className="rounded-full w-10 h-10 p-0 flex-shrink-0 bg-white text-black"
-              size="icon"
-              variant="ghost"
-              title="지문/나레이션 시작"
-            >
-              <Asterisk className="w-5 h-5" />
-            </Button>
-
-            {/* 전송 버튼 */}
-            <div className="flex items-center gap-2">
-              {/* 자동 진행 >> */}
-
-              {/* 전송 */}
-              <Button
-                type="submit"
-                disabled={!canSend || isOrigBusy}
-                className={`rounded-full w-10 h-10 p-0 flex-shrink-0 ${
-                  (!canSend || isOrigBusy) ? 'bg-gray-700 text-gray-400' : 'bg-white text-black'
-                }`}
-                size="icon"
-              >
-                {isOrigBusy ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
-              </Button>
-            </div>
+            {/* (버튼 3개는 입력 컨테이너 내부 absolute 영역으로 이동) */}
           </form>
           </ErrorBoundary>
           </div>
@@ -4300,79 +5586,109 @@ const ChatPage = () => {
             {/* 모델 선택 버튼 */}
             <Button
               type="button"
-              disabled={isOrigBusy}
-              className="h-10 w-12 rounded-xl bg-white text-black px-2 leading-tight"
-              onClick={() => { setModalInitialTab('model'); setShowModelModal(true); }}
+              disabled={aiTypingEffective}
+              className="h-6 w-8 rounded-xl bg-transparent text-[#ddd] p-0 flex items-center justify-center hover:bg-white/5 hover:text-white"
+              onClick={() => {
+                // ✅ 게스트 UX: 설정(모델 선택)은 로그인 후에만.
+                // - 게스트가 눌렀을 때 "로그인 모달 + 설정 모달"이 동시에 뜨는 것을 방지한다.
+                if (!isAuthenticated) {
+                  try { setShowModelModal(false); } catch (_) {}
+                  openLoginModal();
+                  return;
+                }
+                setModalInitialTab('model');
+                setShowModelModal(true);
+              }}
+              aria-label="모델 선택"
+              title="모델 선택"
             >
-              <span className="block text-[11px] leading-4 text-center">모델<br/>선택</span>
+              <Settings className="size-4" />
             </Button>
 
-            {/* 입력 컨테이너 */}
-            <div className="relative flex min-h-[44px] w-full items-center rounded-2xl py-1 shadow-md"
-                 style={{ backgroundColor: 'var(--input-bg)', border: '1px solid var(--input-border)' }}>
-              <Textarea
-                ref={inputRef}
-                value={newMessage}
-                onChange={(e) => setNewMessage(e.target.value)}
-                onKeyDown={handleKeyDown}
-                disabled={isOrigBusy}
-                placeholder={
-                  (isOrigChat && showSituation)
-                    ? '상황 입력 모드: 여기에 쓰고 전송하면 바로 반영돼요.'
-                    : (isOrigChat && (origMeta?.narrator_mode || origMeta?.mode==='parallel' && false)
-                      ? '서술/묘사로 입력하세요. 예) * 창밖에는 비가 내리고 있었다.'
-                      : '대사입력 예) 반가워!')
-                }
-                // ✅ iOS Safari(아이폰) 자동 확대(줌) 방지:
-                // - input/textarea font-size가 16px 미만이면 포커스 시 화면이 확대되며 하단 버튼이 잘리는 문제가 발생한다.
-                // - 모바일 입력창은 16px로 고정한다.
-                className="w-full bg-transparent border-0 focus:border-0 focus:ring-0 outline-none text-base p-0 pl-3 placeholder:text-gray-500 resize-none"
-                style={{ minHeight: 36 }}
-                rows={1}
-              />
+            {/* 입력 컨테이너(경쟁사 스타일): textarea + 우측 버튼 영역(absolute) */}
+            <div className="relative flex-[0.98]">
+              <div className="w-full rounded-2xl border border-[#DDD] bg-[rgba(99,99,99,0.3)] backdrop-blur-[0.8px] shadow-md">
+                <Textarea
+                  ref={inputRef}
+                  value={newMessage}
+                  onChange={(e) => setNewMessage(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  disabled={aiTypingEffective}
+                  placeholder={
+                    (isOrigChat && showSituation)
+                      ? '상황 입력 모드: 여기에 쓰고 전송하면 바로 반영돼요.'
+                      : (isOrigChat && (origMeta?.narrator_mode || origMeta?.mode==='parallel' && false)
+                        ? '서술/묘사로 입력하세요. 예) * 창밖에는 비가 내리고 있었다.'
+                        : '메시지 보내기')
+                  }
+                  // ⚠️ 모바일 폰트/높이 축소 요구 반영:
+                  // - iOS Safari에서는 16px 미만 입력 폰트가 자동 확대(줌)를 유발할 수 있다.
+                  // - 현재 요청은 "폰트 자체"를 더 줄이는 것이므로, UX 우선으로 축소 적용한다.
+                  className="w-full min-h-0 bg-transparent border-0 focus:border-0 focus:ring-0 outline-none text-[15px] leading-[16px] px-4 py-[0.12rem] text-white caret-white placeholder:text-[#ddd]/70 resize-none"
+                  style={{ height: 26, maxHeight: 26, scrollbarWidth: 'none', lineHeight: '16px', paddingRight: 96 }}
+                  rows={1}
+                />
+              </div>
+
+              {/* ✅ 버튼 3개 영역(요술봉/나레이션/전송) */}
+              <div className="absolute bottom-0 right-3 flex items-center h-[26px]">
+                {!isOrigChat && (
+                  <button
+                    type="button"
+                    onClick={handleToggleMagicMode}
+                    disabled={aiTypingEffective}
+                    aria-pressed={magicMode}
+                    className={`inline-flex items-center justify-center w-5 h-5 rounded-full transition ${
+                      magicMode
+                        ? 'bg-black text-white shadow-[0_6px_18px_rgba(0,0,0,0.25)] hover:bg-black/80'
+                        : 'bg-transparent text-[#ddd] hover:bg-white/5 hover:text-white'
+                    }`}
+                    title={magicMode ? '요술봉 ON (선택지 자동 생성)' : '요술봉 OFF'}
+                  >
+                    {magicLoading ? <Loader2 className="size-3.5 animate-spin" /> : <Sparkles className="size-3.5" />}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setNewMessage(prev => (prev.startsWith('*') ? prev : (`* ${prev || ''}`).trimEnd()))}
+                  disabled={aiTypingEffective}
+                  className="inline-flex items-center justify-center w-6 h-6 rounded-xs -ml-1 text-[#ddd] transition-colors hover:text-white"
+                  title="나레이션(지문) 시작"
+                >
+                  <Asterisk className="size-4" />
+                </button>
+                <button
+                  type="submit"
+                  disabled={!canSend || aiTypingEffective}
+                  className="ml-1 flex size-5 items-center justify-center rounded-full bg-purple-600 text-white transition-colors hover:bg-purple-700 disabled:opacity-50 disabled:pointer-events-none"
+                  title="전송"
+                >
+                  {aiTypingEffective ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4 relative -left-px top-px" />}
+                </button>
+              </div>
             </div>
+
+            {/* ✅ 모바일 입력창 폭(체감) 조절: 입력 컨테이너를 약 90%로 축소 */}
+            <div className="flex-[0.02]" aria-hidden="true" />
 
             {/* 상황 입력 토글 버튼 (원작챗) */}
             {isOrigChat && (
               <Button
                 type="button"
                 onClick={() => setShowSituation((v)=>!v)}
-                disabled={isOrigBusy}
-                className={`rounded-full w-10 h-10 p-0 flex-shrink-0 ${
+                disabled={aiTypingEffective}
+                className={`rounded-full w-7 h-7 p-0 flex-shrink-0 ${
                   showSituation ? 'bg-blue-600 text-white' : 'bg-white text-black'
                 }`}
                 size="icon"
                 variant="ghost"
                 title="상황 입력"
               >
-                <FileText className="w-5 h-5" />
+                <FileText className="w-4 h-4" />
               </Button>
             )}
 
-            {/* 애스터리스크 버튼 */}
-            <Button
-              type="button"
-              onClick={() => setNewMessage(prev => (prev.startsWith('*') ? prev : (`* ${prev || ''}`).trimEnd()))}
-              disabled={isOrigBusy}
-              className="rounded-full w-10 h-10 p-0 flex-shrink-0 bg-white text-black"
-              size="icon"
-              variant="ghost"
-              title="지문/나레이션 시작"
-            >
-              <Asterisk className="w-5 h-5" />
-            </Button>
-
-            {/* 전송 버튼 */}
-            <Button
-              type="submit"
-              disabled={!canSend || isOrigBusy}
-              className={`rounded-full w-10 h-10 p-0 flex-shrink-0 ${
-                (!canSend || isOrigBusy) ? 'bg-gray-700 text-gray-400' : 'bg-white text-black'
-              }`}
-              size="icon"
-            >
-              {isOrigBusy ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
-            </Button>
+            {/* (버튼 3개는 입력 컨테이너 내부 absolute 영역으로 이동) */}
           </form>
           </ErrorBoundary>
         </div>

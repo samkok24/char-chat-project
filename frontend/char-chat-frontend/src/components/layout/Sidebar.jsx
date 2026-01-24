@@ -6,7 +6,7 @@ import { Avatar, AvatarFallback, AvatarImage } from '../ui/avatar';
 import { resolveImageUrl, getCharacterPrimaryImage } from '../../lib/images';
 import { getReadingProgress, getReadingProgressAt } from '../../lib/reading';
 import { Button } from '../ui/button';
-import { MessageSquare, Plus, Home, Star, Heart, User, History, UserCog, LogOut, BookOpen, LogIn, HelpCircle, Bell, Settings } from 'lucide-react';
+import { MessageSquare, Plus, Home, Star, Heart, User, History, UserCog, LogOut, BookOpen, LogIn, HelpCircle, Bell, Settings, Loader2 } from 'lucide-react';
 import { Skeleton } from '../ui/skeleton';
 import { Badge } from '../ui/badge';
 import {
@@ -20,10 +20,13 @@ import {
 import UserPersonaModal from '../UserPersonaModal';
 import useRequireAuth from '../../hooks/useRequireAuth';
 import { useLoginModal } from '../../contexts/LoginModalContext';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../ui/dialog';
+import { clearCreateCharacterDraft, hasCreateCharacterDraft } from '../../lib/createCharacterDraft';
 
 const Sidebar = () => {
   const [chatRooms, setChatRooms] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [characterImageById, setCharacterImageById] = useState({});
   const [recentStories, setRecentStories] = useState([]);
   const [showPersonaModal, setShowPersonaModal] = useState(false);
@@ -32,6 +35,31 @@ const Sidebar = () => {
   const [avatarVersion, setAvatarVersion] = useState(Date.now());
   const requireAuth = useRequireAuth();
   const { openLoginModal } = useLoginModal();
+  const [draftPromptOpen, setDraftPromptOpen] = useState(false);
+
+  const handleDraftStartFresh = React.useCallback(() => {
+    /**
+     * ✅ 사이드바: 임시저장 초안이 있을 때 "새로 만들기"
+     *
+     * 의도/원리:
+     * - 초안을 삭제하고 캐릭터 생성 페이지로 이동한다.
+     */
+    try { clearCreateCharacterDraft(); } catch (_) {}
+    try { setDraftPromptOpen(false); } catch (_) {}
+    try { navigate('/characters/create'); } catch (_) {}
+  }, [navigate]);
+
+  const handleDraftLoad = React.useCallback(() => {
+    /**
+     * ✅ 사이드바: 임시저장 초안이 있을 때 "불러오기"
+     *
+     * 의도/원리:
+     * - 초안을 유지한 채 캐릭터 생성 페이지로 이동한다.
+     * - 실제 복원은 CreateCharacterPage의 복원 로직이 담당한다(SSOT).
+     */
+    try { setDraftPromptOpen(false); } catch (_) {}
+    try { navigate('/characters/create'); } catch (_) {}
+  }, [navigate]);
 
   const formatRelativeTime = (iso) => {
     try {
@@ -94,6 +122,14 @@ const Sidebar = () => {
 
   const loadRooms = async (forceRefresh = false) => {
     try {
+      /**
+       * ✅ 사이드바 히스토리 로딩 정책(안전/UX):
+       * - 최초 로딩(표시할 데이터가 아직 0개)일 때만 Skeleton을 보여준다.
+       * - 이후 갱신(이벤트로 재조회)은 기존 리스트를 유지하고, 상단에 작은 로딩 표시만 노출한다.
+       */
+      const hasAnyData = (Array.isArray(chatRooms) && chatRooms.length > 0) || (Array.isArray(recentStories) && recentStories.length > 0);
+      const isInitial = !hasAnyData;
+
       // 캐시 확인 (강제 새로고침이 아닐 때만)
       if (!forceRefresh) {
         try {
@@ -109,14 +145,17 @@ const Sidebar = () => {
               setCharacterImageById(data.characterImageById || {});
               if (Array.isArray(data.recentStories)) setRecentStories(data.recentStories);
               setLoading(false);
+              setRefreshing(false);
               return; // API 호출 스킵
             }
           }
         } catch (_) {}
       }
-      setLoading(true);
-      // 백엔드에서 최근 50개만 가져오기
-      const response = await chatAPI.getChatRooms({ limit: 50 });
+      if (isInitial) setLoading(true);
+      else setRefreshing(true);
+
+      // 백엔드에서 최근 15개만 가져오기 (성능/안정성)
+      const response = await chatAPI.getChatRooms({ limit: 15 });
       const rooms = response.data || [];
       setChatRooms(rooms);
       
@@ -170,6 +209,7 @@ const Sidebar = () => {
       console.error('채팅방 목록을 불러오는데 실패했습니다.', error);
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   };
 
@@ -303,7 +343,15 @@ const Sidebar = () => {
           onClick={(e) => {
             if (!requireAuth('캐릭터 생성')) {
               e.preventDefault();
+              return;
             }
+            // ✅ 경쟁사 UX: 임시저장된 초안이 있으면 모달을 먼저 띄운다.
+            try {
+              if (hasCreateCharacterDraft()) {
+                e.preventDefault();
+                setDraftPromptOpen(true);
+              }
+            } catch (_) {}
           }}
           className="flex items-center justify-center w-full px-4 py-2.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors font-medium text-sm shadow-lg"
         >
@@ -349,9 +397,17 @@ const Sidebar = () => {
         {/* A While Ago - 로그인 시에만 표시 */}
         {isAuthenticated && (
         <div className="px-3 pt-4">
-          <p className="px-1 text-xs text-gray-500 mb-2">히스토리</p>
+          <div className="flex items-center justify-between px-1 mb-2">
+            <p className="text-xs text-gray-500">히스토리</p>
+            {refreshing ? (
+              <div className="flex items-center gap-1 text-[11px] text-gray-500">
+                <Loader2 className="w-3 h-3 animate-spin" aria-hidden="true" />
+                <span>갱신중</span>
+              </div>
+            ) : null}
+          </div>
           <div className="space-y-1">
-            {loading ? (
+            {(loading && (!Array.isArray(chatRooms) || chatRooms.length === 0)) ? (
               Array.from({ length: 3 }).map((_, i) => (
                 <div key={i} className="flex items-center space-x-3 px-4 py-2">
                   <Skeleton className="h-8 w-8 rounded-md" />
@@ -559,6 +615,42 @@ const Sidebar = () => {
         isOpen={showPersonaModal}
         onClose={() => setShowPersonaModal(false)}
       />
+
+      {/* ✅ 경쟁사 UX: 임시저장 불러오기 모달 (사이드바에서 표시) */}
+      <Dialog open={draftPromptOpen} onOpenChange={setDraftPromptOpen}>
+        <DialogContent className="bg-[#111111] border border-purple-500/70 text-white max-w-[340px] rounded-2xl">
+          <DialogHeader>
+            <DialogTitle className="text-center text-white text-base font-semibold">
+              임시저장된 설정이 있는데
+              <br />
+              불러올까요?
+            </DialogTitle>
+          </DialogHeader>
+          <div className="mt-2 space-y-3">
+            <button
+              type="button"
+              onClick={handleDraftStartFresh}
+              className="w-full h-11 rounded-md bg-purple-700 text-white font-semibold hover:bg-purple-800 transition-colors"
+            >
+              새로 만들기
+            </button>
+            <button
+              type="button"
+              onClick={handleDraftLoad}
+              className="w-full h-11 rounded-md bg-purple-600 text-white font-semibold hover:bg-purple-700 transition-colors"
+            >
+              불러오기
+            </button>
+            <button
+              type="button"
+              onClick={() => setDraftPromptOpen(false)}
+              className="w-full h-11 rounded-md bg-purple-900/60 text-white font-semibold hover:bg-purple-900/80 transition-colors"
+            >
+              취소
+            </button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
     </aside>
   );

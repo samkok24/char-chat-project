@@ -31,6 +31,67 @@ from app.schemas import (
 
 # 🔥 CAVEDUCK 스타일 고급 캐릭터 생성 서비스
 
+def _mirror_fields_from_start_sets(basic_info) -> Optional[Dict[str, Any]]:
+    """
+    start_sets(SSOT)로부터 선택된 세트를 추출해 greeting/introduction_scenes 미러링 값을 만든다.
+
+    의도/원리:
+    - 신규(일반 캐릭터챗) 생성 UI는 start_sets에 여러 세트(도입부+첫대사)를 저장한다.
+    - 기존 채팅/프롬프트 로직은 greeting/introduction_scenes를 사용하므로,
+      선택된 1개 세트를 기존 필드로 "미러링"해 호환성을 유지한다.
+    - start_sets가 없거나 형태가 맞지 않으면 None을 반환하여 기존 필드를 그대로 사용한다.
+    """
+    try:
+        ss = getattr(basic_info, "start_sets", None)
+        if not isinstance(ss, dict):
+            return None
+        items = ss.get("items")
+        if not isinstance(items, list) or not items:
+            return None
+
+        selected_id = str(ss.get("selectedId") or ss.get("selected_id") or "").strip()
+        picked = None
+        if selected_id:
+            for it in items:
+                if isinstance(it, dict) and str(it.get("id") or "").strip() == selected_id:
+                    picked = it
+                    break
+        if picked is None:
+            picked = items[0] if isinstance(items[0], dict) else None
+        if not isinstance(picked, dict):
+            return None
+
+        intro = str(picked.get("intro") or picked.get("introduction") or "").strip()
+        first_line = str(picked.get("firstLine") or picked.get("first_line") or "").strip()
+        title = str(picked.get("title") or "도입부 1").strip() or "도입부 1"
+
+        # secret: 기존 전역 비밀정보(도입부[0].secret)를 우선 보존
+        secret = ""
+        try:
+            scenes = getattr(basic_info, "introduction_scenes", None)
+            if isinstance(scenes, list) and scenes:
+                secret = str(getattr(scenes[0], "secret", "") or "")
+        except Exception:
+            secret = ""
+        if not secret:
+            secret = str(picked.get("secret") or "").strip()
+
+        intro_scenes = []
+        if intro:
+            intro_scenes = [{
+                "title": title[:100],
+                "content": intro[:2000],
+                "secret": secret[:1000] if secret else None
+            }]
+
+        return {
+            "greeting": first_line[:500] if first_line else None,
+            "introduction_scenes": intro_scenes,
+        }
+    except Exception:
+        return None
+
+
 async def create_advanced_character(
     db: AsyncSession,
     creator_id: uuid.UUID,
@@ -40,6 +101,10 @@ async def create_advanced_character(
     
     # 1단계: 기본 정보로 캐릭터 생성
     basic_info = character_data.basic_info
+
+    mirrored = _mirror_fields_from_start_sets(basic_info)
+    greeting_value = (mirrored.get("greeting") if mirrored else None) or basic_info.greeting
+    intro_value = (mirrored.get("introduction_scenes") if mirrored else None) or [scene.model_dump() for scene in basic_info.introduction_scenes]
     
     character = Character(
         creator_id=creator_id,
@@ -48,7 +113,7 @@ async def create_advanced_character(
         description=basic_info.description,
         personality=basic_info.personality,
         speech_style=basic_info.speech_style,
-        greeting=basic_info.greeting,
+        greeting=greeting_value,
         
         # 세계관 설정
         world_setting=basic_info.world_setting,
@@ -56,7 +121,9 @@ async def create_advanced_character(
         use_custom_description=basic_info.use_custom_description,
         
         # 도입부 시스템 (JSON 저장)
-        introduction_scenes=[scene.model_dump() for scene in basic_info.introduction_scenes],
+        introduction_scenes=intro_value,
+        # start_sets(SSOT)
+        start_sets=getattr(basic_info, "start_sets", None),
         
         # 캐릭터 타입 및 언어
         character_type=basic_info.character_type,
@@ -128,19 +195,32 @@ async def update_advanced_character(
     # 1단계: 기본 정보 업데이트
     if character_data.basic_info:
         basic_info = character_data.basic_info
+        mirrored = _mirror_fields_from_start_sets(basic_info)
+
         update_data.update({
             'name': basic_info.name,
             'description': basic_info.description,
             'personality': basic_info.personality,
             'speech_style': basic_info.speech_style,
-            'greeting': basic_info.greeting,
+            'greeting': (mirrored.get("greeting") if mirrored else None) or basic_info.greeting,
             'world_setting': basic_info.world_setting,
             'user_display_description': basic_info.user_display_description,
             'use_custom_description': basic_info.use_custom_description,
-            'introduction_scenes': [scene.model_dump() for scene in basic_info.introduction_scenes],
+            'introduction_scenes': (mirrored.get("introduction_scenes") if mirrored else None) or [scene.model_dump() for scene in basic_info.introduction_scenes],
             'character_type': basic_info.character_type,
             'base_language': basic_info.base_language
         })
+        # start_sets는 SSOT로 별도 저장 (요청에 포함된 경우에만 업데이트)
+        try:
+            # Pydantic v2: model_fields_set, v1: __fields_set__
+            fields_set = getattr(basic_info, "model_fields_set", None)
+            if fields_set is None:
+                fields_set = getattr(basic_info, "__fields_set__", set())
+            if isinstance(fields_set, set) and ("start_sets" in fields_set):
+                update_data['start_sets'] = getattr(basic_info, "start_sets", None)
+        except Exception:
+            # 필드셋 확인 실패 시에는 안전하게 start_sets를 건드리지 않는다.
+            pass
     
     # 2단계: 미디어 설정 업데이트
     if character_data.media_settings:

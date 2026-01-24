@@ -1,5 +1,48 @@
 @import "tailwindcss";
 
+/**
+ * ✅ Pretendard Variable 로드
+ *
+ * 주의:
+ * - @font-face는 일부 환경에서 @layer 내부에 넣으면 무시되는 케이스가 있어,
+ *   최상단(레이어 밖)에 둬서 항상 등록되게 한다.
+ */
+@font-face {
+  font-family: "Pretendard Variable";
+  src: url("/fonts/PretendardVariable.woff2") format("woff2");
+  font-weight: 45 920;
+  font-style: normal;
+  font-display: swap;
+}
+
+@layer base {
+  /**
+   * ✅ 전역 폰트 패밀리(SSOT)
+   *
+   * 의도/원리:
+   * - 사이트 전체 UI(텍스트/버튼/입력/모달)의 기본 폰트를 하나로 통일한다.
+   * - 폰트는 "앞에 있는 것부터" 로드/설치 여부에 따라 자동 폴백된다.
+   *
+   * 주의:
+   * - Pretendard는 이 선언만으로 자동 다운로드되지 않는다(실제 로드가 없으면 OS 기본 폰트로 폴백됨).
+   */
+  html,
+  body {
+    /* ✅ Tailwind preflight(body 폰트) 덮어쓰기: 전역 SSOT */
+    font-family: "Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont, system-ui, Roboto,
+      "Helvetica Neue", "Segoe UI", "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic",
+      "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", sans-serif !important;
+  }
+
+  /* ✅ form 컨트롤까지 강제 상속(브라우저/리셋 차이 방어) */
+  button,
+  input,
+  textarea,
+  select {
+    font-family: inherit !important;
+  }
+}
+
 @layer utilities {
   .border {
     border-width: 1px;
@@ -185,6 +228,8 @@
     --input-bg: #111827; /* gray-900 */
     --input-border: #374151; /* gray-700 */
     --input-fg: #ffffff;
+    /* ✅ 레이아웃 SSOT: 페이지 최대 폭(경쟁사 스타일 위저드 레이아웃에 사용) */
+    --page-max-width: 1200px;
   }
   [data-theme="light"] {
     --app-bg: #f8fafc; /* slate-50 */

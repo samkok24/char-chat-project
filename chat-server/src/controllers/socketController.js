@@ -470,6 +470,24 @@ class SocketController {
           
           io.to(roomId).emit('new_message', aiMessageData);
         }
+
+        // ✅ 엔딩 메시지(별도) 브로드캐스트: 즉시 UI에 표시되도록 한다.
+        try {
+          const ending = aiResponse?.data?.ending_message;
+          if (ending && ending.id && typeof ending.content === 'string') {
+            const endingData = {
+              id: ending.id,
+              roomId,
+              senderType: 'character',
+              senderId: room.characterId,
+              senderName: room.characterName || 'AI',
+              content: ending.content,
+              timestamp: ending.created_at || new Date().toISOString(),
+              message_metadata: ending.message_metadata || undefined,
+            };
+            io.to(roomId).emit('new_message', endingData);
+          }
+        } catch (_) {}
       } catch (apiError) {
         const status = apiError?.response?.status;
         safeAck({ ok: false, error: 'backend_failed', status });

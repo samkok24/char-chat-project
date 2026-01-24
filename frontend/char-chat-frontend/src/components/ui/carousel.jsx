@@ -1,6 +1,5 @@
 "use client";
 import * as React from "react"
-import useEmblaCarousel from "embla-carousel-react";
 import { ArrowLeft, ArrowRight } from "lucide-react"
 
 import { cn } from "@/lib/utils"
@@ -27,26 +26,74 @@ function Carousel({
   children,
   ...props
 }) {
-  const [carouselRef, api] = useEmblaCarousel({
-    ...opts,
-    axis: orientation === "horizontal" ? "x" : "y",
-  }, plugins)
+  /**
+   * ✅ 안전 캐러셀(Embla 제거)
+   *
+   * 배경:
+   * - 일부 환경에서 Embla(ref=useState setter) + Radix Slot(composeRefs) 조합이
+   *   ref null↔node 토글을 유발하며 "Maximum update depth exceeded" 크래시가 발생할 수 있다.
+   *
+   * 목표:
+   * - 기존 shadcn Carousel API(컴포넌트/props/export) 형태는 유지
+   * - 외부 의존(Embla) 없이 인덱스 기반으로 슬라이드
+   *
+   * 방어적:
+   * - 사용처가 없더라도, 혹시 남아있어도 앱이 절대 죽지 않도록 설계한다.
+   */
+  const resolvedOrientation =
+    orientation || (opts?.axis === "y" ? "vertical" : "horizontal");
+
+  const [activeIndex, setActiveIndex] = React.useState(0)
+  const [snapCount, setSnapCount] = React.useState(0)
   const [canScrollPrev, setCanScrollPrev] = React.useState(false)
   const [canScrollNext, setCanScrollNext] = React.useState(false)
 
-  const onSelect = React.useCallback((api) => {
-    if (!api) return
-    setCanScrollPrev(api.canScrollPrev())
-    setCanScrollNext(api.canScrollNext())
-  }, [])
+  const activeIndexRef = React.useRef(0)
+  const snapCountRef = React.useRef(0)
+  const listenersRef = React.useRef({
+    select: new Set(),
+    reInit: new Set(),
+  })
+
+  React.useEffect(() => {
+    activeIndexRef.current = activeIndex
+    snapCountRef.current = snapCount
+    setCanScrollPrev(activeIndex > 0)
+    setCanScrollNext(snapCount > 0 && activeIndex < snapCount - 1)
+
+    try {
+      listenersRef.current.select.forEach((fn) => {
+        try { fn(apiRef.current) } catch (_) {}
+      })
+    } catch (_) {}
+  }, [activeIndex, snapCount])
+
+  // snapCount가 변하면 activeIndex를 안전하게 보정 + reInit 이벤트를 흉내낸다.
+  React.useEffect(() => {
+    if (snapCount <= 0) {
+      setActiveIndex(0)
+    } else {
+      setActiveIndex((prev) => Math.max(0, Math.min(snapCount - 1, Number(prev) || 0)))
+    }
+    try {
+      listenersRef.current.reInit.forEach((fn) => {
+        try { fn(apiRef.current) } catch (_) {}
+      })
+    } catch (_) {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [snapCount])
 
   const scrollPrev = React.useCallback(() => {
-    api?.scrollPrev()
-  }, [api])
+    setActiveIndex((prev) => Math.max(0, (Number(prev) || 0) - 1))
+  }, [])
 
   const scrollNext = React.useCallback(() => {
-    api?.scrollNext()
-  }, [api])
+    setActiveIndex((prev) => {
+      const next = (Number(prev) || 0) + 1
+      const max = Math.max(0, (snapCountRef.current || 0) - 1)
+      return Math.min(max, next)
+    })
+  }, [])
 
   const handleKeyDown = React.useCallback((event) => {
     if (event.key === "ArrowLeft") {
@@ -58,34 +105,66 @@ function Carousel({
     }
   }, [scrollPrev, scrollNext])
 
-  React.useEffect(() => {
-    if (!api || !setApi) return
-    setApi(api)
-  }, [api, setApi])
+  const apiRef = React.useRef(null)
+  if (!apiRef.current) {
+    apiRef.current = {
+      // Embla 호환 형태(최소) — 사용처가 있어도 크래시 없이 동작하도록.
+      scrollPrev: () => scrollPrev(),
+      scrollNext: () => scrollNext(),
+      scrollTo: (idx) => {
+        setActiveIndex(() => {
+          const n = Number(idx) || 0
+          const max = Math.max(0, (snapCountRef.current || 0) - 1)
+          return Math.max(0, Math.min(max, n))
+        })
+      },
+      selectedScrollSnap: () => Number(activeIndexRef.current) || 0,
+      scrollSnapList: () => Array.from({ length: Math.max(0, snapCountRef.current || 0) }).map((_, i) => i),
+      canScrollPrev: () => (Number(activeIndexRef.current) || 0) > 0,
+      canScrollNext: () => {
+        const i = Number(activeIndexRef.current) || 0
+        const c = Number(snapCountRef.current) || 0
+        return c > 0 && i < c - 1
+      },
+      on: (evt, fn) => {
+        try {
+          if (!evt || typeof fn !== "function") return
+          const key = String(evt)
+          const bucket = listenersRef.current[key]
+          if (bucket && bucket.add) bucket.add(fn)
+        } catch (_) {}
+      },
+      off: (evt, fn) => {
+        try {
+          if (!evt || typeof fn !== "function") return
+          const key = String(evt)
+          const bucket = listenersRef.current[key]
+          if (bucket && bucket.delete) bucket.delete(fn)
+        } catch (_) {}
+      },
+    }
+  }
 
+  // setApi는 한 번만 주는 것이 정상(Embla처럼). api 객체는 ref에 고정한다.
   React.useEffect(() => {
-    if (!api) return
-    onSelect(api)
-    api.on("reInit", onSelect)
-    api.on("select", onSelect)
-
-    return () => {
-      api?.off("select", onSelect)
-    };
-  }, [api, onSelect])
+    if (!setApi) return
+    try { setApi(apiRef.current) } catch (_) {}
+  }, [setApi])
 
   return (
     <CarouselContext.Provider
       value={{
-        carouselRef,
-        api: api,
+        api: apiRef.current,
         opts,
-        orientation:
-          orientation || (opts?.axis === "y" ? "vertical" : "horizontal"),
+        orientation: resolvedOrientation,
         scrollPrev,
         scrollNext,
         canScrollPrev,
         canScrollNext,
+        activeIndex,
+        setActiveIndex,
+        snapCount,
+        setSnapCount,
       }}>
       <div
         onKeyDownCapture={handleKeyDown}
@@ -102,22 +181,36 @@ function Carousel({
 
 function CarouselContent({
   className,
+  children,
   ...props
 }) {
-  const { carouselRef, orientation } = useCarousel()
+  const { orientation, activeIndex, setSnapCount } = useCarousel()
+  const count = React.Children.count(children)
+
+  React.useEffect(() => {
+    try { setSnapCount(count) } catch (_) {}
+  }, [count, setSnapCount])
+
+  const axis = orientation === "horizontal" ? "X" : "Y"
+  const transform = orientation === "horizontal"
+    ? `translate3d(-${Math.max(0, Number(activeIndex) || 0) * 100}%, 0, 0)`
+    : `translate3d(0, -${Math.max(0, Number(activeIndex) || 0) * 100}%, 0)`
 
   return (
     <div
-      ref={carouselRef}
       className="overflow-hidden"
       data-slot="carousel-content">
       <div
         className={cn(
-          "flex",
+          "flex transition-transform duration-300 ease-out will-change-transform",
           orientation === "horizontal" ? "-ml-4" : "-mt-4 flex-col",
           className
         )}
-        {...props} />
+        style={{ transform }}
+        {...props}
+      >
+        {children}
+      </div>
     </div>
   );
 }

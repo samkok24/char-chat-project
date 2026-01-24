@@ -32,6 +32,11 @@ class Character(Base):
     
     # 📖 도입부 시스템
     introduction_scenes = Column(JSON)
+
+    # 🚀 시작 세트(도입부+첫대사) - 일반 캐릭터챗 전용 확장(SSOT)
+    # - 기존 introduction_scenes/greeting 구조를 재편하지 않고, 신규 UI에서만 사용하는 JSON 저장소로 둔다.
+    # - 원작챗(origin_story_id가 있는 캐릭터)은 기존 흐름을 유지하므로 start_sets는 사용하지 않는다.
+    start_sets = Column(JSON, nullable=True)
     
     # 🎯 캐릭터 타입 및 언어
     character_type = Column(String(50), default="roleplay")

@@ -16,6 +16,7 @@ import './App.css';
 import MediaEventsBridge from './components/MediaEventsBridge';
 import ToastEventsBridge from './components/ToastEventsBridge';
 import PresenceHeartbeatBridge from './components/PresenceHeartbeatBridge';
+import PostLoginRedirectBridge from './components/PostLoginRedirectBridge';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -94,10 +95,11 @@ const StoryDiveNovelPage = React.lazy(() => import('./pages/StoryDiveNovelPage')
 
 // 로딩 컴포넌트 (CAVEDUCK 스타일 - 심플)
 const PageLoader = () => (
-  <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+  // ✅ 다크 테마 앱에서 라우트 전환 시 "하얀 화면" 플래시 방지
+  <div className="min-h-screen bg-gray-900 text-gray-200 flex items-center justify-center">
     <div className="text-center">
-      <Loader2 className="w-8 h-8 animate-spin mx-auto mb-4 text-purple-600" />
-      <p className="text-gray-600">페이지를 불러오는 중...</p>
+      <Loader2 className="w-8 h-8 animate-spin mx-auto mb-4 text-purple-400" />
+      <p className="text-gray-400">페이지를 불러오는 중...</p>
     </div>
   </div>
 );
@@ -129,6 +131,7 @@ const PublicRoute = ({ children }) => {
 const AppRouter = () => {
   return (
     <Router>
+      <PostLoginRedirectBridge />
       <Suspense fallback={<PageLoader />}>
         <Routes>
           {/* 🔥 CAVEDUCK 핵심 페이지 (우선 로딩) */}
@@ -171,7 +174,8 @@ const AppRouter = () => {
           />
           
           {/* 실제 웹소켓 채팅이 이루어지는 페이지 */}
-          <Route path="/ws/chat/:characterId" element={<ProtectedRoute><ChatPage /></ProtectedRoute>} />
+          {/* 게스트도 진입은 가능(전송 시 로그인 요구는 ChatPage에서 처리) */}
+          <Route path="/ws/chat/:characterId" element={<ChatPage />} />
 
           {/* 🏊 스토리 다이브 라우트 */}
           <Route path="/storydive/novels/:novelId" element={<ProtectedRoute><StoryDiveNovelPage /></ProtectedRoute>} />

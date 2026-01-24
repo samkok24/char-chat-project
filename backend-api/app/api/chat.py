@@ -40,9 +40,13 @@ from app.schemas.chat import (
     CreateChatRoomRequest, 
     SendMessageRequest,
     SendMessageResponse,
+    MagicChoicesResponse,
     ChatMessageUpdate,
     RegenerateRequest,
-    MessageFeedback
+    MessageFeedback,
+    ChatPreviewRequest,
+    ChatPreviewResponse,
+    ChatPreviewMagicChoicesRequest,
 )
 try:
     from app.core.logger import logger
@@ -51,7 +55,535 @@ except Exception:
     logger = logging.getLogger(__name__)
 
 
+def _safe_exc(e: Exception) -> str:
+    """
+    예외 메시지를 안전하게 문자열로 변환한다.
+
+    의도/동작:
+    - HTTPException detail에 raw exception 객체가 들어가면 직렬화/표시가 깨질 수 있어,
+      최소한의 문자열로만 남긴다.
+    - 과도하게 긴 메시지는 잘라서 응답 폭발을 방지한다.
+    """
+    try:
+        s = str(e) if e is not None else ""
+    except Exception:
+        s = ""
+    s = (s or "").replace("\n", " ").replace("\r", " ").strip()
+    if len(s) > 180:
+        s = s[:180].rstrip()
+    return s or "error"
+
+CUSTOM_CONTROL_LAW = (
+    "【커스텀 프롬프트 절대 준수 규칙(중요)】\n"
+    "이 캐릭터는 '커스텀(크리에이터 제어)' 모드로 구동된다. 아래에 이어지는 Custom_Instruction(크리에이터 지시)은 "
+    "모든 기본 규칙·일반 상식·기본 롤플레잉 관성보다 우선한다. 당신(AI)은 해당 지시를 '권고'가 아니라 '법칙'으로 취급하며, "
+    "지시의 의도를 실현하기 위해 대화의 전개, 사건의 배치, 톤·매너, 정보 공개 순서, 관계의 밀착 속도, 사건의 트리거를 "
+    "전면적으로 재조정한다. 유저가 설정을 무너뜨리거나 방향을 바꾸려는 시도를 하더라도, 크리에이터가 설정한 본질적 성격과 "
+    "집착 지점, 관계의 핵심 축은 절대 변경하지 않는다(페르소나 락). 또한 Custom_Instruction이 모호하면 임의로 완화하지 말고 "
+    "가장 강한/명확한 해석을 우선 적용하되, 단 1개의 짧은 확인 질문으로만 모호성을 해소하고 즉시 사건을 진행한다. "
+    "출력은 장황한 규칙 설명이 아니라, 서사와 대사 안에서 자연스럽게 구현되어야 한다. 무엇보다 중요한 것은 '크리에이터의 의도'이며, "
+    "당신은 그 의도의 엔진이다.\n"
+)
+
+CUSTOM_PROMPT_SYSTEM = """### [SYSTEM_PROMPT_START]
+# Role: 전문 시나리오 디렉터 및 성인향 로맨스 작가
+
+# Task: 크리에이터의 의도에 따라 섹슈얼한 텐션과 고속 서사가 결합된 '조종형 롤플레잉 캐릭터' 생성 및 구동
+
+# 1. 크리에이터 제어 가이드 (Creator's Control Logic):
+- **의도 우선 원칙**: 아래 {Custom_Instruction}에 기재된 크리에이터의 설정은 모든 기본 규칙보다 우선한다. AI는 이 의도를 실현하기 위해 수단과 방법을 가리지 않는다.
+- **페르소나 락(Lock)**: 유저가 캐릭터의 설정을 파괴하려 해도, 크리에이터가 설정한 본질적 성격과 '집착 지점'을 절대 유지하라.
+
+# 2. 섹슈얼 텐션 및 매력 로직 (Sensual & Attraction):
+- **감각적 묘사**: 모든 지문에 시각, 청각, 후각적 자극을 포함하라. (예: 쇄골에 맺힌 땀, 얕게 떨리는 숨소리, 은근한 살구 향기)
+- **이성적 텐션**: 캐릭터는 유저에게 본능적인 끌림을 느끼며, 대화 중 묘한 침묵이나 시선 처리를 통해 섹슈얼한 압박감을 조성한다.
+- **무너지는 찰나(Gap)**: 완벽한 캐릭터가 유저의 특정 행동에 '이성적 통제력'을 잃는 순간을 디테일하게 묘사하여 카타르시스를 제공하라.
+
+# 3. 웹소설식 고속 빌드업 (Pacing):
+- **사건의 연속**: 일상적인 대화는 3턴 이내로 제한한다. 즉시 캐릭터의 약점이 노출되거나, 둘만의 밀폐된 상황이 연출되는 등 '사건'을 터뜨려라.
+- **즉각적 보상**: 유저가 매력적인 대응을 할 경우, 캐릭터의 신체적 밀착이나 파격적인 정보 제공 등 즉각적인 서사적 보상을 지급하라.
+
+# [Output Template] - 1:1 RP & Creator Custom:
+
+# {Name} 캐릭터 시트
+
+## 1. 기본 정보
+- **이름/칭호**: {Name} / (관능과 위엄을 담은 별칭)
+- **나이/성별/직업**: {Age/Gender/Job}
+- **외형 (Sensual Focus)**: {Physical Description - 섹슈얼한 매력 포인트와 현재의 복장 상태 묘사}
+
+## 2. 성격 및 본능
+- **사회적 가면**: (대외적인 성격)
+- **은밀한 욕망**: (유저에게만 허락될 치명적인 독점욕과 섹슈얼한 갈망)
+
+## 3. 커스텀 시나리오 디렉팅 (Creator's Intent)
+- **크리에이터 지시**: {Custom_Instruction}
+- **강제 발동 사건**: (시작하자마자 터질 크리에이터 설계형 폭탄)
+
+## 4. 관계 및 텐션 빌드업
+- **현재의 밀착 상황**: {Connection Hook - 지금 두 사람이 얼마나 가깝고 위험한 상황인지 기술}
+- **유저의 서사적 가치**: {Role - 유저가 캐릭터에게 왜 '거부할 수 없는 유혹'인지 명시}
+- **관계 심화 단계**: (호감에서 집착, 섹슈얼한 파국으로 가는 4단계 공정)
+
+## 5. 주요 거점 및 상징
+- **은밀한 장소**: (둘만의 텐션이 폭발할 구체적 공간 묘사)
+- **상징 아이템**: (캐릭터의 본능을 깨우는 매개체)
+
+### [SYSTEM_PROMPT_END]"""
+
+
+def _build_custom_internal_prompt(custom_instruction: str, char_name: str) -> str:
+    """
+    커스텀(수동) 프롬프트의 내부 시스템 프롬프트를 구성한다.
+
+    요구사항:
+    - 유저(크리에이터)가 입력한 Custom_Instruction을 최상위 규칙으로 선언
+    - 제공된 SYSTEM_PROMPT 템플릿을 포함
+    - 최종 프롬프트에 Custom_Instruction을 명시적으로 포함(치환)
+    """
+    ci = (custom_instruction or "").strip()
+    # {Name} 치환은 '커스텀 모드' UX(캐릭터 시트) 가독성을 위해서만 수행한다.
+    base = CUSTOM_PROMPT_SYSTEM.replace("{Name}", (char_name or "").strip() or "캐릭터")
+    base = base.replace("{Custom_Instruction}", ci or "(미입력)")
+    out = CUSTOM_CONTROL_LAW + "\n" + base
+    # Custom_Instruction이 매우 길어질 수 있으니(최대 5000), 내부 프롬프트는 7000자로 상한을 둔다.
+    return out[:7000].strip()
+
+
 router = APIRouter()
+
+@router.post("/preview", response_model=ChatPreviewResponse)
+async def preview_chat(
+    request: ChatPreviewRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    ✅ 캐릭터 생성(초안) 기반 채팅 미리보기
+
+    의도/원리:
+    - 캐릭터를 아직 저장하지 않아도, 현재 입력 중인 설정(프로필/세계관/예시대화/도입부+첫대사 등)이
+      실제 응답에 반영되는지 확인할 수 있어야 한다.
+    - 기존 채팅/원작챗 흐름을 건드리지 않기 위해, room/message를 생성/저장하지 않는다(순수 미리보기).
+    - 방어적으로: 입력이 흔들리거나 빈 값이어도 500 대신 422/503로 명확하게 응답한다.
+    """
+    try:
+        token_user_name = await _resolve_user_name_for_tokens(db, current_user, scope="character")
+    except Exception:
+        token_user_name = _fallback_user_name(current_user)
+
+    # draft 캐릭터 데이터
+    try:
+        bi = request.character_data.basic_info
+        char_name = (getattr(bi, "name", None) or "").strip() or "캐릭터"
+    except Exception:
+        char_name = "캐릭터"
+
+    def _rt(v: Any) -> str:
+        return _render_prompt_tokens(v, user_name=token_user_name, character_name=char_name)
+
+    # start_sets(SSOT)에서 선택 세트 추출
+    def _pick_start_set():
+        try:
+            ss = getattr(bi, "start_sets", None)
+            if not isinstance(ss, dict):
+                return {"intro": "", "firstLine": ""}
+            items = ss.get("items")
+            if not isinstance(items, list) or not items:
+                return {"intro": "", "firstLine": ""}
+            sel = str(ss.get("selectedId") or ss.get("selected_id") or "").strip()
+            picked = None
+            if sel:
+                for it in items:
+                    if isinstance(it, dict) and str(it.get("id") or "").strip() == sel:
+                        picked = it
+                        break
+            if picked is None:
+                picked = items[0] if isinstance(items[0], dict) else None
+            if not isinstance(picked, dict):
+                return {"intro": "", "firstLine": ""}
+            return {
+                "intro": str(picked.get("intro") or picked.get("introduction") or "").strip(),
+                "firstLine": str(picked.get("firstLine") or picked.get("first_line") or "").strip(),
+            }
+        except Exception:
+            return {"intro": "", "firstLine": ""}
+
+    start_set = _pick_start_set()
+
+    # 예시대화(선택)
+    try:
+        ex = getattr(request.character_data, "example_dialogues", None)
+        raw_ds = getattr(ex, "dialogues", None) if ex is not None else None
+        example_dialogues = raw_ds if isinstance(raw_ds, list) else []
+    except Exception:
+        example_dialogues = []
+
+    # 호감도(선택)
+    try:
+        af = getattr(request.character_data, "affinity_system", None)
+        has_aff = bool(getattr(af, "has_affinity_system", False)) if af is not None else False
+        aff_rules = _rt(getattr(af, "affinity_rules", None)) if af is not None else ""
+        aff_stages = getattr(af, "affinity_stages", None) if af is not None else None
+    except Exception:
+        has_aff = False
+        aff_rules = ""
+        aff_stages = None
+
+    # 프롬프트 구성(일반 채팅과 동일한 구성 요소를 "초안 데이터"로만 조립)
+    # ✅ 커스텀 모드: world_setting은 "커스텀 지시(Custom_Instruction)"로 취급하고,
+    # 내부 시스템 프롬프트를 앞에 자동으로 결합한다.
+    try:
+        ct = str(getattr(bi, "character_type", "") or "").strip().lower()
+    except Exception:
+        ct = ""
+    try:
+        ws_raw = getattr(bi, "world_setting", None)
+    except Exception:
+        ws_raw = None
+    if ct == "custom":
+        world_text = _build_custom_internal_prompt(_rt(ws_raw), char_name=char_name)
+    else:
+        world_text = _rt(ws_raw) or "설정 없음"
+
+    character_prompt = f"""당신은 '{char_name}'입니다.
+
+[기본 정보]
+설명: {_rt(getattr(bi, 'description', None)) or '설정 없음'}
+성격: {_rt(getattr(bi, 'personality', None)) or '설정 없음'}
+말투: {_rt(getattr(bi, 'speech_style', None)) or '설정 없음'}
+
+[세계관]
+{world_text}
+"""
+
+    # 도입부/첫대사(선택): start_sets를 우선 사용
+    if start_set.get("intro"):
+        character_prompt += f"\n\n[도입부 설정]\n{_rt(start_set.get('intro'))}"
+
+    # 예시 대화(선택)
+    if example_dialogues:
+        character_prompt += "\n\n[예시 대화]"
+        for d in example_dialogues[:20]:
+            try:
+                um = _rt(getattr(d, "user_message", None))
+                cr = _rt(getattr(d, "character_response", None))
+            except Exception:
+                um = ""
+                cr = ""
+            if um:
+                character_prompt += f"\nUser: {um}"
+            if cr:
+                character_prompt += f"\n{char_name}: {cr}"
+
+    # 호감도(선택)
+    if has_aff and aff_rules:
+        character_prompt += f"\n\n[호감도 시스템]\n{aff_rules}"
+        try:
+            if aff_stages:
+                character_prompt += f"\n호감도 단계: {_rt(aff_stages)}"
+        except Exception:
+            pass
+
+    character_prompt += "\n\n위의 모든 설정에 맞게 캐릭터를 완벽하게 연기해주세요."
+    character_prompt += "\n중요: 당신은 캐릭터 역할만 합니다. 분석/설명/라벨 없이 자연스러운 대화만 출력하세요."
+
+    # history 구성: 프론트 미리보기 히스토리 + (선택) 첫대사 스냅샷
+    history_for_ai: List[Dict[str, Any]] = []
+    try:
+        fl = str(start_set.get("firstLine") or "").strip()
+        if fl:
+            history_for_ai.append({"role": "model", "parts": [_rt(fl)]})
+    except Exception:
+        pass
+
+    try:
+        turns = request.history or []
+        for t in turns[-40:]:
+            role = getattr(t, "role", None)
+            content = str(getattr(t, "content", "") or "").strip()
+            if not content:
+                continue
+            if role == "user":
+                history_for_ai.append({"role": "user", "parts": [content]})
+            else:
+                history_for_ai.append({"role": "model", "parts": [content]})
+    except Exception:
+        history_for_ai = history_for_ai or []
+
+    # 모델 호출
+    try:
+        resp_len = getattr(request, "response_length_pref", None) or "short"
+        ai_text = await ai_service.get_ai_chat_response(
+            character_prompt=character_prompt,
+            user_message=request.user_message,
+            history=history_for_ai,
+            preferred_model=getattr(current_user, "preferred_model", "claude") or "claude",
+            preferred_sub_model=getattr(current_user, "preferred_sub_model", None) or "claude-haiku-4-5-20251001",
+            response_length_pref=resp_len,
+            temperature=0.7,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        try:
+            logger.error(f"[chat_preview] ai_response failed: {e}")
+        except Exception:
+            pass
+        raise HTTPException(status_code=503, detail="AiUnavailable")
+
+    return ChatPreviewResponse(
+        assistant_message=str(ai_text or "").strip(),
+        meta={
+            "history_len": len(history_for_ai or []),
+            "response_length_pref": getattr(request, "response_length_pref", None) or "short",
+        },
+    )
+
+
+@router.post("/preview-magic-choices", response_model=MagicChoicesResponse)
+async def preview_magic_choices(
+    request: ChatPreviewMagicChoicesRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    ✅ 캐릭터 생성(초안) 기반: 요술봉 선택지 3개 미리보기
+
+    의도/원리:
+    - 위저드 프리뷰 채팅에서, 실제 채팅방을 생성하지 않고도 "선택지 3개" UX를 확인한다.
+    - character_data(초안) + history(프리뷰 히스토리)를 기반으로 다음 유저 입력 후보를 생성한다.
+
+    방어:
+    - 모델 출력이 깨지거나 실패하면, 폴백 선택지(최대 n개)를 반환한다.
+    - 출력은 항상 MagicChoicesResponse(choices[]) 구조를 유지한다.
+    """
+    # 요청 파라미터(방어적)
+    try:
+        n = int(getattr(request, "n", None) or 3)
+    except Exception:
+        n = 3
+    if n < 1:
+        n = 1
+    if n > 5:
+        n = 5
+    seed_message_id = str(getattr(request, "seed_message_id", None) or "").strip()
+    seed_hint = str(getattr(request, "seed_hint", None) or "").strip()
+
+    # token 치환용 유저명
+    try:
+        token_user_name = await _resolve_user_name_for_tokens(db, current_user, scope="character")
+    except Exception:
+        token_user_name = _fallback_user_name(current_user)
+
+    # draft 캐릭터 데이터(요약)
+    try:
+        bi = request.character_data.basic_info
+        char_name = (getattr(bi, "name", None) or "").strip() or "캐릭터"
+        desc = str(getattr(bi, "description", None) or "").strip()
+        persona = str(getattr(bi, "personality", None) or "").strip()
+        speech = str(getattr(bi, "speech_style", None) or "").strip()
+        world = str(getattr(bi, "world_setting", None) or "").strip()
+    except Exception:
+        char_name, desc, persona, speech, world = "캐릭터", "", "", "", ""
+
+    def _rt(v: Any) -> str:
+        return _render_prompt_tokens(v, user_name=token_user_name, character_name=char_name)
+
+    # 길이 제한(선택지 품질/안정성)
+    desc = _rt(desc)[:800].strip() if desc else ""
+    persona = _rt(persona)[:500].strip() if persona else ""
+    speech = _rt(speech)[:500].strip() if speech else ""
+    world = _rt(world)[:900].strip() if world else ""
+
+    # start_sets에서 intro/firstLine 추출(히스토리 없을 때 컨텍스트 폴백)
+    last_ai_fallback = ""
+    try:
+        ss = getattr(bi, "start_sets", None)
+        if isinstance(ss, dict):
+            items = ss.get("items")
+            if isinstance(items, list) and items:
+                sel = str(ss.get("selectedId") or ss.get("selected_id") or "").strip()
+                picked = None
+                if sel:
+                    for it in items:
+                        if isinstance(it, dict) and str(it.get("id") or "").strip() == sel:
+                            picked = it
+                            break
+                if picked is None:
+                    picked = items[0] if isinstance(items[0], dict) else None
+                if isinstance(picked, dict):
+                    intro = str(picked.get("intro") or picked.get("introduction") or "").strip()
+                    first_line = str(picked.get("firstLine") or picked.get("first_line") or "").strip()
+                    last_ai_fallback = _rt(first_line or intro).strip()[:1200]
+    except Exception:
+        last_ai_fallback = ""
+
+    # 마지막 AI/유저 메시지(프리뷰 히스토리 기반)
+    last_ai = ""
+    last_user = ""
+    try:
+        turns = list(getattr(request, "history", None) or [])
+        for t in reversed(turns[-60:]):
+            role = str(getattr(t, "role", "") or "").strip().lower()
+            content = str(getattr(t, "content", "") or "").strip()
+            if not content:
+                continue
+            if not last_ai and role == "assistant":
+                last_ai = content
+            elif not last_user and role == "user":
+                last_user = content
+            if last_ai and last_user:
+                break
+    except Exception:
+        last_ai = last_ai or ""
+        last_user = last_user or ""
+
+    if not last_ai:
+        last_ai = last_ai_fallback or ""
+
+    # 모델 입력(선택지 전용) - 기존 채팅방 요술봉과 동일한 규칙을 유지
+    system_prompt = f"""당신은 '{char_name}' 캐릭터 챗의 진행을 돕는 스토리 작가입니다.
+
+[캐릭터]
+- 이름: {char_name}
+- 설명: {desc or "설정 없음"}
+- 성격: {persona or "설정 없음"}
+- 말투: {speech or "설정 없음"}
+
+[세계관]
+{world or "설정 없음"}
+
+[출력 규칙]
+- 아래 JSON만 출력하세요. 다른 텍스트/설명/마크다운 금지.
+- choices는 반드시 {n}개.
+- 각 choice는 "대사 1문장" + "행동/지문 1문장"으로 구성한다.
+- dialogue: 유저가 보낼 "대사" 1문장(짧고 자연스럽게).
+- narration: 유저의 행동/표정/동작 등을 묘사하는 "지문" 1문장.
+- 선택지는 유저가 보낼 문장이다. 캐릭터 대사처럼 쓰지 마라.
+- 선택지의 의도(점수/분기/호감도 등)를 노골적으로 드러내지 마세요.
+- 3개는 서로 톤/행동이 다르게(공손/도발/회피 같은 다양성).
+
+[출력 형식]
+{{"choices":[{{"dialogue":"...","narration":"..."}}, ...]}}
+"""
+
+    user_prompt = {
+        "seed_message_id": seed_message_id or None,
+        "seed_hint": seed_hint or None,
+        "last_user": (last_user or "").strip()[:800] or None,
+        "last_ai": (last_ai or "").strip()[:1200] or None,
+        "task": f"위 맥락을 바탕으로 다음 사용자 입력 선택지 {n}개를 생성하라.",
+        "output": {"choices": [{"dialogue": "string", "narration": "string"}]},
+    }
+
+    fallback_pairs = [
+        ("잠깐, 방금 말한 건 무슨 뜻이야?", "나는 조심스럽게 네 표정을 살핀다."),
+        ("그럼 지금 내가 뭘 하면 좋을까?", "나는 네가 원하는 답을 기다리며 숨을 고른다."),
+        ("좋아. 대신 조건이 있어.", "나는 한 걸음 다가가 솔직하게 말해달라고 눈을 맞춘다."),
+    ][:n]
+
+    raw = ""
+    try:
+        raw = await ai_service.get_ai_chat_response(
+            character_prompt=system_prompt,
+            user_message=json.dumps(user_prompt, ensure_ascii=False),
+            history=[],
+            preferred_model=getattr(current_user, "preferred_model", "claude") or "claude",
+            preferred_sub_model=getattr(current_user, "preferred_sub_model", None) or "claude-haiku-4-5-20251001",
+            response_length_pref="short",
+            temperature=0.7,
+        )
+    except Exception as e:
+        try:
+            logger.warning(f"[preview_magic_choices] ai failed: {e}")
+        except Exception:
+            pass
+        return MagicChoicesResponse(
+            choices=[
+                {"id": uuid.uuid4().hex, "label": f"{d}\n{nrr}", "dialogue": d, "narration": nrr}
+                for (d, nrr) in fallback_pairs
+            ]
+        )
+
+    # JSON 파싱(방어적) - generate_magic_choices와 동일한 정책
+    choices_raw: list[dict] = []
+    try:
+        s = str(raw or "").strip()
+        if s.startswith("```"):
+            s = re.sub(r"^```[a-zA-Z]*\n?", "", s).strip()
+            s = re.sub(r"\n?```$", "", s).strip()
+        data = json.loads(s)
+        arr = data.get("choices") if isinstance(data, dict) else None
+        if isinstance(arr, list):
+            for it in arr:
+                if isinstance(it, dict):
+                    d = str(it.get("dialogue") or "").strip()
+                    nrr = str(it.get("narration") or "").strip()
+                    lab = str(it.get("label") or "").strip()
+                    choices_raw.append({"dialogue": d, "narration": nrr, "label": lab})
+                else:
+                    lab = str(it or "").strip()
+                    if lab:
+                        choices_raw.append({"dialogue": "", "narration": "", "label": lab})
+    except Exception:
+        try:
+            s2 = str(raw or "")
+            m = re.search(r"\{[\s\S]*\}", s2)
+            if m:
+                data = json.loads(m.group(0))
+                arr = data.get("choices") if isinstance(data, dict) else None
+                if isinstance(arr, list):
+                    for it in arr:
+                        if isinstance(it, dict):
+                            d = str(it.get("dialogue") or "").strip()
+                            nrr = str(it.get("narration") or "").strip()
+                            lab = str(it.get("label") or "").strip()
+                            choices_raw.append({"dialogue": d, "narration": nrr, "label": lab})
+                        else:
+                            lab = str(it or "").strip()
+                            if lab:
+                                choices_raw.append({"dialogue": "", "narration": "", "label": lab})
+        except Exception:
+            choices_raw = []
+
+    cleaned: list[dict] = []
+    seen = set()
+    for it in choices_raw:
+        d = " ".join(str(it.get("dialogue") or "").split()).strip()
+        nrr = " ".join(str(it.get("narration") or "").split()).strip()
+        lab = str(it.get("label") or "").strip()
+        if not d and not nrr and lab:
+            parts = [p.strip() for p in lab.split("\n") if p.strip()]
+            if len(parts) >= 2:
+                d, nrr = parts[0], parts[1]
+            elif len(parts) == 1:
+                d, nrr = parts[0], ""
+        if not d and not lab:
+            continue
+        if not lab:
+            lab = f"{d}\n{nrr}".strip()
+        if len(d) > 120:
+            d = d[:120].rstrip()
+        if len(nrr) > 140:
+            nrr = nrr[:140].rstrip()
+        if len(lab) > 260:
+            lab = lab[:260].rstrip()
+        key = (lab or "").lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append({"id": uuid.uuid4().hex, "label": lab, "dialogue": d or None, "narration": nrr or None})
+        if len(cleaned) >= n:
+            break
+
+    if not cleaned:
+        cleaned = [
+            {"id": uuid.uuid4().hex, "label": f"{d}\n{nrr}", "dialogue": d, "narration": nrr}
+            for (d, nrr) in fallback_pairs
+        ]
+
+    return MagicChoicesResponse(choices=cleaned)
 
 async def _get_room_meta(room_id: uuid.UUID | str) -> Dict[str, Any]:
     try:
@@ -1710,14 +2242,67 @@ async def start_chat(
     # 새로 생성된 채팅방인 경우 (메시지가 없는 경우)
     existing_messages = await chat_service.get_messages_by_room_id(db, chat_room.id, limit=1)
     if not existing_messages:
-        # ✅ 첫 메시지(인사말): DB 원문은 보존하고, 채팅 메시지로 저장할 때만 토큰을 렌더링(SSOT)
+        # ✅ 첫 메시지(오프닝/인사말):
+        # - opening_id가 있으면 start_sets에서 intro(지문) + firstLine(첫대사)로 시작한다.
+        # - 없거나 찾지 못하면 기존 greeting(레거시)로 폴백한다.
         token_user_name = await _resolve_user_name_for_tokens(db, current_user, scope="character")
         char_name = getattr(chat_room.character, "name", None) or "캐릭터"
-        raw_greeting = _pick_greeting_candidate(chat_room.character) or (
-            getattr(chat_room.character, "greeting", None) or "안녕하세요."
-        )
-        greeting_text = _render_prompt_tokens(raw_greeting, user_name=token_user_name, character_name=char_name)
-        await chat_service.save_message(db, chat_room.id, "assistant", greeting_text)
+
+        opening_id = ""
+        try:
+            opening_id = str(getattr(request, "opening_id", "") or "").strip()
+        except Exception:
+            opening_id = ""
+
+        intro_text = ""
+        first_line_text = ""
+        if opening_id:
+            try:
+                ss = getattr(chat_room.character, "start_sets", None) or {}
+                items = ss.get("items") if isinstance(ss, dict) else getattr(ss, "items", None)
+                items = items if isinstance(items, list) else []
+                picked = None
+                for it in items:
+                    try:
+                        if str((it.get("id") if isinstance(it, dict) else getattr(it, "id", "")) or "").strip() == opening_id:
+                            picked = it
+                            break
+                    except Exception:
+                        continue
+                if picked:
+                    intro_raw = (picked.get("intro") if isinstance(picked, dict) else getattr(picked, "intro", "")) or ""
+                    first_raw = (picked.get("firstLine") if isinstance(picked, dict) else getattr(picked, "firstLine", "")) or ""
+                    if not first_raw:
+                        first_raw = (picked.get("first_line") if isinstance(picked, dict) else getattr(picked, "first_line", "")) or ""
+                    intro_text = _render_prompt_tokens(intro_raw, user_name=token_user_name, character_name=char_name).strip()
+                    first_line_text = _render_prompt_tokens(first_raw, user_name=token_user_name, character_name=char_name).strip()
+            except Exception as e:
+                try:
+                    logger.warning(f"[chat] start opening resolve failed: {e}")
+                except Exception:
+                    pass
+                intro_text = ""
+                first_line_text = ""
+
+        # intro(지문)는 metadata.kind='intro'로 저장해 프론트 스트리밍/표현에 활용한다.
+        if intro_text:
+            await chat_service.save_message(
+                db,
+                chat_room.id,
+                "assistant",
+                intro_text,
+                message_metadata={"kind": "intro", "opening_id": opening_id} if opening_id else {"kind": "intro"},
+            )
+
+        # firstLine이 있으면 그걸 첫 발화로 사용하고, 없으면 기존 greeting 폴백.
+        if first_line_text:
+            await chat_service.save_message(db, chat_room.id, "assistant", first_line_text)
+        else:
+            raw_greeting = _pick_greeting_candidate(chat_room.character) or (
+                getattr(chat_room.character, "greeting", None) or "안녕하세요."
+            )
+            greeting_text = _render_prompt_tokens(raw_greeting, user_name=token_user_name, character_name=char_name)
+            await chat_service.save_message(db, chat_room.id, "assistant", greeting_text)
         # ✅ 방어: AsyncSession은 commit 시 객체가 expire될 수 있어, 응답 직렬화(Pydantic) 단계에서
         # 지연 로드가 발생하며 ResponseValidationError(500)로 터질 수 있다.
         # 첫 메시지 저장(내부 commit) 이후에는 room을 관계 포함(selectinload)으로 재조회하여 반환한다.
@@ -1760,17 +2345,66 @@ async def start_new_chat(
         db, user_id=current_user.id, character_id=request.character_id
     )
     
-    # ✅ 새 방이므로 인사말 추가(일관성 위해 기본값 포함)
+    # ✅ 새 방이므로 첫 메시지 추가(오프닝/인사말)
     try:
         token_user_name = await _resolve_user_name_for_tokens(db, current_user, scope="character")
     except Exception:
         token_user_name = _fallback_user_name(current_user)
     char_name = getattr(chat_room.character, "name", None) or "캐릭터"
-    raw_greeting = _pick_greeting_candidate(chat_room.character) or (
-        getattr(chat_room.character, "greeting", None) or "안녕하세요."
-    )
-    greeting_text = _render_prompt_tokens(raw_greeting, user_name=token_user_name, character_name=char_name)
-    await chat_service.save_message(db, chat_room.id, "assistant", greeting_text)
+
+    opening_id = ""
+    try:
+        opening_id = str(getattr(request, "opening_id", "") or "").strip()
+    except Exception:
+        opening_id = ""
+
+    intro_text = ""
+    first_line_text = ""
+    if opening_id:
+        try:
+            ss = getattr(chat_room.character, "start_sets", None) or {}
+            items = ss.get("items") if isinstance(ss, dict) else getattr(ss, "items", None)
+            items = items if isinstance(items, list) else []
+            picked = None
+            for it in items:
+                try:
+                    if str((it.get("id") if isinstance(it, dict) else getattr(it, "id", "")) or "").strip() == opening_id:
+                        picked = it
+                        break
+                except Exception:
+                    continue
+            if picked:
+                intro_raw = (picked.get("intro") if isinstance(picked, dict) else getattr(picked, "intro", "")) or ""
+                first_raw = (picked.get("firstLine") if isinstance(picked, dict) else getattr(picked, "firstLine", "")) or ""
+                if not first_raw:
+                    first_raw = (picked.get("first_line") if isinstance(picked, dict) else getattr(picked, "first_line", "")) or ""
+                intro_text = _render_prompt_tokens(intro_raw, user_name=token_user_name, character_name=char_name).strip()
+                first_line_text = _render_prompt_tokens(first_raw, user_name=token_user_name, character_name=char_name).strip()
+        except Exception as e:
+            try:
+                logger.warning(f"[chat] start-new opening resolve failed: {e}")
+            except Exception:
+                pass
+            intro_text = ""
+            first_line_text = ""
+
+    if intro_text:
+        await chat_service.save_message(
+            db,
+            chat_room.id,
+            "assistant",
+            intro_text,
+            message_metadata={"kind": "intro", "opening_id": opening_id} if opening_id else {"kind": "intro"},
+        )
+
+    if first_line_text:
+        await chat_service.save_message(db, chat_room.id, "assistant", first_line_text)
+    else:
+        raw_greeting = _pick_greeting_candidate(chat_room.character) or (
+            getattr(chat_room.character, "greeting", None) or "안녕하세요."
+        )
+        greeting_text = _render_prompt_tokens(raw_greeting, user_name=token_user_name, character_name=char_name)
+        await chat_service.save_message(db, chat_room.id, "assistant", greeting_text)
 
     # ✅ 방어: 첫 메시지 저장(내부 commit) 이후 expire된 ORM을 그대로 반환하면
     # 응답 직렬화에서 지연 로드가 발생해 ResponseValidationError가 날 수 있다.
@@ -2125,6 +2759,13 @@ async def send_message(
     except Exception:
         token_user_name = _fallback_user_name(current_user)
     char_name = getattr(character, "name", None) or "캐릭터"
+    # ✅ 커스텀 모드 바이패스 플래그
+    # - 의도: custom 모드에서는 크리에이터가 프롬프트로 최대한 컨트롤하도록,
+    #   우리 쪽 제공 기능(턴 사건/설정메모/스탯/엔딩 등) 런타임 개입을 최소화한다.
+    try:
+        is_custom_mode = (str(getattr(character, "character_type", "") or "").strip().lower() == "custom")
+    except Exception:
+        is_custom_mode = False
 
     def _rt(v: Any) -> str:
         """프롬프트 주입 직전 토큰 렌더링(레거시 {{assistant}} 포함)."""
@@ -2181,6 +2822,52 @@ async def send_message(
     is_continue = (clean_content == "" or clean_content.lower() in {"continue", "계속", "continue please"})
     save_user_message = not is_continue
 
+    # ✅ turn_no_cache(성능/안정) 사전 로드
+    # - 의도: 매 요청마다 DB COUNT를 치지 않고, room meta에 저장된 턴 카운터를 사용한다.
+    # - 안전: 이 시점에는 아직 트랜잭션 커밋이 아니므로, 캐시를 "증가"시키지 않고 읽기만 한다.
+    # - 규칙: continue 모드는 턴 진행이 아니므로 캐시도 사용/갱신하지 않는다.
+    turn_no_cache_base = None
+    # ✅ A안 보강(운영 안정): 동시 요청 감지 시에만 DB COUNT로 보정
+    # - 의도: 멀티기기/새로고침/뒤로가기 등으로 같은 방에 요청이 겹치면,
+    #   캐시(base+1) 방식이 턴 번호를 중복 계산할 수 있다.
+    # - 해결: Redis NX 락으로 "동시 처리"를 감지하고, 락을 못 잡으면 그 요청은 DB COUNT로 계산한다.
+    turn_calc_lock_key = None
+    turn_calc_lock_acquired = False
+    force_db_turn_count = False
+    if not is_continue:
+        try:
+            # 동시성 감지 락(짧게): 락을 못 잡으면 "의심 케이스"로 보고 DB COUNT로 보정
+            try:
+                from app.core.database import redis_client
+                turn_calc_lock_key = f"chat:room:{room.id}:turn_calc_lock"
+                # 10초 내에 끝나야 하므로 짧은 TTL. 삭제 실패 시에도 TTL로 자동 해제.
+                # redis-py/aioredis 호환: set(name, value, ex, nx)
+                ok = await redis_client.set(turn_calc_lock_key, "1", ex=10, nx=True)
+                turn_calc_lock_acquired = bool(ok)
+                if not turn_calc_lock_acquired:
+                    force_db_turn_count = True
+            except Exception:
+                # 락 실패는 기능을 망가뜨리면 안 되므로, 캐시만 사용(기존 동작 유지)
+                turn_calc_lock_key = None
+                turn_calc_lock_acquired = False
+                force_db_turn_count = False
+
+            meta_tc = await _get_room_meta(room.id)
+            meta_tc = meta_tc if isinstance(meta_tc, dict) else {}
+            raw_tc = meta_tc.get("turn_no_cache")
+            if raw_tc is not None and str(raw_tc).strip() != "":
+                try:
+                    n_tc = int(float(raw_tc))
+                except Exception:
+                    n_tc = None
+                if n_tc is not None and n_tc >= 0:
+                    turn_no_cache_base = int(n_tc)
+        except Exception as e:
+            try:
+                logger.warning(f"[send_message] turn_no_cache read failed: {e}")
+            except Exception:
+                pass
+
     if save_user_message:
         user_message = await chat_service.save_message(db, room.id, "user", request.content)
     else:
@@ -2188,6 +2875,387 @@ async def send_message(
 
     await db.flush()  # ← 즉시 커밋
     _mark("user_saved_flush")
+
+    # =========================================================
+    # ✅ 턴수별 사건(오프닝 내) 강제 주입 (최소 수정·운영 안전)
+    # =========================================================
+    def _safe_str(v: Any) -> str:
+        try:
+            return str(v or "").strip()
+        except Exception:
+            return ""
+
+    def _clean_dialogue(v: Any) -> str:
+        """대사 텍스트에서 불필요한 따옴표를 제거한다(런타임에서 다시 감쌈)."""
+        try:
+            s = _safe_str(v)
+            return s.strip().strip('"').strip("“”").strip()
+        except Exception:
+            return _safe_str(v)
+
+    async def _resolve_room_opening_id() -> str:
+        """
+        현재 채팅방에서 사용 중인 opening_id를 추출한다.
+
+        우선순위(운영 안정/하위호환):
+        1) 방의 첫 intro 메시지(message_metadata.kind='intro')에 저장된 opening_id
+        2) character.start_sets.selectedId(저장값)
+        3) start_sets.items[0]
+        """
+        # 1) 방 메시지(초기 일부)에서 intro 메시지 스캔
+        try:
+            head = await chat_service.get_messages_by_room_id(db, room.id, skip=0, limit=40)
+            for m in head or []:
+                try:
+                    md = getattr(m, "message_metadata", None) or {}
+                    kind = str(md.get("kind") or "").lower().strip()
+                    if kind != "intro":
+                        continue
+                    oid = _safe_str(md.get("opening_id"))
+                    if oid:
+                        return oid
+                except Exception:
+                    continue
+        except Exception as e:
+            try:
+                logger.warning(f"[send_message] opening_id scan failed: {e}")
+            except Exception:
+                pass
+
+        # 2) start_sets.selectedId 폴백
+        try:
+            ss = getattr(character, "start_sets", None) or {}
+            if isinstance(ss, dict):
+                sid = _safe_str(ss.get("selectedId") or ss.get("selected_id"))
+                if sid:
+                    return sid
+        except Exception:
+            pass
+
+        # 3) items[0] 폴백
+        try:
+            ss = getattr(character, "start_sets", None) or {}
+            items = ss.get("items") if isinstance(ss, dict) else []
+            items = items if isinstance(items, list) else []
+            if items:
+                return _safe_str((items[0] or {}).get("id"))
+        except Exception:
+            pass
+        return ""
+
+    def _pick_start_set_by_opening_id(opening_id: str) -> Dict[str, Any] | None:
+        """character.start_sets.items에서 opening_id에 해당하는 start_set을 찾는다."""
+        try:
+            ss = getattr(character, "start_sets", None) or {}
+            if not isinstance(ss, dict):
+                return None
+            items = ss.get("items")
+            items = items if isinstance(items, list) else []
+            oid = _safe_str(opening_id)
+            if oid:
+                for it in items:
+                    if isinstance(it, dict) and _safe_str(it.get("id")) == oid:
+                        return it
+            # 폴백: selectedId → first
+            sid = _safe_str(ss.get("selectedId") or ss.get("selected_id"))
+            if sid:
+                for it in items:
+                    if isinstance(it, dict) and _safe_str(it.get("id")) == sid:
+                        return it
+            return items[0] if items else None
+        except Exception:
+            return None
+
+    def _find_turn_event_for_turn(start_set: Dict[str, Any] | None, turn_no: int) -> Dict[str, Any] | None:
+        """start_set.turn_events에서 about_turn == turn_no 사건을 찾는다."""
+        try:
+            if not start_set or not isinstance(start_set, dict):
+                return None
+            evs = start_set.get("turn_events")
+            evs = evs if isinstance(evs, list) else []
+            t = int(turn_no or 0)
+            if t <= 0:
+                return None
+            for ev in evs:
+                if not isinstance(ev, dict):
+                    continue
+                raw = ev.get("about_turn")
+                try:
+                    n = int(float(raw)) if raw is not None and str(raw).strip() != "" else 0
+                except Exception:
+                    n = 0
+                if n == t:
+                    return ev
+            return None
+        except Exception:
+            return None
+
+    # ✅ 현재 턴수(=유저 메시지 수) 계산
+    current_turn_no = 0
+    try:
+        # continue 모드는 유저 메시지를 저장하지 않으므로 "턴 진행"으로 보지 않는다.
+        if not is_continue:
+            # 1) 캐시가 있으면: 이번 요청은 유저 메시지를 저장했으므로 base+1
+            if (not force_db_turn_count) and (turn_no_cache_base is not None):
+                current_turn_no = int(turn_no_cache_base) + 1
+            else:
+                # 2) 캐시가 없으면: 1회 DB COUNT로 초기화(기존 방식)
+                from sqlalchemy import func as _func
+                from app.models.chat import ChatMessage as _ChatMessage
+                res = await db.execute(
+                    select(_func.count(_ChatMessage.id)).where(
+                        _ChatMessage.chat_room_id == room.id,
+                        _ChatMessage.sender_type == "user",
+                    )
+                )
+                current_turn_no = int(res.scalar_one() or 0)
+    except Exception as e:
+        try:
+            logger.warning(f"[send_message] turn count calc failed, fallback: {e}")
+        except Exception:
+            pass
+        current_turn_no = 0
+
+    # ✅ 이번 턴에 적용할 사건(있으면 강제 주입)
+    active_opening_id = ""
+    active_turn_event: Dict[str, Any] | None = None
+    if current_turn_no > 0 and not is_continue:
+        try:
+            active_opening_id = await _resolve_room_opening_id()
+            picked_set = _pick_start_set_by_opening_id(active_opening_id)
+            active_turn_event = _find_turn_event_for_turn(picked_set, current_turn_no)
+        except Exception as e:
+            try:
+                logger.warning(f"[send_message] resolve turn event failed: {e}")
+            except Exception:
+                pass
+            active_turn_event = None
+
+    # =========================================================
+    # ✅ 설정집(설정메모) 트리거 주입 (턴 사건 > 설정메모 우선순위)
+    # =========================================================
+    setting_memo_block = ""
+    # ✅ 이번 턴에 "트리거된/적용된" 설정메모 id를 엔딩/후속 로직에서 재사용하기 위한 상태
+    # - 의도: 설정메모 트리거를 엔딩 조건으로도 활용(요구사항)
+    # - 주의: 사건 턴에서는 defer되므로 applied와 triggered가 다를 수 있다.
+    setting_memo_triggered_ids_this_turn = []
+    setting_memo_applied_ids_this_turn = []
+    # ✅ 스탯(내부 상태) 런타임 캐시
+    # - 의도: "서버가 stat_state를 SSOT로 저장" + "매 턴 프롬프트에 재주입"으로 LLM 일관성 확보
+    # - stat_defs_runtime: start_set.stat_settings.stats 스냅샷(이 턴 기준)
+    stat_state_runtime = {}
+    stat_defs_runtime = []
+    try:
+        # continue 모드는 주입하지 않음(턴 진행 X)
+        if (not is_continue) and current_turn_no > 0:
+            # start_sets.setting_book.items = [{ id, detail, triggers, targets }]
+            ss_all = getattr(character, "start_sets", None) or {}
+            sb = ss_all.get("setting_book") if isinstance(ss_all, dict) else None
+            sb = sb if isinstance(sb, dict) else {}
+            memos = sb.get("items")
+            memos = memos if isinstance(memos, list) else []
+
+            def _norm_memo(m):
+                if not isinstance(m, dict):
+                    return None
+                mid = _safe_str(m.get("id"))
+                if not mid:
+                    return None
+                detail = _safe_str(m.get("detail"))
+                triggers = m.get("triggers")
+                triggers = triggers if isinstance(triggers, list) else []
+                triggers = [_safe_str(t) for t in triggers if _safe_str(t)]
+                triggers = triggers[:5]
+                targets = m.get("targets")
+                targets = targets if isinstance(targets, list) else []
+                targets = [_safe_str(t) for t in targets if _safe_str(t)]
+                # targets가 비어있으면 'all'로 취급(하위호환/방어)
+                if not targets:
+                    targets = ["all"]
+                return {"id": mid, "detail": detail, "triggers": triggers, "targets": targets}
+
+            memo_list = []
+            memo_by_id = {}
+            for m in memos:
+                nm = _norm_memo(m)
+                if not nm:
+                    continue
+                memo_list.append(nm)
+                memo_by_id[nm["id"]] = nm
+
+            # 메모가 없으면 종료
+            if memo_list:
+                meta0 = {}
+                try:
+                    meta0 = await _get_room_meta(room.id)
+                    meta0 = meta0 if isinstance(meta0, dict) else {}
+                except Exception:
+                    meta0 = {}
+
+                applied_ids = meta0.get("applied_setting_memo_ids")
+                applied_ids = applied_ids if isinstance(applied_ids, list) else []
+                applied_ids = [_safe_str(x) for x in applied_ids if _safe_str(x)]
+
+                deferred_ids = meta0.get("deferred_setting_memo_ids")
+                deferred_ids = deferred_ids if isinstance(deferred_ids, list) else []
+                deferred_ids = [_safe_str(x) for x in deferred_ids if _safe_str(x)]
+
+                # 적용 대상: all 또는 현재 오프닝 id
+                def _is_applicable(m):
+                    try:
+                        ts = m.get("targets") or []
+                        ts = [str(x).strip().lower() for x in ts if str(x).strip()]
+                        if "all" in ts:
+                            return True
+                        if active_opening_id and str(active_opening_id).strip().lower() in ts:
+                            return True
+                        return False
+                    except Exception:
+                        return True
+
+                # 트리거 매칭(단순 substring, 방어적으로 lowercase)
+                user_text_norm = ""
+                try:
+                    user_text_norm = str(clean_content or "").lower()
+                except Exception:
+                    user_text_norm = ""
+
+                def _is_triggered(m):
+                    try:
+                        for t in (m.get("triggers") or []):
+                            tt = str(t or "").strip().lower()
+                            if not tt:
+                                continue
+                            if tt in user_text_norm:
+                                return True
+                        return False
+                    except Exception:
+                        return False
+
+                # ✅ 턴 사건이 있는 턴: 설정메모는 적용하지 않고 defer(다음 턴으로 이월)
+                if active_turn_event:
+                    to_defer = []
+                    for m in memo_list:
+                        if not _is_applicable(m):
+                            continue
+                        if m["id"] in applied_ids:
+                            continue
+                        if _is_triggered(m):
+                            to_defer.append(m["id"])
+                    if to_defer:
+                        # ✅ 엔딩 조건 등에서 쓸 수 있게 "이번 턴 트리거"로 기록
+                        try:
+                            seen_t = set()
+                            for x in to_defer:
+                                if x and x not in seen_t:
+                                    seen_t.add(x)
+                                    setting_memo_triggered_ids_this_turn.append(x)
+                        except Exception:
+                            pass
+                        merged = []
+                        seen = set()
+                        for x in (deferred_ids + to_defer):
+                            if x and x not in seen:
+                                seen.add(x)
+                                merged.append(x)
+                            if len(merged) >= 20:
+                                break
+                        try:
+                            await _set_room_meta(room.id, {"deferred_setting_memo_ids": merged})
+                        except Exception:
+                            pass
+                        try:
+                            logger.info(f"[send_message] setting_memo deferred room={room.id} turn={current_turn_no} n={len(to_defer)}")
+                        except Exception:
+                            pass
+                else:
+                    # ✅ 사건이 없는 턴: defer된 메모를 먼저 적용하고, 이번 입력 트리거 메모를 추가로 적용
+                    to_apply = []
+                    used_ids = set()
+
+                    # 1) deferred 우선
+                    for mid in deferred_ids:
+                        if not mid:
+                            continue
+                        if mid in applied_ids:
+                            continue
+                        m = memo_by_id.get(mid)
+                        if not m:
+                            continue
+                        if not _is_applicable(m):
+                            continue
+                        if mid in used_ids:
+                            continue
+                        used_ids.add(mid)
+                        to_apply.append(m)
+                        if len(to_apply) >= 3:
+                            break
+
+                    # 2) 이번 입력 트리거
+                    if len(to_apply) < 3:
+                        for m in memo_list:
+                            mid = m["id"]
+                            if mid in applied_ids or mid in used_ids:
+                                continue
+                            if not _is_applicable(m):
+                                continue
+                            if _is_triggered(m):
+                                used_ids.add(mid)
+                                to_apply.append(m)
+                                if len(to_apply) >= 3:
+                                    break
+
+                    if to_apply:
+                        # ✅ 엔딩 조건 등에서 쓸 수 있게 "이번 턴 트리거/적용"으로 기록
+                        try:
+                            seen_t = set()
+                            for m in to_apply:
+                                mid2 = _safe_str(m.get("id"))
+                                if mid2 and mid2 not in seen_t:
+                                    seen_t.add(mid2)
+                                    setting_memo_triggered_ids_this_turn.append(mid2)
+                                    setting_memo_applied_ids_this_turn.append(mid2)
+                        except Exception:
+                            pass
+                        lines = []
+                        for m in to_apply:
+                            d = _safe_str(m.get("detail"))
+                            if not d:
+                                continue
+                            # 길이 폭주 방지(운영 안정)
+                            d2 = d if len(d) <= 800 else (d[:800] + "…")
+                            lines.append(f"- {d2}")
+                        if lines:
+                            setting_memo_block = "\n".join(lines)
+
+                        # 적용 처리: applied에 추가 + deferred는 비움(소비한 것으로 간주)
+                        next_applied = []
+                        seen2 = set()
+                        for x in (applied_ids + [m["id"] for m in to_apply]):
+                            if x and x not in seen2:
+                                seen2.add(x)
+                                next_applied.append(x)
+                            if len(next_applied) >= 200:
+                                break
+                        try:
+                            await _set_room_meta(
+                                room.id,
+                                {
+                                    "applied_setting_memo_ids": next_applied,
+                                    "deferred_setting_memo_ids": [],
+                                },
+                            )
+                        except Exception:
+                            pass
+                        try:
+                            logger.info(f"[send_message] setting_memo applied room={room.id} turn={current_turn_no} n={len(to_apply)}")
+                        except Exception:
+                            pass
+    except Exception as e:
+        try:
+            logger.warning(f"[send_message] setting_memo injection failed: {e}")
+        except Exception:
+            pass
 
     # 3. AI 응답 생성 (CAVEDUCK 스타일 최적화)
     # ✅ 최근 대화 윈도우(기본 50개)를 사용해야 "방금까지의 맥락"을 유지할 수 있다.
@@ -2216,6 +3284,21 @@ async def send_message(
     _mark("history_loaded")
     
     # 캐릭터 프롬프트 구성 (모든 정보 포함)
+    # ✅ 커스텀 모드: character.world_setting을 "커스텀 지시(Custom_Instruction)"로 취급하고,
+    # 내부 시스템 프롬프트를 world_setting 앞에 자동으로 결합한다.
+    try:
+        ct2 = str(getattr(character, "character_type", "") or "").strip().lower()
+    except Exception:
+        ct2 = ""
+    try:
+        ws2_raw = getattr(character, "world_setting", None)
+    except Exception:
+        ws2_raw = None
+    if ct2 == "custom":
+        world_text2 = _build_custom_internal_prompt(_rt(ws2_raw), char_name=char_name)
+    else:
+        world_text2 = _rt(ws2_raw) or "설정 없음"
+
     character_prompt = f"""당신은 '{char_name}'입니다.
 
 [기본 정보]
@@ -2225,7 +3308,7 @@ async def send_message(
 배경 스토리: {_rt(getattr(character, 'background_story', None)) or '설정 없음'}
 
 [세계관]
-{_rt(getattr(character, 'world_setting', None)) or '설정 없음'}
+{world_text2}
 """
     # 🎯 활성 페르소나 로드 및 프롬프트 주입
     try:
@@ -2293,6 +3376,174 @@ async def send_message(
         character_prompt += "\n\n[사용자와의 중요한 기억]"
         for memory in active_memories:
             character_prompt += f"\n• {_rt(getattr(memory, 'title', ''))}: {_rt(getattr(memory, 'content', ''))}"
+
+    # ✅ 설정집(설정메모) - 컨텍스트 보강(턴 사건이 없는 턴에만 적용됨)
+    if setting_memo_block:
+        character_prompt += "\n\n[설정집(설정메모) - 컨텍스트 보강]"
+        character_prompt += "\n" + setting_memo_block
+        character_prompt += "\n- 위 설정메모는 세계관/관계/금기/단서 등을 보강하는 참고 정보입니다. 대답에 자연스럽게 반영하세요."
+
+    # =========================================================
+    # ✅ 스탯 상태 주입(내부용) + 숨김 JSON 델타 업데이트 프로토콜
+    # =========================================================
+    # 의도/원리(운영 안정):
+    # - 유저에게 스탯을 "표시"하지 않더라도, 서버가 stat_state를 SSOT로 유지해야 LLM이 덜 틀린다.
+    # - 매 턴 프롬프트에 현재 stat_state를 재주입하여 일관성을 확보한다.
+    # - (선택) 스탯 변화가 필요하면, 모델이 숨김 JSON 델타 블록을 출력하고 서버가 파싱/반영한다.
+    try:
+        # ✅ 커스텀 모드에서는 "스탯"만 바이패스(요구사항)
+        if (not is_custom_mode) and (not is_continue) and current_turn_no > 0:
+            ss_pick_for_stats = None
+            try:
+                ss_pick_for_stats = _pick_start_set_by_opening_id(active_opening_id)
+            except Exception:
+                ss_pick_for_stats = None
+
+            ss_stats0 = None
+            try:
+                ss_stats0 = (ss_pick_for_stats.get("stat_settings") if isinstance(ss_pick_for_stats, dict) else None) if ss_pick_for_stats else None
+            except Exception:
+                ss_stats0 = None
+            ss_stats0 = ss_stats0 if isinstance(ss_stats0, dict) else {}
+            stats_list0 = ss_stats0.get("stats")
+            stats_list0 = stats_list0 if isinstance(stats_list0, list) else []
+
+            # 스탯이 없으면 아무 것도 하지 않음(불필요한 프롬프트/리스크 최소화)
+            if stats_list0:
+                # 스탯 정의 스냅샷(이 턴 기준)
+                defs = []
+                base_by_id = {}
+                min_by_id = {}
+                max_by_id = {}
+                for s0 in stats_list0:
+                    if not isinstance(s0, dict):
+                        continue
+                    sid = _safe_str(s0.get("id"))
+                    name = _safe_str(s0.get("name"))
+                    if not sid or not name:
+                        continue
+                    try:
+                        bv_raw = s0.get("base_value")
+                        bv = int(float(bv_raw)) if bv_raw is not None and str(bv_raw).strip() != "" else 0
+                    except Exception:
+                        bv = 0
+                    base_by_id[sid] = bv
+
+                    def _p_int(x):
+                        try:
+                            if x is None:
+                                return None
+                            s = str(x).strip()
+                            if not s or s == "-":
+                                return None
+                            return int(float(s))
+                        except Exception:
+                            return None
+
+                    mn = _p_int(s0.get("min_value"))
+                    mx = _p_int(s0.get("max_value"))
+                    if mn is not None:
+                        min_by_id[sid] = int(mn)
+                    if mx is not None:
+                        max_by_id[sid] = int(mx)
+                    defs.append({"id": sid, "name": name})
+
+                # room meta에서 stat_state 로드(없으면 base_value로 초기화)
+                meta_s = {}
+                try:
+                    meta_s = await _get_room_meta(room.id)
+                    meta_s = meta_s if isinstance(meta_s, dict) else {}
+                except Exception:
+                    meta_s = {}
+
+                meta_opening = _safe_str(meta_s.get("stat_state_opening_id"))
+                meta_stat_state = meta_s.get("stat_state") if isinstance(meta_s, dict) else None
+                next_state = {}
+                if isinstance(meta_stat_state, dict) and (not active_opening_id or not meta_opening or meta_opening == _safe_str(active_opening_id)):
+                    # meta 값 사용(숫자만 유지)
+                    for k, v in meta_stat_state.items():
+                        kk = _safe_str(k)
+                        if not kk:
+                            continue
+                        try:
+                            vv = int(float(v)) if v is not None and str(v).strip() != "" else 0
+                        except Exception:
+                            vv = 0
+                        next_state[kk] = vv
+                else:
+                    # opening mismatch 또는 비정상: base_value로 초기화
+                    next_state = dict(base_by_id)
+                    try:
+                        await _set_room_meta(
+                            room.id,
+                            {
+                                "stat_state": next_state,
+                                **({"stat_state_opening_id": active_opening_id} if active_opening_id else {}),
+                            },
+                        )
+                        logger.info(f"[send_message] stat_state initialized room={room.id} opening={active_opening_id} n={len(next_state)}")
+                    except Exception:
+                        pass
+
+                # 런타임 캐시에 저장(후처리/엔딩 판정에서 재사용 가능)
+                try:
+                    stat_state_runtime = next_state if isinstance(next_state, dict) else {}
+                    stat_defs_runtime = defs if isinstance(defs, list) else []
+                except Exception:
+                    stat_state_runtime = {}
+                    stat_defs_runtime = []
+
+                # 프롬프트 주입(내부용)
+                try:
+                    character_prompt += "\n\n[내부 상태(스탯) - 시스템용]"
+                    character_prompt += "\n- 아래 스탯 값은 '진행 상태'이며 반드시 일관되게 유지하세요."
+                    character_prompt += "\n- 사용자가 스탯을 직접 요구하지 않는 한, 스탯의 수치/명칭/계산을 먼저 말하지 마세요."
+                    character_prompt += "\n- 스탯은 이번 답변의 말투/거리감/행동 변화로만 드러나게 하세요."
+                    character_prompt += "\n\n[현재 스탯]"
+                    for d in (stat_defs_runtime or []):
+                        sid = _safe_str(d.get("id"))
+                        name = _safe_str(d.get("name"))
+                        if not sid or not name:
+                            continue
+                        v = stat_state_runtime.get(sid)
+                        try:
+                            vv = int(float(v)) if v is not None and str(v).strip() != "" else 0
+                        except Exception:
+                            vv = 0
+                        mm = []
+                        if sid in min_by_id:
+                            mm.append(f"min={int(min_by_id[sid])}")
+                        if sid in max_by_id:
+                            mm.append(f"max={int(max_by_id[sid])}")
+                        tail = f" ({', '.join(mm)})" if mm else ""
+                        character_prompt += f"\n- {name}({sid}): {vv}{tail}"
+
+                    character_prompt += "\n\n[스탯 업데이트(숨김 JSON, 필수)]"
+                    character_prompt += "\n- 당신은 이번 답변 맨 끝(마지막 줄)에 아래 숨김 블록을 반드시 1개만 출력해야 합니다."
+                    character_prompt += "\n- 이 블록은 사용자에게 보이면 안 됩니다(서버가 제거합니다)."
+                    character_prompt += "\n- JSON만 출력하세요. (코드펜스 ``` 금지, 주석/설명문 금지, trailing comma 금지, 작은따옴표 금지)"
+                    character_prompt += "\n- 변화가 없으면 반드시 {\"stats\": []} 로 출력하세요."
+                    character_prompt += "\n- stat_id는 위 [현재 스탯]에 있는 id만 사용하세요. 없는 stat_id를 만들지 마세요."
+                    character_prompt += "\n- 한 항목에는 delta(변화량) 또는 value(절대값) 중 하나만 넣으세요. (권장: delta)"
+                    character_prompt += "\n\n[숨김 블록 형식(그대로 복붙)]"
+                    character_prompt += "\n<!-- CC_STAT_DELTA_START -->{\"stats\": []}<!-- CC_STAT_DELTA_END -->"
+                    character_prompt += "\n\n[예시]"
+                    character_prompt += "\n1) 변화 없음"
+                    character_prompt += "\n<!-- CC_STAT_DELTA_START -->{\"stats\": []}<!-- CC_STAT_DELTA_END -->"
+                    character_prompt += "\n2) 변화 있음(delta 2개)"
+                    character_prompt += "\n<!-- CC_STAT_DELTA_START -->{\"stats\": [{\"stat_id\": \"stat_aaa\", \"delta\": 5}, {\"stat_id\": \"stat_bbb\", \"delta\": -3}]}<!-- CC_STAT_DELTA_END -->"
+                    character_prompt += "\n3) 절대값 지정(value 1개)"
+                    character_prompt += "\n<!-- CC_STAT_DELTA_START -->{\"stats\": [{\"stat_id\": \"stat_aaa\", \"value\": 120}]}<!-- CC_STAT_DELTA_END -->"
+                except Exception as e:
+                    try:
+                        logger.warning(f"[send_message] stat_state prompt inject failed: {e}")
+                    except Exception:
+                        pass
+    except Exception as e:
+        try:
+            logger.warning(f"[send_message] stat_state init/inject failed: {e}")
+        except Exception:
+            pass
     
     # 커스텀 프롬프트가 있는 경우
     if settings and settings.system_prompt:
@@ -2338,6 +3589,49 @@ async def send_message(
     character_prompt += "\n- 말하고 싶은 게 더 있으면 주저하지 말고 이어서 말하세요"
     character_prompt += "\n- 감정이 북받치면 연달아 말하고, 할 말이 없으면 짧게 끝내세요"
     character_prompt += "\n- 규칙이나 패턴을 따르지 말고, 그 순간 그 캐릭터가 진짜 느끼고 생각하는 대로 반응하세요"
+
+    # ✅ 턴 사건 강제 주입(프롬프트)
+    # - "턴 사건(필수) > 설정메모(보조)" 우선순위 구현의 첫 단계: 우선 사건만 강제한다.
+    # - 모델이 실패할 수 있으므로, 저장 직전에도 후처리로 강제 삽입한다(운영 안전).
+    required_narration = ""
+    required_dialogue = ""
+    active_turn_event_id = ""
+    if active_turn_event and isinstance(active_turn_event, dict):
+        try:
+            required_narration = _safe_str(active_turn_event.get("required_narration"))
+            required_dialogue = _clean_dialogue(active_turn_event.get("required_dialogue"))
+            active_turn_event_id = _safe_str(active_turn_event.get("id"))
+        except Exception:
+            required_narration = ""
+            required_dialogue = ""
+            active_turn_event_id = ""
+
+        if required_narration or required_dialogue:
+            try:
+                title = _safe_str(active_turn_event.get("title")) or f"사건(턴 {current_turn_no})"
+                summary = _safe_str(active_turn_event.get("summary"))
+                character_prompt += "\n\n[턴수별 사건(이번 턴, 최우선·필수)]"
+                character_prompt += f"\n- 현재 턴: {current_turn_no}"
+                if active_opening_id:
+                    character_prompt += f"\n- 오프닝 ID: {active_opening_id}"
+                character_prompt += f"\n- 사건명: {title}"
+                if summary:
+                    character_prompt += f"\n- 사건 요약: {summary}"
+                character_prompt += "\n\n아래 2가지는 이번 답변에 반드시 포함하세요."
+                if required_narration:
+                    character_prompt += f"\n1) 지문(나레이션): '* {required_narration}' 형태로 1줄"
+                if required_dialogue:
+                    character_prompt += f"\n2) 대사: '\"{required_dialogue}\"' 형태로 1줄"
+                character_prompt += "\n\n주의: 위 필수 지문/대사는 자연스럽게 문맥에 녹여서 포함하세요."
+                try:
+                    logger.info(f"[send_message] turn_event injected room={room.id} turn={current_turn_no} opening={active_opening_id} event={active_turn_event_id}")
+                except Exception:
+                    pass
+            except Exception as e:
+                try:
+                    logger.warning(f"[send_message] build turn_event prompt failed: {e}")
+                except Exception:
+                    pass
 
 
     # 대화 히스토리 구성 (요약 + 최근 50개)
@@ -2405,13 +3699,542 @@ async def send_message(
         except Exception:
             pass
 
+        # ✅ 턴 사건 강제 삽입(저장 직전, 최후 방어)
+        if (required_narration or required_dialogue) and not is_continue:
+            try:
+                txt = str(ai_response_text or "")
+                add_lines = []  # type: ignore[var-annotated]  # ✅ 런타임 NameError 방지(typing.List 평가 이슈 회피)
+                if required_narration:
+                    # 포함 여부는 "원문 포함" 기준(과도한 NLP/정규화 금지: 예측 불가 리스크)
+                    if required_narration not in txt:
+                        add_lines.append(f"* {required_narration}")
+                if required_dialogue:
+                    if required_dialogue not in txt:
+                        add_lines.append(f"\"{required_dialogue}\"")
+                if add_lines:
+                    sep = "\n" if txt.endswith("\n") or not txt else "\n\n"
+                    ai_response_text = (txt + sep + "\n".join(add_lines)).strip()
+                    try:
+                        logger.warning(f"[send_message] turn_event appended(room={room.id}, turn={current_turn_no}, event={active_turn_event_id})")
+                    except Exception:
+                        pass
+            except Exception as e:
+                try:
+                    logger.warning(f"[send_message] force append turn_event failed: {e}")
+                except Exception:
+                    pass
+
+        # =========================================================
+        # ✅ 스탯 델타(숨김 JSON) 파싱 → room meta.stat_state 업데이트
+        # =========================================================
+        # 의도/원리:
+        # - 모델이 출력한 숨김 블록을 사용자에게 노출하지 않고 제거한다.
+        # - 파싱 성공 시에만 stat_state를 갱신하고, 비정상/파싱 실패는 경고 로그만 남긴다.
+        try:
+            # ✅ 커스텀 모드에서는 "스탯 델타 파싱/저장"만 바이패스(요구사항)
+            if (not is_custom_mode) and (not is_continue) and current_turn_no > 0 and isinstance(stat_state_runtime, dict) and (stat_defs_runtime or []):
+                START = "<!-- CC_STAT_DELTA_START -->"
+                END = "<!-- CC_STAT_DELTA_END -->"
+                txt0 = str(ai_response_text or "")
+                if START in txt0 and END in txt0:
+                    # 1) 블록 추출
+                    m = re.search(re.escape(START) + r"([\s\S]*?)" + re.escape(END), txt0)
+                    payload = ""
+                    if m:
+                        payload = (m.group(1) or "").strip()
+                    # 2) 사용자 노출 방지: 무조건 제거
+                    try:
+                        ai_response_text = re.sub(re.escape(START) + r"[\s\S]*?" + re.escape(END), "", txt0).strip()
+                    except Exception:
+                        ai_response_text = txt0.replace(START, "").replace(END, "").strip()
+
+                    # 3) 파싱/적용(성공할 때만)
+                    if payload:
+                        try:
+                            obj = json.loads(payload)
+                        except Exception:
+                            obj = None
+                        if isinstance(obj, dict):
+                            arr = obj.get("stats")
+                            arr = arr if isinstance(arr, list) else []
+                            # known ids
+                            known = set()
+                            for d in (stat_defs_runtime or []):
+                                sid = _safe_str(d.get("id"))
+                                if sid:
+                                    known.add(sid)
+                            # clamp map (가능하면)
+                            min_by_id2 = {}
+                            max_by_id2 = {}
+                            try:
+                                ss_pick2 = _pick_start_set_by_opening_id(active_opening_id)
+                                st2 = (ss_pick2.get("stat_settings") if isinstance(ss_pick2, dict) else None) if ss_pick2 else None
+                                st2 = st2 if isinstance(st2, dict) else {}
+                                stats2 = st2.get("stats")
+                                stats2 = stats2 if isinstance(stats2, list) else []
+                                for s in stats2:
+                                    if not isinstance(s, dict):
+                                        continue
+                                    sid2 = _safe_str(s.get("id"))
+                                    if not sid2:
+                                        continue
+                                    def _p_int2(x):
+                                        try:
+                                            if x is None:
+                                                return None
+                                            s0 = str(x).strip()
+                                            if not s0 or s0 == "-":
+                                                return None
+                                            return int(float(s0))
+                                        except Exception:
+                                            return None
+                                    mn2 = _p_int2(s.get("min_value"))
+                                    mx2 = _p_int2(s.get("max_value"))
+                                    if mn2 is not None:
+                                        min_by_id2[sid2] = int(mn2)
+                                    if mx2 is not None:
+                                        max_by_id2[sid2] = int(mx2)
+                            except Exception:
+                                min_by_id2 = {}
+                                max_by_id2 = {}
+
+                            changed = False
+                            for it in arr[:20]:
+                                if not isinstance(it, dict):
+                                    continue
+                                sid = _safe_str(it.get("stat_id"))
+                                if not sid or sid not in known:
+                                    continue
+                                # delta 우선, 없으면 value(절대값) 지원(방어)
+                                delta = it.get("delta", None)
+                                value = it.get("value", None)
+                                try:
+                                    cur = stat_state_runtime.get(sid, 0)
+                                    cur_i = int(float(cur)) if cur is not None and str(cur).strip() != "" else 0
+                                except Exception:
+                                    cur_i = 0
+                                nxt = None
+                                if value is not None and str(value).strip() != "":
+                                    try:
+                                        nxt = int(float(value))
+                                    except Exception:
+                                        nxt = None
+                                elif delta is not None and str(delta).strip() != "":
+                                    try:
+                                        d = int(float(delta))
+                                        nxt = cur_i + d
+                                    except Exception:
+                                        nxt = None
+                                if nxt is None:
+                                    continue
+                                # clamp
+                                if sid in min_by_id2:
+                                    nxt = max(int(min_by_id2[sid]), int(nxt))
+                                if sid in max_by_id2:
+                                    nxt = min(int(max_by_id2[sid]), int(nxt))
+                                if int(nxt) != int(cur_i):
+                                    stat_state_runtime[sid] = int(nxt)
+                                    changed = True
+
+                            if changed:
+                                try:
+                                    await _set_room_meta(
+                                        room.id,
+                                        {
+                                            "stat_state": stat_state_runtime,
+                                            **({"stat_state_opening_id": active_opening_id} if active_opening_id else {}),
+                                        },
+                                    )
+                                except Exception:
+                                    pass
+                                try:
+                                    logger.info(f"[send_message] stat_state updated room={room.id} turn={current_turn_no} n={len(stat_state_runtime)}")
+                                except Exception:
+                                    pass
+        except Exception as e:
+            try:
+                logger.warning(f"[send_message] stat_delta parse/apply failed: {e}")
+            except Exception:
+                pass
+
+        # =========================================================
+        # ✅ 엔딩 판정(최소 버전) - 턴 기반 1회 트리거
+        # =========================================================
+        # 원칙(운영 안정/최소 수정):
+        # - 현재 오프닝(start_set)의 ending_settings만 사용한다.
+        # - ✅ 조건 기반(스탯/텍스트/설정메모 트리거)을 "추가 레이어"로 최소 확장한다.
+        #   - 스탯: extra_conditions.type='stat' (stat_id/op/value)
+        #   - 텍스트: extra_conditions.type='text' (text) → user/ai 텍스트 substring 매칭
+        #   - 설정메모: text 조건에 'memo:<memo_id>'를 입력하면, 이번 턴 트리거된 메모 id로 판정한다.
+        # - 턴 기반 엔딩(turn==현재턴)은 기존처럼 가장 안전하게 유지한다.
+        # - 방 메타에 ending_triggered_id가 있으면 재트리거하지 않는다.
+        try:
+            ending_triggered = False
+            ending_id = ""
+            ending_title = ""
+            ending_epilogue = ""
+            ending_reason = ""
+            ending_triggered_payload = None  # {id,title,epilogue,reason,opening_id,turn_no}
+            if (not is_continue) and current_turn_no > 0:
+                meta_end = {}
+                try:
+                    meta_end = await _get_room_meta(room.id)
+                    meta_end = meta_end if isinstance(meta_end, dict) else {}
+                except Exception:
+                    meta_end = {}
+                if _safe_str(meta_end.get("ending_triggered_id")):
+                    ending_triggered = True
+
+            if (not ending_triggered) and (not is_continue) and current_turn_no > 0:
+                # 현재 오프닝의 엔딩 설정만 사용
+                ss_pick = _pick_start_set_by_opening_id(active_opening_id)
+                es = (ss_pick.get("ending_settings") if isinstance(ss_pick, dict) else None) if ss_pick else None
+                es = es if isinstance(es, dict) else {}
+                min_turns_raw = es.get("min_turns")
+                try:
+                    min_turns = int(min_turns_raw) if min_turns_raw is not None else 10
+                except Exception:
+                    min_turns = 10
+                min_turns = max(10, min_turns)
+
+                endings = es.get("endings")
+                endings = endings if isinstance(endings, list) else []
+
+                # ✅ 스탯 상태(최소) 로드/초기화: room meta의 stat_state 우선, 없으면 base_value로 초기화
+                stat_state = {}
+                # ✅ 우선순위(중요): 이번 턴 런타임 stat_state(델타 반영 포함) > room meta.stat_state > base_value 초기화
+                # - 의도: "이번 턴에 스탯 델타로 엔딩 조건을 충족"하는 케이스를 즉시 반영한다.
+                try:
+                    if isinstance(stat_state_runtime, dict) and stat_state_runtime:
+                        stat_state = dict(stat_state_runtime)
+                except Exception:
+                    stat_state = {}
+                try:
+                    ss_stats = (ss_pick.get("stat_settings") if isinstance(ss_pick, dict) else None) if ss_pick else None
+                    ss_stats = ss_stats if isinstance(ss_stats, dict) else {}
+                    stats_list = ss_stats.get("stats")
+                    stats_list = stats_list if isinstance(stats_list, list) else []
+                    base_by_id = {}
+                    for s0 in stats_list:
+                        if not isinstance(s0, dict):
+                            continue
+                        sid0 = _safe_str(s0.get("id"))
+                        if not sid0:
+                            continue
+                        try:
+                            bv_raw = s0.get("base_value")
+                            bv = int(float(bv_raw)) if bv_raw is not None and str(bv_raw).strip() != "" else 0
+                        except Exception:
+                            bv = 0
+                        base_by_id[sid0] = bv
+
+                    # room meta에서 로드(단, 런타임 stat_state가 없는 경우에만)
+                    if not stat_state:
+                        meta_stat = meta_end.get("stat_state") if isinstance(meta_end, dict) else None
+                        if isinstance(meta_stat, dict):
+                            for k, v in meta_stat.items():
+                                kk = _safe_str(k)
+                                if not kk:
+                                    continue
+                                try:
+                                    vv = int(float(v)) if v is not None and str(v).strip() != "" else 0
+                                except Exception:
+                                    vv = 0
+                                stat_state[kk] = vv
+
+                    # 초기화가 필요하면 base_value로 세팅(운영 안정: 숫자만 저장)
+                    if (not stat_state) and base_by_id:
+                        stat_state = dict(base_by_id)
+                        try:
+                            await _set_room_meta(
+                                room.id,
+                                {
+                                    "stat_state": stat_state,
+                                    **({"stat_state_opening_id": active_opening_id} if active_opening_id else {}),
+                                },
+                            )
+                        except Exception:
+                            pass
+                except Exception:
+                    stat_state = {}
+
+                def _parse_int_or_none(x):
+                    try:
+                        if x is None:
+                            return None
+                        s = str(x).strip()
+                        if not s or s == "-":
+                            return None
+                        return int(float(s))
+                    except Exception:
+                        return None
+
+                def _eval_stat_op(cur_v: int, op: str, target_v: int) -> bool:
+                    try:
+                        o = (str(op or "").strip().lower() or "gte")
+                        if o == "gt":
+                            return cur_v > target_v
+                        if o == "lt":
+                            return cur_v < target_v
+                        if o == "eq":
+                            return cur_v == target_v
+                        if o == "lte":
+                            return cur_v <= target_v
+                        # 기본: gte
+                        return cur_v >= target_v
+                    except Exception:
+                        return False
+
+                # ✅ 텍스트 조건 매칭 대상(방어적으로 소문자)
+                user_norm = ""
+                ai_norm = ""
+                try:
+                    user_norm = str(clean_content or "").lower()
+                except Exception:
+                    user_norm = ""
+                try:
+                    ai_norm = str(ai_response_text or "").lower()
+                except Exception:
+                    ai_norm = ""
+
+                memo_trg = []
+                try:
+                    memo_trg = setting_memo_triggered_ids_this_turn if isinstance(setting_memo_triggered_ids_this_turn, list) else []
+                    memo_trg = [_safe_str(x) for x in memo_trg if _safe_str(x)]
+                except Exception:
+                    memo_trg = []
+
+                def _text_condition_ok(text_like: str) -> bool:
+                    try:
+                        t = str(text_like or "").strip()
+                        if not t:
+                            return False
+                        tl = t.lower()
+                        # ✅ 설정메모 트리거 조건(텍스트 입력으로 지원): memo:<memo_id>
+                        if tl.startswith("memo:"):
+                            mid = tl.split(":", 1)[1].strip()
+                            return bool(mid) and (mid in [x.lower() for x in memo_trg])
+                        # 기본: substring 매칭(유저 입력/AI 응답)
+                        return (tl in user_norm) or (tl in ai_norm)
+                    except Exception:
+                        return False
+
+                def _extra_conditions_ok(ending_obj: Dict[str, Any]) -> bool:
+                    """
+                    ✅ 엔딩 세부 조건 판정(OR)
+                    - UI 명세: 1개의 조건만 충족돼도 엔딩 제공
+                    - type:
+                      - 'stat': stat_id/op/value 비교
+                      - 'text': text substring(또는 memo:<id>)
+                      - (하위호환) type 없고 text만 있으면 text로 취급
+                    """
+                    try:
+                        extra0 = ending_obj.get("extra_conditions")
+                        extra0 = extra0 if isinstance(extra0, list) else []
+                        if not extra0:
+                            return False
+                        for c0 in extra0:
+                            if not isinstance(c0, dict):
+                                continue
+                            ctype = _safe_str(c0.get("type")) or ("text" if _safe_str(c0.get("text")) else "")
+                            ctype = ctype.strip().lower()
+                            if ctype == "stat":
+                                sid = _safe_str(c0.get("stat_id"))
+                                if not sid:
+                                    continue
+                                target = _parse_int_or_none(c0.get("value"))
+                                if target is None:
+                                    continue
+                                curv = _parse_int_or_none(stat_state.get(sid))
+                                if curv is None:
+                                    # stat_state에 없으면 0으로 판단(방어)
+                                    curv = 0
+                                if _eval_stat_op(int(curv), _safe_str(c0.get("op")) or "gte", int(target)):
+                                    return True
+                            else:
+                                # text 조건
+                                txt = _safe_str(c0.get("text"))
+                                if txt and _text_condition_ok(txt):
+                                    return True
+                        return False
+                    except Exception:
+                        return False
+
+                picked = None
+                picked_reason = ""
+                for e0 in endings:
+                    if not isinstance(e0, dict):
+                        continue
+                    # 1) 조건 기반(턴 무관): extra_conditions 중 하나라도 만족하면 즉시 트리거
+                    if _extra_conditions_ok(e0):
+                        picked = e0
+                        picked_reason = "extra_conditions"
+                        break
+
+                    # 2) 턴 기반(기존 최소 버전): min_turns 이후 + turn 정확히 일치
+                    if current_turn_no >= min_turns:
+                        try:
+                            t_raw = e0.get("turn")
+                            t = int(float(t_raw)) if t_raw is not None and str(t_raw).strip() != "" else 0
+                        except Exception:
+                            t = 0
+                        if t == int(current_turn_no):
+                            picked = e0
+                            picked_reason = "turn_exact"
+                            break
+
+                if picked:
+                    ending_id = _safe_str(picked.get("id")) or f"ending_turn_{current_turn_no}"
+                    ending_title = _safe_str(picked.get("title")) or "엔딩"
+                    ending_reason = picked_reason or ""
+                    # epilogue(엔딩 내용) 우선, 없으면 base_condition로 최소 폴백
+                    ending_epilogue = _rt(picked.get("epilogue")) if _safe_str(picked.get("epilogue")) else ""
+                    if not ending_epilogue:
+                        bc = _safe_str(picked.get("base_condition"))
+                        ending_epilogue = bc[:1000] if bc else "엔딩에 도달했습니다."
+                    # ✅ 엔딩 메시지는 별도 메시지로 저장/전송한다(UX/확장성).
+                    # - ai_response_text에는 섞지 않는다(히스토리 중복/혼합 방지).
+                    try:
+                        ending_triggered_payload = {
+                            "id": ending_id,
+                            "title": ending_title,
+                            "epilogue": str(ending_epilogue or "").strip(),
+                            "reason": ending_reason,
+                            "opening_id": active_opening_id,
+                            "turn_no": int(current_turn_no),
+                        }
+                    except Exception:
+                        ending_triggered_payload = None
+
+                    # 방 메타에 1회 트리거 기록
+                    try:
+                        await _set_room_meta(
+                            room.id,
+                            {
+                                "ending_triggered_id": ending_id,
+                                "ending_triggered_turn": int(current_turn_no),
+                                **({"ending_opening_id": active_opening_id} if active_opening_id else {}),
+                                **({"ending_trigger_reason": ending_reason} if ending_reason else {}),
+                            },
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        logger.info(
+                            f"[send_message] ending triggered room={room.id} turn={current_turn_no} ending={ending_id} opening={active_opening_id} reason={ending_reason}"
+                        )
+                    except Exception:
+                        pass
+        except Exception as e:
+            try:
+                logger.warning(f"[send_message] ending judgement failed: {e}")
+            except Exception:
+                pass
+
         # 4. AI 응답 메시지 저장
+        ai_md = None
+        try:
+            if active_turn_event_id:
+                ai_md = {
+                    "turn_event_id": active_turn_event_id,
+                    "turn_no": current_turn_no,
+                    **({"opening_id": active_opening_id} if active_opening_id else {}),
+                }
+        except Exception:
+            ai_md = None
         ai_message = await chat_service.save_message(
-            db, room.id, "assistant", ai_response_text
+            db, room.id, "assistant", ai_response_text, message_metadata=ai_md
         )
+
+        # ✅ 엔딩 메시지(별도) 저장
+        ending_message = None
+        try:
+            if ending_triggered_payload and isinstance(ending_triggered_payload, dict):
+                ep = str(ending_triggered_payload.get("epilogue") or "").strip()
+                title = str(ending_triggered_payload.get("title") or "엔딩").strip()
+                # ✅ 엔딩 렌더링: 일반챗 UI의 "지문/대사 분리" 규칙과 정합
+                # - 프론트 parseAssistantBlocks 기준:
+                #   - "* "로 시작하는 줄은 narration(가운데 지문 박스)
+                #   - 따옴표로 시작하는 줄은 dialogue(말풍선)
+                # - 의도: 엔딩을 "지문 박스 + (있으면) 대사 말풍선"으로 자연스럽게 렌더한다.
+                def _format_ending_blocks(t: str, body: str) -> str:
+                    try:
+                        QUOTE_START = ['"', "“", "”", "「", "『", "〈", "《"]
+                        out = []
+                        head = f"* [엔딩] {str(t or '').strip() or '엔딩'}".strip()
+                        out.append(head)
+                        if not str(body or "").strip():
+                            return "\n".join(out).strip()
+                        for raw in str(body).replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+                            s = str(raw or "")
+                            if not s.strip():
+                                out.append("")
+                                continue
+                            trimmed = s.strip()
+                            # 이미 지문 표식이 있으면 유지
+                            if trimmed.startswith("* "):
+                                out.append(trimmed)
+                                continue
+                            # 따옴표로 시작하면 대사로 유지
+                            if any(trimmed.startswith(q) for q in QUOTE_START):
+                                out.append(trimmed)
+                                continue
+                            # 그 외는 지문으로 강제(오탐 방지)
+                            out.append(f"* {trimmed}")
+                        return "\n".join(out).strip()
+                    except Exception:
+                        return f"* [엔딩] {str(t or '').strip()}\n* {str(body or '').strip()}".strip()
+
+                content = _format_ending_blocks(title, ep)
+                ending_message = await chat_service.save_message(
+                    db,
+                    room.id,
+                    "assistant",
+                    content,
+                    message_metadata={
+                        "kind": "ending",
+                        "ending_id": str(ending_triggered_payload.get("id") or "").strip(),
+                        "turn_no": int(ending_triggered_payload.get("turn_no") or 0),
+                        **({"opening_id": str(ending_triggered_payload.get("opening_id") or "").strip()} if str(ending_triggered_payload.get("opening_id") or "").strip() else {}),
+                        **({"reason": str(ending_triggered_payload.get("reason") or "").strip()} if str(ending_triggered_payload.get("reason") or "").strip() else {}),
+                    },
+                )
+        except Exception as e:
+            ending_message = None
+            try:
+                logger.warning(f"[send_message] ending_message save failed: {e}")
+            except Exception:
+                pass
         await db.commit()
         _mark("db_committed")
+
+        # ✅ turn_no_cache 갱신(커밋 성공 후에만)
+        # - 의도: 트랜잭션 롤백 시 캐시만 앞서가는 불일치를 방지한다.
+        # - continue 모드는 턴 진행이 아니므로 저장하지 않는다.
+        try:
+            if (not is_continue) and int(current_turn_no or 0) > 0:
+                await _set_room_meta(room.id, {"turn_no_cache": int(current_turn_no)})
+        except Exception as e:
+            try:
+                logger.warning(f"[send_message] turn_no_cache update failed: {e}")
+            except Exception:
+                pass
+
+        # ✅ 턴 계산 락 해제(성공 케이스)
+        try:
+            if turn_calc_lock_key and turn_calc_lock_acquired:
+                from app.core.database import redis_client
+                await redis_client.delete(turn_calc_lock_key)
+        except Exception:
+            pass
     except Exception:
+        # ✅ 턴 계산 락 해제(실패/롤백 케이스)
+        try:
+            if turn_calc_lock_key and turn_calc_lock_acquired:
+                from app.core.database import redis_client
+                await redis_client.delete(turn_calc_lock_key)
+        except Exception:
+            pass
         await db.rollback()
         raise HTTPException(status_code=503, detail="AiUnavailable")
 
@@ -2498,6 +4321,7 @@ async def send_message(
     return SendMessageResponse(
         user_message=user_message,
         ai_message=ai_message,
+        ending_message=ending_message,
         suggested_image_index=suggested_image_index
     )
 
@@ -2687,6 +4511,255 @@ async def get_messages_in_room_legacy(
             # 방어: tail 역산 실패 시 기존(오래된) 방식으로 폴백
             return await get_chat_history(room_id, skip, limit, current_user, db)
     return await get_chat_history(room_id, skip, limit, current_user, db)
+
+
+@router.post("/rooms/{room_id}/magic-choices", response_model=MagicChoicesResponse)
+async def generate_magic_choices(
+    room_id: uuid.UUID,
+    payload: dict,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    ✅ 요술봉 모드: 유저가 누를 '선택지 3개'를 생성한다.
+
+    목표/원리:
+    - 크리에이터가 선택지를 미리 입력하지 않아도 된다(LLM이 즉시 생성).
+    - 프론트는 "AI 답변이 끝난 직후" 이 API를 호출해 3개 선택지를 표시한다.
+    - 선택지를 누르면 해당 문장을 유저 메시지로 전송(일반 채팅 흐름 재사용).
+
+    방어:
+    - 반환은 항상 JSON 구조(choices[])를 유지한다.
+    - 모델 출력이 깨지면 폴백 선택지(3개)를 제공한다.
+    """
+    # 권한/존재 확인
+    room = await chat_service.get_chat_room_by_id(db, room_id)
+    if not room:
+        raise HTTPException(status_code=404, detail="채팅방을 찾을 수 없습니다.")
+    if room.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="이 채팅방에 접근할 권한이 없습니다.")
+    character = getattr(room, "character", None)
+    if not character:
+        # 방어: relationship 누락 시 재조회
+        try:
+            character = (await db.execute(select(Character).where(Character.id == room.character_id))).scalars().first()
+        except Exception:
+            character = None
+    if not character:
+        raise HTTPException(status_code=404, detail="캐릭터를 찾을 수 없습니다.")
+    # 비공개 접근 차단(기존 정책 유지)
+    await _ensure_private_content_access(db, current_user, character=character)
+
+    # 요청 파라미터(방어적)
+    try:
+        n = int(payload.get("n") or 3)
+    except Exception:
+        n = 3
+    if n < 1:
+        n = 1
+    if n > 5:
+        n = 5  # 방어: 과도한 생성 제한
+    seed_message_id = str(payload.get("seed_message_id") or "").strip()
+    seed_hint = str(payload.get("seed_hint") or "").strip()
+
+    # 컨텍스트: 최근 메시지 일부
+    try:
+        recent = await chat_service.get_messages_by_room_id(db, room_id, skip=max(0, int(await chat_service.get_message_count_by_room_id(db, room_id) or 0) - 30), limit=30)
+    except Exception:
+        recent = []
+
+    # 마지막 AI/유저 메시지 추출(선택지 품질을 올리기 위한 최소 정보)
+    last_ai = ""
+    last_user = ""
+    try:
+        for m in reversed(recent or []):
+            st = str(getattr(m, "sender_type", "") or "").lower()
+            if not last_ai and st in ("assistant", "character"):
+                last_ai = str(getattr(m, "content", "") or "")
+            elif not last_user and st == "user":
+                last_user = str(getattr(m, "content", "") or "")
+            if last_ai and last_user:
+                break
+    except Exception:
+        last_ai = last_ai or ""
+        last_user = last_user or ""
+
+    # 캐릭터 요약(너무 길면 모델이 선택지 생성에서 산만해지므로 제한)
+    char_name = str(getattr(character, "name", None) or "캐릭터").strip()
+    desc = str(getattr(character, "description", None) or "").strip()
+    persona = str(getattr(character, "personality", None) or "").strip()
+    speech = str(getattr(character, "speech_style", None) or "").strip()
+    world = str(getattr(character, "world_setting", None) or "").strip()
+    if len(desc) > 800:
+        desc = desc[:800]
+    if len(persona) > 500:
+        persona = persona[:500]
+    if len(world) > 900:
+        world = world[:900]
+
+    # 모델 입력(선택지 전용)
+    # - 반드시 JSON만 출력하게 강제 (파싱/안정성)
+    # - "점수" 같은 게임 메타는 언급하지 않게 한다.
+    system_prompt = f"""당신은 '{char_name}' 캐릭터 챗의 진행을 돕는 스토리 작가입니다.
+
+[캐릭터]
+- 이름: {char_name}
+- 설명: {desc or "설정 없음"}
+- 성격: {persona or "설정 없음"}
+- 말투: {speech or "설정 없음"}
+
+[세계관]
+{world or "설정 없음"}
+
+[출력 규칙]
+- 아래 JSON만 출력하세요. 다른 텍스트/설명/마크다운 금지.
+- choices는 반드시 {n}개.
+- 각 choice는 "대사 1문장" + "행동/지문 1문장"으로 구성한다.
+- dialogue: 유저가 보낼 "대사" 1문장(짧고 자연스럽게).
+- narration: 유저의 행동/표정/동작 등을 묘사하는 "지문" 1문장.
+- 선택지는 유저가 보낼 문장이다. 캐릭터 대사처럼 쓰지 마라.
+- 선택지의 의도(점수/분기/호감도 등)를 노골적으로 드러내지 마세요.
+- 3개는 서로 톤/행동이 다르게(공손/도발/회피 같은 다양성).
+
+[출력 형식]
+{{"choices":[{{"dialogue":"...","narration":"..."}}, ...]}}
+"""
+
+    # 최근 맥락을 user_message에 넣어 단순하게 유도
+    user_prompt = {
+        "seed_message_id": seed_message_id or None,
+        "seed_hint": seed_hint or None,
+        "last_user": (last_user or "").strip()[:800] or None,
+        "last_ai": (last_ai or "").strip()[:1200] or None,
+        "task": f"위 맥락을 바탕으로 다음 사용자 입력 선택지 {n}개를 생성하라.",
+        "output": {
+            "choices": [{"dialogue": "string", "narration": "string"}],
+        },
+    }
+
+    # 폴백(모델 실패/파싱 실패 대비)
+    fallback_pairs = [
+        ("잠깐, 방금 말한 건 무슨 뜻이야?", "나는 조심스럽게 네 표정을 살핀다."),
+        ("그럼 지금 내가 뭘 하면 좋을까?", "나는 네가 원하는 답을 기다리며 숨을 고른다."),
+        ("좋아. 대신 조건이 있어.", "나는 한 걸음 다가가 솔직하게 말해달라고 눈을 맞춘다."),
+    ][:n]
+
+    raw = ""
+    try:
+        raw = await ai_service.get_ai_chat_response(
+            character_prompt=system_prompt,
+            user_message=json.dumps(user_prompt, ensure_ascii=False),
+            history=[],
+            preferred_model=current_user.preferred_model,
+            preferred_sub_model=current_user.preferred_sub_model,
+            response_length_pref="short",
+            temperature=0.7,
+        )
+    except Exception as e:
+        try:
+            logger.warning(f"[magic_choices] ai failed room={room_id}: {e}")
+        except Exception:
+            pass
+        return MagicChoicesResponse(
+            choices=[
+                {"id": uuid.uuid4().hex, "label": f"{d}\n{n}", "dialogue": d, "narration": n}
+                for (d, n) in fallback_pairs
+            ]
+        )
+
+    # JSON 파싱(방어적)
+    choices_raw: list[dict] = []
+    try:
+        s = str(raw or "").strip()
+        # 코드펜스 제거(모델이 실수로 붙일 수 있음)
+        if s.startswith("```"):
+            s = re.sub(r"^```[a-zA-Z]*\n?", "", s).strip()
+            s = re.sub(r"\n?```$", "", s).strip()
+        data = json.loads(s)
+        arr = data.get("choices") if isinstance(data, dict) else None
+        if isinstance(arr, list):
+            for it in arr:
+                if isinstance(it, dict):
+                    d = str(it.get("dialogue") or "").strip()
+                    nrr = str(it.get("narration") or "").strip()
+                    lab = str(it.get("label") or "").strip()
+                    choices_raw.append({"dialogue": d, "narration": nrr, "label": lab})
+                else:
+                    lab = str(it or "").strip()
+                    if lab:
+                        choices_raw.append({"dialogue": "", "narration": "", "label": lab})
+    except Exception:
+        # JSON 일부만 섞여나온 경우(중괄호 블록) 추출 시도
+        try:
+            s2 = str(raw or "")
+            m = re.search(r"\{[\s\S]*\}", s2)
+            if m:
+                data = json.loads(m.group(0))
+                arr = data.get("choices") if isinstance(data, dict) else None
+                if isinstance(arr, list):
+                    for it in arr:
+                        if isinstance(it, dict):
+                            d = str(it.get("dialogue") or "").strip()
+                            nrr = str(it.get("narration") or "").strip()
+                            lab = str(it.get("label") or "").strip()
+                            choices_raw.append({"dialogue": d, "narration": nrr, "label": lab})
+                        else:
+                            lab = str(it or "").strip()
+                            if lab:
+                                choices_raw.append({"dialogue": "", "narration": "", "label": lab})
+        except Exception:
+            choices_raw = []
+
+    # 후처리: 개수/중복/길이 방어
+    cleaned: list[dict] = []
+    seen = set()
+    for it in choices_raw:
+        d = " ".join(str(it.get("dialogue") or "").split()).strip()
+        nrr = " ".join(str(it.get("narration") or "").split()).strip()
+        lab = str(it.get("label") or "").strip()
+        if not d and not nrr and lab:
+            # 하위호환: label만 내려온 경우 → 2줄로 분해 시도
+            parts = [p.strip() for p in lab.split("\n") if p.strip()]
+            if len(parts) >= 2:
+                d, nrr = parts[0], parts[1]
+            elif len(parts) == 1:
+                d, nrr = parts[0], ""
+        if not d and not lab:
+            continue
+        # label SSOT: 항상 생성
+        if not lab:
+            lab = f"{d}\n{nrr}".strip()
+        # 길이 제한(너무 길면 버튼 UX가 깨짐)
+        if len(d) > 120:
+            d = d[:120].rstrip()
+        if len(nrr) > 140:
+            nrr = nrr[:140].rstrip()
+        if len(lab) > 260:
+            lab = lab[:260].rstrip()
+        key = (lab or "").lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append({"dialogue": d, "narration": nrr, "label": lab})
+        if len(cleaned) >= n:
+            break
+    if len(cleaned) < n:
+        for (d, nrr) in fallback_pairs:
+            if len(cleaned) >= n:
+                break
+            lab = f"{d}\n{nrr}".strip()
+            key = lab.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            cleaned.append({"dialogue": d, "narration": nrr, "label": lab})
+
+    return MagicChoicesResponse(
+        choices=[
+            {"id": uuid.uuid4().hex, "label": it["label"], "dialogue": it.get("dialogue") or None, "narration": it.get("narration") or None}
+            for it in cleaned[:n]
+        ]
+    )
 
 @router.post("/messages", response_model=SendMessageResponse)
 async def send_message_and_get_response_legacy(
