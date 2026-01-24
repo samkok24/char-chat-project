@@ -88,6 +88,7 @@ COLUMNS_TO_ADD = {
         ("user_display_description", "TEXT"),
         ("use_custom_description", "BOOLEAN DEFAULT 0"),
         ("introduction_scenes", "TEXT"), # TEXT for JSON
+        ("start_sets", "TEXT"), # TEXT for JSON (도입부+첫대사 세트 SSOT)
         ("character_type", "VARCHAR(50) DEFAULT 'roleplay'"),
         ("base_language", "VARCHAR(10) DEFAULT 'ko'"),
         ("image_descriptions", "TEXT"), # TEXT for JSON

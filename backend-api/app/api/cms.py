@@ -31,7 +31,7 @@ from app.core.config import settings
 from app.core.security import get_current_user
 from app.models.user import User
 from app.models.site_config import SiteConfig
-from app.schemas.cms import HomeBanner, HomeSlot, TagDisplayConfig
+from app.schemas.cms import HomeBanner, HomeSlot, TagDisplayConfig, HomePopup, HomePopupItem, HomePopupConfig
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,7 @@ router = APIRouter()
 CONFIG_KEY_HOME_BANNERS = "homeBanners"
 CONFIG_KEY_HOME_SLOTS = "homeSlots"
 CONFIG_KEY_CHARACTER_TAG_DISPLAY = "characterTagDisplay"
+CONFIG_KEY_HOME_POPUPS = "homePopups"
 
 
 def _ensure_admin(user: User) -> None:
@@ -397,6 +398,56 @@ def _default_character_tag_display() -> dict:
     }
 
 
+def _default_home_popups() -> dict:
+    """홈 팝업 기본값(운영 안전용): 비활성 0개 + 최대 1개 노출."""
+    return {"maxDisplayCount": 1, "items": []}
+
+
+def _normalize_home_popups(cfg: HomePopupConfig) -> dict:
+    """
+    홈 팝업 저장값을 서버에서 멱등/안전하게 정리한다.
+
+    의도:
+    - items 내부 id/타임스탬프(updatedAt/createdAt)를 보정한다.
+    - maxDisplayCount는 0~10으로 제한한다(과도한 팝업 방지).
+    """
+    now = _now_iso()
+    try:
+        max_cnt = int(getattr(cfg, "maxDisplayCount", 1) or 0)
+    except Exception:
+        max_cnt = 1
+    if max_cnt < 0:
+        max_cnt = 0
+    if max_cnt > 10:
+        max_cnt = 10
+
+    out_items = []
+    for p in (cfg.items or []):
+        d = p.model_dump()
+        pid = str(d.get("id") or "").strip()
+        if not pid:
+            pid = f"pop_{uuid.uuid4().hex[:12]}"
+        d["id"] = pid
+        if not d.get("createdAt"):
+            d["createdAt"] = now
+        d["updatedAt"] = now
+
+        # 방어: dismissDays 보정(0~365)
+        try:
+            dd = int(d.get("dismissDays", 1) or 0)
+        except Exception:
+            dd = 1
+        if dd < 0:
+            dd = 0
+        if dd > 365:
+            dd = 365
+        d["dismissDays"] = dd
+
+        out_items.append(d)
+
+    return {"maxDisplayCount": max_cnt, "items": out_items}
+
+
 def _normalize_character_tag_display(item: TagDisplayConfig) -> dict:
     """저장값을 서버에서 멱등/안전하게 정리한다(타임스탬프 포함)."""
     now = _now_iso()
@@ -536,6 +587,122 @@ async def get_character_tag_display(db: AsyncSession = Depends(get_db)):
         except Exception:
             print(f"[cms] get_character_tag_display failed: {e}")
         return TagDisplayConfig.model_validate(_default_character_tag_display())
+
+
+@router.get("/home/popups", response_model=HomePopupConfig, summary="홈 팝업 설정(공개)")
+async def get_home_popups(db: AsyncSession = Depends(get_db)):
+    """홈 팝업 설정 조회(유저/비로그인 공개)."""
+    try:
+        cfg = await _get_config(db, CONFIG_KEY_HOME_POPUPS)
+        value = cfg.value if cfg else None
+        if isinstance(value, dict):
+            return HomePopupConfig.model_validate(value)
+        return HomePopupConfig.model_validate(_default_home_popups())
+    except Exception as e:
+        # ✅ 배포 DB 스키마 불일치 등으로 ORM이 깨지는 경우 raw SQL로 폴백
+        try:
+            raw = await _get_config_value_raw(db, CONFIG_KEY_HOME_POPUPS)
+            if isinstance(raw, dict):
+                return HomePopupConfig.model_validate(raw)
+        except Exception:
+            pass
+        try:
+            logger.exception(f"[cms] get_home_popups failed: {e}")
+        except Exception:
+            print(f"[cms] get_home_popups failed: {e}")
+        return HomePopupConfig.model_validate(_default_home_popups())
+
+
+@router.put("/home/popups", response_model=HomePopupConfig, summary="홈 팝업 설정 저장(관리자)")
+async def put_home_popups(
+    payload: HomePopupConfig,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """홈 팝업 설정 저장(관리자 전용)."""
+    _ensure_admin(current_user)
+    try:
+        normalized = _normalize_home_popups(payload)
+        cfg = await _get_config(db, CONFIG_KEY_HOME_POPUPS)
+        if cfg:
+            cfg.value = normalized
+        else:
+            cfg = SiteConfig(key=CONFIG_KEY_HOME_POPUPS, value=normalized)
+            db.add(cfg)
+        await db.commit()
+        return HomePopupConfig.model_validate(normalized)
+    except Exception as e:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+        try:
+            logger.exception(f"[cms] put_home_popups failed: {e}")
+        except Exception:
+            print(f"[cms] put_home_popups failed: {e}")
+        # ✅ 배포 DB 스키마/권한/컬럼 불일치로 ORM 저장이 실패할 수 있어 raw SQL 폴백을 1회 시도한다.
+        try:
+            normalized = _normalize_home_popups(payload)
+            await _upsert_config_raw(db, CONFIG_KEY_HOME_POPUPS, normalized)
+            return HomePopupConfig.model_validate(normalized)
+        except Exception as e2:
+            try:
+                logger.exception(f"[cms] put_home_popups raw fallback failed: {e2}")
+            except Exception:
+                print(f"[cms] put_home_popups raw fallback failed: {e2}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"홈 팝업 저장에 실패했습니다. ({_safe_exc(e2) or _safe_exc(e)})",
+            )
+
+
+# ===== 하위 호환(단일 팝업 엔드포인트 유지) =====
+@router.get("/home/popup", response_model=HomePopup, summary="홈 팝업 설정(공개) - legacy")
+async def get_home_popup(db: AsyncSession = Depends(get_db)):
+    """레거시 단일 팝업 조회. 신규 구현은 /home/popups 사용."""
+    try:
+        cfg = await _get_config(db, CONFIG_KEY_HOME_POPUPS)
+        value = cfg.value if cfg else None
+        if isinstance(value, dict):
+            items = value.get("items") if isinstance(value.get("items"), list) else []
+            if items and isinstance(items[0], dict):
+                return HomePopup.model_validate(items[0])
+        return HomePopup.model_validate({"enabled": False})
+    except Exception:
+        return HomePopup.model_validate({"enabled": False})
+
+
+@router.put("/home/popup", response_model=HomePopup, summary="홈 팝업 설정 저장(관리자) - legacy")
+async def put_home_popup(
+    payload: HomePopup,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """레거시 단일 팝업 저장. 신규 구현은 /home/popups 사용."""
+    _ensure_admin(current_user)
+    cfg = HomePopupConfig(maxDisplayCount=1, items=[HomePopupItem.model_validate(payload.model_dump())])
+    normalized = _normalize_home_popups(cfg)
+    try:
+        row = await _get_config(db, CONFIG_KEY_HOME_POPUPS)
+        if row:
+            row.value = normalized
+        else:
+            row = SiteConfig(key=CONFIG_KEY_HOME_POPUPS, value=normalized)
+            db.add(row)
+        await db.commit()
+        try:
+            items = normalized.get("items") if isinstance(normalized, dict) else []
+            if items and isinstance(items[0], dict):
+                return HomePopup.model_validate(items[0])
+        except Exception:
+            pass
+        return HomePopup.model_validate({"enabled": False})
+    except Exception as e:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=f"홈 팝업 저장에 실패했습니다. ({_safe_exc(e)})")
 
 
 @router.put("/tags/character", response_model=TagDisplayConfig, summary="캐릭터 탭 태그 노출/순서 설정 저장(관리자)")

@@ -37,6 +37,16 @@ import {
   isSystemHomeSlotId,
 } from '../lib/cmsSlots';
 import {
+  HOME_POPUPS_STORAGE_KEY,
+  HOME_POPUPS_CHANGED_EVENT,
+  DEFAULT_HOME_POPUPS_CONFIG,
+  getHomePopupsConfig,
+  isDefaultHomePopupsConfig,
+  setHomePopupsConfig,
+  sanitizeHomePopupsConfig,
+  sanitizeHomePopupItem,
+} from '../lib/cmsPopups';
+import {
   CHARACTER_TAG_DISPLAY_STORAGE_KEY,
   CHARACTER_TAG_DISPLAY_CHANGED_EVENT,
   DEFAULT_CHARACTER_TAG_DISPLAY,
@@ -196,8 +206,9 @@ const CMSPage = () => {
   const { user } = useAuth();
   const isAdmin = !!user?.is_admin;
 
-  const [activeTab, setActiveTab] = React.useState('banners'); // users | banners | slots | tags | aiModels
+  const [activeTab, setActiveTab] = React.useState('banners'); // users | banners | popups | slots | tags | aiModels
   const [banners, setBannersState] = React.useState(() => getHomeBanners());
+  const [popupsConfig, setPopupsConfigState] = React.useState(() => getHomePopupsConfig());
   const [slots, setSlotsState] = React.useState(() => getHomeSlots());
   const [tagDisplay, setTagDisplayState] = React.useState(() => getCharacterTagDisplay());
   const [saving, setSaving] = React.useState(false);
@@ -289,8 +300,9 @@ const CMSPage = () => {
     let active = true;
     const loadFromServer = async () => {
       try {
-        const [bRes, sRes, tRes] = await Promise.all([
+        const [bRes, pRes, sRes, tRes] = await Promise.all([
           cmsAPI.getHomeBanners().catch((e) => ({ __err: e })),
+          cmsAPI.getHomePopups().catch((e) => ({ __err: e })),
           cmsAPI.getHomeSlots().catch((e) => ({ __err: e })),
           cmsAPI.getCharacterTagDisplay().catch((e) => ({ __err: e })),
         ]);
@@ -319,6 +331,27 @@ const CMSPage = () => {
           }
         } catch (e) {
           try { console.warn('[CMSPage] apply server banners failed:', e); } catch (_) {}
+        }
+
+        // 팝업
+        try {
+          const serverPopups = (pRes && pRes.data && typeof pRes.data === 'object') ? pRes.data : null;
+          if (serverPopups) {
+            // ✅ 안전 전환: 서버가 "기본값(비활성/빈 목록)"이고 로컬에 값이 있으면 로컬을 우선 유지한다.
+            let skipApply = false;
+            try {
+              const hasLocal = !!localStorage.getItem(HOME_POPUPS_STORAGE_KEY);
+              const looksDefault = isDefaultHomePopupsConfig(serverPopups);
+              if (hasLocal && looksDefault) skipApply = true;
+            } catch (_) {}
+            if (!skipApply) {
+              const saved = setHomePopupsConfig(serverPopups);
+              if (saved?.ok) setPopupsConfigState(saved.config);
+              else setPopupsConfigState(sanitizeHomePopupsConfig(serverPopups));
+            }
+          }
+        } catch (e) {
+          try { console.warn('[CMSPage] apply server popups failed:', e); } catch (_) {}
         }
 
         // 구좌
@@ -854,6 +887,200 @@ const CMSPage = () => {
     if (!window.confirm('기본값으로 초기화하시겠습니까? (현재 설정이 사라집니다)')) return;
     setBannersState(DEFAULT_HOME_BANNERS.map(sanitizeHomeBanner));
     toast.success('기본값으로 초기화되었습니다. 저장 버튼을 눌러 반영하세요.');
+  };
+
+  // ===== 홈 팝업 관리 =====
+  const updatePopupsConfig = (patch) => {
+    const safePatch = (patch && typeof patch === 'object') ? patch : {};
+    setPopupsConfigState((prev) => sanitizeHomePopupsConfig({ ...(prev || {}), ...safePatch }));
+  };
+
+  const updatePopupItem = (id, patch) => {
+    const pid = String(id || '').trim();
+    if (!pid) return;
+    const safePatch = (patch && typeof patch === 'object') ? patch : {};
+    setPopupsConfigState((prev) => {
+      const cfg = sanitizeHomePopupsConfig(prev);
+      const nextItems = (cfg.items || []).map((p) => {
+        if (String(p?.id || '').trim() !== pid) return p;
+        const merged = sanitizeHomePopupItem({ ...(p || {}), ...safePatch, id: p?.id });
+        // 입력 UX: message/title은 입력 중 trim을 유지하고 싶으면 여기서 raw 유지 가능(현재는 단순 적용)
+        return merged;
+      });
+      return sanitizeHomePopupsConfig({ ...cfg, items: nextItems });
+    });
+  };
+
+  const addPopup = () => {
+    const labelIdx = (Array.isArray(popupsConfig?.items) ? popupsConfig.items.length : 0) + 1;
+    setPopupsConfigState((prev) => {
+      const cfg = sanitizeHomePopupsConfig(prev);
+      const p = sanitizeHomePopupItem({
+        enabled: false,
+        title: `팝업 ${labelIdx}`,
+        message: '',
+        displayOn: 'all',
+        dismissDays: 1,
+      });
+      return sanitizeHomePopupsConfig({ ...cfg, items: [...(cfg.items || []), p] });
+    });
+    toast.success('팝업이 추가되었습니다. 아래에서 내용을 수정한 뒤 저장하세요.');
+  };
+
+  const removePopup = (id) => {
+    const pid = String(id || '').trim();
+    if (!pid) return;
+    if (!window.confirm('이 팝업을 삭제하시겠습니까?')) return;
+    setPopupsConfigState((prev) => {
+      const cfg = sanitizeHomePopupsConfig(prev);
+      const nextItems = (cfg.items || []).filter((p) => String(p?.id || '').trim() !== pid);
+      return sanitizeHomePopupsConfig({ ...cfg, items: nextItems });
+    });
+    toast.success('팝업이 삭제되었습니다. 저장 버튼을 눌러 전 유저에게 반영하세요.');
+  };
+
+  const movePopup = (id, dir) => {
+    const pid = String(id || '').trim();
+    if (!pid) return;
+    setPopupsConfigState((prev) => {
+      const cfg = sanitizeHomePopupsConfig(prev);
+      const arr = Array.isArray(cfg.items) ? [...cfg.items] : [];
+      const idx = arr.findIndex((p) => String(p?.id || '').trim() === pid);
+      if (idx < 0) return cfg;
+      const nextIdx = dir === 'up' ? idx - 1 : idx + 1;
+      if (nextIdx < 0 || nextIdx >= arr.length) return cfg;
+      const tmp = arr[idx];
+      arr[idx] = arr[nextIdx];
+      arr[nextIdx] = tmp;
+      return sanitizeHomePopupsConfig({ ...cfg, items: arr });
+    });
+  };
+
+  const pickPopupImage = async (id, which = 'pc') => {
+    const pid = String(id || '').trim();
+    if (!pid) return;
+    try {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = 'image/*';
+      input.onchange = async (e) => {
+        const file = e?.target?.files?.[0];
+        if (!file) return;
+        // ✅ 운영 안정: base64(dataUrl)를 저장하지 않고, 서버(/files/upload) 업로드 URL만 저장한다.
+        let url = '';
+        try {
+          const res = await filesAPI.uploadImages([file]);
+          const arr = res?.data;
+          url = Array.isArray(arr) ? String(arr[0] || '').trim() : '';
+        } catch (err) {
+          console.error('[CMSPage] popup image upload failed:', err);
+          toast.error('이미지 업로드에 실패했습니다.');
+          return;
+        }
+        if (!url) {
+          toast.error('이미지 업로드 결과가 비어있습니다.');
+          return;
+        }
+        updatePopupItem(pid, which === 'mobile' ? { mobileImageUrl: url } : { imageUrl: url });
+        toast.success('이미지가 업로드되었습니다. 저장 버튼을 눌러 전 유저에게 반영하세요.');
+      };
+      input.click();
+    } catch (e) {
+      console.error('[CMSPage] popup image pick failed:', e);
+      toast.error('이미지 적용에 실패했습니다.');
+    }
+  };
+
+  const resetPopupsToDefault = () => {
+    if (!window.confirm('기본값으로 초기화하시겠습니까? (현재 설정이 사라집니다)')) return;
+    setPopupsConfigState(sanitizeHomePopupsConfig(DEFAULT_HOME_POPUPS_CONFIG));
+    toast.success('기본값으로 초기화되었습니다. 저장 버튼을 눌러 반영하세요.');
+  };
+
+  const savePopupsAll = async () => {
+    setSaving(true);
+    try {
+      const cfg = sanitizeHomePopupsConfig(popupsConfig);
+      // 간단 검증: 기간 역전 방지
+      for (const p of (cfg.items || [])) {
+        const start = p.startAt ? new Date(p.startAt).getTime() : null;
+        const end = p.endAt ? new Date(p.endAt).getTime() : null;
+        if (start && end && Number.isFinite(start) && Number.isFinite(end) && start > end) {
+          toast.error(`"${p.title || '팝업'}"의 노출 기간이 올바르지 않습니다. (시작 > 종료)`);
+          setSaving(false);
+          return;
+        }
+      }
+
+      let savedToServer = false;
+      let serverConfig = null;
+      let serverSaveError = null;
+      try {
+        // ✅ 서버 저장 전에 data: 이미지 URL(구버전 로컬 저장)을 서버 업로드 URL로 변환한다.
+        const payload = sanitizeHomePopupsConfig(cfg);
+        let didMigrate = false;
+        const nextItems = [...(payload.items || [])];
+        for (let i = 0; i < nextItems.length; i++) {
+          const p = nextItems[i] || {};
+          const id = String(p.id || '').trim() || `popup_${i}`;
+          const title = String(p.title || '').trim() || '팝업';
+          const next = { ...p };
+
+          if (isDataImageUrl(next.imageUrl)) {
+            didMigrate = true;
+            const file = dataImageUrlToFile(next.imageUrl, `popup_${id}_pc`);
+            if (!file) throw new Error(`"${title}" 팝업의 PC 이미지 변환에 실패했습니다.`);
+            const up = await filesAPI.uploadImages([file]);
+            const url = Array.isArray(up?.data) ? String(up.data?.[0] || '').trim() : '';
+            if (!url) throw new Error(`"${title}" 팝업의 PC 이미지 업로드에 실패했습니다.`);
+            next.imageUrl = url;
+          }
+          if (isDataImageUrl(next.mobileImageUrl)) {
+            didMigrate = true;
+            const file = dataImageUrlToFile(next.mobileImageUrl, `popup_${id}_mobile`);
+            if (!file) throw new Error(`"${title}" 팝업의 모바일 이미지 변환에 실패했습니다.`);
+            const up = await filesAPI.uploadImages([file]);
+            const url = Array.isArray(up?.data) ? String(up.data?.[0] || '').trim() : '';
+            if (!url) throw new Error(`"${title}" 팝업의 모바일 이미지 업로드에 실패했습니다.`);
+            next.mobileImageUrl = url;
+          }
+
+          nextItems[i] = sanitizeHomePopupItem(next);
+        }
+
+        const toSend = sanitizeHomePopupsConfig({ ...payload, items: nextItems });
+        if (didMigrate) {
+          try { setPopupsConfigState(toSend); } catch (_) {}
+        }
+
+        const resp = await cmsAPI.putHomePopups(toSend);
+        serverConfig = (resp && resp.data && typeof resp.data === 'object') ? resp.data : null;
+        savedToServer = !!serverConfig;
+      } catch (e) {
+        console.error('[CMSPage] putHomePopups failed:', e);
+        serverSaveError = e;
+        savedToServer = false;
+      }
+
+      const toPersist = serverConfig || cfg;
+      const saved = setHomePopupsConfig(toPersist);
+      if (saved?.ok) setPopupsConfigState(saved.config);
+
+      if (savedToServer) toast.success('저장 완료! (전 유저에게 반영됩니다)');
+      else {
+        let detail = '';
+        try {
+          const status = serverSaveError?.response?.status;
+          const serverDetail = serverSaveError?.response?.data?.detail;
+          const msg = serverDetail || serverSaveError?.message || '';
+          if (status) detail = ` (HTTP ${status}${msg ? `: ${msg}` : ''})`;
+          else if (msg) detail = ` (${msg})`;
+        } catch (_) {}
+        toast.error(`서버 저장에 실패했습니다. 현재는 로컬에만 저장되었습니다. (유저 전체 반영 안 됨)${detail}`);
+      }
+    } finally {
+      setSaving(false);
+    }
   };
 
   // ===== 홈 구좌(슬롯) 관리 =====
@@ -1584,6 +1811,7 @@ const CMSPage = () => {
   }, []);
 
   const isBannersTab = activeTab === 'banners';
+  const isPopupsTab = activeTab === 'popups';
   const isSlotsTab = activeTab === 'slots';
   const isTagsTab = activeTab === 'tags';
   const isAiModelsTab = activeTab === 'aiModels';
@@ -1635,7 +1863,7 @@ const CMSPage = () => {
               <div>
                 <div className="text-xl font-bold text-white">관리자 페이지</div>
                 <div className="text-sm text-gray-400">
-                  {isUsersTab ? '회원 관리' : isBannersTab ? '배너 조작' : isSlotsTab ? '구좌 조작' : isTagsTab ? '태그 관리' : 'AI모델 조작(준비중)'}
+                  {isUsersTab ? '회원 관리' : isBannersTab ? '배너 조작' : isPopupsTab ? '팝업 설정' : isSlotsTab ? '구좌 조작' : isTagsTab ? '태그 관리' : 'AI모델 조작(준비중)'}
                 </div>
               </div>
             </div>
@@ -1670,13 +1898,13 @@ const CMSPage = () => {
                   <Button
                     variant="outline"
                     className="bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
-                    onClick={isBannersTab ? resetToDefault : isSlotsTab ? resetSlotsToDefault : resetTagDisplayToDefault}
+                    onClick={isBannersTab ? resetToDefault : isPopupsTab ? resetPopupsToDefault : isSlotsTab ? resetSlotsToDefault : resetTagDisplayToDefault}
                   >
                     초기화
                   </Button>
                   <Button
                     className="bg-purple-600 hover:bg-purple-700 text-white"
-                    onClick={isBannersTab ? saveAll : isSlotsTab ? saveSlotsAll : saveTagDisplayAll}
+                    onClick={isBannersTab ? saveAll : isPopupsTab ? savePopupsAll : isSlotsTab ? saveSlotsAll : saveTagDisplayAll}
                     disabled={saving}
                   >
                     <Save className="w-4 h-4 mr-2" />
@@ -1704,6 +1932,14 @@ const CMSPage = () => {
               title="배너 조작"
             >
               배너 조작
+            </Button>
+            <Button
+              variant="outline"
+              className={`h-9 px-3 ${isPopupsTab ? 'bg-purple-600 border-purple-500 text-white hover:bg-purple-700' : 'bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700'}`}
+              onClick={() => setActiveTab('popups')}
+              title="팝업 설정"
+            >
+              팝업 설정
             </Button>
             <Button
               variant="outline"
@@ -2429,6 +2665,301 @@ const CMSPage = () => {
               )}
             </CardContent>
           </Card>
+          )}
+
+          {isPopupsTab && (
+            <Card className="bg-gray-800 border-gray-700">
+              <CardHeader className="flex flex-row items-start justify-between gap-3">
+                <div>
+                  <CardTitle className="text-white">홈 팝업</CardTitle>
+                  <CardDescription className="text-gray-400">
+                    팝업 노출 개수/이미지/링크/“N일간 안보기”/노출 기간을 설정할 수 있습니다. (서버 저장, 전 유저 반영)
+                  </CardDescription>
+                </div>
+                <Button
+                  onClick={addPopup}
+                  className="bg-pink-600 hover:bg-pink-700 text-white"
+                >
+                  <Plus className="w-4 h-4 mr-2" />
+                  팝업 추가
+                </Button>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="rounded-xl border border-gray-700 bg-gray-900/30 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-sm font-semibold text-white">동시에(순차) 띄울 최대 개수</div>
+                      <div className="text-xs text-gray-500">
+                        홈 진입 시 조건을 만족하는 팝업이 여러 개면, 위에서부터 최대 N개까지 순서대로 노출합니다.
+                      </div>
+                    </div>
+                    <Input
+                      type="number"
+                      min={0}
+                      max={10}
+                      value={Number(popupsConfig?.maxDisplayCount ?? 1)}
+                      onChange={(e) => updatePopupsConfig({ maxDisplayCount: Number(e.target.value) })}
+                      className="w-24 bg-gray-900 border-gray-700 text-white"
+                    />
+                  </div>
+                </div>
+
+                {(Array.isArray(popupsConfig?.items) ? popupsConfig.items : []).length === 0 ? (
+                  <div className="text-gray-400 text-sm">팝업이 없습니다. “팝업 추가”를 눌러 등록하세요.</div>
+                ) : (
+                  (popupsConfig.items || []).map((p, idx) => {
+                    const displayOn = String(p.displayOn || 'all').trim().toLowerCase() || 'all';
+                    const href = String(p.linkUrl || '').trim();
+                    const external = href && isExternalUrl(href);
+                    return (
+                      <div key={p.id} className="rounded-xl border border-gray-700 bg-gray-900/30 p-4">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <div className="text-sm font-semibold text-white truncate">
+                                #{idx + 1} {p.title || '팝업'}
+                              </div>
+                              {displayOn !== 'all' ? (
+                                <Badge className="bg-gray-700 text-gray-200">
+                                  {displayOn === 'pc' ? 'PC만' : '모바일만'}
+                                </Badge>
+                              ) : null}
+                              {external && (
+                                <Badge className="bg-gray-700 text-gray-200">
+                                  <ExternalLink className="w-3 h-3 mr-1" />
+                                  외부링크
+                                </Badge>
+                              )}
+                            </div>
+                            <div className="text-xs text-gray-500 mt-1">
+                              {p.startAt ? new Date(p.startAt).toLocaleString('ko-KR') : '상시'}
+                              {' '}~{' '}
+                              {p.endAt ? new Date(p.endAt).toLocaleString('ko-KR') : '상시'}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2 flex-shrink-0">
+                            <Button
+                              variant="outline"
+                              className="h-9 px-3 bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
+                              onClick={() => movePopup(p.id, 'up')}
+                              disabled={idx === 0}
+                              title="위로"
+                            >
+                              <ArrowUp className="w-4 h-4" />
+                            </Button>
+                            <Button
+                              variant="outline"
+                              className="h-9 px-3 bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
+                              onClick={() => movePopup(p.id, 'down')}
+                              disabled={idx === (popupsConfig.items.length - 1)}
+                              title="아래로"
+                            >
+                              <ArrowDown className="w-4 h-4" />
+                            </Button>
+                            <Button
+                              variant="outline"
+                              className="h-9 px-3 bg-red-600/20 border-red-500/30 text-red-200 hover:bg-red-600/30"
+                              onClick={() => removePopup(p.id)}
+                              title="삭제"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </Button>
+                          </div>
+                        </div>
+
+                        <div className="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
+                          <div className="space-y-3">
+                            <div className="flex items-center justify-between gap-3 rounded-lg border border-gray-800 bg-gray-900/30 px-4 py-3">
+                              <div className="min-w-0">
+                                <div className="text-sm font-semibold text-white">활성화</div>
+                                <div className="text-xs text-gray-500">활성화된 팝업만 노출됩니다.</div>
+                              </div>
+                              <Switch
+                                checked={!!p.enabled}
+                                onCheckedChange={(v) => updatePopupItem(p.id, { enabled: !!v })}
+                              />
+                            </div>
+
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                              <div className="space-y-2">
+                                <Label className="text-gray-300">노출 대상</Label>
+                                <select
+                                  value={displayOn}
+                                  onChange={(e) => updatePopupItem(p.id, { displayOn: e.target.value })}
+                                  className="w-full h-10 rounded-md bg-gray-900 border border-gray-700 text-white px-3"
+                                >
+                                  <option value="all">전체</option>
+                                  <option value="pc">PC만</option>
+                                  <option value="mobile">모바일만</option>
+                                </select>
+                              </div>
+                              <div className="space-y-2">
+                                <Label className="text-gray-300">N일간 안보기</Label>
+                                <Input
+                                  type="number"
+                                  min={0}
+                                  max={365}
+                                  value={Number(p.dismissDays ?? 1)}
+                                  onChange={(e) => updatePopupItem(p.id, { dismissDays: Number(e.target.value) })}
+                                  className="bg-gray-900 border-gray-700 text-white"
+                                  placeholder="예: 1"
+                                />
+                                <div className="text-xs text-gray-500">0이면 “이번 세션만 닫기”로 동작합니다.</div>
+                              </div>
+                            </div>
+
+                            <div className="space-y-2">
+                              <Label className="text-gray-300">제목</Label>
+                              <Input
+                                value={p.title || ''}
+                                onChange={(e) => updatePopupItem(p.id, { title: e.target.value })}
+                                className="bg-gray-900 border-gray-700 text-white"
+                                placeholder="예: 신규 업데이트 안내"
+                              />
+                            </div>
+
+                            <div className="space-y-2">
+                              <Label className="text-gray-300">내용</Label>
+                              <Textarea
+                                value={p.message || ''}
+                                onChange={(e) => updatePopupItem(p.id, { message: e.target.value })}
+                                className="bg-gray-900 border-gray-700 text-white min-h-[90px]"
+                                placeholder="팝업 본문 텍스트"
+                              />
+                            </div>
+
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                              <div className="space-y-2">
+                                <Label className="text-gray-300">노출 시작(옵션)</Label>
+                                <Input
+                                  type="datetime-local"
+                                  value={toDatetimeLocal(p.startAt)}
+                                  onChange={(e) => updatePopupItem(p.id, { startAt: fromDatetimeLocal(e.target.value) })}
+                                  className="bg-gray-900 border-gray-700 text-white"
+                                />
+                              </div>
+                              <div className="space-y-2">
+                                <Label className="text-gray-300">노출 종료(옵션)</Label>
+                                <Input
+                                  type="datetime-local"
+                                  value={toDatetimeLocal(p.endAt)}
+                                  onChange={(e) => updatePopupItem(p.id, { endAt: fromDatetimeLocal(e.target.value) })}
+                                  className="bg-gray-900 border-gray-700 text-white"
+                                />
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="space-y-3">
+                            <div className="space-y-2">
+                              <Label className="text-gray-300">링크 URL(옵션)</Label>
+                              <Input
+                                value={p.linkUrl || ''}
+                                onChange={(e) => updatePopupItem(p.id, { linkUrl: e.target.value })}
+                                className="bg-gray-900 border-gray-700 text-white"
+                                placeholder="예: /notices 또는 https://..."
+                              />
+                            </div>
+                            <div className="flex items-center justify-between gap-3 rounded-lg border border-gray-800 bg-gray-900/30 px-4 py-3">
+                              <div className="min-w-0">
+                                <div className="text-sm font-semibold text-white">새 탭으로 열기</div>
+                                <div className="text-xs text-gray-500">외부 링크는 새 탭을 권장합니다.</div>
+                              </div>
+                              <Switch
+                                checked={!!p.openInNewTab}
+                                onCheckedChange={(v) => updatePopupItem(p.id, { openInNewTab: !!v })}
+                              />
+                            </div>
+
+                            <div className="rounded-lg border border-gray-800 bg-gray-950/30 overflow-hidden">
+                              <div className="px-3 py-2 border-b border-gray-800 text-xs text-gray-300 flex items-center justify-between">
+                                <span className="font-semibold">PC 이미지</span>
+                                <span className="text-[11px] text-gray-500">imageUrl</span>
+                              </div>
+                              <div className="relative aspect-[16/9]">
+                                <div className="absolute inset-0 bg-gradient-to-r from-[#2a160c] via-[#15121a] to-[#0b1627]" />
+                                {p.imageUrl ? (
+                                  <img
+                                    src={withCacheBust(resolveImageUrl(p.imageUrl) || p.imageUrl, p.updatedAt || p.createdAt)}
+                                    alt={p.title || '팝업'}
+                                    className="absolute inset-0 w-full h-full object-cover"
+                                  />
+                                ) : (
+                                  <div className="absolute inset-0 flex items-center justify-center text-gray-300 text-sm">
+                                    PC 이미지 없음
+                                  </div>
+                                )}
+                              </div>
+                              <div className="p-3 flex items-center gap-2">
+                                <Button
+                                  variant="outline"
+                                  className="h-9 px-3 bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
+                                  onClick={() => pickPopupImage(p.id, 'pc')}
+                                >
+                                  <ImageIcon className="w-4 h-4 mr-2" />
+                                  업로드
+                                </Button>
+                                <Button
+                                  variant="outline"
+                                  className="h-9 px-3 bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
+                                  onClick={() => updatePopupItem(p.id, { imageUrl: '' })}
+                                  disabled={!String(p.imageUrl || '').trim()}
+                                  title="PC 이미지 제거"
+                                >
+                                  <Trash2 className="w-4 h-4 mr-2" />
+                                  제거
+                                </Button>
+                              </div>
+                            </div>
+
+                            <div className="rounded-lg border border-gray-800 bg-gray-950/30 overflow-hidden">
+                              <div className="px-3 py-2 border-b border-gray-800 text-xs text-gray-300 flex items-center justify-between">
+                                <span className="font-semibold">모바일 이미지(옵션)</span>
+                                <span className="text-[11px] text-gray-500">mobileImageUrl</span>
+                              </div>
+                              <div className="relative aspect-[16/9]">
+                                <div className="absolute inset-0 bg-gradient-to-r from-[#2a160c] via-[#15121a] to-[#0b1627]" />
+                                {(p.mobileImageUrl || p.imageUrl) ? (
+                                  <img
+                                    src={withCacheBust(resolveImageUrl((p.mobileImageUrl || p.imageUrl)) || (p.mobileImageUrl || p.imageUrl), p.updatedAt || p.createdAt)}
+                                    alt={p.title || '팝업'}
+                                    className="absolute inset-0 w-full h-full object-cover"
+                                  />
+                                ) : (
+                                  <div className="absolute inset-0 flex items-center justify-center text-gray-300 text-sm">
+                                    모바일 이미지 없음
+                                  </div>
+                                )}
+                              </div>
+                              <div className="p-3 flex items-center gap-2">
+                                <Button
+                                  variant="outline"
+                                  className="h-9 px-3 bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
+                                  onClick={() => pickPopupImage(p.id, 'mobile')}
+                                >
+                                  <ImageIcon className="w-4 h-4 mr-2" />
+                                  업로드
+                                </Button>
+                                <Button
+                                  variant="outline"
+                                  className="h-9 px-3 bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
+                                  onClick={() => updatePopupItem(p.id, { mobileImageUrl: '' })}
+                                  disabled={!String(p.mobileImageUrl || '').trim()}
+                                  title="모바일 이미지 제거"
+                                >
+                                  <Trash2 className="w-4 h-4 mr-2" />
+                                  제거
+                                </Button>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </CardContent>
+            </Card>
           )}
 
           {isSlotsTab && (

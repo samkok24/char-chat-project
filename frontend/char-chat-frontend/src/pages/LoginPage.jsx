@@ -264,10 +264,24 @@ const LoginPage = () => {
             <img
               src="/brand-logo.png"
               alt="Chapter8"
-              className="h-24 w-auto max-w-[280px] object-contain object-center"
+              className="h-24 w-auto max-w-[280px] object-contain object-center cursor-pointer"
+              role="button"
+              tabIndex={0}
+              title="메인으로 이동"
               onError={(e) => {
                 // 방어적 처리: 로고 로드 실패 시 최소한의 대체 표시
                 e.currentTarget.style.display = 'none';
+              }}
+              onClick={() => {
+                try { navigate('/dashboard'); } catch (_) {}
+              }}
+              onKeyDown={(e) => {
+                try {
+                  if (e?.key === 'Enter' || e?.key === ' ') {
+                    e.preventDefault();
+                    navigate('/dashboard');
+                  }
+                } catch (_) {}
               }}
             />
           </div>

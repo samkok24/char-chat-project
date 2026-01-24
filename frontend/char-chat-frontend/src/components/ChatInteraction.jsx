@@ -10,16 +10,17 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { usersAPI, chatAPI, origChatAPI } from '../lib/api';
-import { useLoginModal } from '../contexts/LoginModalContext';
 import { getReadingProgress } from '../lib/readingProgress';
 import { Loader2 } from 'lucide-react';
 
-const ChatInteraction = ({ onStartChat, characterId, isAuthenticated, isWebNovel = false, originStoryId = null }) => {
+const ChatInteraction = ({ onStartChat, characterId, isAuthenticated, isWebNovel = false, originStoryId = null, openingId = '' }) => {
   const navigate = useNavigate();
-  const { openLoginModal } = useLoginModal();
   const isOrigChatCharacter = !!originStoryId;
   const safeOriginStoryId = (() => {
     try { return String(originStoryId || '').trim(); } catch (_) { return ''; }
+  })();
+  const safeOpeningId = (() => {
+    try { return String(openingId || '').trim(); } catch (_) { return ''; }
   })();
   const [startingOrigChat, setStartingOrigChat] = React.useState(false);
 
@@ -45,14 +46,19 @@ const ChatInteraction = ({ onStartChat, characterId, isAuthenticated, isWebNovel
     })[0]
   : null;
     // const recentMatch = Array.isArray(recent) ? recent.find(c => String(c.id) === String(characterId)) : null;
-  const hasHistory = !!recentMatch;
+  // ✅ 게스트에서는 React Query 캐시(recent)가 남아있어도 "대화 시작"만 노출한다.
+  const hasHistory = Boolean(isAuthenticated && recentMatch);
 
   const handleContinue = async () => {
-    if (!isAuthenticated) { openLoginModal(); return; }
     // ✅ 원작챗 캐릭터는 일반 채팅방(room) 재사용 로직이 아니라, origchat plain 모드로 진입해야 한다.
     // - ChatPage가 localStorage의 마지막 원작챗 room을 재사용하거나, 없으면 새로 생성한다(SSOT).
     if (isOrigChatCharacter && safeOriginStoryId) {
       navigate(`/ws/chat/${characterId}?source=origchat&storyId=${safeOriginStoryId}&mode=plain`);
+      return;
+    }
+    // ✅ 게스트 UX: 채팅 화면 진입은 허용(전송 시 로그인 요구는 ChatPage에서 처리)
+    if (!isAuthenticated) {
+      navigate(`/ws/chat/${characterId}`);
       return;
     }
     try {
@@ -76,7 +82,6 @@ const ChatInteraction = ({ onStartChat, characterId, isAuthenticated, isWebNovel
   };
 
   const handleNew = async () => {
-    if (!isAuthenticated) { openLoginModal(); return; }
     // ✅ 원작챗 캐릭터는 "새로 대화"도 origchat plain 모드로 진입해야 한다.
     // - new=1을 붙이면 ChatPage가 기존 원작챗 방을 재사용하지 않고 새 방을 생성한다.
     if (isOrigChatCharacter && safeOriginStoryId) {
@@ -118,14 +123,44 @@ const ChatInteraction = ({ onStartChat, characterId, isAuthenticated, isWebNovel
       }
       return;
     }
+    // ✅ 게스트 UX: 채팅 화면 진입은 허용(전송 시 로그인 요구는 ChatPage에서 처리)
+    if (!isAuthenticated) {
+      try {
+        const usp = new URLSearchParams();
+        usp.set('new', '1');
+        if (safeOpeningId) usp.set('opening', safeOpeningId);
+        navigate(`/ws/chat/${characterId}?${usp.toString()}`);
+      } catch (_) {
+        navigate(`/ws/chat/${characterId}`);
+      }
+      return;
+    }
     try {
       // 무조건 새 방 생성 API 사용
-      const roomResponse = await chatAPI.startNewChat(characterId);
+      const roomResponse = await chatAPI.startNewChat(
+        characterId,
+        (safeOpeningId ? { opening_id: safeOpeningId } : null)
+      );
       const newRoomId = roomResponse.data.id;
-      navigate(`/ws/chat/${characterId}?room=${newRoomId}`);
+      try {
+        const usp = new URLSearchParams();
+        usp.set('room', String(newRoomId));
+        usp.set('new', '1');
+        if (safeOpeningId) usp.set('opening', safeOpeningId);
+        navigate(`/ws/chat/${characterId}?${usp.toString()}`);
+      } catch (_) {
+        navigate(`/ws/chat/${characterId}?room=${newRoomId}`);
+      }
     } catch (err) {
       console.error('Failed to create new chat:', err);
-      navigate(`/ws/chat/${characterId}?new=1`);
+      try {
+        const usp = new URLSearchParams();
+        usp.set('new', '1');
+        if (safeOpeningId) usp.set('opening', safeOpeningId);
+        navigate(`/ws/chat/${characterId}?${usp.toString()}`);
+      } catch (_) {
+        navigate(`/ws/chat/${characterId}?new=1`);
+      }
     }
   };
 

@@ -7,6 +7,7 @@ ALTER TABLE characters ADD COLUMN world_setting TEXT;
 ALTER TABLE characters ADD COLUMN user_display_description TEXT;
 ALTER TABLE characters ADD COLUMN use_custom_description BOOLEAN DEFAULT 0;
 ALTER TABLE characters ADD COLUMN introduction_scenes TEXT;
+ALTER TABLE characters ADD COLUMN start_sets TEXT;
 ALTER TABLE characters ADD COLUMN character_type VARCHAR(50) DEFAULT 'roleplay';
 ALTER TABLE characters ADD COLUMN base_language VARCHAR(10) DEFAULT 'ko';
 ALTER TABLE characters ADD COLUMN image_descriptions TEXT;

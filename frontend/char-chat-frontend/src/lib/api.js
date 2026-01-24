@@ -597,6 +597,34 @@ export const charactersAPI = {
   // - DB 저장은 하지 않고, 고급 생성 payload 초안만 반환한다.
   quickGenerateCharacterDraft: (data) =>
     api.post('/characters/quick-generate', data),
+
+  // ⚡ 위저드(일반 캐릭터): 프롬프트(world_setting) 자동 생성
+  quickGeneratePromptDraft: (data) =>
+    api.post('/characters/quick-generate-prompt', data),
+
+  // ⚡ 위저드(일반 캐릭터): 첫시작(도입부+첫대사) 자동 생성
+  quickGenerateFirstStartDraft: (data) =>
+    api.post('/characters/quick-generate-first-start', data),
+
+  // ⚡ 위저드(일반 캐릭터): 디테일(성격/말투/칩) 자동 생성
+  quickGenerateDetailDraft: (data) =>
+    api.post('/characters/quick-generate-detail', data),
+
+  // ⚡ 위저드(일반 캐릭터): 비밀정보(secret) 자동 생성
+  quickGenerateSecretDraft: (data) =>
+    api.post('/characters/quick-generate-secret', data),
+
+  // ⚡ 위저드(일반 캐릭터): 턴수별 사건(오프닝 내) 자동 생성
+  quickGenerateTurnEventsDraft: (data) =>
+    api.post('/characters/quick-generate-turn-events', data),
+
+  // ⚡ 위저드(일반 캐릭터): 엔딩 제목/기본조건(초안) 자동 생성
+  quickGenerateEndingDraft: (data) =>
+    api.post('/characters/quick-generate-ending-draft', data),
+
+  // ⚡ 위저드(일반 캐릭터): 엔딩 내용(에필로그) 자동 생성
+  quickGenerateEndingEpilogueDraft: (data) =>
+    api.post('/characters/quick-generate-ending-epilogue', data),
   
   updateAdvancedCharacter: (id, data) =>
     api.put(`/characters/advanced/${id}`, data),
@@ -678,11 +706,11 @@ export const tagsAPI = {
 // 💬 채팅 관련 API
 export const chatAPI = {
   // 🔥 CAVEDUCK 스타일 채팅 시작 API
-  startChat: (characterId) =>
-    api.post('/chat/start', { character_id: characterId }),
+  startChat: (characterId, extra = null) =>
+    api.post('/chat/start', { character_id: characterId, ...(extra && typeof extra === 'object' ? extra : {}) }),
   
-  startNewChat: (characterId) =>
-    api.post('/chat/start-new', { character_id: characterId }),
+  startNewChat: (characterId, extra = null) =>
+    api.post('/chat/start-new', { character_id: characterId, ...(extra && typeof extra === 'object' ? extra : {}) }),
   
   startChatWithContext: (data) =>
     api.post('/chat/start-with-context', data),
@@ -749,6 +777,9 @@ export const chatAPI = {
     api.delete(`/chat/rooms/${roomId}`),
   // 룸 메타(원작챗 진행도/설정) 조회
   getRoomMeta: (roomId) => api.get(`/chat/rooms/${roomId}/meta`),
+  // ✅ 요술봉 모드: 선택지 3개 생성(일반 캐릭터챗)
+  // payload: { n?: number, seed_message_id?: string, seed_hint?: string }
+  getMagicChoices: (roomId, payload = {}) => api.post(`/chat/rooms/${roomId}/magic-choices`, payload),
   // 메시지 수정/재생성
   updateMessage: (messageId, content) =>
     api.patch(`/chat/messages/${messageId}`, { content }),
@@ -1000,10 +1031,12 @@ export const cmsAPI = {
   // 공개 GET(유저/비로그인)
   getHomeBanners: () => api.get('/cms/home/banners'),
   getHomeSlots: () => api.get('/cms/home/slots'),
+  getHomePopups: () => api.get('/cms/home/popups'),
   getCharacterTagDisplay: () => api.get('/cms/tags/character'),
   // 관리자 PUT(저장)
   putHomeBanners: (data) => api.put('/cms/home/banners', data),
   putHomeSlots: (data) => api.put('/cms/home/slots', data),
+  putHomePopups: (data) => api.put('/cms/home/popups', data),
   putCharacterTagDisplay: (data) => api.put('/cms/tags/character', data),
 };
 

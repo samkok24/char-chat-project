@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 from contextlib import asynccontextmanager
 import logging
 import os
+import asyncio
 from app.core.config import settings
 from app.core.database import engine, Base
 from app.core.paths import get_upload_dir
@@ -65,6 +66,22 @@ async def lifespan(app: FastAPI):
     """애플리케이션 시작/종료 시 실행되는 이벤트"""
     # 시작 시
     logger.info("🚀 AI 캐릭터 챗 플랫폼 시작 (CAVEDUCK 스타일)")
+
+    # ✅ SQLite 운영/도커 환경: precise_migration.py(SSOT)로 누락 컬럼을 안전하게 보정한다.
+    # - start_sets 같은 신규 컬럼이 DB에 없으면 /characters 조회가 즉시 500으로 터지며,
+    #   브라우저에서는 CORS 에러처럼 보이는 2차 장애로 이어진다.
+    # - ALTER TABLE을 여기에 개별 추가하지 않고, SSOT 스크립트(run_precise_migration)만 호출한다.
+    try:
+        if settings.DATABASE_URL.startswith("sqlite"):
+            from precise_migration import run_precise_migration  # repo root (컨테이너 /app, 로컬 workspace root)
+
+            # 이벤트 루프 블로킹 방지
+            await asyncio.to_thread(run_precise_migration)
+            logger.info("🛠️ SQLite precise_migration 완료(start_sets 포함)")
+    except Exception as e:
+        # 치명적: 마이그레이션 실패면 계속 진행해도 500 연쇄 발생
+        logger.exception(f"[fatal] SQLite precise_migration 실패: {e}")
+        raise
     
     # 데이터베이스 테이블 생성 (개발용)
     async with engine.begin() as conn:
@@ -173,7 +190,7 @@ async def lifespan(app: FastAPI):
                     """
                 )
                 logger.info("📄 chat_message_edits 테이블 확인/생성 완료")
-            
+
             # 전역 태그 시드
             try:
                 seed_tags = [

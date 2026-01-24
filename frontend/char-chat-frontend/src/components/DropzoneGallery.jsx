@@ -1,6 +1,6 @@
 import React, { useCallback, useMemo, useRef, useState, useEffect } from 'react';
 import { Button } from './ui/button';
-import { X, Upload, Loader2, RotateCcw } from 'lucide-react';
+import { X, Upload, Loader2, RotateCcw, Copy, Lock } from 'lucide-react';
 import { resolveImageUrl } from '../lib/images';
 
 const ACCEPTED_TYPES = ['image/jpeg','image/png','image/webp','image/gif'];
@@ -10,6 +10,9 @@ const MAX_SIZE_MB = 10;
 export default function DropzoneGallery({
   existingImages = [], // [{url, description}]
   newFiles = [], // File[] (제어 컴포넌트 외부 상태와 동기화)
+  getCopyText, // (url: string, index: number) => string  (optional) - code copy for inline image
+  onToggleExistingPublic, // (index: number) => void (optional) - 공개/비공개 토글
+  tone = 'light', // 'light' | 'dark' (optional) - 상황별 이미지 탭 UI 톤 통일용
   onAddFiles, // (File[]) => void
   onRemoveExisting, // (index) => void
   onRemoveNew, // (index) => void
@@ -24,6 +27,39 @@ export default function DropzoneGallery({
   const [isUploading, setIsUploading] = useState(false);
 
   const totalCount = (existingImages?.length || 0) + (newFiles?.length || 0);
+
+  const dispatchToast = useCallback((type, message) => {
+    try {
+      window.dispatchEvent(new CustomEvent('toast', { detail: { type, message } }));
+    } catch (_) {}
+  }, []);
+
+  const copyToClipboard = useCallback(async (text) => {
+    const t = String(text || '').trim();
+    if (!t) return false;
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(t);
+        return true;
+      }
+    } catch (_) {}
+    // fallback
+    try {
+      const el = document.createElement('textarea');
+      el.value = t;
+      el.setAttribute('readonly', '');
+      el.style.position = 'fixed';
+      el.style.left = '-9999px';
+      el.style.top = '-9999px';
+      document.body.appendChild(el);
+      el.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(el);
+      return !!ok;
+    } catch (_) {
+      return false;
+    }
+  }, []);
 
   const validateFiles = useCallback((files) => {
     const result = [];
@@ -211,7 +247,15 @@ export default function DropzoneGallery({
         onDrop={onDrop}
         onDragOver={onDragOver}
         onDragLeave={onDragLeave}
-        className={`border-2 border-dashed rounded-lg p-4 text-center bg-white text-black ${isDragging ? 'border-purple-500 bg-purple-500/10' : 'border-gray-300'}`}
+        className={[
+          'border-2 border-dashed rounded-lg p-4 text-center',
+          tone === 'dark'
+            ? 'bg-gray-950/30 text-gray-100'
+            : 'bg-white text-black',
+          isDragging
+            ? 'border-purple-500 bg-purple-500/10'
+            : (tone === 'dark' ? 'border-gray-700' : 'border-gray-300'),
+        ].join(' ')}
       >
         <input
           ref={inputRef}
@@ -226,15 +270,23 @@ export default function DropzoneGallery({
         />
         <div className="flex flex-col items-center gap-2">
           {isUploading ? (
-             <Loader2 className="w-6 h-6 text-purple-600 animate-spin" />
+            <Loader2 className={['w-6 h-6 animate-spin', tone === 'dark' ? 'text-purple-400' : 'text-purple-600'].join(' ')} />
           ) : (
-          <Upload className="w-5 h-5 text-gray-500" />
+            <Upload className={['w-5 h-5', tone === 'dark' ? 'text-gray-400' : 'text-gray-500'].join(' ')} />
           )}
-          <div className="text-sm text-gray-800">
-             {isUploading ? '업로드 중...' : '이미지를 끌어다 놓거나 클릭하여 업로드'}
+          <div className={['text-sm', tone === 'dark' ? 'text-gray-200' : 'text-gray-800'].join(' ')}>
+            {isUploading ? '업로드 중...' : '이미지를 끌어다 놓거나 클릭하여 업로드'}
           </div>
-          <div className="text-xs text-gray-600">허용: jpg, png, webp, gif • 최대 {MAX_FILES}장 • {MAX_SIZE_MB}MB/파일</div>
-          <Button variant="outline" size="sm" onClick={() => inputRef.current?.click()} disabled={isUploading}>
+          <div className={['text-xs', tone === 'dark' ? 'text-gray-400' : 'text-gray-600'].join(' ')}>
+            허용: jpg, png, webp, gif • 최대 {MAX_FILES}장 • {MAX_SIZE_MB}MB/파일
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => inputRef.current?.click()}
+            disabled={isUploading}
+            className={tone === 'dark' ? 'border-gray-700 bg-gray-900/20 text-gray-100 hover:bg-gray-900/40' : ''}
+          >
             {isUploading ? '처리 중...' : '파일 선택'}
           </Button>
         </div>
@@ -264,16 +316,64 @@ export default function DropzoneGallery({
                   }
                 }}
               />
+              {/* ✅ 인라인 이미지 코드 복사(항상 노출): 회색 배경 + 흰색 아이콘 */}
+              {typeof getCopyText === 'function' && (
+                <button
+                  type="button"
+                  onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                  onClick={async (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    try {
+                      const raw = getCopyText(img?.url, index);
+                      const ok = await copyToClipboard(raw);
+                      if (ok) dispatchToast('success', '이미지 코드가 복사되었습니다.');
+                      else dispatchToast('error', '코드 복사에 실패했습니다.');
+                    } catch (_) {
+                      dispatchToast('error', '코드 복사에 실패했습니다.');
+                    }
+                  }}
+                  className="absolute top-1 right-1 z-20 bg-gray-700/70 hover:bg-gray-700 text-white rounded-md p-1"
+                  title="코드 복사"
+                  aria-label="코드 복사"
+                >
+                  <Copy className="w-4 h-4" />
+                </button>
+              )}
+
+              {/* ✅ 공개/비공개 배지(기본 공개): 항상 노출, 클릭으로 토글 */}
+              {typeof onToggleExistingPublic === 'function' && (
+                <button
+                  type="button"
+                  onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    try { onToggleExistingPublic(index); } catch (_) {}
+                  }}
+                  className={[
+                    'absolute bottom-1 left-1 z-20 inline-flex items-center gap-1 rounded-full px-2 py-1 text-[11px] font-semibold',
+                    // UX: 버튼 라벨은 "현재 상태"가 아니라 "전환 액션"을 보여준다.
+                    // - 현재 공개 → 버튼: 비공개
+                    // - 현재 비공개 → 버튼: 공개
+                    (img?.is_public === false)
+                      ? 'bg-rose-600/90 hover:bg-rose-600 text-white'
+                      : 'bg-gray-700/75 hover:bg-gray-700 text-white',
+                  ].join(' ')}
+                  title={(img?.is_public === false) ? '공개로 전환' : '비공개로 전환'}
+                  aria-label={(img?.is_public === false) ? '공개로 전환' : '비공개로 전환'}
+                >
+                  <Lock className="w-3 h-3" />
+                  {(img?.is_public === false) ? '공개' : '비공개'}
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => onRemoveExisting?.(index)}
-                className="absolute top-1 right-1 bg-black/60 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity z-10"
+                className="absolute top-1 left-1 bg-black/60 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity z-10"
               >
                 <X className="w-3 h-3" />
               </button>
-              <div className="absolute bottom-1 right-1 bg-black/60 text-white text-[10px] px-1.5 rounded pointer-events-none">
-                #{index + 1}
-              </div>
             </div>
           ))}
 

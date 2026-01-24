@@ -24,7 +24,9 @@ import {
   AlertCircle,
   MoreVertical,
   Star,
-  Plus
+  Plus,
+  ChevronLeft,
+  ChevronRight
 } from 'lucide-react';
 import CharacterInfoHeader from '../components/CharacterInfoHeader'; // 컴포넌트 임포트
 import ChatInteraction from '../components/ChatInteraction'; // 컴포넌트 임포트
@@ -62,6 +64,9 @@ const CharacterDetailPage = () => {
   const [baseRatio, setBaseRatio] = useState(1); // height/width
   const [likeCount, setLikeCount] = useState(0);
   const [imgModalOpen, setImgModalOpen] = useState(false);
+  // ✅ 오프닝 선택(상세페이지): 유저가 시작 오프닝을 고르면 첫상황/첫대사가 즉시 바뀌고,
+  // 시작 버튼을 누르면 해당 오프닝으로 채팅이 시작된다.
+  const [selectedOpeningId, setSelectedOpeningId] = useState('');
 
   // Media assets for this character
   const { data: mediaAssets = [], refetch: refetchMedia } = useQuery({
@@ -97,8 +102,27 @@ const CharacterDetailPage = () => {
         // [핵심 수정] 이미지 갤러리 설정
         const mainImageUrl = characterData.avatar_url;
         // characterData.image_descriptions가 있고, 배열인지 확인
+        /**
+         * ✅ 상황이미지 공개/비공개(요구사항)
+         *
+         * - 기본값은 공개.
+         * - 비공개 이미지는 "다른 유저"에게 상세페이지 미니갤러리에 보이지 않아야 한다.
+         * - 크리에이터(소유자)/관리자는 모두 볼 수 있다.
+         */
+        const canSeePrivate = (() => {
+          try {
+            const uid = user?.id;
+            if (uid && characterData?.creator_id && uid === characterData.creator_id) return true;
+            if (user?.is_admin) return true;
+            return false;
+          } catch (_) {
+            return false;
+          }
+        })();
         const galleryImageUrls = Array.isArray(characterData.image_descriptions)
-          ? characterData.image_descriptions.map(img => img.url)
+          ? characterData.image_descriptions
+              .filter((img) => canSeePrivate || img?.is_public !== false)
+              .map((img) => img.url)
           : [];
 
         // 대표 아바타 이미지를 갤러리의 첫 번째 이미지로 포함
@@ -198,12 +222,22 @@ const CharacterDetailPage = () => {
   };
 
   const startChat = () => {
-    if (!isAuthenticated) {
-      openLoginModal();
-      return;
+    /**
+     * ✅ 게스트 UX(요구사항)
+     *
+     * - 게스트도 채팅방 화면 진입은 허용한다.
+     * - 전송/요술봉 등 "행동"에서만 로그인 모달을 띄운다(이 로직은 ChatPage에서 처리).
+     */
+    try {
+      const opening = String(selectedOpeningId || '').trim();
+      const usp = new URLSearchParams();
+      // ✅ 오프닝 선택이 있는 경우, "새로 시작"으로 강제해서 선택값이 기존 방에 섞이지 않게 한다.
+      usp.set('new', '1');
+      if (opening) usp.set('opening', opening);
+      navigate(`/ws/chat/${characterId}?${usp.toString()}`);
+    } catch (_) {
+      navigate(`/ws/chat/${characterId}`);
     }
-    // 실제 채팅 페이지로 이동하도록 경로 수정
-    navigate(`/ws/chat/${characterId}`);
   };
 
   // 🔥 useMutation을 사용한 좋아요 처리
@@ -275,6 +309,25 @@ const CharacterDetailPage = () => {
 
   const progress = getReadingProgress(workId);
   const continueChapter = progress > 0 ? progress : 1;
+
+  React.useEffect(() => {
+    // ✅ 상세페이지 오프닝 선택 초기값/정합성 유지(방어적)
+    try {
+      const ss = character?.start_sets;
+      const items = Array.isArray(ss?.items) ? ss.items : [];
+      const validIds = items.map((x) => String(x?.id || '').trim()).filter(Boolean);
+      if (validIds.length === 0) {
+        if (selectedOpeningId) setSelectedOpeningId('');
+        return;
+      }
+      const preferred = String(selectedOpeningId || '').trim();
+      if (preferred && validIds.includes(preferred)) return;
+      const sid = String(ss?.selectedId || ss?.selected_id || '').trim();
+      const next = (sid && validIds.includes(sid)) ? sid : validIds[0];
+      setSelectedOpeningId(next);
+    } catch (_) {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [character?.id, character?.start_sets]);
 
   const deleteCharacter = async () => {
     if (!window.confirm('정말로 이 캐릭터를 삭제하시겠습니까?')) return;
@@ -350,14 +403,67 @@ const CharacterDetailPage = () => {
           <div className="lg:col-span-1">
             {/* 메인 프리뷰: 첫 이미지 비율에 맞춰 컨테이너 고정 */}
             <div className="relative w-full mb-3" style={{ paddingTop: `${Math.max(0.1, baseRatio) * 100}%` }}>
-              <img
-                src={resolveImageUrl(activeImage) || activeImage}
-                alt={character.name}
-                className="absolute inset-0 w-full h-full object-cover rounded-lg"
-                aria-live="polite"
-                aria-label={`${galleryImages.indexOf(activeImage) + 1} / ${galleryImages.length}`}
-              />
-              <span className="sr-only" aria-live="polite">{`${galleryImages.indexOf(activeImage) + 1} / ${galleryImages.length}`}</span>
+              {/* ✅ 썸네일(미니 갤러리) 비노출 → <> 버튼 + 모바일 스와이프(슬라이드) */}
+              <div
+                className="absolute inset-0 rounded-lg overflow-hidden bg-gray-900"
+                onTouchStart={(e) => {
+                  try { window.__cc_touch_start_x = e?.touches?.[0]?.clientX ?? null; } catch (_) {}
+                }}
+                onTouchEnd={(e) => {
+                  try {
+                    const startX = Number(window.__cc_touch_start_x);
+                    window.__cc_touch_start_x = null;
+                    const endX = e?.changedTouches?.[0]?.clientX;
+                    if (!Number.isFinite(startX) || typeof endX !== 'number') return;
+                    const dx = endX - startX;
+                    const TH = 40;
+                    const imgs = Array.isArray(galleryImages) && galleryImages.length > 0 ? galleryImages : [activeImage || DEFAULT_SQUARE_URI];
+                    const cur = Math.max(0, imgs.indexOf(activeImage));
+                    if (dx > TH && cur > 0) setActiveImage(imgs[cur - 1]);
+                    if (dx < -TH && cur < imgs.length - 1) setActiveImage(imgs[cur + 1]);
+                  } catch (_) {}
+                }}
+              >
+                {(() => {
+                  const imgs = Array.isArray(galleryImages) && galleryImages.length > 0 ? galleryImages : [activeImage || DEFAULT_SQUARE_URI];
+                  const cur = Math.max(0, imgs.indexOf(activeImage));
+                  const src = resolveImageUrl(imgs[cur]) || imgs[cur] || DEFAULT_SQUARE_URI;
+                  const canPrev = cur > 0;
+                  const canNext = cur < imgs.length - 1;
+                  return (
+                    <>
+                      <img
+                        src={src}
+                        alt={character.name}
+                        className="absolute inset-0 w-full h-full object-cover"
+                        loading="lazy"
+                        decoding="async"
+                        onError={(e) => {
+                          try { e.currentTarget.src = DEFAULT_SQUARE_URI; } catch (_) {}
+                        }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => { if (canPrev) setActiveImage(imgs[cur - 1]); }}
+                        disabled={!canPrev}
+                        aria-label="이전 이미지"
+                        className="absolute left-3 top-1/2 -translate-y-1/2 z-10 h-9 w-9 rounded-full bg-black/30 text-white hover:bg-black/40 disabled:opacity-30 disabled:pointer-events-none flex items-center justify-center"
+                      >
+                        <ChevronLeft className="w-5 h-5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { if (canNext) setActiveImage(imgs[cur + 1]); }}
+                        disabled={!canNext}
+                        aria-label="다음 이미지"
+                        className="absolute right-3 top-1/2 -translate-y-1/2 z-10 h-9 w-9 rounded-full bg-black/30 text-white hover:bg-black/40 disabled:opacity-30 disabled:pointer-events-none flex items-center justify-center"
+                      >
+                        <ChevronRight className="w-5 h-5" />
+                      </button>
+                    </>
+                  );
+                })()}
+              </div>
               <div className="absolute top-2 left-2">
                 {character?.origin_story_id ? (
                   <Badge className="bg-orange-400 text-black hover:bg-orange-400">원작챗</Badge>
@@ -367,26 +473,6 @@ const CharacterDetailPage = () => {
                   <Badge className="bg-purple-600 text-white hover:bg-purple-600">캐릭터</Badge>
                 )}
               </div>
-            </div>
-            {/* 미니 갤러리: 가로 스크롤 */}
-            <div id="detail-thumbnail-gallery" className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
-              {galleryImages.map((imgUrl, index) => {
-                const isActive = activeImage === imgUrl;
-                return (
-                  <button
-                    key={index}
-                    onClick={() => setActiveImage(imgUrl)}
-                    className={`relative flex-shrink-0 ${isActive ? 'ring-2 ring-purple-500 ring-offset-1 ring-offset-gray-900' : 'opacity-80 hover:opacity-100'}`}
-                    aria-label={`썸네일 ${index + 1}`}
-                  >
-                    <img
-                      src={resolveImageUrl(imgUrl) || imgUrl}
-                      alt={`${character.name} thumbnail ${index + 1}`}
-                      className={`w-16 h-16 object-cover rounded-md ${isActive ? 'brightness-100' : 'brightness-90'}`}
-                    />
-                  </button>
-                );
-              })}
             </div>
           </div>
 
@@ -407,6 +493,30 @@ const CharacterDetailPage = () => {
               workId={workId}
               tags={tags}
             />
+
+            {/* ✅ 원작챗: 원작 웹소설 카드를 상단으로 끌어올림 */}
+            {originStoryId ? (
+              <section id="origin-story" className="mt-3">
+                <ul className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3 sm:gap-4">
+                  <li className="md:col-span-2 lg:col-span-2">
+                    <StoryExploreCard
+                      story={{
+                        id: originStoryId,
+                        title: character?.origin_story_title,
+                        cover_url: character?.origin_story_cover,
+                        creator_username: character?.origin_story_creator,
+                        view_count: character?.origin_story_views,
+                        like_count: character?.origin_story_likes,
+                        excerpt: character?.origin_story_excerpt,
+                      }}
+                      variant="home"
+                      showLikeBadge={false}
+                      onClick={() => navigate(`/stories/${originStoryId}`)}
+                    />
+                  </li>
+                </ul>
+              </section>
+            ) : null}
 
             {/* 원작 웹소설 카드는 CharacterDetails 내 '세계관' 아래에서만 노출 */}
 
@@ -452,6 +562,7 @@ const CharacterDetailPage = () => {
               isAuthenticated={isAuthenticated}
               isWebNovel={isWebNovel}
               originStoryId={originStoryId}
+              openingId={selectedOpeningId}
             />
             <CharacterDetails 
               character={character}
@@ -463,34 +574,12 @@ const CharacterDetailPage = () => {
               submittingComment={submittingComment}
               user={user}
               tags={tags}
-              originStoryCard={originStoryId ? (
-                /**
-                 * 원작 정보(원작 격자) UI
-                 *
-                 * 요구사항:
-                 * - 모바일 메인화면에서 보이는 "웹소설 격자" UI를 그대로 사용한다.
-                 * - 기존 컴포넌트(StoryExploreCard)는 변경하지 않고, 레이아웃/배치만 조정한다.
-                 */
-                <section id="origin-story" className="mt-2">
-                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
-                    {/* 단일 카드라도 모바일에서는 꽉 차게 보여주기 위해 2칸(span) 처리 */}
-                    <div className="col-span-2 sm:col-span-2 md:col-span-2 lg:col-span-2">
-                      <StoryExploreCard
-                        story={{
-                          id: originStoryId,
-                          title: character?.origin_story_title,
-                          cover_url: character?.origin_story_cover,
-                          creator_username: character?.origin_story_creator,
-                          view_count: character?.origin_story_views,
-                          like_count: character?.origin_story_likes,
-                          excerpt: character?.origin_story_excerpt,
-                        }}
-                        onClick={() => navigate(`/stories/${originStoryId}`)}
-                      />
-                    </div>
-                  </div>
-                </section>
-              ) : null}
+              // ✅ 원작 카드 위치를 상단으로 옮겼으므로 중복 방지
+              originStoryCard={null}
+              openingId={selectedOpeningId}
+              onOpeningChange={(v) => {
+                try { setSelectedOpeningId(String(v || '').trim()); } catch (_) {}
+              }}
             />
             {/* 최근 생성물 스트립 제거 */}
             <ImageGenerateInsertModal
