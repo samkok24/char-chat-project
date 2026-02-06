@@ -3,9 +3,10 @@
 
 // ✅ 허용 토큰
 // - {{character}}: 사용자에게 더 직관적인 "캐릭터" 토큰 (권장)
+// - {{char}}: 단축 토큰(호환)
 // - {{assistant}}: 레거시 호환
 // - {{user}}: 사용자/페르소나
-export const ALLOWED_TOKENS = ['{{assistant}}', '{{character}}', '{{user}}'];
+export const ALLOWED_TOKENS = ['{{assistant}}', '{{character}}', '{{char}}', '{{user}}'];
 export const FORBIDDEN_TOKENS = ['{{system}}', '{{dev}}'];
 
 export function replacePromptTokens(text, { assistantName = '캐릭터', userName = '나' } = {}) {
@@ -21,6 +22,7 @@ export function replacePromptTokens(text, { assistantName = '캐릭터', userNam
   result = result
     .replaceAll('{{assistant}}', assistantName)
     .replaceAll('{{character}}', assistantName)
+    .replaceAll('{{char}}', assistantName)
     .replaceAll('{{user}}', userName);
   return result;
 }

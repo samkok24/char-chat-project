@@ -92,6 +92,15 @@ import {
 
 const CHARACTER_PAGE_SIZE = 40;
 
+// ✅ 캐릭터 탭 고정 태그칩(요구사항): "모두" 옆에 롤플/시뮬/커스텀을 항상 노출
+// - 실제 필터는 서버에서 character_type으로 해석(태그 매핑이 없는 기존 데이터도 동작하도록)
+const CHARACTER_TAB_FIXED_MODE_TAGS = [
+  { slug: '롤플', label: '롤플' },
+  { slug: '시뮬', label: '시뮬' },
+  { slug: '커스텀', label: '커스텀' },
+];
+const CHARACTER_TAB_FIXED_MODE_SLUG_SET = new Set(CHARACTER_TAB_FIXED_MODE_TAGS.map((t) => t.slug));
+
 // ===== CMS 커스텀 구좌(홈) 유틸 =====
 // 요구사항: "랜덤 정렬"은 새로고침(페이지 로드)할 때마다 순서가 바뀌되,
 // 같은 세션(리렌더) 중에는 순서가 흔들리지 않도록 "세션 시드" + "슬롯 ID" 기반으로 섞는다.
@@ -298,6 +307,14 @@ const HomePage = () => {
   const [characterTagDisplay, setCharacterTagDisplayState] = useState(() => {
     try { return getCharacterTagDisplay(); } catch (_) { return {}; }
   });
+  const hiddenCharacterTagSlugsSet = React.useMemo(() => {
+    try {
+      const arr = Array.isArray(characterTagDisplay?.hiddenSlugs) ? characterTagDisplay.hiddenSlugs : [];
+      return new Set(arr.map((s) => String(s || '').trim()).filter(Boolean));
+    } catch (_) {
+      return new Set();
+    }
+  }, [characterTagDisplay]);
   const refreshCharacterTagDisplay = React.useCallback(() => {
     try { setCharacterTagDisplayState(getCharacterTagDisplay()); } catch (e) {
       try { console.error('[HomePage] getCharacterTagDisplay failed:', e); } catch (_) {}
@@ -678,7 +695,9 @@ const HomePage = () => {
       navigate(`/ws/chat/${id}?source=origchat&storyId=${originStoryId}&mode=plain&new=1`);
       return;
     }
-    navigate(`/ws/chat/${id}?new=1`);
+    // ✅ opening 파라미터를 전달해야 intro(지문)가 채팅방에 저장됨
+    const openingId = c?.start_sets?.selectedId || 'set_1';
+    navigate(`/ws/chat/${id}?new=1&opening=${encodeURIComponent(openingId)}`);
   };
 
   const onboardingSearchTerm = React.useMemo(() => {
@@ -757,25 +776,24 @@ const HomePage = () => {
     navigate({ pathname: location.pathname, search: p.toString() }, { replace: true });
   };
 
-  const goToOrigSerialNovelTab = () => {
+  const goToCharacterTab = () => {
     /**
-     * 온보딩 CTA: "웹소설 읽고 원작캐릭터 만나기"
+     * 온보딩 CTA: "다른 작품들 구경하기"
      *
      * 의도/동작:
-     * - 홈 상단 탭 "원작연재"로 이동하되, 서브탭은 '원작소설'로 강제한다.
-     * - 사용자가 과거에 sub=origchat을 보고 있었더라도, 이 CTA는 읽기(원작소설) 동선으로 안내한다.
+     * - 홈 상단 탭 "캐릭터"로 이동한다.
      *
      * 방어적 처리:
      * - URL 파싱 실패 시에도 안전하게 동작하도록 기본 경로로 폴백한다.
      */
     try {
       const p = new URLSearchParams(location.search);
-      p.set('tab', 'origserial');
-      p.set('sub', 'novel');
+      p.set('tab', 'character');
+      p.delete('sub');
       navigate({ pathname: location.pathname, search: p.toString() }, { replace: true });
     } catch (_) {
       try {
-        navigate('/dashboard?tab=origserial&sub=novel', { replace: true });
+        navigate('/dashboard?tab=character', { replace: true });
       } catch (__) {}
     }
   };
@@ -1562,9 +1580,12 @@ const HomePage = () => {
 
   // 태그 추가 기능 제거 요청에 따라 관련 로직/버튼 제거됨
 
+  // ✅ 경쟁사 격자 체감(카드가 너무 작아 보이지 않게):
+  // - 대형 화면에서 6열로 늘어나면 카드가 경쟁사 대비 더 작아져 보인다.
+  // - 그래서 데스크탑에서는 최대 5열로 캡한다(6열 금지).
   const gridColumnClasses = (isCharacterTab || isOrigSerialTab)
-    ? 'grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6 gap-3'
-    : 'grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3';
+    ? 'grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-5 gap-3'
+    : 'grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-5 gap-3';
 
   const displayGridItems = React.useMemo(() => {
     if (isCharacterTab) {
@@ -1641,20 +1662,6 @@ const HomePage = () => {
         )}
       </button>
     </>
-  );
-
-  const homeTopTabsNode = (
-    <div className="flex items-center gap-2 justify-center flex-nowrap">
-      <span className="px-3 py-1 rounded-full bg-gradient-to-r from-purple-600 to-fuchsia-600 text-white shadow-md border border-transparent whitespace-nowrap">
-        메인
-      </span>
-      <Link
-        to="/agent"
-        className="px-3 py-1 rounded-full border border-purple-500/60 text-purple-300 bg-transparent hover:bg-purple-700/20 transition-colors whitespace-nowrap"
-      >
-        스토리 에이전트(Beta)
-      </Link>
-    </div>
   );
 
   /**
@@ -1862,7 +1869,7 @@ const HomePage = () => {
               )}
             </div>
           ) : (
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 xl:grid-cols-5 gap-3">
               {dailyTagCharactersLoading ? (
                 Array.from({ length: skeletonCount }).map((_, idx) => (
                   <div
@@ -2016,7 +2023,7 @@ const HomePage = () => {
             </div>
             <div className="relative">
               {/* ✅ 다른 홈 구좌(트렌딩/추천/원작챗/웹소설)와 동일한 그리드 규칙(사이즈 일치) */}
-              <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3 sm:gap-4">
+              <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-5 gap-3 sm:gap-4">
                 {visible.map((x, idx) => {
                   const rid = String(x?.item?.id || '').trim();
                   const key = rid ? `${x.type}:${rid}` : `${x.type}:${idx}`;
@@ -2180,46 +2187,37 @@ const HomePage = () => {
         </Dialog>
 
         {/* 메인 컨텐츠 */}
-        <main className="px-4 sm:px-8 py-4 sm:py-6">
-          {/* 상단 탭 (Agent와 동일 스타일) */}
-          <div className="mb-5 sm:mb-6">
-            {/* ✅ 모바일: 탭은 한 줄 고정, 공지(벨)/관리자(톱니)는 AppLayout 모바일 헤더 우측으로 이동 */}
-            <div className="md:hidden">
-              {homeTopTabsNode}
-            </div>
-
-            {/* ✅ 데스크탑: 기존처럼 탭 중앙 + 아이콘 우측 */}
-            <div className="hidden md:grid grid-cols-3 items-center">
-            <div />
-              {homeTopTabsNode}
-              <div className="justify-self-end flex items-center gap-2">
-                {user?.is_admin && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      try { window.open('/cms', '_blank', 'noopener,noreferrer'); } catch (_) { navigate('/cms'); }
-                    }}
-                    className={`${headerIconButtonBaseClass} h-9 w-9`}
-                    aria-label="관리자 페이지"
-                    title="관리자 페이지"
-                  >
-                    <Settings className="w-4 h-4" />
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => navigate('/notices')}
-                  className={`${headerIconButtonBaseClass} h-9 w-9`}
-                  aria-label="공지사항"
-                  title="공지사항"
-                >
-                  <Bell className="w-4 h-4" />
-                  {showNoticeDot && (
-                    <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-red-500" aria-hidden="true" />
-                  )}
-                </button>
-            </div>
-          </div>
+        {/* ✅ 경쟁사 레이아웃 체감: 데스크탑 본문 좌우 여백을 줄여 카드 폭을 키운다 */}
+        {/* ✅ 경쟁사처럼 본문 최대폭을 두고(센터 정렬) 좌/우 여백을 만든다 */}
+        <main className="mx-auto w-full max-w-[1220px] px-4 sm:px-5 lg:px-6 py-4 sm:py-6">
+          {/* ✅ 요구사항: 홈 상단 '메인/스토리 에이전트' 탭 제거 → 콘텐츠를 위로 당겨 렌더링 */}
+          {/* 데스크탑: 공지/관리자 아이콘은 우측에 유지 */}
+          <div className="hidden md:flex items-center justify-end gap-2 mb-3">
+            {user?.is_admin && (
+              <button
+                type="button"
+                onClick={() => {
+                  try { window.open('/cms', '_blank', 'noopener,noreferrer'); } catch (_) { navigate('/cms'); }
+                }}
+                className={`${headerIconButtonBaseClass} h-9 w-9`}
+                aria-label="관리자 페이지"
+                title="관리자 페이지"
+              >
+                <Settings className="w-4 h-4" />
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => navigate('/notices')}
+              className={`${headerIconButtonBaseClass} h-9 w-9`}
+              aria-label="공지사항"
+              title="공지사항"
+            >
+              <Bell className="w-4 h-4" />
+              {showNoticeDot && (
+                <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-red-500" aria-hidden="true" />
+              )}
+            </button>
           </div>
 
           {/* ✅ 캐러셀 배너(상단 탭 ↔ 필터 탭 사이) */}
@@ -2234,26 +2232,6 @@ const HomePage = () => {
                 </div>
                 <div className="text-sm text-gray-300 mt-1 leading-relaxed">
                   검색으로 찾거나, 30초만에 새 캐릭터를 만들어 바로 대화할 수 있어요.
-                </div>
-
-                {/* ✅ 서비스 이해도 보강(2줄): 캐릭터챗 vs 원작챗 */}
-                <div className="mt-3 rounded-xl border border-gray-800/80 bg-gray-950/20 px-4 py-3">
-                  <div className="flex items-start gap-2">
-                    <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-purple-600 text-white text-[11px] font-semibold flex-shrink-0">
-                      캐릭터챗
-                    </span>
-                    <p className="text-xs sm:text-sm text-gray-300 leading-relaxed">
-                      창작 캐릭터와 설정/말투 기반으로 자유롭게 대화해요.
-                    </p>
-                  </div>
-                  <div className="mt-2 flex items-start gap-2">
-                    <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-orange-400 text-black text-[11px] font-semibold flex-shrink-0">
-                      원작챗
-                    </span>
-                    <p className="text-xs sm:text-sm text-gray-300 leading-relaxed">
-                      웹소설 등장인물과 원작 맥락을 바탕으로 대화해요.
-                    </p>
-                  </div>
                 </div>
 
                 <div className="mt-4 grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
@@ -2374,10 +2352,10 @@ const HomePage = () => {
                         <Button
                           type="button"
                           variant="outline"
-                          onClick={goToOrigSerialNovelTab}
+                          onClick={goToCharacterTab}
                           className="w-full h-11 rounded-xl border-blue-500/40 bg-gray-900/30 text-blue-100 hover:bg-blue-500/10 hover:border-blue-400/60"
                         >
-                          무료로 웹소설 읽고 채팅하기
+                          다른 작품들 구경하기
                         </Button>
                       </div>
                     </div>
@@ -2853,7 +2831,7 @@ const HomePage = () => {
             <div className="mb-5">
                 {/* ✅ 모바일 최적화: 태그는 한 줄 가로 스크롤(줄바꿈 방지) */}
                 <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1 scrollbar-hide sm:flex-wrap sm:overflow-visible sm:pb-0">
-                  {/* ✅ 기본값: 전체 */}
+                  {/* ✅ 기본값: 모두 */}
                   <button
                     type="button"
                     onClick={() => setSelectedTags([])}
@@ -2863,12 +2841,38 @@ const HomePage = () => {
                         : 'bg-gray-800 text-gray-200 border-gray-700 hover:bg-gray-750'
                     }`}
                   >
-                    전체
+                    모두
                   </button>
+                  {/* ✅ 고정 모드 태그칩: 모두 옆에 노출 */}
+                  {CHARACTER_TAB_FIXED_MODE_TAGS.map((it) => {
+                    const slug = String(it?.slug || '').trim();
+                    const label = String(it?.label || '').trim();
+                    if (!slug || !label) return null;
+                    // ✅ CMS(운영) 숨김 설정을 존중한다.
+                    if (hiddenCharacterTagSlugsSet.has(slug)) return null;
+                    const active = selectedTags.includes(slug);
+                    return (
+                      <button
+                        type="button"
+                        key={`fixed-mode-tag:${slug}`}
+                        onClick={() => setSelectedTags((prev) => (prev.length === 1 && prev[0] === slug ? [] : [slug]))}
+                        className={`px-3 py-1 rounded-full border text-xs sm:text-sm flex-shrink-0 whitespace-nowrap ${
+                          active
+                            ? 'bg-yellow-500 text-black border-yellow-400'
+                            : 'bg-gray-800 text-gray-200 border-gray-700 hover:bg-gray-750'
+                        }`}
+                        title={label}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
                   {visibleCharacterTabTags.map((t) => {
                     const slug = String(t?.slug || '').trim();
                     const name = String(t?.name || t?.slug || '').trim();
                     if (!slug || !name) return null;
+                    // ✅ 고정 모드 태그칩은 위에서 별도로 렌더링한다(중복 방지).
+                    if (CHARACTER_TAB_FIXED_MODE_SLUG_SET.has(slug)) return null;
                     const active = selectedTags.includes(slug);
                   return (
                     <button
@@ -3090,7 +3094,7 @@ const HomePage = () => {
             <button
               type="button"
               onClick={handleDraftStartFresh}
-              className="w-full h-11 rounded-md bg-purple-700 text-white font-semibold hover:bg-purple-800 transition-colors"
+              className="w-full h-11 rounded-md bg-gray-800 text-white font-semibold hover:bg-gray-700 transition-colors border border-gray-700/80"
             >
               새로 만들기
             </button>
@@ -3104,7 +3108,7 @@ const HomePage = () => {
             <button
               type="button"
               onClick={() => setDraftPromptOpen(false)}
-              className="w-full h-11 rounded-md bg-purple-900/60 text-white font-semibold hover:bg-purple-900/80 transition-colors"
+              className="w-full h-11 rounded-md bg-gray-900/60 text-white font-semibold hover:bg-gray-900/80 transition-colors border border-gray-800/80"
             >
               취소
             </button>

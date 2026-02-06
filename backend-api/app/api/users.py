@@ -24,6 +24,7 @@ from app.schemas.character import RecentCharacterResponse, CharacterListResponse
 from app.schemas.comment import CommentResponse, CommentWithUser, StoryCommentResponse, StoryCommentWithUser
 from app.schemas.story import StoryListItem
 from app.services import user_service
+from app.services.start_sets_utils import extract_max_turns_from_start_sets
 from app.core.security import get_current_user, get_password_hash
 from app.services.comment_service import (
     get_character_comments_by_user,
@@ -97,6 +98,9 @@ async def get_my_recent_characters(
                 greeting=getattr(char, 'greeting', None),
                 avatar_url=getattr(char, 'avatar_url', None),
                 source_type=getattr(char, 'source_type', 'ORIGINAL'),
+                character_type=getattr(char, 'character_type', None),
+                # ✅ 격자 카드 UX: 턴수 배지 표기용(SSOT: char.start_sets.sim_options.max_turns)
+                max_turns=extract_max_turns_from_start_sets(getattr(char, "start_sets", None)),
                 image_descriptions=imgs if isinstance(imgs, list) else None,
                 chat_count=int(getattr(char, 'chat_count', 0) or 0),
                 like_count=int(getattr(char, 'like_count', 0) or 0),
@@ -152,6 +156,9 @@ async def get_my_liked_characters(
                 greeting=getattr(char, 'greeting', None),
                 avatar_url=getattr(char, 'avatar_url', None),
                 source_type=getattr(char, 'source_type', 'ORIGINAL'),
+                character_type=getattr(char, 'character_type', None),
+                # ✅ 격자 카드 UX: 턴수 배지 표기용(SSOT: char.start_sets.sim_options.max_turns)
+                max_turns=extract_max_turns_from_start_sets(getattr(char, "start_sets", None)),
                 image_descriptions=imgs if isinstance(imgs, list) else None,
                 chat_count=int(getattr(char, 'chat_count', 0) or 0),
                 like_count=int(getattr(char, 'like_count', 0) or 0),

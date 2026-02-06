@@ -4,6 +4,7 @@ import './index.css'
 import App from './App.jsx'
 import { Toaster } from './components/ui/sonner'
 import { TooltipProvider } from './components/ui/tooltip'
+import { installEphemeralScrollbars } from './lib/ephemeralScrollbars'
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
@@ -21,6 +22,21 @@ createRoot(document.getElementById('root')).render(
     <Toaster richColors position="top-center" />
   </StrictMode>,
 )
+
+/**
+ * ✅ 전역 textarea 스크롤바 UX(다크 + 스크롤 중에만 잠깐 표시)
+ *
+ * 의도:
+ * - 모든 텍스트 필드(특히 textarea)의 밝은 기본 스크롤바가 UI를 깨뜨리는 문제를 해결한다.
+ * - 페이지/모달/위저드 어디서든 동일한 UX를 유지한다(SSOT).
+ */
+try {
+  if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+    installEphemeralScrollbars({ selector: 'textarea' });
+  }
+} catch (e) {
+  try { console.warn('[main] installEphemeralScrollbars failed:', e); } catch (_) {}
+}
 
 /**
  * Service Worker 정책(안정성 우선)

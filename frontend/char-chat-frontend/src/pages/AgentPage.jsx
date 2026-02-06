@@ -45,6 +45,8 @@ import ImageGenerateInsertModal from '../components/ImageGenerateInsertModal';
 import Composer from '../components/agent/Composer';
 import DualResponseBubble from '../components/agent/DualResponseBubble';
 import CharacterChatInline from '../components/CharacterChatInline';
+import { hasChatHtmlLike, sanitizeChatMessageHtml } from '../lib/messageHtml';
+import RichMessageHtml from '../components/RichMessageHtml';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuLabel } from '../components/ui/dropdown-menu';
 import { applyTagDisplayConfig } from '../lib/tagOrder';
 import {
@@ -271,8 +273,6 @@ return '';
 const AgentPage = () => {
 const navigate = useNavigate();
 const location = useLocation();
-const onAgentTab = location.pathname.startsWith('/agent');
-const onDashboardTab = location.pathname.startsWith('/dashboard');
 const todayLabel = React.useMemo(() => {
   try {
     const d = new Date();
@@ -1602,6 +1602,8 @@ const firstAssistant = msgs.find(x => x.role === 'assistant' && x.content)?.cont
 const description = `${w5.background}/${w5.place}/${w5.role} 세계관 기반. 에이전트 세션에서 파생된 캐릭터.`;
 const greeting = firstAssistant.slice(0, 280);
 const dialogues = pairs.slice(0, 6).map((p, idx) => ({ user_message: p.user, character_response: p.assistant, order_index: idx }));
+// ✅ 요구사항: 크리에이터 코멘트는 1000자 제한(선택) - 서버 422 방지용 방어 클립
+const userDisplayDescription = description.slice(0, 1000);
 
 // 갤러리 이미지 구성
 const galleryFromNew = includeNewImages ? (imageResults || []).map(x => x.url) : [];
@@ -1616,7 +1618,7 @@ basic_info: {
   speech_style: '',
   greeting,
   world_setting: `${w5.background} · ${w5.place} · ${w5.role} · 목표:${w5.goal}`,
-  user_display_description: description,
+  user_display_description: userDisplayDescription,
   use_custom_description: false,
   introduction_scenes: [
     { title: '도입부', content: greeting, secret: '' }
@@ -2862,23 +2864,23 @@ return (
         </svg>
         </button>
       </div>
-      <div className="grid grid-cols-[0px_1fr_auto] md:grid-cols-3 items-center px-6 md:px-8 py-6">
-         <div />
-         <div className="flex items-center gap-2 justify-center">
-           <Link
-            to="/dashboard"
-            className={`${onDashboardTab ? 'bg-gradient-to-r from-purple-600 to-fuchsia-600 text-white shadow-md' : 'bg-transparent text-purple-300'} px-3 py-1 rounded-full border ${onDashboardTab ? 'border-transparent' : 'border-purple-500/60'} hover:bg-purple-700/20 transition-colors whitespace-nowrap`}
-           >메인</Link>
-           <span
-            className={`${onAgentTab ? 'bg-gradient-to-r from-purple-600 to-fuchsia-600 text-white shadow-md' : 'bg-transparent text-purple-300'} px-3 py-1 rounded-full border ${onAgentTab ? 'border-transparent' : 'border-purple-500/60'} hover:bg-purple-700/20 transition-colors select-none whitespace-nowrap`}
-           >스토리 에이전트(Beta)</span>
-    </div>
-         <div className="justify-self-end flex items-center gap-2">
-           <button onClick={() => navigate('/dashboard')} className="p-2 rounded-full border border-gray-600/60 bg-transparent text-gray-300 hover:bg-gray-700/40" title="닫기">
-             <X className="h-4 w-4" />
-           </button>
+      {/* ✅ 요구사항: 상단 탭 제거 + 좌측에 "< 메인으로 가기" */}
+      <div className="flex items-center justify-between px-6 md:px-8 py-4">
+        <Link
+          to="/dashboard"
+          className="inline-flex items-center gap-1 text-sm font-semibold text-gray-200 hover:text-white transition-colors"
+          aria-label="메인으로 가기"
+          title="메인으로 가기"
+        >
+          <ChevronLeft className="h-4 w-4" aria-hidden="true" />
+          <span>메인으로 가기</span>
+        </Link>
+        <div className="flex items-center gap-2">
+          <button onClick={() => navigate('/dashboard')} className="p-2 rounded-full border border-gray-600/60 bg-transparent text-gray-300 hover:bg-gray-700/40" title="닫기">
+            <X className="h-4 w-4" />
+          </button>
         </div>
-            </div>
+      </div>
               </div>
     <div className="flex-1 min-h-0">
       <div className="overflow-y-auto pb-40 relative" ref={messagesContainerRef} style={{ maxHeight: 'calc(100vh - 160px)' }}>
@@ -3077,7 +3079,13 @@ return (
                                         {generationStatus === GEN_STATE.STOPPED && <span className="text-yellow-400">중단되었습니다.</span>}
                           </div>
                                     <div className="p-4 text-sm text-gray-200 whitespace-pre-wrap leading-relaxed">
-                                        {m.content}
+                                        {(() => {
+                                          const txt = typeof m?.content === 'string' ? m.content : String(m?.content ?? '');
+                                          if (hasChatHtmlLike(txt)) {
+                                            return <RichMessageHtml html={txt} className="message-rich" />;
+                                          }
+                                          return txt;
+                                        })()}
                           </div>
                                     <div className="px-4 py-2 border-t border-gray-700 flex justify-end">
                                         <Button 
@@ -3164,7 +3172,13 @@ return (
                                                     );
                                                   }
                                                   
-                                                  // 일반 렌더링
+                                                  // ✅ 메시지 HTML 지원(편집 중 제외)
+                                                  // - `contentEditable` 모드에서는 innerText 기반 입력/선택 로직이 있어 기존 텍스트 렌더를 유지한다.
+                                                  if (editingMessageId !== m.id && hasChatHtmlLike(renderText)) {
+                                                    return <RichMessageHtml html={renderText} className="message-rich" />;
+                                                  }
+
+                                                  // 일반 렌더링(줄 단위)
                                                   const lines = renderText.split('\n');
                                                   return lines.map((line, idx) => (
                                                     <div key={idx}>
@@ -3221,6 +3235,9 @@ return (
                                                   );
                                                 }
                                                 
+                                                if (editingMessageId !== m.id && hasChatHtmlLike(renderText)) {
+                                                  return <RichMessageHtml html={renderText} className="message-rich" />;
+                                                }
                                                 return renderText;
                                               })()}
                                             </div>

@@ -11,6 +11,49 @@ const AppLayout = ({ children, SidebarComponent = Sidebar, sidebarProps, mobileH
   const onAgentPage = location.pathname === '/agent';
   const isMobile = useIsMobile();
   const [mobileSidebarOpen, setMobileSidebarOpen] = React.useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = React.useState(false);
+
+  React.useEffect(() => {
+    /**
+     * ✅ 반응형: "모바일은 놔두고", 데스크탑에서만 화면 폭이 좁아질 때 아이콘 모드
+     *
+     * 요구사항:
+     * - 경쟁사처럼 "화면이 좁아질 때만" 사이드바가 아이콘으로 바뀐다.
+     * - 모바일은 기존처럼 Sheet(오버레이) 사용 → 아이콘 모드로 바꾸지 않는다.
+     *
+     * 정책:
+     * - md 이상(>=768px) & xl 미만(<1280px)일 때만 접기
+     * - xl 이상이면 펼치기
+     */
+    try {
+      if (typeof window === 'undefined') return () => {};
+      if (!window.matchMedia) return () => {};
+
+      const mq = window.matchMedia('(min-width: 768px) and (max-width: 1279px)');
+      const sync = () => {
+        try {
+          // 모바일은 useIsMobile이 true → collapsed 강제 해제
+          if (isMobile) {
+            setSidebarCollapsed(false);
+            return;
+          }
+          setSidebarCollapsed(Boolean(mq.matches));
+        } catch (_) {}
+      };
+
+      sync();
+      try { mq.addEventListener('change', sync); } catch (_) {
+        try { mq.addListener(sync); } catch (_) {}
+      }
+      return () => {
+        try { mq.removeEventListener('change', sync); } catch (_) {
+          try { mq.removeListener(sync); } catch (_) {}
+        }
+      };
+    } catch (_) {
+      return () => {};
+    }
+  }, [isMobile]);
 
   /**
    * 모바일 사이드바(Sheet) 닫힘 보장
@@ -34,7 +77,10 @@ const AppLayout = ({ children, SidebarComponent = Sidebar, sidebarProps, mobileH
         <>
           {/* ✅ 데스크탑: 기존처럼 고정 사이드바 */}
           <div className="hidden md:flex">
-            <SidebarComponent {...sidebarProps} />
+            <SidebarComponent
+              {...sidebarProps}
+              collapsed={Boolean(sidebarCollapsed)}
+            />
           </div>
 
           {/* ✅ 모바일: Sheet(오버레이)로 사이드바 제공 */}
@@ -44,7 +90,7 @@ const AppLayout = ({ children, SidebarComponent = Sidebar, sidebarProps, mobileH
               // 배경/테두리를 앱 톤에 맞춘다. padding은 Sidebar 내부 레이아웃을 그대로 쓰기 위해 0.
               className="bg-gray-800 border-gray-700 p-0 w-[16rem] max-w-[92vw]"
             >
-              <SidebarComponent {...sidebarProps} />
+              <SidebarComponent {...sidebarProps} collapsed={false} />
             </SheetContent>
           </Sheet>
         </>

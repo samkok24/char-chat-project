@@ -210,6 +210,8 @@ const CMSPage = () => {
   const [banners, setBannersState] = React.useState(() => getHomeBanners());
   const [popupsConfig, setPopupsConfigState] = React.useState(() => getHomePopupsConfig());
   const [slots, setSlotsState] = React.useState(() => getHomeSlots());
+  // ✅ 구좌 목록 보기 탭(요구사항): 활성/비활성 분리하여 복잡도 감소
+  const [slotListTab, setSlotListTab] = React.useState('enabled'); // enabled | disabled
   const [tagDisplay, setTagDisplayState] = React.useState(() => getCharacterTagDisplay());
   const [saving, setSaving] = React.useState(false);
 
@@ -1206,7 +1208,14 @@ const CMSPage = () => {
 
   const runContentSearch = async () => {
     const q = String(contentPickerQuery || '').trim();
-    const tagsCsv = (contentPickerTags || []).map((t) => String(t || '').trim()).filter(Boolean).join(',');
+    // ✅ 방어/UX: 태그는 보통 '#태그'로 인지하는데, 서버 slug는 '#'가 없다.
+    // - 사용자가 '#롤플'처럼 입력해도 정상 동작하도록, 검색 요청 직전에 '#'를 제거해 정규화한다.
+    const tagsCsv = (contentPickerTags || [])
+      .map((t) => String(t || '').trim())
+      .filter(Boolean)
+      .map((s) => (s.startsWith('#') ? s.replace(/^#+/, '').trim() : s))
+      .filter(Boolean)
+      .join(',');
 
     if (!q && !tagsCsv) {
       toast.error('검색어 또는 태그를 1개 이상 입력/선택해주세요.');
@@ -1294,7 +1303,8 @@ const CMSPage = () => {
    * - 저장은 로컬스토리지이므로, 지나치게 큰 태그 배열/중복을 방지한다.
    */
   const addContentPickerTag = (slugLike) => {
-    const slug = String(slugLike || '').trim();
+    // ✅ 방어/UX: '#태그' 입력을 허용(서버 slug는 '#' 없이 저장/검색됨)
+    const slug = String(slugLike || '').trim().replace(/^#+/, '').trim();
     if (!slug) return;
     setContentPickerTags((prev) => {
       const arr = Array.isArray(prev) ? prev : [];
@@ -1366,16 +1376,41 @@ const CMSPage = () => {
     closeContentPicker();
   };
 
+  /**
+   * ✅ 구좌 순서 이동(활성/비활성 탭 호환)
+   *
+   * 문제/의도:
+   * - 활성 탭에서 "위로"를 눌렀는데 중간에 비활성 구좌가 끼어있으면,
+   *   실제로는 swap이 발생해도 UI(활성 리스트)에서는 순서가 안 바뀐 것처럼 보일 수 있다.
+   * - 따라서 현재 탭(활성/비활성)과 동일한 상태의 구좌끼리만 서로 교환하도록 한다.
+   */
   const moveSlot = (id, dir) => {
+    const tab = String(slotListTab || 'enabled').trim().toLowerCase();
+    const matchesTab = (s) => {
+      if (tab === 'disabled') return s?.enabled === false;
+      return s?.enabled !== false;
+    };
+
     setSlotsState((prev) => {
       const arr = Array.isArray(prev) ? [...prev] : [];
-      const idx = arr.findIndex((s) => String(s.id) === String(id));
+      const idx = arr.findIndex((s) => String(s?.id || '') === String(id || ''));
       if (idx < 0) return arr;
-      const nextIdx = dir === 'up' ? idx - 1 : idx + 1;
-      if (nextIdx < 0 || nextIdx >= arr.length) return arr;
+
+      let targetIdx = -1;
+      if (dir === 'up') {
+        for (let i = idx - 1; i >= 0; i -= 1) {
+          if (matchesTab(arr[i])) { targetIdx = i; break; }
+        }
+      } else {
+        for (let i = idx + 1; i < arr.length; i += 1) {
+          if (matchesTab(arr[i])) { targetIdx = i; break; }
+        }
+      }
+
+      if (targetIdx < 0) return arr;
       const tmp = arr[idx];
-      arr[idx] = arr[nextIdx];
-      arr[nextIdx] = tmp;
+      arr[idx] = arr[targetIdx];
+      arr[targetIdx] = tmp;
       return arr;
     });
   };
@@ -1816,6 +1851,31 @@ const CMSPage = () => {
   const isTagsTab = activeTab === 'tags';
   const isAiModelsTab = activeTab === 'aiModels';
   const isUsersTab = activeTab === 'users';
+
+  const enabledSlotsCount = React.useMemo(() => {
+    try {
+      const arr = Array.isArray(slots) ? slots : [];
+      return arr.filter((s) => s?.enabled !== false).length;
+    } catch (_) {
+      return 0;
+    }
+  }, [slots]);
+
+  const disabledSlotsCount = React.useMemo(() => {
+    try {
+      const arr = Array.isArray(slots) ? slots : [];
+      return arr.filter((s) => s?.enabled === false).length;
+    } catch (_) {
+      return 0;
+    }
+  }, [slots]);
+
+  const visibleSlotsForTab = React.useMemo(() => {
+    const arr = Array.isArray(slots) ? slots : [];
+    const tab = String(slotListTab || 'enabled').trim().toLowerCase();
+    if (tab === 'disabled') return arr.filter((s) => s?.enabled === false);
+    return arr.filter((s) => s?.enabled !== false);
+  }, [slots, slotListTab]);
 
   const filteredTagsForManage = React.useMemo(() => {
     const q = String(tagListQuery || '').trim().toLowerCase();
@@ -2980,10 +3040,41 @@ const CMSPage = () => {
                 </Button>
               </CardHeader>
               <CardContent className="space-y-4">
+                {/* ✅ 보기 탭: 활성/비활성 분리 */}
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-gray-800 bg-gray-900/30 px-4 py-3">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className={`h-9 px-3 ${slotListTab === 'enabled' ? 'bg-purple-600 border-purple-500 text-white hover:bg-purple-700' : 'bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700'}`}
+                      onClick={() => setSlotListTab('enabled')}
+                      title="활성화된 구좌만 보기"
+                    >
+                      활성화({enabledSlotsCount})
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className={`h-9 px-3 ${slotListTab === 'disabled' ? 'bg-purple-600 border-purple-500 text-white hover:bg-purple-700' : 'bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700'}`}
+                      onClick={() => setSlotListTab('disabled')}
+                      title="비활성화된 구좌만 보기"
+                    >
+                      비활성화({disabledSlotsCount})
+                    </Button>
+                  </div>
+                  <div className="text-xs text-gray-500">
+                    팁: 스위치를 끄면 비활성화 탭으로 이동합니다.
+                  </div>
+                </div>
+
                 {(slots || []).length === 0 ? (
                   <div className="text-gray-400 text-sm">구좌가 없습니다. “구좌 추가”를 눌러 등록하세요.</div>
+                ) : (visibleSlotsForTab || []).length === 0 ? (
+                  <div className="text-gray-400 text-sm">
+                    {slotListTab === 'disabled' ? '비활성화된 구좌가 없습니다.' : '활성화된 구좌가 없습니다.'}
+                  </div>
                 ) : (
-                  (slots || []).map((s, idx) => {
+                  (visibleSlotsForTab || []).map((s, idx) => {
                     const status = computeStatus(s);
                     const slotType = String(s?.slotType || (isSystemHomeSlotId(s?.id) ? 'system' : 'custom')).trim().toLowerCase();
                     const isCustomSlot = slotType === 'custom';
@@ -3019,7 +3110,7 @@ const CMSPage = () => {
                               variant="outline"
                               className="h-9 px-3 bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
                               onClick={() => moveSlot(s.id, 'down')}
-                              disabled={idx === ((slots || []).length - 1)}
+                              disabled={idx === ((visibleSlotsForTab || []).length - 1)}
                               title="아래로"
                             >
                               <ArrowDown className="w-4 h-4" />
@@ -3633,7 +3724,8 @@ const CMSPage = () => {
               if (!v) closeContentPicker();
             }}
           >
-            <DialogContent className="bg-gray-900 border-gray-800 text-white">
+            {/* ✅ UX(필수): 검색 결과가 많아도 하단 버튼(취소/적용)이 항상 보이도록 모달 높이를 제한하고 본문만 스크롤 */}
+            <DialogContent className="bg-gray-900 border-gray-800 text-white flex flex-col max-h-[90vh] overflow-hidden">
               <DialogHeader>
                 <DialogTitle className="text-white">구좌 콘텐츠 선택</DialogTitle>
                 <DialogDescription className="text-gray-400">
@@ -3641,7 +3733,8 @@ const CMSPage = () => {
                 </DialogDescription>
               </DialogHeader>
 
-              <div className="space-y-4">
+              {/* 본문(스크롤 영역) */}
+              <div className="min-h-0 flex-1 overflow-y-auto space-y-4 pr-1">
                 {/* 검색/필터 */}
                 <div className="rounded-lg border border-gray-800 bg-gray-950/30 p-4 space-y-4">
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
@@ -3733,7 +3826,8 @@ const CMSPage = () => {
                     />
 
                     {(() => {
-                      const q = String(contentPickerTagQuery || '').trim().toLowerCase();
+                      // ✅ UX: '#롤플'처럼 입력해도 추천이 뜨도록 '#'를 제거하고 매칭한다.
+                      const q = String(contentPickerTagQuery || '').trim().toLowerCase().replace(/^#+/, '').trim();
                       if (!q) return null;
                       const taken = new Set((contentPickerTags || []).map((x) => String(x || '').trim()).filter(Boolean));
                       const list = (Array.isArray(allTags) ? allTags : [])
@@ -3930,7 +4024,8 @@ const CMSPage = () => {
                 </div>
               </div>
 
-              <DialogFooter>
+              {/* ✅ 하단 버튼 영역(항상 보이도록 고정) */}
+              <DialogFooter className="border-t border-gray-800 pt-4">
                 <Button
                   type="button"
                   variant="outline"

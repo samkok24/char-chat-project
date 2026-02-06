@@ -34,6 +34,59 @@ const CharacterInfoHeader = ({
   const navigate = useNavigate();
   const { profileVersion } = useAuth();
   const isCompact = !!compact;
+  const tagLabelsBelowDates = (() => {
+    /**
+     * ✅ 태그 라벨 구성 (모달/상세 공통)
+     *
+     * 요구사항:
+     * - 태그를 "공개일 | 수정일" 아래로 이동한다(모달/상세 동일).
+     * - 남성향/여성향 옆에 롤플/시뮬/커스텀(=character_type 기반) 라벨이 함께 떠야 한다.
+     *
+     * 정책/방어:
+     * - 최대 12개까지만 노출(레이아웃 폭발 방지).
+     */
+    try {
+      const rawTags = Array.isArray(tags) ? tags : [];
+      const labels = rawTags
+        .map((t) => String(t?.name || t?.slug || '').trim())
+        .filter(Boolean);
+
+      const audience = labels.find((x) => x === '남성향' || x === '여성향' || x === '전체') || '';
+      const audienceLabel = (audience === '전체') ? '' : audience;
+
+      const modeRaw = String(
+        character?.character_type
+        ?? character?.basic_info?.character_type
+        ?? ''
+      ).trim();
+      const modeLower = modeRaw.toLowerCase();
+      const modeLabel = (() => {
+        if (!modeLower && !modeRaw) return '';
+        if (modeLower === 'roleplay' || modeRaw.includes('롤플')) return '롤플';
+        if (modeLower === 'simulator' || modeRaw.includes('시뮬')) return '시뮬';
+        if (modeLower === 'custom' || modeRaw.includes('커스텀')) return '커스텀';
+        return '';
+      })();
+
+      const out = [];
+      for (const x of [audienceLabel, modeLabel]) {
+        const v = String(x || '').trim();
+        if (!v) continue;
+        if (!out.includes(v)) out.push(v);
+      }
+
+      for (const x of labels) {
+        const v = String(x || '').trim();
+        if (!v) continue;
+        if (v === '전체') continue;
+        if (!out.includes(v)) out.push(v);
+        if (out.length >= 12) break;
+      }
+      return out.slice(0, 12);
+    } catch (_) {
+      return [];
+    }
+  })();
 
   return (
     <div className="space-y-4">
@@ -129,6 +182,26 @@ const CharacterInfoHeader = ({
         {' '}|{' '}
         <span>수정일 {new Date(character.updated_at).toLocaleDateString()}</span>
       </div>
+
+      {/* ✅ 태그: 공개일 | 수정일 밑으로 이동 (모달/상세 공통) */}
+      {Array.isArray(tagLabelsBelowDates) && tagLabelsBelowDates.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {tagLabelsBelowDates.map((label) => {
+            const t = String(label || '').trim();
+            const clean = t.startsWith('#') ? t.slice(1).trim() : t;
+            if (!clean) return null;
+            return (
+              <div
+                key={`tag-chip:${clean}`}
+                // ✅ 격자(tag chip) 디자인과 동일 스타일로 통일
+                className="inline-flex items-center whitespace-nowrap rounded-full border border-purple-500/25 bg-gray-900/40 px-2 py-0.5 text-[11px] font-medium leading-none text-purple-300"
+              >
+                {clean}
+              </div>
+            );
+          })}
+        </div>
+      )}
       
       {/* 하단 중복 표시는 제거됨 */}
     </div>

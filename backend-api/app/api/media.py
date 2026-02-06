@@ -491,8 +491,15 @@ async def track_media_event(
 ):
     try:
         import logging
-        logging.getLogger("uvicorn.access").info(
-            f"media_event event={event} entity_type={entity_type} entity_id={entity_id} count={count}"
+        # ✅ 주의: uvicorn.access 로거는 "접속 로그" 전용 포맷을 강제해서
+        # 임의 메시지를 넣으면 포맷 언패킹 에러(ValueError)가 발생한다.
+        # 따라서 일반 앱 로거를 사용한다.
+        logging.getLogger(__name__).info(
+            "media_event event=%s entity_type=%s entity_id=%s count=%s",
+            event,
+            entity_type,
+            entity_id,
+            count,
         )
     except Exception:
         pass

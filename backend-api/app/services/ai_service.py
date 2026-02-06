@@ -15,8 +15,17 @@ from io import BytesIO
 from PIL import Image
 import base64
 import asyncio
+import time
 
 logger = logging.getLogger(__name__)
+
+# ✅ Vision 결과 캐시(성능/안정):
+# - 같은 image_url로 짧은 시간에 여러 번(예: 프로필 2단계 자동생성) 호출되면,
+#   매번 이미지 다운로드 + Claude Vision 호출로 10~30초가 추가된다.
+# - TTL 캐시로 "2번째 호출부터" 즉시 반환해 UX를 개선한다.
+_VISION_TAGS_CACHE: dict[str, tuple[float, dict, dict]] = {}
+_VISION_TAGS_CACHE_TTL_SEC = 600  # 10분
+_VISION_TAGS_CACHE_MAX = 256
 
 # Claude 모델명 상수 (전역 참조용)
 # NOTE:
@@ -126,7 +135,7 @@ def _format_history_block(history: object, *, max_items: int = 20, max_chars: in
     except Exception:
         return ""
 
-# --- Gemini AI 설정 ---
+ # --- Gemini AI 설정 ---
 genai.configure(api_key=settings.GEMINI_API_KEY)
 claude_client = anthropic.AsyncAnthropic(api_key=settings.CLAUDE_API_KEY)
 # --- OCR 제거: 기존 PaddleOCR 경량 사용 구간을 완전 비활성화 ---
@@ -525,10 +534,24 @@ async def analyze_image_tags_and_context(image_url: str, model: str = 'claude') 
     실패 시 호출자가 폴백을 사용하도록 예외를 던집니다.
     """
     try:
+        # 캐시 히트
+        try:
+            key = str(image_url or "").strip()
+            if key:
+                hit = _VISION_TAGS_CACHE.get(key)
+                if hit:
+                    ts, tags, ctx = hit
+                    if (time.time() - float(ts)) <= _VISION_TAGS_CACHE_TTL_SEC:
+                        return tags or {}, ctx or {}
+        except Exception:
+            pass
+
         logging.info("Vision combine: start (unified tags+context)")
         import requests, base64, json
         # 이미지 다운로드 및 MIME 추정
         resp = requests.get(image_url, timeout=10)
+        # ✅ 방어: 4xx/5xx면 즉시 실패 처리(HTML/에러 바디를 이미지로 오인 방지)
+        resp.raise_for_status()
         img_bytes = resp.content
         ct = (resp.headers.get('Content-Type') or '').lower()
         if ct.startswith('image/'):
@@ -539,6 +562,9 @@ async def analyze_image_tags_and_context(image_url: str, model: str = 'claude') 
                 'jpeg': 'image/jpeg', 'jpg': 'image/jpeg', 'png': 'image/png',
                 'gif': 'image/gif', 'webp': 'image/webp', 'bmp': 'image/bmp'
             }.get(kind, 'image/jpeg')
+            # ✅ 방어: content-type도 이미지가 아니고, imghdr도 못 맞추면 이미지가 아닌 응답으로 간주
+            if kind is None:
+                raise ValueError(f"image_url is not an image (status={resp.status_code}, ct={ct}, url={image_url})")
         image_b64 = base64.b64encode(img_bytes).decode('utf-8')
         # 통합 스키마 프롬프트(건조/사실 전용)
         prompt = (
@@ -567,24 +593,94 @@ async def analyze_image_tags_and_context(image_url: str, model: str = 'claude') 
             "  }\n"
             "}"
         )
-        # Claude 우선 호출(건조 모드: 낮은 온도/탑P, 토큰 축소)
-        txt = await get_claude_completion(
-            prompt,
-            temperature=0.1,
-            max_tokens=1000,
-            model=CLAUDE_MODEL_PRIMARY,
-            image_base64=image_b64,
-            image_mime=image_mime
-        )
-        if '```json' in txt:
-            txt = txt.split('```json')[1].split('```')[0].strip()
-        elif '```' in txt:
-            txt = txt.split('```')[1].split('```')[0].strip()
-        data = json.loads(txt)
+        # ✅ Claude 우선 호출 → 실패 시 Gemini로 폴백
+        #
+        # 배경:
+        # - 운영/로컬 환경에 따라 Claude 키/권한 문제가 있으면 Vision이 항상 실패하며,
+        #   이 경우 캐릭터 자동생성이 이미지와 무관한 "폴백"으로 떨어진다.
+        # - 이미지는 서비스 핵심이므로, Gemini Vision으로 2차 폴백을 제공해 가용성을 확보한다.
+        data = None
+        provider = "unknown"
+        try:
+            txt = await get_claude_completion(
+                prompt,
+                temperature=0.1,
+                max_tokens=1000,
+                model=CLAUDE_MODEL_PRIMARY,
+                image_base64=image_b64,
+                image_mime=image_mime
+            )
+            if '```json' in txt:
+                txt = txt.split('```json')[1].split('```')[0].strip()
+            elif '```' in txt:
+                txt = txt.split('```')[1].split('```')[0].strip()
+            parsed = json.loads(txt)
+            if isinstance(parsed, dict):
+                data = parsed
+                provider = "claude"
+        except Exception as e:
+            try:
+                logging.warning(f"Vision combine: Claude failed -> fallback to Gemini ({e})")
+            except Exception:
+                pass
+
+        if data is None:
+            try:
+                from PIL import Image
+                from io import BytesIO
+                import google.generativeai as genai
+
+                img = Image.open(BytesIO(img_bytes))
+                # 모델 힌트가 들어와도 안전하게 기본값 사용
+                gm = genai.GenerativeModel('gemini-2.5-pro')
+                generation_config = genai.types.GenerationConfig(
+                    temperature=0.1,
+                    max_output_tokens=900,
+                )
+                resp2 = await gm.generate_content_async([prompt, img], generation_config=generation_config)
+                txt2 = ""
+                try:
+                    txt2 = resp2.text or ""
+                except Exception:
+                    txt2 = ""
+                if '```json' in txt2:
+                    txt2 = txt2.split('```json')[1].split('```')[0].strip()
+                elif '```' in txt2:
+                    txt2 = txt2.split('```')[1].split('```')[0].strip()
+                parsed2 = json.loads(txt2) if txt2 else {}
+                if isinstance(parsed2, dict):
+                    data = parsed2
+                    provider = "gemini"
+            except Exception as e:
+                try:
+                    logging.error(f"Vision combine: Gemini fallback failed: {e}")
+                except Exception:
+                    pass
+                data = None
+
         if not isinstance(data, dict):
             raise ValueError("combined response is not dict")
-        logging.info("Vision combine: success (provider=Claude)")
-        return data.get('tags') or {}, data.get('context') or {}
+
+        try:
+            logging.info(f"Vision combine: success (provider={provider})")
+        except Exception:
+            pass
+
+        tags_out = (data.get('tags') or {}) if isinstance(data.get('tags') or {}, dict) else {}
+        ctx_out = (data.get('context') or {}) if isinstance(data.get('context') or {}, dict) else {}
+        # 캐시 저장(간단 LRU: 초과 시 임의 1개 제거)
+        try:
+            key = str(image_url or "").strip()
+            if key:
+                if len(_VISION_TAGS_CACHE) >= _VISION_TAGS_CACHE_MAX:
+                    try:
+                        _VISION_TAGS_CACHE.pop(next(iter(_VISION_TAGS_CACHE)))
+                    except Exception:
+                        _VISION_TAGS_CACHE.clear()
+                _VISION_TAGS_CACHE[key] = (time.time(), tags_out, ctx_out)
+        except Exception:
+            pass
+        return tags_out, ctx_out
     except Exception:
         # 호출자 폴백
         raise
@@ -1252,7 +1348,12 @@ async def write_story_from_image_grounded(image_url: str, user_hint: str = "", p
     except Exception:
         pass
     return text
-async def get_gemini_completion(prompt: str, temperature: float = 0.7, max_tokens: int = 1024, model: str= 'gemini-2.5-pro') -> str:
+async def get_gemini_completion(
+    prompt: str,
+    temperature: float = 0.7,
+    max_tokens: int = 1024,
+    model: str= 'gemini-2.5-pro'
+) -> str:
     """
     주어진 프롬프트로 Google Gemini 모델을 호출하여 응답을 반환합니다.
 
@@ -1299,14 +1400,13 @@ async def get_gemini_completion(prompt: str, temperature: float = 0.7, max_token
             pass
 
         gemini_model = genai.GenerativeModel(model)
-        
-        # GenerationConfig를 사용하여 JSON 모드 등을 활성화할 수 있음 (향후 확장)
+
         generation_config = genai.types.GenerationConfig(
             temperature=temperature,
             max_output_tokens=max_tokens
             # response_mime_type="application/json" # Gemini 1.5 Pro의 JSON 모드
         )
-        
+
         response = await gemini_model.generate_content_async(
             prompt,
             generation_config=generation_config,
@@ -1483,6 +1583,75 @@ async def get_gemini_completion(prompt: str, temperature: float = 0.7, max_token
         # 프론트엔드에 전달할 수 있는 일반적인 오류 메시지를 반환하거나,
         # 별도의 예외를 발생시켜 API 레벨에서 처리하도록 할 수 있습니다.
         raise ValueError(f"AI 모델 호출에 실패했습니다: {str(e)}")
+
+
+async def get_gemini_completion_json(
+    prompt: str,
+    *,
+    temperature: float = 0.7,
+    max_tokens: int = 1024,
+    model: str = "gemini-3-pro-preview",
+) -> str:
+    """
+    Gemini 텍스트 호출에서 "JSON 응답"을 강제하는 전용 헬퍼.
+
+    의도/원리(중요):
+    - `response_mime_type`는 "이미지/비전"과 무관하며, 출력 포맷(예: JSON) 강제 용도다.
+    - `get_gemini_completion()`은 공용(전역) 함수라 동작 변경이 위험하므로,
+      캐릭터 생성(QuickMeet/위저드 자동생성)처럼 "구조화 JSON 응답"이 필요한 경로에서만 이 함수를 사용한다.
+    - SDK/환경에 따라 response_mime_type 미지원(TypeError)이 있을 수 있으므로,
+      그 경우에는 일반 GenerationConfig로 호출한다(호출 자체는 유지). 파싱/정제는 호출부에서 계속 방어한다.
+    """
+    try:
+        gemini_model = genai.GenerativeModel(model)
+
+        # ✅ JSON 모드: 지원되는 환경에서만 활성화
+        try:
+            generation_config = genai.types.GenerationConfig(
+                temperature=temperature,
+                max_output_tokens=max_tokens,
+                response_mime_type="application/json",
+            )
+        except TypeError:
+            generation_config = genai.types.GenerationConfig(
+                temperature=temperature,
+                max_output_tokens=max_tokens,
+            )
+
+        response = await gemini_model.generate_content_async(
+            prompt,
+            generation_config=generation_config,
+        )
+
+        # 안전한 텍스트 추출 (get_gemini_completion과 동일한 방어 로직)
+        try:
+            if hasattr(response, "text") and response.text:
+                return response.text
+        except Exception:
+            pass
+
+        try:
+            candidates = getattr(response, "candidates", []) or []
+            for cand in candidates:
+                content = getattr(cand, "content", None)
+                if not content:
+                    continue
+                parts = getattr(content, "parts", []) or []
+                text_parts = [getattr(p, "text", "") for p in parts if getattr(p, "text", "")]
+                joined = "".join(text_parts).strip()
+                if joined:
+                    return joined
+        except Exception:
+            pass
+
+        return ""
+    except Exception as e:
+        try:
+            logger.error(f"Gemini(JSON) API 호출 중 오류 발생: {e}")
+        except Exception:
+            pass
+        raise ValueError(f"AI 모델 호출에 실패했습니다: {str(e)}")
+
 
 async def get_gemini_completion_stream(prompt: str, temperature: float = 0.7, max_tokens: int = 1024, model: str = 'gemini-1.5-pro'):
     """Gemini 모델의 스트리밍 응답을 비동기 제너레이터로 반환합니다."""
@@ -2272,10 +2441,12 @@ async def get_ai_completion(
     지정된 AI 모델을 호출하여 응답을 반환하는 통합 함수입니다.
     """
     if model == "gemini":
-        model_name = sub_model or 'gemini-2.5-pro'
+        # ✅ Gemini 기본 sub_model: gemini-3-flash-preview (속도 최우선)
+        model_name = sub_model or 'gemini-3-flash-preview'
         return await get_gemini_completion(prompt, temperature, max_tokens, model=model_name)
     elif model == "claude":
-        model_name = sub_model or CLAUDE_MODEL_PRIMARY
+        # ✅ Claude 기본 sub_model: Haiku 4.5 (속도 우선, 채팅은 별도 함수 사용)
+        model_name = sub_model or 'claude-haiku-4-5-20251001'
         return await get_claude_completion(prompt, temperature, max_tokens, model=model_name)
     elif model == "gpt":
         model_name = sub_model or 'gpt-4o'
@@ -2293,11 +2464,13 @@ async def get_ai_completion_stream(
 ) -> AsyncGenerator[str, None]:
     """지정된 AI 모델의 스트리밍 응답을 반환하는 통합 함수입니다."""
     if model == "gemini":
-        model_name = sub_model or 'gemini-2.5-pro'
+        # ✅ Gemini 기본 sub_model: gemini-3-flash-preview (속도 최우선)
+        model_name = sub_model or 'gemini-3-flash-preview'
         async for chunk in get_gemini_completion_stream(prompt, temperature, max_tokens, model=model_name):
             yield chunk
     elif model == "claude":
-        model_name = sub_model or CLAUDE_MODEL_PRIMARY
+        # ✅ Claude 기본 sub_model: Haiku 4.5 (속도 우선)
+        model_name = sub_model or 'claude-haiku-4-5-20251001'
         async for chunk in get_claude_completion_stream(prompt, temperature, max_tokens, model=model_name):
             yield chunk
     elif model == "gpt":

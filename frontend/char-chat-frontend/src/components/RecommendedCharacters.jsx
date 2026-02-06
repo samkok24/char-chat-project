@@ -102,9 +102,10 @@ const RecommendedCharacters = ({ title } = {}) => {
     refetchOnMount: 'always',
   });
 
-  // 데스크탑 기준(7열 x 2행)으로 14개를 기본 페이지로 사용한다.
-  // 모바일에서는 반응형 그리드(2~4열)로 더 크게 보이도록 한다.
-  const pageSize = isMobile ? 4 : 14;
+  // ✅ 경쟁사 체감 크기(카드가 너무 작아 보이지 않게):
+  // - 데스크탑 7열(14개/페이지)은 카드가 지나치게 작아져 보인다.
+  // - lg에서는 5열(=10개/페이지, 5x2)로 맞추고, 더 넓은 화면에서만 6열로 확장한다.
+  const pageSize = isMobile ? 4 : 10;
   const [page, setPage] = useState(0);
   const items = data || [];
   const empty = !isLoading && (!items || items.length === 0);
@@ -164,7 +165,7 @@ const RecommendedCharacters = ({ title } = {}) => {
         )}
       </div>
       <div className="relative">
-        <ul className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3 sm:gap-4">
+        <ul className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-5 gap-3 sm:gap-4">
           {isLoading && Array.from({ length: skeletonCount }).map((_, idx) => (
             <RecommendedSkeleton key={idx} />
           ))}

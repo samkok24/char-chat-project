@@ -598,9 +598,26 @@ export const charactersAPI = {
   quickGenerateCharacterDraft: (data) =>
     api.post('/characters/quick-generate', data),
 
+  // ⚡ 프로필 단계: 소재 태그칩 후보(SSOT)
+  quickProfileThemeSuggestions: () =>
+    api.get('/characters/quick-profile-theme-suggestions'),
+
+  // 🖼️ 온보딩/위저드: 이미지 비전 힌트(소재칩 하이라이트 용)
+  quickVisionHints: (data) =>
+    api.post('/characters/quick-vision-hints', data),
+
+  // ⚡ 메인탭: 30초 안에 캐릭터 생성(단일 엔드포인트)
+  // - 백엔드가 world_setting + 오프닝 + 엔딩2개(+선택: 스탯/설정메모)를 묶어서 생성/저장한다.
+  quickCreateCharacter30s: (data) =>
+    api.post('/characters/quick-create-30s', data),
+
   // ⚡ 위저드(일반 캐릭터): 프롬프트(world_setting) 자동 생성
   quickGeneratePromptDraft: (data) =>
     api.post('/characters/quick-generate-prompt', data),
+
+  // ⚡ 위저드/다음단계 자동완성: 스탯 초안만 생성
+  quickGenerateStatDraft: (data) =>
+    api.post('/characters/quick-generate-stat', data),
 
   // ⚡ 위저드(일반 캐릭터): 첫시작(도입부+첫대사) 자동 생성
   quickGenerateFirstStartDraft: (data) =>
@@ -780,6 +797,9 @@ export const chatAPI = {
   // ✅ 요술봉 모드: 선택지 3개 생성(일반 캐릭터챗)
   // payload: { n?: number, seed_message_id?: string, seed_hint?: string }
   getMagicChoices: (roomId, payload = {}) => api.post(`/chat/rooms/${roomId}/magic-choices`, payload),
+  // ✅ 다음행동(앞당기기): 유저 지문 1문단 생성
+  // payload: { seed_message_id?: string, seed_hint?: string }
+  getNextAction: (roomId, payload = {}) => api.post(`/chat/rooms/${roomId}/next-action`, payload),
   // 메시지 수정/재생성
   updateMessage: (messageId, content) =>
     api.patch(`/chat/messages/${messageId}`, { content }),

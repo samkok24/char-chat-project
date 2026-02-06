@@ -567,12 +567,66 @@ async def get_public_characters(
     # - 기존 구현은 join + Tag.slug == A AND Tag.slug == B 형태로 다중 태그가 사실상 동작하지 않았다.
     # - `Character.tags.any(...)`를 slug별로 AND로 누적하면 의도대로 "모든 태그 포함" 필터가 된다.
     if tags:
+        # ✅ 시스템 태그(필터 전용): '롤플/시뮬/커스텀'은 DB 태그 매핑이 아니라 character_type 필터로 해석한다.
+        #
+        # 배경/의도:
+        # - 운영 데이터에서 character_type은 컬럼(SSOT)로 존재하지만, 모든 캐릭터가 동일 내용을 Tag로도 갖고 있지는 않다.
+        # - 따라서 캐릭터 탭에서 '롤플/시뮬/커스텀' 태그를 선택했을 때 결과가 0개가 되는 것을 방지하기 위해,
+        #   서버에서 해당 slug를 character_type 필터로 매핑한다.
+        #
+        # 규칙:
+        # - 여러 개가 동시에 들어오면 OR(IN)로 처리한다(방어적).
+        type_map = {
+            "롤플": "roleplay",
+            "시뮬": "simulator",
+            "커스텀": "custom",
+        }
+        requested_types = []
+        normalized_tags = []
+        seen_tags = set()
         for slug in tags:
             try:
                 s = str(slug or "").strip()
             except Exception:
                 s = ""
+            # ✅ UX 방어: '#태그' 입력 호환(프론트/운영에서 해시를 붙여 쓰는 경우가 많다)
+            if s.startswith("#"):
+                s = s.lstrip("#").strip()
             if not s:
+                continue
+            if s in seen_tags:
+                continue
+            seen_tags.add(s)
+            normalized_tags.append(s)
+            t = type_map.get(s)
+            if not t:
+                continue
+            if t in requested_types:
+                continue
+            requested_types.append(t)
+
+        if requested_types:
+            # ✅ 방어: legacy 데이터에서 character_type이 NULL/빈 문자열일 수 있어,
+            # '롤플(roleplay)' 필터는 NULL도 roleplay로 간주한다.
+            conds = []
+            if "roleplay" in requested_types:
+                conds.append(
+                    or_(
+                        Character.character_type == "roleplay",
+                        Character.character_type.is_(None),
+                        Character.character_type == "",
+                    )
+                )
+            if "simulator" in requested_types:
+                conds.append(Character.character_type == "simulator")
+            if "custom" in requested_types:
+                conds.append(Character.character_type == "custom")
+            if conds:
+                query = query.where(or_(*conds))
+
+        for s in normalized_tags:
+            # ✅ system character_type tag는 Tag 조인 필터에서 제외한다.
+            if s in type_map:
                 continue
             query = query.where(Character.tags.any(Tag.slug == s))
 

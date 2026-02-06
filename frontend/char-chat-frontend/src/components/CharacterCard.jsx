@@ -160,7 +160,7 @@ export const CharacterCard = ({
         const tags = rows
           .map((t) => String(t?.name || t?.slug || '').trim())
           .filter(Boolean)
-          .slice(0, 6);
+          ;
         try { _HOME_CHAR_TAGS_CACHE.set(id, tags); } catch (_) {}
         if (!cancelled) setHomeCharTags(tags);
       } catch (e) {
@@ -215,6 +215,110 @@ export const CharacterCard = ({
     return rendered || '설명이 없습니다.';
   })();
 
+  /**
+   * 격자 좌상단 "턴수 배지" 텍스트 계산
+   *
+   * 의도/원리:
+   * - SSOT: `start_sets.sim_options.max_turns` 값을 사용한다.
+   *   - 목록(list) 응답은 start_sets를 포함하지 않으므로, 백엔드에서 파생 필드 `max_turns`를 같이 내려준다.
+   * - 오래된 캐릭터(턴수 저장이 없던 시절)는 분량 안내를 위해 '∞'로 표시한다(일반 캐릭터챗만).
+   * - 원작챗/웹소설은 턴수 개념이 보장되지 않으므로, 값이 있을 때만 표시한다.
+   */
+  const turnBadgeText = (() => {
+    try {
+      const raw =
+        character?.max_turns
+        ?? character?.start_sets?.sim_options?.max_turns
+        ?? character?.start_sets?.sim_options?.maxTurns;
+      const n = Number(raw);
+      const turns = Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
+      if (turns != null) return `${turns}턴`;
+      // 일반 캐릭터챗만 기본값으로 ∞ 표시(구서버/구데이터 방어)
+      if (!isFromOrigChat && !isWebNovel) return '∞';
+      return null;
+    } catch (_) {
+      return (!isFromOrigChat && !isWebNovel) ? '∞' : null;
+    }
+  })();
+
+  /**
+   * ✅ 격자 카드 "태그 노출" 정책(요구사항)
+   *
+   * - 격자에서는 `남성향/여성향` → `롤플/시뮬/커스텀` 순으로 우선 노출한다.
+   * - 그 뒤에 나머지 태그도 이어서 "쭉" 노출한다(가독성 위해 최대 개수는 제한).
+   * - `전체`는 선택 정보가 아니므로(=전체 선택) 배지/태그를 숨긴다.
+   */
+  const getGridBadgeLabels = ({ rawTags }) => {
+    try {
+      const tags = Array.isArray(rawTags) ? rawTags : [];
+      const tagLabels = tags
+        .map((t) => String(t?.name || t?.slug || t || '').trim())
+        .filter(Boolean);
+
+      const modeRaw = String(
+        character?.basic_info?.character_type
+        ?? character?.character_type
+        ?? character?.prompt_type
+        ?? character?.start_sets?.basic_info?.character_type
+        ?? ''
+      ).trim();
+      const modeLower = modeRaw.toLowerCase();
+      const modeLabel = (() => {
+        if (!modeLower && !modeRaw) return '';
+        if (modeLower === 'roleplay' || modeRaw.includes('롤플')) return '롤플';
+        if (modeLower === 'simulator' || modeRaw.includes('시뮬')) return '시뮬';
+        if (modeLower === 'custom' || modeRaw.includes('커스텀')) return '커스텀';
+        return '';
+      })();
+
+      const audience = tagLabels.find((x) => x === '남성향' || x === '여성향' || x === '전체') || '';
+      const audienceLabel = (audience === '전체') ? '' : audience;
+
+      // ✅ 요청사항: 남성향/여성향 → 롤플/시뮬/커스텀 → 나머지 태그 순서로 이어서 노출
+      const out = [];
+      for (const x of [audienceLabel, modeLabel]) {
+        const v = String(x || '').trim();
+        if (!v) continue;
+        if (!out.includes(v)) out.push(v);
+      }
+      for (const x of tagLabels) {
+        const v = String(x || '').trim();
+        if (!v) continue;
+        if (v === '전체') continue;
+        if (!out.includes(v)) out.push(v);
+      }
+      return out;
+    } catch (_) {
+      return [];
+    }
+  };
+
+  /**
+   * 태그 칩 렌더러
+   *
+   * 의도/원리:
+   * - 경쟁사 격자와 동일하게 "tag chip" 형태로 보여준다.
+   * - 리스트 응답/홈 태그 API 응답 등 다양한 소스가 섞이므로, label만 방어적으로 추출한다.
+   */
+  const renderTagChips = (labels) => {
+    const list = Array.isArray(labels) ? labels : [];
+    return list
+      .map((t) => String(t || '').trim())
+      .filter(Boolean)
+      .slice(0, 12)
+      .map((t) => (
+        <div
+          key={t}
+          role="button"
+          id="tag"
+          // ✅ 우리 스타일(타원형) + 보라색 텍스트 + 작은 글씨 + '#' 제거
+          className="inline-flex items-center whitespace-nowrap rounded-full border border-purple-500/25 bg-gray-900/40 px-2 py-0.5 text-[11px] font-medium leading-none text-purple-300"
+        >
+          {t}
+        </div>
+      ));
+  };
+
   // ✅ 홈 메인 구좌 카드 스타일(요구사항): "이미지 위 오버레이" 톤으로 통일
   if (variant === 'home') {
     // ✅ 원작챗(=웹소설 원작 기반) 격자 UX:
@@ -226,24 +330,16 @@ export const CharacterCard = ({
     const creatorUsername = String(character?.creator_username || '').trim();
     const creatorId = String(character?.creator_id || '').trim();
     const showCreator = Boolean(creatorUsername && creatorId);
-    const showTags = Array.isArray(homeCharTags) && homeCharTags.length > 0;
+    const badgeLabels = getGridBadgeLabels({ rawTags: homeCharTags });
+    const showBadges = Array.isArray(badgeLabels) && badgeLabels.length > 0;
 
     return (
-      <div
-        className="bg-gray-800/50 rounded-lg overflow-hidden border border-gray-700/50 group-hover:border-gray-600 transition-colors cursor-pointer group"
-        onClick={handleCardClick}
-      >
-        {/* 이미지 영역 + 오버레이(요구사항) */}
-        <div className="relative aspect-[3/4] overflow-hidden bg-gray-900">
-          {/*
-           * ✅ 오버레이 안정성:
-           * - 일부 환경에서 LazyLoadImage(blur effect) 레이어/래퍼가 오버레이(텍스트)를 덮는 케이스가 있었다.
-           * - 홈 격자(variant="home")에서는 단순 <img loading="lazy">로 렌더링해 오버레이가 항상 보이도록 한다.
-           */}
+      <div role="button" className="flex w-full flex-col" onClick={handleCardClick}>
+        <div className="group relative aspect-square w-full rounded-xl bg-gray-900">
           <img
             alt={character?.name}
             src={getThumbnailUrl(avatarSrc, 400) || avatarSrc || DEFAULT_SQUARE_URI}
-            className="w-full h-full object-cover object-top group-hover:scale-105 transition-transform duration-300"
+            className="absolute inset-0 aspect-square size-full rounded-xl object-cover cc-grid-face-crop transition-opacity duration-300 ease-in-out group-hover:opacity-70"
             loading="lazy"
             decoding="async"
             draggable="false"
@@ -251,192 +347,179 @@ export const CharacterCard = ({
               try { e.currentTarget.src = DEFAULT_SQUARE_URI; } catch (_) {}
             }}
           />
-          <div className="absolute top-2 left-2 z-10">
-            {isFromOrigChat ? (
-              <Badge className="bg-orange-400 text-black hover:bg-orange-400 px-1.5 py-0.5 text-[11px]">원작챗</Badge>
-            ) : isWebNovel ? (
-              <Badge className="bg-blue-600 text-white hover:bg-blue-600 px-1.5 py-0.5 text-[11px]">웹소설</Badge>
-            ) : (
-              <Badge className="bg-purple-600 text-white hover:bg-purple-600 px-1.5 py-0.5 text-[11px]">캐릭터</Badge>
-            )}
-          </div>
+
+          {/* 좌상단 배지: 턴수 + (원작챗/웹소설) */}
+          {(turnBadgeText || isFromOrigChat || isWebNovel) ? (
+            <div className="absolute top-2 left-2 z-10 flex flex-col items-start gap-1">
+              {turnBadgeText ? (
+                <Badge className="bg-purple-600/90 text-white hover:bg-purple-600 px-1.5 py-0.5 text-[11px]">
+                  {turnBadgeText}
+                </Badge>
+              ) : null}
+              {(isFromOrigChat || isWebNovel) ? (
+                isFromOrigChat ? (
+                  <Badge className="bg-orange-400 text-black hover:bg-orange-400 px-1.5 py-0.5 text-[11px]">원작챗</Badge>
+                ) : (
+                  <Badge className="bg-blue-600 text-white hover:bg-blue-600 px-1.5 py-0.5 text-[11px]">웹소설</Badge>
+                )
+              ) : null}
+            </div>
+          ) : null}
+
+          {/* NEW */}
           {isNew ? (
             <div className="absolute top-2 right-2 z-10 pointer-events-none select-none">
-              <div className="w-5 h-5 rounded-full bg-gradient-to-r from-orange-500 to-red-500 text-white text-[10px] font-extrabold flex items-center justify-center shadow-md">
+              <div className="flex size-6 shrink-0 items-center justify-center rounded-sm bg-gradient-to-r from-orange-500 to-red-500 text-M/14 text-white font-extrabold shadow-md">
                 N
               </div>
             </div>
           ) : null}
 
-          {/* 하단 오버레이(제목/설명/원작/좋아요) */}
-          {/* ✅ z-index 보강 + position 정합성:
-           * - `absolute`와 `relative`를 동시에 주면 Tailwind 유틸 우선순위로 `relative`가 이겨
-           *   오버레이가 아래로 밀리고(부모 overflow-hidden에 잘림) 텍스트가 안 보일 수 있다.
-           * - 오버레이는 반드시 absolute로 유지한다.
+          <div className="absolute inset-0 rounded-xl bg-black opacity-0 transition-opacity duration-300 ease-in-out group-hover:opacity-30" />
+        </div>
+
+        {/* ✅ 이미지-이름 간격: mt-5 → mt-2.5 (절반) */}
+        <div className="mt-2.5 flex w-full shrink-0 justify-between">
+          {/* ✅ 이름은 1줄 고정 + 이클립스(긴 이름으로 레이아웃 밀림 방지)
+           * - flex 아이템에서 truncate가 안정적으로 동작하려면 min-w-0가 필요하다.
            */}
-          <div className="absolute inset-x-0 bottom-0 z-20 p-3 pt-10 pb-9 bg-gradient-to-t from-black/90 via-black/40 to-transparent">
-            <div className="flex items-start justify-between gap-2">
-              <h4 className="text-white font-bold text-sm leading-tight line-clamp-1">
-                {character?.name}
-              </h4>
-              {showLikeCount ? (
-                <span className="inline-flex items-center gap-1 rounded bg-black/60 px-1.5 py-0.5 text-[11px] text-gray-100 shrink-0">
-                  <Heart className="w-3 h-3 text-red-400" />
-                  {formatCount(likeCount)}
-                </span>
-              ) : null}
-            </div>
-
-            <p className="mt-1 text-[11px] text-gray-200/80 line-clamp-2 leading-snug">
-              {renderedDescription}
-            </p>
-
-            {/* ✅ 태그 칩: 소개글(2줄) 아래, 크리에이터 닉네임 위에 작게 노출 */}
-            {showTags ? (
-              <div className="mt-2 flex items-center gap-1 overflow-x-auto pb-0.5 scrollbar-hide">
-                {homeCharTags.map((t) => (
-                  <span
-                    key={t}
-                    className="inline-flex items-center rounded-full border border-gray-700/70 bg-black/55 px-1.5 py-0.5 text-[10px] text-gray-100/90 whitespace-nowrap flex-shrink-0 max-w-[140px] truncate"
-                    title={t}
-                  >
-                    {t}
-                  </span>
-                ))}
-              </div>
-            ) : null}
-
-            {isFromOrigChat ? (
-              originStoryId ? (
-                <Link
-                  to={`/stories/${originStoryId}`}
-                  onClick={(e) => e.stopPropagation()}
-                  className="mt-2 inline-flex max-w-full"
-                  aria-label="원작 웹소설 보기"
-                >
-                  <Badge
-                    title={originBadgeText}
-                    className="bg-blue-600 text-white hover:bg-blue-500 inline-flex max-w-full truncate text-[10px] px-1.5 py-0.5 rounded-md justify-start text-left leading-[1.05] tracking-tight"
-                  >
-                    {originBadgeText}
-                  </Badge>
-                </Link>
-              ) : (
-                <div className="mt-2 inline-flex max-w-full">
-                  <Badge
-                    title={originBadgeText}
-                    className="bg-blue-600 text-white hover:bg-blue-500 inline-flex max-w-full truncate text-[10px] px-1.5 py-0.5 rounded-md justify-start text-left leading-[1.05] tracking-tight"
-                  >
-                    {originBadgeText}
-                  </Badge>
-                </div>
-              )
-            ) : showCreator ? (
-              <Link
-                to={`/users/${creatorId}/creator`}
-                onClick={(e) => e.stopPropagation()}
-                className="absolute left-3 bottom-2 inline-flex max-w-[calc(100%-1.5rem)] items-center gap-1 rounded bg-black/40 px-1.5 py-0.5 text-[11px] text-gray-100/90 hover:text-white truncate"
-                aria-label="크리에이터 프로필 보기"
-              >
-                <span className="truncate">@{creatorUsername}</span>
-              </Link>
-            ) : null}
+          <div className="min-w-0 max-w-[80%] flex-1 truncate text-base font-bold text-content-primary">
+            {character?.name}
           </div>
+          {showLikeCount ? (
+            <div className="my-auto flex items-center justify-center gap-0.5 whitespace-nowrap text-xs font-semibold">
+              <Heart className="size-4 min-h-4 min-w-4 cursor-pointer text-content-primary" />
+              <span className="text-content-primary">{formatCount(likeCount)}</span>
+            </div>
+          ) : null}
+        </div>
+
+        {/* ✅ 한줄소개: 행간을 넓혀 가독성 개선 */}
+        <div className="mt-1 line-clamp-2 w-full shrink-0 text-M/14 text-content-tertiary leading-relaxed">
+          {renderedDescription}
+        </div>
+
+        {/* ✅ 격자 배지(롤플/시뮬/커스텀 → 남성향/여성향) */}
+        {showBadges ? (
+          <div className="mt-0.5 flex w-full shrink-0 flex-wrap items-center gap-1 self-start">
+            {renderTagChips(badgeLabels)}
+          </div>
+        ) : null}
+
+        {/* ✅ 태그-크리에이터 닉네임 간격 확보 */}
+        <div role="button" id="creator" className="mt-2.5 flex flex-row items-center gap-1">
+          {isFromOrigChat && originStoryId ? (
+            <Link
+              to={`/stories/${originStoryId}`}
+              onClick={(e) => e.stopPropagation()}
+              className="w-fit max-w-32 truncate text-M/12 text-[#808080] hover:text-content-primary"
+              aria-label="원작 웹소설 보기"
+              title={originBadgeText}
+            >
+              @{originBadgeText}
+            </Link>
+          ) : showCreator ? (
+            <Link
+              to={`/users/${creatorId}/creator`}
+              onClick={(e) => e.stopPropagation()}
+              className="w-fit max-w-32 truncate text-M/12 text-[#808080] hover:text-content-primary"
+              aria-label="크리에이터 프로필 보기"
+            >
+              @{creatorUsername}
+            </Link>
+          ) : null}
         </div>
       </div>
     );
   }
 
+  const creatorUsername = String(character?.creator_username || '').trim();
+  const creatorId = String(character?.creator_id || '').trim();
+  const showCreator = Boolean(creatorUsername && creatorId);
+
   return (
-    <div 
-      className={`bg-gray-800 rounded-xl overflow-hidden hover:bg-gray-700 transition-all duration-200 cursor-pointer group border ${borderClass} ${hoverBorderClass}`}
-      onClick={handleCardClick}
-    >
-      {/* 캐릭터 이미지 */}
-      <div className="aspect-square relative overflow-hidden bg-gray-900">
+    <div role="button" className="flex w-full flex-col" onClick={handleCardClick}>
+      <div className="group relative aspect-square w-full rounded-xl bg-gray-900">
         <LazyLoadImage
           alt={character.name}
           src={avatarSrc}
           effect="blur"
-          className="w-full h-full object-cover object-top group-hover:scale-105 transition-transform duration-300"
-          wrapperClassName="w-full h-full"
+          className="absolute inset-0 aspect-square size-full rounded-xl object-cover cc-grid-face-crop transition-opacity duration-300 ease-in-out group-hover:opacity-70"
+          wrapperClassName="absolute inset-0 w-full h-full"
         />
-        <div className="absolute top-1 left-1">
-          {isFromOrigChat ? (
-            <Badge className="bg-orange-400 text-black hover:bg-orange-400 px-1.5 py-0.5 text-[11px]">원작챗</Badge>
-          ) : character?.source_type === 'IMPORTED' ? (
-            <Badge className="bg-blue-600 text-white hover:bg-blue-600 px-1.5 py-0.5 text-[11px]">웹소설</Badge>
-          ) : (
-            <Badge className="bg-purple-600 text-white hover:bg-purple-600 px-1.5 py-0.5 text-[11px]">캐릭터</Badge>
-          )}
-        </div>
+
+        {/* 좌상단 배지: 턴수 + (원작챗/웹소설) */}
+        {(turnBadgeText || isFromOrigChat || character?.source_type === 'IMPORTED') ? (
+          <div className="absolute top-2 left-2 z-10 flex flex-col items-start gap-1">
+            {turnBadgeText ? (
+              <Badge className="bg-purple-600/90 text-white hover:bg-purple-600 px-1.5 py-0.5 text-[11px]">
+                {turnBadgeText}
+              </Badge>
+            ) : null}
+            {(isFromOrigChat || character?.source_type === 'IMPORTED') ? (
+              isFromOrigChat ? (
+                <Badge className="bg-orange-400 text-black hover:bg-orange-400 px-1.5 py-0.5 text-[11px]">원작챗</Badge>
+              ) : (
+                <Badge className="bg-blue-600 text-white hover:bg-blue-600 px-1.5 py-0.5 text-[11px]">웹소설</Badge>
+              )
+            ) : null}
+          </div>
+        ) : null}
+
         {isNew ? (
-          <div className="absolute top-1 right-1 z-10 pointer-events-none select-none">
-            <div className="w-5 h-5 rounded-full bg-gradient-to-r from-orange-500 to-red-500 text-white text-[10px] font-extrabold flex items-center justify-center shadow-md">
+          <div className="absolute top-2 right-2 z-10 pointer-events-none select-none">
+            <div className="flex size-6 shrink-0 items-center justify-center rounded-sm bg-gradient-to-r from-orange-500 to-red-500 text-M/14 text-white font-extrabold shadow-md">
               N
             </div>
           </div>
         ) : null}
-        {/* 채팅수/좋아요 바: 이미지 우하단 오버레이 */}
+
+        <div className="absolute inset-0 rounded-xl bg-black opacity-0 transition-opacity duration-300 ease-in-out group-hover:opacity-30" />
+      </div>
+
+      {/* ✅ 이미지-이름 간격: mt-5 → mt-2.5 (절반) */}
+      <div className="mt-2.5 flex w-full shrink-0 justify-between">
+        {/* ✅ 이름은 1줄 고정 + 이클립스(긴 이름으로 레이아웃 밀림 방지)
+         * - flex 아이템에서 truncate가 안정적으로 동작하려면 min-w-0가 필요하다.
+         */}
+        <div className="min-w-0 max-w-[80%] flex-1 truncate text-base font-bold text-content-primary">
+          {character?.name}
+        </div>
         {showLikeCount ? (
-          <div className="absolute bottom-1 right-1 py-0.5 px-1.5 rounded bg-black/60 text-xs text-gray-100 flex items-center gap-2">
-            <span className="inline-flex items-center gap-0.5">
-              <Heart className="w-3 h-3" />
-              {formatCount(likeCount)}
-            </span>
+          <div className="my-auto flex items-center justify-center gap-0.5 whitespace-nowrap text-xs font-semibold">
+            <Heart className="size-4 min-h-4 min-w-4 cursor-pointer text-content-primary" />
+            <span className="text-content-primary">{formatCount(likeCount)}</span>
           </div>
         ) : null}
       </div>
-      
-      {/* 캐릭터 정보 */}
-      <div className={`${showOriginBadge && isFromOrigChat ? 'px-4 pt-0 pb-6' : 'p-4 pb-6'} relative h-[120px] overflow-hidden`}>
-        {showOriginBadge && isFromOrigChat && !(character?.origin_story_title || originTitle) && (
-          <div className="mb-0.5 h-[18px] w-20 rounded-md bg-gray-700 animate-pulse" />
-        )}
-        {showOriginBadge && isFromOrigChat && (character?.origin_story_title || originTitle) && (
-          <span
-            onClick={(e)=>{ e.stopPropagation(); const sid = character?.origin_story_id; if (sid) navigate(`/stories/${sid}`); }}
-            className="block mb-0.5 w-full"
-            role="link"
-            aria-label="원작 웹소설로 이동"
-          >
-            <Badge title={character?.origin_story_title || originTitle} className="bg-blue-600 text-white hover:bg-blue-500 inline-flex max-w-full truncate text-[10px] px-1.5 py-0.5 rounded-md justify-start text-left leading-[1.05] tracking-tight">
-              {character?.origin_story_title || originTitle}
-            </Badge>
-          </span>
-        )}
-        <h3 className="font-medium text-white truncate text-[13px] leading-tight">{character.name}</h3>
-        {/* 설명 */}
-        <p className="text-[12px] text-gray-400 mt-0.5 line-clamp-2 pr-1">
-          {renderedDescription}
-        </p>
-        
-        {/* 상태 정보 제거: 이미지 영역으로 이동 */}
 
-        {character.creator_username && character.creator_id && (
+      {/* ✅ 한줄소개: 행간을 넓혀 가독성 개선 */}
+      <div className="mt-1 line-clamp-2 w-full shrink-0 text-M/14 text-content-tertiary leading-relaxed">
+        {renderedDescription}
+      </div>
+
+      {/* ✅ 격자 배지(롤플/시뮬/커스텀 → 남성향/여성향) */}
+      {(() => {
+        const badgeLabels = getGridBadgeLabels({ rawTags: character?.tags });
+        if (!Array.isArray(badgeLabels) || badgeLabels.length <= 0) return null;
+        return (
+        <div className="mt-0.5 flex w-full shrink-0 flex-wrap items-center gap-1 self-start">
+          {renderTagChips(badgeLabels)}
+        </div>
+        );
+      })()}
+
+      {/* ✅ 태그-크리에이터 닉네임 간격 확보 */}
+      <div role="button" id="creator" className="mt-2.5 flex flex-row items-center gap-1">
+        {showCreator ? (
           <Link
-            to={`/users/${character.creator_id}/creator`}
+            to={`/users/${creatorId}/creator`}
             onClick={(e) => e.stopPropagation()}
-            className="absolute left-2 bottom-2 inline-flex items-center gap-2 text-xs text-gray-100 bg-black/60 px-1.5 py-0.5 rounded hover:text-white cursor-pointer truncate"
+            className="w-fit max-w-32 truncate text-M/12 text-[#808080] hover:text-content-primary"
           >
-            <Avatar className="w-5 h-5">
-              <AvatarImage
-                src={resolveImageUrl(
-                  character.creator_avatar_url
-                    ? `${character.creator_avatar_url}${
-                        character.creator_avatar_url.includes('?') ? '&' : '?'
-                      }v=${profileVersion}`
-                    : ''
-                )}
-                alt={character.creator_username}
-              />
-              <AvatarFallback className="text-[10px]">
-                {character.creator_username?.charAt(0)?.toUpperCase() || 'U'}
-              </AvatarFallback>
-            </Avatar>
-            <span className="truncate max-w-[120px]">{character.creator_username}</span>
+            @{creatorUsername}
           </Link>
-        )}
+        ) : null}
       </div>
     </div>
   );

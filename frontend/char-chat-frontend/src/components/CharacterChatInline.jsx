@@ -3,6 +3,8 @@ import { chatAPI } from '../lib/api';
 import { X, Send, Loader2, Bot } from 'lucide-react';
 import { Button } from './ui/button';
 import { Avatar, AvatarImage, AvatarFallback } from './ui/avatar';
+import RichMessageHtml from './RichMessageHtml';
+import { hasChatHtmlLike, sanitizeChatMessageHtml } from '../lib/messageHtml';
 
 const CharacterChatInline = ({ 
   characterId, 
@@ -157,9 +159,17 @@ const CharacterChatInline = ({
                       isUser ? 'rounded-tr-none bg-white text-black' : 'rounded-tl-none bg-white/10'
                     }`}
                   >
-                    <p className="whitespace-pre-wrap text-xs leading-relaxed">
-                      {msg.content}
-                    </p>
+                    {(() => {
+                      const txt = typeof msg?.content === 'string' ? msg.content : String(msg?.content ?? '');
+                      if (hasChatHtmlLike(txt)) {
+                        return <RichMessageHtml html={txt} className="message-rich text-xs leading-relaxed" />;
+                      }
+                      return (
+                        <p className="whitespace-pre-wrap text-xs leading-relaxed">
+                          {txt}
+                        </p>
+                      );
+                    })()}
                   </div>
                 </div>
               );

@@ -12,10 +12,16 @@ import { resolveImageUrl } from '../lib/images';
 import { sanitizePromptTokens } from '../lib/prompt';
 import { parseAssistantBlocks } from '../lib/assistantBlocks';
 import { imageCodeIdFromUrl } from '../lib/imageCode';
+import { buildAutoGenModeHint, buildAutoGenToneHint } from '../lib/autoGenModeHints';
+import { countSentencesRoughKo } from '../lib/textMetrics';
+import { PROFILE_NAME_MIN_LEN, PROFILE_NAME_MAX_LEN, PROFILE_ONE_LINE_MIN_LEN, PROFILE_ONE_LINE_MAX_LEN, PROFILE_CONCEPT_MAX_LEN, getProfileOneLineMaxLenByCharacterType } from '../lib/profileConstraints';
+import { QUICK_MEET_GENRE_CHIPS, QUICK_MEET_TYPE_CHIPS, QUICK_MEET_HOOK_CHIPS, QUICK_MEET_HOOK_CHIPS_SIMULATOR, shuffleCopy, getQuickMeetGenrePriority, uniqStringsPreserveOrder } from '../lib/quickMeetFixedChips';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Textarea } from '../components/ui/textarea';
+import CharLimitCounter from '../components/CharLimitCounter';
+import WizardTokenHelpIcon from '../components/WizardTokenHelpIcon';
 import { Switch } from '../components/ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
@@ -25,6 +31,7 @@ import { Badge } from '../components/ui/badge';
 import { Separator } from '../components/ui/separator';
 import { 
   ArrowLeft,
+  ArrowLeftRight,
   Save,
   Loader2,
   MessageCircle,
@@ -49,7 +56,11 @@ import {
   Wand2, // Wand2 아이콘 추가
   Asterisk,
   Eye,
+  RefreshCw,
+  Pencil,
+  Check,
   ChevronDown,
+  ChevronLeft,
   ChevronUp
 } from 'lucide-react';
 import { StoryImporterModal } from '../components/StoryImporterModal'; // StoryImporterModal 컴포넌트 추가
@@ -57,6 +68,7 @@ import AvatarCropModal from '../components/AvatarCropModal';
 import TagSelectModal from '../components/TagSelectModal';
 import ImageGenerateInsertModal from '../components/ImageGenerateInsertModal';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../components/ui/dialog';
+import ImageZoomModal from '../components/ImageZoomModal';
 import { CharacterCard } from '../components/CharacterCard';
 import DropzoneGallery from '../components/DropzoneGallery';
 import ErrorBoundary from '../components/ErrorBoundary';
@@ -151,9 +163,9 @@ const CreateCharacterPage = () => {
       world_setting: '',
       user_display_description: '',
       // ✅ 요구사항:
-      // - "사용자용 설명"은 기본적으로 별도 작성(ON)으로 간주한다.
-      // - UI에서는 "크리에이터 코멘트"로 노출하며, 생성(Create) 시 필수 입력으로 검증한다.
-      use_custom_description: true,
+      // - UI에서는 "크리에이터 코멘트"로 노출하며, 토글 ON일 때만 입력 박스를 보여준다.
+      // - 입력은 선택이며(비어있으면 노출하지 않음), 토글 OFF여도 기존 입력값은 덮어쓰지 않는다.
+      use_custom_description: false,
       introduction_scenes: [
         { title: '오프닝 1', content: '', secret: '' }
       ],
@@ -165,12 +177,11 @@ const CreateCharacterPage = () => {
         items: [
           { id: 'set_1', title: '오프닝 1', intro: '', firstLine: '' },
         ],
-        // ✅ 옵션(신규/SSOT): 스토리 진행 턴수(기본 200) + 무한모드 허용
+        // ✅ 옵션(신규/SSOT): 스토리 진행 턴수(기본 200)
         // - start_sets는 "위저드 전용 JSON 저장소"이므로, 별도 DB 스키마 없이도 안전하게 확장 가능
         sim_options: {
           mode: 'preset', // 'preset' | 'custom'
           max_turns: 200,
-          allow_infinite_mode: false,
         },
         // ✅ 설정집(탭) - 설정메모(요구사항)
         // - 설정집은 "탭 이름"이며, 내부는 "설정메모 1/2/..." 리스트로만 관리한다.
@@ -232,11 +243,17 @@ const CreateCharacterPage = () => {
   const [isAutoSaving, setIsAutoSaving] = useState(false);
   const [lastSavedAt, setLastSavedAt] = useState(null);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  // ✅ 이탈 경고(요구사항): 임시저장 없이 뒤로가기(앱/브라우저) 방지
+  // - 브라우저 back(popstate)은 취소 불가라, pushState로 "가드 엔트리"를 1개 쌓아 confirm을 띄운다.
+  const leaveBypassRef = useRef(false);
+  const leaveGuardArmedRef = useRef(false);
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   // ✅ 위저드 전용: 채팅 미리보기(모바일 화면) - 최대 10회(유저 메시지 기준)
   const [isChatPreviewOpen, setIsChatPreviewOpen] = useState(false);
   const [chatPreviewInput, setChatPreviewInput] = useState('');
   const [chatPreviewMessages, setChatPreviewMessages] = useState([]); // [{id:string, role:'user'|'assistant', content:string}]
+  // ✅ 프리뷰(assistant 말풍선) 키워드 트리거 이미지: message_id -> resolved_url
+  const [chatPreviewSuggestedImageById, setChatPreviewSuggestedImageById] = useState({});
   const [chatPreviewMagicMode, setChatPreviewMagicMode] = useState(false);
   const [chatPreviewMagicChoices, setChatPreviewMagicChoices] = useState([]); // [{id,label,dialogue?,narration?}]
   const [chatPreviewMagicLoading, setChatPreviewMagicLoading] = useState(false);
@@ -265,6 +282,15 @@ const CreateCharacterPage = () => {
   const [chatPreviewMagicRevealCount, setChatPreviewMagicRevealCount] = useState(0); // 0~3
   const chatPreviewMagicRevealTimerRef = useRef(null);
   const chatPreviewMagicRevealCancelSeqRef = useRef(0);
+  // ✅ 크리에이터 테스트(요구사항): "턴사건 프리뷰" 패널
+  // - 목적: 턴수별 사건을 실제 채팅 흐름에 '중간 삽입'하지 않고, 1턴 전용 테스트로만 확인한다.
+  const [turnEventPreviewOpen, setTurnEventPreviewOpen] = useState(false);
+  const [turnEventPreviewLoading, setTurnEventPreviewLoading] = useState(false);
+  const [turnEventPreviewError, setTurnEventPreviewError] = useState('');
+  const [turnEventPreviewText, setTurnEventPreviewText] = useState('');
+  const [turnEventPreviewPickedId, setTurnEventPreviewPickedId] = useState('');
+  // ✅ 프리뷰 리셋 시그니처(ref): "정보 수정"일 때만 리셋하기 위한 내부 캐시
+  const chatPreviewResetSigRef = useRef('');
   // ✅ 프리뷰 자동 스크롤 가드: 사용자가 위로 올리면 강제 스크롤 금지
   // - "바닥 근처일 때만" 자동 스크롤을 허용한다.
   const chatPreviewAutoScrollRef = useRef(true);
@@ -285,6 +311,9 @@ const CreateCharacterPage = () => {
     intro: '',
     firstLine: '',
   });
+  // ✅ 크리에이터 테스트용: 프리뷰 턴 강제 지정(턴수별 사건 발동 검증)
+  // - 프리뷰는 room이 없어 N턴까지 직접 채우는 테스트가 번거로우므로, 서버에 override를 전달한다.
+  const [chatPreviewTurnOverride, setChatPreviewTurnOverride] = useState('');
   const chatPreviewBgUrl = useMemo(() => {
     try {
       const first = Array.isArray(formData?.media_settings?.image_descriptions)
@@ -387,6 +416,8 @@ const CreateCharacterPage = () => {
             <img
               src={resolved}
               alt=""
+              loading="lazy"
+              decoding="async"
               className="block w-full h-auto rounded-xl cursor-zoom-in border border-white/10"
               onClick={() => {
                 try {
@@ -410,9 +441,111 @@ const CreateCharacterPage = () => {
   // - 저장 시 personality에 섹션 형태로 병합해 전달한다(LLM 프롬프트에 반영 목적)
   const [detailPrefs, setDetailPrefs] = useState({ interests: [], likes: [], dislikes: [] });
   const [detailChipInputs, setDetailChipInputs] = useState({ interests: '', likes: '', dislikes: '' });
+  // ✅ 디테일 필드 모드 토글(요구사항)
+  // - 기본값: character_type(롤플/시뮬)에 따라 자동 전환
+  // - 사용자가 토글로 강제 변경하면 override로 저장(=타입과 다른 방식으로 입력 가능)
+  // - 강제 변경 상태에서는 경고문구를 노출한다(운영 안전/UX).
+  const [detailModeOverrides, setDetailModeOverrides] = useState({
+    personality: null, // 'roleplay' | 'simulator' | null(타입 따라감)
+    speech_style: null,
+    interests: null,
+    likes: null,
+    dislikes: null,
+  });
   const detailPrefsInitRef = useRef(false);
   // ✅ 비밀정보(프롬프트 하단) 토글: ON일 때만 입력/자동생성 UI 노출
   const [isSecretInfoEnabled, setIsSecretInfoEnabled] = useState(false);
+
+  const defaultDetailMode = useMemo(() => {
+    /**
+     * ✅ 디테일 기본 모드(SSOT)
+     *
+     * 의도/원리:
+     * - "시뮬레이션"이면 디테일 입력의 의미가 룰/트리거 중심으로 자동 전환된다.
+     * - "롤플레잉/커스텀"이면 디테일 입력은 캐릭터성/취향 중심으로 유지한다.
+     */
+    const t = String(formData?.basic_info?.character_type || 'roleplay').trim();
+    return t === 'simulator' ? 'simulator' : 'roleplay';
+  }, [formData?.basic_info?.character_type]);
+
+  const getEffectiveDetailMode = useCallback((key) => {
+    /**
+     * ✅ 디테일 모드(roleplay/simulator)를 결정한다.
+     *
+     * 규칙:
+     * - 커스텀 타입이면 _custom_toggle 값을 사용한다.
+     * - 롤플레잉/시뮬레이터 타입이면 character_type 기반 기본값을 따른다.
+     */
+    try {
+      const charType = String(formData?.basic_info?.character_type || 'roleplay').trim();
+      // 커스텀 모드일 때는 _custom_toggle 값 사용
+      if (charType === 'custom') {
+        const toggle = detailModeOverrides?.['_custom_toggle'];
+        if (toggle === 'simulator' || toggle === 'roleplay') return toggle;
+        return 'roleplay'; // 커스텀 기본값은 롤플레이
+      }
+      return defaultDetailMode;
+    } catch (_) {
+      return defaultDetailMode;
+    }
+  }, [detailModeOverrides, defaultDetailMode, formData?.basic_info?.character_type]);
+
+  const isDetailModeForced = useCallback((key) => {
+    /**
+     * ✅ 사용자가 "억지로" 토글을 바꿔 강제한 상태인지 판단한다.
+     *
+     * - 강제 상태: override가 존재 + 기본 모드와 다름
+     * - 이때만 경고 문구를 노출한다.
+     */
+    try {
+      const v = detailModeOverrides?.[key];
+      return (v === 'simulator' || v === 'roleplay') && v !== defaultDetailMode;
+    } catch (_) {
+      return false;
+    }
+  }, [detailModeOverrides, defaultDetailMode]);
+
+  const toggleDetailMode = useCallback((key) => {
+    /**
+     * ✅ 디테일 항목 모드 토글(ON/OFF)
+     *
+     * 의도/원리:
+     * - 토글은 "시뮬 방식(ON) / 롤플 방식(OFF)"로 동작한다.
+     * - 사용자가 타입 기본값과 동일한 상태로 되돌리면 override를 제거해,
+     *   이후 타입 변경 시 자동 전환이 다시 살아나게 한다.
+     */
+    try {
+      setDetailModeOverrides((prev) => {
+        const currentOverride = prev?.[key];
+        const current = (currentOverride === 'simulator' || currentOverride === 'roleplay')
+          ? currentOverride
+          : defaultDetailMode;
+        const next = current === 'simulator' ? 'roleplay' : 'simulator';
+        // next가 기본값과 같으면 강제 해제(자동 전환으로 복귀)
+        if (next === defaultDetailMode) {
+          return { ...(prev || {}), [key]: null };
+        }
+        return { ...(prev || {}), [key]: next };
+      });
+    } catch (_) {}
+  }, [defaultDetailMode]);
+
+  const detailFieldCopy = useMemo(() => ({
+    roleplay: {
+      personality: { label: '성격 및 특징', placeholder: '캐릭터의 성격과 특징을 자세히 설명해주세요' },
+      speech_style: { label: '말투', placeholder: '캐릭터의 말투를 구체적으로 설명해주세요' },
+      interests: { label: '관심사', placeholder: '관심사를 입력해주세요.' },
+      likes: { label: '좋아하는 것', placeholder: '좋아하는 것을 입력해주세요.' },
+      dislikes: { label: '싫어하는 것', placeholder: '싫어하는 것을 입력해주세요.' },
+    },
+    simulator: {
+      personality: { label: '의사결정 규칙', placeholder: '예: 우선순위/금기/판단 기준을 짧은 규칙 형태로 적어주세요' },
+      speech_style: { label: '출력 포맷 규칙', placeholder: '예: (지문→대사→선택지) 같은 출력 규칙/제약을 적어주세요' },
+      interests: { label: '이벤트 훅', placeholder: '이야기에서 사건이 터지는 소재/훅을 입력해주세요.' },
+      likes: { label: '보상 트리거', placeholder: '보상(호감/정보/자원 등)이 걸릴 키워드를 입력해주세요.' },
+      dislikes: { label: '페널티 트리거', placeholder: '페널티(불리 이벤트/호감 하락 등) 키워드를 입력해주세요.' },
+    },
+  }), []);
 
   // ✅ 예시대화 탭 UI 상태(요구사항): "예시대화1/2/..." 탭으로 관리
   const [activeExampleDialogueIdx, setActiveExampleDialogueIdx] = useState(0);
@@ -538,6 +671,9 @@ const CreateCharacterPage = () => {
   // 이미지 확대 모달 상태
   const [imageViewerOpen, setImageViewerOpen] = useState(false);
   const [imageViewerSrc, setImageViewerSrc] = useState('');
+  // ✅ 작품 컨셉: 기본 잠금(수정 불가) + 연필로 잠금 해제 + 체크로 확정
+  const [profileConceptEditConfirmOpen, setProfileConceptEditConfirmOpen] = useState(false);
+  const [profileConceptEditMode, setProfileConceptEditMode] = useState(false);
   // ✅ 프롬프트 동기화(확인/취소) 모달 상태
   const [promptSyncConfirmOpen, setPromptSyncConfirmOpen] = useState(false);
   const [promptSyncPendingText, setPromptSyncPendingText] = useState('');
@@ -550,6 +686,15 @@ const CreateCharacterPage = () => {
   // ✅ 프롬프트 → 스탯 적용(확인 모달)
   const [promptApplyStatsConfirmOpen, setPromptApplyStatsConfirmOpen] = useState(false);
   const [promptApplyStatsPendingStats, setPromptApplyStatsPendingStats] = useState([]); // [{ id, name, min_value, max_value, base_value, unit, description }]
+  // ✅ 자동생성 덮어쓰기 확인 모달(공통)
+  const [autoGenOverwriteConfirmOpen, setAutoGenOverwriteConfirmOpen] = useState(false);
+  const [autoGenOverwriteConfirmTargets, setAutoGenOverwriteConfirmTargets] = useState(''); // 예: "프롬프트", "오프닝(첫상황/첫대사)"
+  const autoGenOverwriteConfirmActionRef = useRef(null); // () => Promise<void>
+  // ✅ 프로필 자동생성(작품명) "독립 시행" 보장용
+  // - 1회 자동생성으로 채워진 name을 그대로 다시 서버에 입력값으로 보내면,
+  //   모델이 그 이름을 "고정 힌트"로 취급해 같은 이름이 반복될 수 있다.
+  // - 따라서 "직전 자동생성 결과와 동일한 name"은 placeholder로 취급해 재생성되게 한다.
+  const lastAutoGeneratedProfileNameRef = useRef('');
   // ✅ 스탯 변경 → 프롬프트 동기화 필요 여부(오프닝 단위)
   const [statsDirtyByStartSetId, setStatsDirtyByStartSetId] = useState({}); // { [startSetId]: boolean }
   // ✅ 엔딩 탭 아코디언 UI 상태(로컬 UI 전용)
@@ -575,6 +720,40 @@ const CreateCharacterPage = () => {
 
   // ✅ 헤더: 전체요약 모달(스크롤로 한눈에 보기)
   const [wizardSummaryOpen, setWizardSummaryOpen] = useState(false);
+
+  const openAutoGenOverwriteConfirm = useCallback((targetsLabel, onConfirm) => {
+    /**
+     * ✅ 자동생성 덮어쓰기 공통 확인 모달
+     *
+     * 의도/원리:
+     * - 자동생성 결과가 마음에 들지 않을 수 있으므로 "덮어쓰기"를 허용한다.
+     * - 단, 기존 입력값이 사라질 수 있으므로 덮어쓰기 직전에 경고 모달을 띄운다.
+     */
+    try {
+      const label = String(targetsLabel || '').trim();
+      const fn = (typeof onConfirm === 'function') ? onConfirm : null;
+      if (!label || !fn) return;
+      autoGenOverwriteConfirmActionRef.current = fn;
+      setAutoGenOverwriteConfirmTargets(label);
+      setAutoGenOverwriteConfirmOpen(true);
+    } catch (e) {
+      try { console.error('[CreateCharacterPage] openAutoGenOverwriteConfirm failed:', e); } catch (_) {}
+    }
+  }, []);
+
+  const confirmAutoGenOverwrite = useCallback(async () => {
+    try {
+      const fn = autoGenOverwriteConfirmActionRef.current;
+      setAutoGenOverwriteConfirmOpen(false);
+      setAutoGenOverwriteConfirmTargets('');
+      autoGenOverwriteConfirmActionRef.current = null;
+      if (typeof fn !== 'function') return;
+      await fn();
+    } catch (e) {
+      try { console.error('[CreateCharacterPage] confirmAutoGenOverwrite failed:', e); } catch (_) {}
+      try { dispatchToast('error', '자동 생성에 실패했습니다. 잠시 후 다시 시도해주세요.'); } catch (_) {}
+    }
+  }, []);
   const insertKeywordToken = useCallback((index, token) => {
     if (!token) return;
     setFormData((prev) => {
@@ -597,11 +776,13 @@ const CreateCharacterPage = () => {
 
   // 토큰 정의
   // - {{character}}: 권장(직관적)
+  // - {{char}}: 단축 토큰(호환)
   // - {{assistant}}: 레거시 호환(기존 데이터/입력 지원)
   const TOKEN_CHARACTER = '{{character}}';
+  const TOKEN_CHAR = '{{char}}';
   const TOKEN_ASSISTANT = '{{assistant}}';
   const TOKEN_USER = '{{user}}';
-  const ALLOWED_TOKENS = [TOKEN_ASSISTANT, TOKEN_CHARACTER, TOKEN_USER];
+  const ALLOWED_TOKENS = [TOKEN_ASSISTANT, TOKEN_CHARACTER, TOKEN_CHAR, TOKEN_USER];
   const HEADER_OFFSET = 72;
 
   const scrollToField = useCallback((key) => {
@@ -678,7 +859,7 @@ const CreateCharacterPage = () => {
   // Zod 스키마 정의
   const validationSchema = useMemo(() => {
     const tokenRegex = /\{\{[^}]+\}\}/g;
-    const allowedTokens = [TOKEN_ASSISTANT, TOKEN_CHARACTER, TOKEN_USER];
+    const allowedTokens = [TOKEN_ASSISTANT, TOKEN_CHARACTER, TOKEN_CHAR, TOKEN_USER];
     const noIllegalTokens = (val) => !val || [...(val.matchAll(tokenRegex) || [])].every(m => allowedTokens.includes(m[0]));
 
     const introductionSceneSchema = z.object({
@@ -695,7 +876,7 @@ const CreateCharacterPage = () => {
 
     return z.object({
       basic_info: z.object({
-        name: z.string().min(1, '캐릭터 이름을 입력하세요'),
+        name: z.string().min(1, '작품명을 입력하세요'),
         // 설명은 선택 입력 (백엔드도 optional)
         description: z.string().optional().refine(noIllegalTokens, '허용되지 않은 토큰이 포함됨'),
         personality: z.string().optional().refine(noIllegalTokens, '허용되지 않은 토큰이 포함됨'),
@@ -770,20 +951,332 @@ const CreateCharacterPage = () => {
     { id: 'first_start', label: '오프닝' },
     // ✅ 경쟁사 구조: 오프닝(시작 설정)별로 스탯을 설정
     { id: 'stat', label: '스탯' },
+    // ✅ UX: 엔딩을 먼저 잡고(큰 골), 설정집으로 보강하는 흐름이 자연스럽다.
+    { id: 'ending', label: '엔딩' },
     // ✅ 경쟁사 키워드북 유사: 설정집(설정집 1/2... + 트리거 + 노트)
     { id: 'setting_book', label: '설정집' },
-    // ✅ 경쟁사 구조: 오프닝(시작 설정) 옆에 엔딩 설정 탭
-    { id: 'ending', label: '엔딩' },
-    { id: 'options', label: '옵션' },
     { id: 'detail', label: '디테일' },
+    // ✅ 옵션(공개/태그 등)은 마지막에 두어 "출시/마무리" 감각을 준다.
+    { id: 'options', label: '옵션' },
   ];
   const [normalWizardStep, setNormalWizardStep] = useState('profile');
+  // ✅ 프롬프트 타입 변경 UX: "프로필 단계"로 이동 + 해당 영역 하이라이트(깜빡)
+  const promptTypeSectionRef = useRef(null);
+  const [promptTypeHighlight, setPromptTypeHighlight] = useState(false);
+
+  // ✅ 위저드(프로필 탭): QuickMeet(30초)와 동일한 장르/유형/소재 칩(햄버거 아코디언) 상태
+  // - SSOT: 실제 저장은 selectedTagSlugs이며, 칩 선택은 해당 배열에 반영된다.
+  const QUICK_MEET_GENRE_MAX_SELECT = 2;
+  const QUICK_MEET_GENRE_PREVIEW_COUNT = 8;
+  const QUICK_MEET_TYPE_PAGE_SIZE = 18;
+  const QUICK_MEET_HOOK_PAGE_SIZE = 14;
+
+  const [qmGenrePool, setQmGenrePool] = useState(() => shuffleCopy(QUICK_MEET_GENRE_CHIPS));
+  const [qmTypePool, setQmTypePool] = useState(() => shuffleCopy(QUICK_MEET_TYPE_CHIPS));
+  const getQuickMeetHookChipsForWizardMode = useCallback(() => {
+    /**
+     * ✅ 위저드(프로필) 시뮬 훅/소재 풀 분리
+     *
+     * 요구사항:
+     * - 시뮬은 "목표/루프/제약"이 보이는 훅 풀이 필요하다.
+     * - 롤플과 시뮬은 동일 훅 풀을 공유하지 않는다(분리).
+     */
+    try {
+      const t = String(formData?.basic_info?.character_type || 'roleplay').trim();
+      const base = (t === 'simulator')
+        ? (Array.isArray(QUICK_MEET_HOOK_CHIPS_SIMULATOR) ? QUICK_MEET_HOOK_CHIPS_SIMULATOR : QUICK_MEET_HOOK_CHIPS)
+        : (Array.isArray(QUICK_MEET_HOOK_CHIPS) ? QUICK_MEET_HOOK_CHIPS : []);
+      return uniqStringsPreserveOrder(base);
+    } catch (_) {
+      return uniqStringsPreserveOrder(Array.isArray(QUICK_MEET_HOOK_CHIPS) ? QUICK_MEET_HOOK_CHIPS : []);
+    }
+  }, [formData?.basic_info?.character_type]);
+
+  const [qmHookPool, setQmHookPool] = useState(() => shuffleCopy(uniqStringsPreserveOrder(QUICK_MEET_HOOK_CHIPS)));
+  const [qmGenreExpanded, setQmGenreExpanded] = useState(false);
+  const [qmChipPanelsOpen, setQmChipPanelsOpen] = useState({ genre: true, type: false, hook: false });
+  const [qmTypePage, setQmTypePage] = useState(0);
+  const [qmHookPage, setQmHookPage] = useState(0);
+  const [qmSelectedGenres, setQmSelectedGenres] = useState([]); // string[]
+  const [qmSelectedType, setQmSelectedType] = useState(''); // string
+  const [qmSelectedHook, setQmSelectedHook] = useState(''); // string
+
+  useEffect(() => {
+    /**
+     * ✅ selectedTagSlugs(SSOT) ↔ QuickMeet 칩 상태 동기화
+     * - TagSelectModal에서 제거/추가해도 칩 상태가 따라가야 한다(30초 모달과 동일 UX).
+     */
+    try {
+      if (!useNormalCreateWizard) return;
+      const slugs = Array.isArray(selectedTagSlugs) ? selectedTagSlugs : [];
+      const set = new Set(slugs.map((x) => String(x || '').trim()).filter(Boolean));
+
+      // 1) 장르(최대 2)
+      try {
+        setQmSelectedGenres((prev) => {
+          const cur = Array.isArray(prev) ? prev.map((x) => String(x || '').trim()).filter(Boolean) : [];
+          const kept = cur.filter((x) => set.has(x));
+          if (kept.length >= QUICK_MEET_GENRE_MAX_SELECT) return kept.slice(0, QUICK_MEET_GENRE_MAX_SELECT);
+          const pool = Array.isArray(QUICK_MEET_GENRE_CHIPS) ? QUICK_MEET_GENRE_CHIPS : [];
+          const add = [];
+          for (const g0 of pool) {
+            const g = String(g0 || '').trim();
+            if (!g) continue;
+            if (!set.has(g)) continue;
+            if (kept.includes(g)) continue;
+            add.push(g);
+            if (kept.length + add.length >= QUICK_MEET_GENRE_MAX_SELECT) break;
+          }
+          return [...kept, ...add].slice(0, QUICK_MEET_GENRE_MAX_SELECT);
+        });
+      } catch (_) {}
+
+      // 2) 유형(단일)
+      try {
+        setQmSelectedType((prev) => {
+          const cur = String(prev || '').trim();
+          if (cur && set.has(cur)) return cur;
+          const pool = Array.isArray(QUICK_MEET_TYPE_CHIPS) ? QUICK_MEET_TYPE_CHIPS : [];
+          for (const t0 of pool) {
+            const t = String(t0 || '').trim();
+            if (!t) continue;
+            if (set.has(t)) return t;
+          }
+          return '';
+        });
+      } catch (_) {}
+
+      // 3) 소재(단일)
+      try {
+        setQmSelectedHook((prev) => {
+          const cur = String(prev || '').trim();
+          if (cur && set.has(cur)) return cur;
+          // ✅ 방어: 시뮬 훅은 roleplay 훅 풀에 없을 수 있어 union을 본다.
+          const pool = [
+            ...(Array.isArray(QUICK_MEET_HOOK_CHIPS) ? QUICK_MEET_HOOK_CHIPS : []),
+            ...(Array.isArray(QUICK_MEET_HOOK_CHIPS_SIMULATOR) ? QUICK_MEET_HOOK_CHIPS_SIMULATOR : []),
+          ];
+          for (const t0 of pool) {
+            const t = String(t0 || '').trim();
+            if (!t) continue;
+            if (set.has(t)) return t;
+          }
+          return '';
+        });
+      } catch (_) {}
+    } catch (_) {}
+  }, [useNormalCreateWizard, selectedTagSlugs]);
+
+  const upsertQuickMeetTagSlug = useCallback((slug, { remove = false } = {}) => {
+    /**
+     * ✅ QuickMeet 칩 선택을 selectedTagSlugs(SSOT)에 반영
+     *
+     * 배경:
+     * - CreateCharacterPage 내부에서 QuickMeet(칩 UI) 선택 상태는 로컬 state로 보이지만,
+     *   실제 저장/전송의 SSOT는 selectedTagSlugs 이다.
+     *
+     * 방어 정책:
+     * - 필수 태그(성향/이미지 스타일)는 절대 제거하지 않는다.
+     */
+    try {
+      const s = String(slug || '').trim();
+      if (!s) return;
+      const isReq = REQUIRED_AUDIENCE_SLUGS.includes(s) || REQUIRED_STYLE_SLUGS.includes(s);
+      if (remove && isReq) return;
+      setSelectedTagSlugs((prev) => {
+        const arr = Array.isArray(prev) ? prev : [];
+        if (remove) return arr.filter((x) => String(x || '').trim() !== s);
+        const next = [...arr, s].map((x) => String(x || '').trim()).filter(Boolean);
+        return Array.from(new Set(next));
+      });
+    } catch (_) {}
+  }, []);
+
+  useEffect(() => {
+    /**
+     * ✅ 위저드: 모드 변경 시 시뮬 훅 풀 교체
+     *
+     * - 시뮬로 바뀌면 목표/루프 중심 훅 풀이 보여야 한다.
+     * - 롤플로 바뀌면 롤플 훅 풀을 유지한다.
+     */
+    try {
+      if (!useNormalCreateWizard) return;
+      const pool = shuffleCopy(getQuickMeetHookChipsForWizardMode());
+      setQmHookPool(pool);
+      setQmHookPage(0);
+      const picked = String(qmSelectedHook || '').trim();
+      if (picked && !pool.includes(picked)) {
+        setQmSelectedHook('');
+        try { upsertQuickMeetTagSlug(picked, { remove: true }); } catch (_) {}
+      }
+    } catch (_) {}
+  }, [useNormalCreateWizard, getQuickMeetHookChipsForWizardMode, qmSelectedHook, upsertQuickMeetTagSlug]);
+
+  const toggleQuickMeetGenreChip = useCallback((label) => {
+    /**
+     * ✅ 장르: 최대 2개 선택, 선택된 항목은 앞으로 모으기(최근 선택 우선)
+     */
+    try {
+      const t = String(label || '').trim();
+      if (!t) return;
+      setQmSelectedGenres((prev) => {
+        const arr = Array.isArray(prev) ? prev : [];
+        if (arr.includes(t)) {
+          const next = arr.filter((x) => x !== t);
+          upsertQuickMeetTagSlug(t, { remove: true });
+          return next;
+        }
+        if (arr.length >= QUICK_MEET_GENRE_MAX_SELECT) return arr;
+        const next = [t, ...arr];
+        upsertQuickMeetTagSlug(t, { remove: false });
+        return next;
+      });
+    } catch (_) {}
+  }, [upsertQuickMeetTagSlug]);
+
+  const toggleQuickMeetSingleChip = useCallback((kind, label) => {
+    /**
+     * ✅ 유형/소재: 단일 선택(토글 가능)
+     */
+    try {
+      const t = String(label || '').trim();
+      if (!t) return;
+      if (kind === 'type') {
+        setQmSelectedType((prev) => {
+          const prevV = String(prev || '').trim();
+          const nextV = (prevV === t) ? '' : t;
+          if (prevV && prevV !== nextV) upsertQuickMeetTagSlug(prevV, { remove: true });
+          if (nextV) upsertQuickMeetTagSlug(nextV, { remove: false });
+          return nextV;
+        });
+        return;
+      }
+      if (kind === 'hook') {
+        setQmSelectedHook((prev) => {
+          const prevV = String(prev || '').trim();
+          const nextV = (prevV === t) ? '' : t;
+          if (prevV && prevV !== nextV) upsertQuickMeetTagSlug(prevV, { remove: true });
+          if (nextV) upsertQuickMeetTagSlug(nextV, { remove: false });
+          return nextV;
+        });
+      }
+    } catch (_) {}
+  }, [upsertQuickMeetTagSlug]);
+
+  const qmSelectedAudienceSlug = useMemo(() => {
+    /**
+     * ✅ 성향(남/여/전체) 기반 장르 선노출 우선순위 계산용
+     */
+    try {
+      const slugs = Array.isArray(selectedTagSlugs) ? selectedTagSlugs : [];
+      return String(slugs.find((s) => REQUIRED_AUDIENCE_SLUGS.includes(s)) || '').trim();
+    } catch (_) {
+      return '';
+    }
+  }, [selectedTagSlugs]);
+
+  const qmGenreDisplay = useMemo(() => {
+    try {
+      const pool = Array.isArray(qmGenrePool) ? qmGenrePool : [];
+      const pinned = Array.isArray(qmSelectedGenres) ? qmSelectedGenres : [];
+      const priority = getQuickMeetGenrePriority(qmSelectedAudienceSlug);
+      const prioSet = new Set(priority);
+      const pinnedSet = new Set(pinned);
+      const prioIn = priority.filter((x) => pool.includes(x) && !pinnedSet.has(x));
+      const rest = pool.filter((x) => !pinnedSet.has(x) && !prioSet.has(x));
+      return [...pinned, ...prioIn, ...rest];
+    } catch (_) {
+      return Array.isArray(qmGenrePool) ? qmGenrePool : [];
+    }
+  }, [qmGenrePool, qmSelectedGenres, qmSelectedAudienceSlug]);
+
+  const qmTypeDisplay = useMemo(() => {
+    try {
+      const pool = Array.isArray(qmTypePool) ? qmTypePool : [];
+      const p = String(qmSelectedType || '').trim();
+      if (!p) return pool;
+      return [p, ...pool.filter((x) => x !== p)];
+    } catch (_) {
+      return Array.isArray(qmTypePool) ? qmTypePool : [];
+    }
+  }, [qmTypePool, qmSelectedType]);
+
+  const qmHookDisplay = useMemo(() => {
+    try {
+      const pool = Array.isArray(qmHookPool) ? qmHookPool : [];
+      const p = String(qmSelectedHook || '').trim();
+      if (!p) return pool;
+      return [p, ...pool.filter((x) => x !== p)];
+    } catch (_) {
+      return Array.isArray(qmHookPool) ? qmHookPool : [];
+    }
+  }, [qmHookPool, qmSelectedHook]);
+
+  const qmTypeVisible = useMemo(() => {
+    try {
+      const arr = Array.isArray(qmTypeDisplay) ? qmTypeDisplay : [];
+      if (arr.length === 0) return [];
+      const start = (Number(qmTypePage || 0) * QUICK_MEET_TYPE_PAGE_SIZE) % arr.length;
+      const slice = arr.slice(start, start + QUICK_MEET_TYPE_PAGE_SIZE);
+      if (slice.length < QUICK_MEET_TYPE_PAGE_SIZE) {
+        const filled = [...slice, ...arr.slice(0, QUICK_MEET_TYPE_PAGE_SIZE - slice.length)];
+        const picked = String(qmSelectedType || '').trim();
+        if (!picked) return filled;
+        const rest = filled.filter((x) => String(x || '').trim() !== picked);
+        return [picked, ...rest].slice(0, QUICK_MEET_TYPE_PAGE_SIZE);
+      }
+      const picked = String(qmSelectedType || '').trim();
+      if (!picked) return slice;
+      const rest = slice.filter((x) => String(x || '').trim() !== picked);
+      return [picked, ...rest].slice(0, QUICK_MEET_TYPE_PAGE_SIZE);
+    } catch (_) {
+      return [];
+    }
+  }, [qmTypeDisplay, qmTypePage, qmSelectedType, QUICK_MEET_TYPE_PAGE_SIZE]);
+
+  const qmHookVisible = useMemo(() => {
+    try {
+      const arr = Array.isArray(qmHookDisplay) ? qmHookDisplay : [];
+      if (arr.length === 0) return [];
+      const start = (Number(qmHookPage || 0) * QUICK_MEET_HOOK_PAGE_SIZE) % arr.length;
+      const slice = arr.slice(start, start + QUICK_MEET_HOOK_PAGE_SIZE);
+      if (slice.length < QUICK_MEET_HOOK_PAGE_SIZE) {
+        const filled = [...slice, ...arr.slice(0, QUICK_MEET_HOOK_PAGE_SIZE - slice.length)];
+        const picked = String(qmSelectedHook || '').trim();
+        if (!picked) return filled;
+        const rest = filled.filter((x) => String(x || '').trim() !== picked);
+        return [picked, ...rest].slice(0, QUICK_MEET_HOOK_PAGE_SIZE);
+      }
+      const picked = String(qmSelectedHook || '').trim();
+      if (!picked) return slice;
+      const rest = slice.filter((x) => String(x || '').trim() !== picked);
+      return [picked, ...rest].slice(0, QUICK_MEET_HOOK_PAGE_SIZE);
+    } catch (_) {
+      return [];
+    }
+  }, [qmHookDisplay, qmHookPage, qmSelectedHook, QUICK_MEET_HOOK_PAGE_SIZE]);
 
   useEffect(() => {
     if (!useNormalCreateWizard) return;
     const ok = NORMAL_CREATE_WIZARD_STEPS.some((s) => s.id === normalWizardStep);
     if (!ok) setNormalWizardStep('profile');
   }, [useNormalCreateWizard, normalWizardStep]);
+
+  useEffect(() => {
+    if (!useNormalCreateWizard) return;
+    if (normalWizardStep !== 'profile') return;
+    if (!promptTypeHighlight) return;
+    try {
+      // DOM 렌더 후 스크롤(UX 안정)
+      const t = setTimeout(() => {
+        try { promptTypeSectionRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'center' }); } catch (_) {}
+      }, 50);
+      const off = setTimeout(() => { try { setPromptTypeHighlight(false); } catch (_) {} }, 2200);
+      return () => { try { clearTimeout(t); } catch (_) {} try { clearTimeout(off); } catch (_) {} };
+    } catch (_) {
+      return undefined;
+    }
+  }, [useNormalCreateWizard, normalWizardStep, promptTypeHighlight]);
 
   const wizardStepIndex = useMemo(() => {
     try {
@@ -799,10 +1292,48 @@ const CreateCharacterPage = () => {
     // - 기존 전체 저장 검증(필수 항목 다수)과 분리: 단계별로 필요한 최소만 체크한다.
     try {
       if (!useNormalCreateWizard) return true;
+
+      // ✅ 글자수 제한(초과 시 에러 대신 인라인 경고)
+      // - maxLength로 막으면 350/300 같은 초과 표시가 불가능하므로,
+      //   위저드 이동을 여기서 선제 차단하고(버튼 비활성화), UI는 인라인 경고로만 안내한다.
+      const profileDescMax = getProfileOneLineMaxLenByCharacterType(formData?.basic_info?.character_type);
+      const LIMITS = {
+        profile_name: PROFILE_NAME_MAX_LEN,
+        profile_desc: profileDescMax,
+        prompt_world: 6000,
+        prompt_secret: 1000,
+        options_creator_comment: 1000,
+        detail_personality: 300,
+        detail_speech_style: 300,
+        opening_title: 100,
+        opening_intro: 2000,
+        opening_first_line: 500,
+        dialogue_user: 500,
+        dialogue_char: 1000,
+      };
+      const len = (v) => String(v ?? '').length;
+      const over = (v, mx) => len(v) > mx;
+
       if (normalWizardStep === 'profile') {
-        const nameOk = !!String(formData?.basic_info?.name || '').trim();
-        const descOk = !!String(formData?.basic_info?.description || '').trim();
+        const nameRaw = String(formData?.basic_info?.name || '');
+        const descRaw = String(formData?.basic_info?.description || '');
+        const nameTrim = nameRaw.trim();
+        const descTrim = descRaw.trim();
+        const nameOk = !!nameTrim;
+        const descOk = !!descTrim;
+        const nameNotOver = !over(nameRaw, LIMITS.profile_name);
+        const descNotOver = !over(descRaw, LIMITS.profile_desc);
+        // ✅ UX: 유저 수동 입력은 최소 1자(=비어있지 않음)만 요구한다.
+        // - 최소 길이(8/150)는 자동생성 결과 품질/일관성을 위한 제약으로만 사용한다.
         const audienceOk = (selectedTagSlugs || []).some((s) => REQUIRED_AUDIENCE_SLUGS.includes(s));
+        const promptTypeOk = (() => {
+          try {
+            const t = String(formData?.basic_info?.character_type || '').trim();
+            return t === 'roleplay' || t === 'simulator' || t === 'custom';
+          } catch (_) {
+            return false;
+          }
+        })();
         const imageOk = (() => {
           /**
            * ✅ 프로필 단계 대표이미지 필수(요구사항)
@@ -835,11 +1366,32 @@ const CreateCharacterPage = () => {
             return false;
           }
         })();
-        return nameOk && descOk && audienceOk && turnsOk && imageOk;
+        // ✅ QuickMeet(30초)와 일관: 장르(>=1), 캐릭터 유형(1), 소재(1) 선택이 필수
+        const qmGenreOk = (selectedTagSlugs || []).some((s) => (Array.isArray(QUICK_MEET_GENRE_CHIPS) ? QUICK_MEET_GENRE_CHIPS : []).includes(s));
+        const qmTypeOk = (selectedTagSlugs || []).some((s) => (Array.isArray(QUICK_MEET_TYPE_CHIPS) ? QUICK_MEET_TYPE_CHIPS : []).includes(s));
+        const qmHookOk = (selectedTagSlugs || []).some((s) => {
+          const pool = [
+            ...(Array.isArray(QUICK_MEET_HOOK_CHIPS) ? QUICK_MEET_HOOK_CHIPS : []),
+            ...(Array.isArray(QUICK_MEET_HOOK_CHIPS_SIMULATOR) ? QUICK_MEET_HOOK_CHIPS_SIMULATOR : []),
+          ];
+          return pool.includes(s);
+        });
+        return nameOk && descOk && nameNotOver && descNotOver && audienceOk && promptTypeOk && turnsOk && qmGenreOk && qmTypeOk && qmHookOk && imageOk;
       }
       if (normalWizardStep === 'prompt') {
         // 프롬프트(= 기존 world_setting) 최소 1자
-        return !!String(formData?.basic_info?.world_setting || '').trim();
+        const world = String(formData?.basic_info?.world_setting || '');
+        const ok = !!world.trim();
+        const notOver = !over(world, LIMITS.prompt_world);
+        const secretOk = (() => {
+          try {
+            if (!isSecretInfoEnabled) return true;
+            return !over(formData?.basic_info?.introduction_scenes?.[0]?.secret, LIMITS.prompt_secret);
+          } catch (_) {
+            return true;
+          }
+        })();
+        return ok && notOver && secretOk;
       }
       if (normalWizardStep === 'image') {
         const hasExistingImages = Array.isArray(formData?.media_settings?.image_descriptions)
@@ -858,13 +1410,48 @@ const CreateCharacterPage = () => {
         const items = Array.isArray(ss?.items) ? ss.items : [];
         const sel = String(ss?.selectedId || '').trim();
         const picked = items.find((x) => String(x?.id || '').trim() === sel) || items[0] || {};
-        return !!String(picked?.firstLine || '').trim();
+        const titleRaw = String(picked?.title || '');
+        const introRaw = String(picked?.intro || '');
+        const firstRaw = String(picked?.firstLine || '');
+        const firstOk = !!String(firstRaw || '').trim();
+        return (
+          firstOk
+          && !over(titleRaw, LIMITS.opening_title)
+          && !over(introRaw, LIMITS.opening_intro)
+          && !over(firstRaw, LIMITS.opening_first_line)
+        );
+      }
+      if (normalWizardStep === 'options') {
+        try {
+          if (!formData?.basic_info?.use_custom_description) return true;
+          return !over(formData?.basic_info?.user_display_description, LIMITS.options_creator_comment);
+        } catch (_) {
+          return true;
+        }
+      }
+      if (normalWizardStep === 'detail') {
+        const pOk = !over(formData?.basic_info?.personality, LIMITS.detail_personality);
+        const sOk = !over(formData?.basic_info?.speech_style, LIMITS.detail_speech_style);
+        const dialoguesOk = (() => {
+          try {
+            const ds = Array.isArray(formData?.example_dialogues?.dialogues) ? formData.example_dialogues.dialogues : [];
+            for (const d of ds) {
+              const u = String(d?.user_message || '');
+              const a = String(d?.character_response || '');
+              if (over(u, LIMITS.dialogue_user) || over(a, LIMITS.dialogue_char)) return false;
+            }
+            return true;
+          } catch (_) {
+            return true;
+          }
+        })();
+        return pOk && sOk && dialoguesOk;
       }
       return true;
     } catch (_) {
       return false;
     }
-  }, [useNormalCreateWizard, normalWizardStep, formData, selectedTagSlugs]);
+  }, [useNormalCreateWizard, normalWizardStep, formData, selectedTagSlugs, isSecretInfoEnabled]);
 
   const goNextWizardStep = useCallback(() => {
     try {
@@ -886,430 +1473,264 @@ const CreateCharacterPage = () => {
     } catch (_) {}
   }, [useNormalCreateWizard, NORMAL_CREATE_WIZARD_STEPS, wizardStepIndex]);
 
-  const handleNextStepAutoFill = useCallback(async () => {
+  const syncStatsIntoPromptText = (baseText, statsList) => {
     /**
-     * ✅ 다음단계 자동완성(요구사항)
+     * ✅ 프롬프트에 스탯 블록을 안전하게 삽입/교체한다.
      *
      * 의도/원리:
-     * - 사용자가 현재 단계의 최소 입력을 마치면, "다음 단계"로 이동하면서
-     *   다음 단계에서 자동생성이 가능한 항목만 1회 채운다.
-     * - 경쟁사 UX처럼 진행 모달을 띄워, "무엇을 작성 중인지"와 진행률을 보여준다.
+     * - 프롬프트 자동생성 응답(stats)을 사용자가 프롬프트에서도 즉시 확인할 수 있어야 한다.
+     * - 마커로 감싸 "관리 영역"만 교체해 사용자 작성 영역을 침범하지 않는다.
+     *
+     * 주의:
+     * - 이 함수는 UI 상태를 바꾸지 않는 순수 함수여야 한다(CQS).
+     */
+    try {
+      const START = '<!-- CC_STATS_START -->';
+      const END = '<!-- CC_STATS_END -->';
+      const header = '## 스탯 설정 (자동 동기화)\n';
+      const body = (Array.isArray(statsList) ? statsList : []).map((s) => {
+        const nm = String(s?.name || '').trim();
+        if (!nm) return null;
+        const mn = (s?.min_value === '' || s?.min_value == null) ? '' : String(s.min_value);
+        const mx = (s?.max_value === '' || s?.max_value == null) ? '' : String(s.max_value);
+        const bv = (s?.base_value === '' || s?.base_value == null) ? '' : String(s.base_value);
+        const unit = String(s?.unit || '').trim();
+        const desc = String(s?.description || '').trim();
+        const range = (mn !== '' && mx !== '') ? `${mn}~${mx}` : '';
+        const base = (bv !== '') ? `기본 ${bv}` : '';
+        const unitPart = unit ? `(${unit})` : '';
+        const meta = [range, base].filter(Boolean).join(', ');
+        const metaPart = meta ? ` — ${meta}` : '';
+        const descPart = desc ? `\n  - 설명: ${desc}` : '';
+        return `- **${nm}** ${unitPart}${metaPart}${descPart}`;
+      }).filter(Boolean).join('\n');
+      const block = [START, header + (body || '- (스탯 없음)'), END].join('\n');
+
+      const text = String(baseText || '');
+      const sIdx = text.indexOf(START);
+      const eIdx = text.indexOf(END);
+      if (sIdx >= 0 && eIdx > sIdx) {
+        const before = text.slice(0, sIdx).trimEnd();
+        const after = text.slice(eIdx + END.length).trimStart();
+        return [before, block, after].filter(Boolean).join('\n\n').trim().slice(0, 6000);
+      }
+      /**
+       * ✅ 방어적 복구:
+       * - 사용자가 프롬프트에서 START/END 중 하나만 삭제하면, 기존 블록이 "깨진 상태"가 된다.
+       * - 이 경우에는 이중 삽입/잔여 마커가 남을 수 있으므로, 깨진 블록을 교체하는 방식으로 복구한다.
+       */
+      if (sIdx >= 0 && !(eIdx > sIdx)) {
+        // START는 있는데 END가 없거나 위치가 이상함 → START부터 끝까지는 관리영역으로 보고 교체
+        const before = text.slice(0, sIdx).trimEnd();
+        return [before, block].filter(Boolean).join('\n\n').trim().slice(0, 6000);
+      }
+      if (eIdx >= 0 && sIdx < 0) {
+        // END만 남은 경우 → END 마커만 제거 후 정상 삽입(중복/잔여 마커 방지)
+        const before = text.slice(0, eIdx).trimEnd();
+        const after = text.slice(eIdx + END.length).trimStart();
+        const cleaned = [before, after].filter(Boolean).join('\n\n').trim();
+        return [cleaned, block].filter(Boolean).join('\n\n').trim().slice(0, 6000);
+      }
+      // 없으면 마지막에 추가
+      return [text.trim(), block].filter(Boolean).join('\n\n').trim().slice(0, 6000);
+    } catch (_) {
+      return String(baseText || '').slice(0, 6000);
+    }
+  };
+
+  const extractStatsFromPromptStatsBlock = (promptTextRaw) => {
+    /**
+     * ✅ 프롬프트의 스탯 블록(<!-- CC_STATS_START/END -->)을 파싱해 스탯 리스트로 변환한다.
+     *
+     * 의도/원리:
+     * - "다음단계 자동완성"에서 스탯 단계로 갈 때, 프롬프트에 블록이 있으면 그 내용을 SSOT처럼 사용한다.
+     * - 파싱 실패 시에는 호출부에서 서버 스탯 생성(quick-generate-stat)으로 폴백한다.
      *
      * 방어:
-     * - 동시 실행 방지(중복 API 호출/데이터 경합 방지)
-     * - 자동생성 불가 단계(이미지/설정집/옵션 등)는 안내만 하고 종료
+     * - 블록 누락/형식 불일치/부분 누락에 안전하게 대응한다.
      */
-    if (!useNormalCreateWizard) return;
-    if (nextStepAutoFillRunningRef.current) return;
     try {
-      // 다음 단계가 없으면 종료
-      if (wizardStepIndex >= NORMAL_CREATE_WIZARD_STEPS.length - 1) {
-        dispatchToast('error', '이미 마지막 단계입니다.');
-        return;
-      }
+      const text = String(promptTextRaw || '');
+      const START = '<!-- CC_STATS_START -->';
+      const END = '<!-- CC_STATS_END -->';
+      const sIdx = text.indexOf(START);
+      const eIdx = text.indexOf(END);
+      if (!(sIdx >= 0 && eIdx > sIdx)) return [];
 
-      nextStepAutoFillRunningRef.current = true;
-      setNextStepAutoFillError('');
-      setNextStepAutoFillProgress(0);
-      setNextStepAutoFillLabel('다음 단계 자동완성 준비 중...');
-      setNextStepAutoFillOpen(true);
-      setNextStepAutoFillSummaryLines([]);
+      const blockBody = text.slice(sIdx + START.length, eIdx);
+      const lines = String(blockBody || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+      const parsed = [];
+      for (let i = 0; i < lines.length; i += 1) {
+        const line = String(lines[i] || '').trimEnd();
+        const m = line.match(/^- \*\*(.+?)\*\*\s*(\((.*?)\))?\s*(?:—\s*(.*))?$/);
+        if (!m) continue;
+        const name = String(m[1] || '').trim();
+        if (!name) continue;
+        const unit = String(m[3] || '').trim();
+        const meta = String(m[4] || '').trim();
 
-      // ✅ blur 강제(다음단계 이동 전 커밋 보장)
-      try {
-        const el = (typeof document !== 'undefined') ? document.activeElement : null;
-        if (el && typeof el.blur === 'function') el.blur();
-      } catch (_) {}
-
-      const nextIdx = Math.min(NORMAL_CREATE_WIZARD_STEPS.length - 1, wizardStepIndex + 1);
-      const nextId = String(NORMAL_CREATE_WIZARD_STEPS[nextIdx]?.id || '').trim();
-      if (!nextId) {
-        dispatchToast('error', '다음 단계를 찾을 수 없습니다.');
-        setNextStepAutoFillError('next_step_not_found');
-        setNextStepAutoFillProgress(100);
-        return;
-      }
-
-      // ✅ UX: 먼저 다음 단계로 이동(사용자가 채워지는 걸 바로 확인 가능)
-      try { setNormalWizardStep(nextId); } catch (_) {}
-
-      // 단계별 자동완성 실행
-      if (nextId === 'prompt') {
-        // ✅ 한 글자라도 입력 흔적이 있으면 자동완성 금지
-        const existing = String(formData?.basic_info?.world_setting || '').trim();
-        if (existing) {
-          try { setNextStepAutoFillSummaryLines((prev) => [...(Array.isArray(prev) ? prev : []), '프롬프트: 기존 입력 감지로 자동완성 생략']); } catch (_) {}
-          setNextStepAutoFillProgress(100);
-          setNextStepAutoFillLabel('이미 입력된 프롬프트가 있어 자동완성을 생략했어요.');
-          return;
-        }
-
-        setNextStepAutoFillLabel('프롬프트 자동 생성 중...');
-        setNextStepAutoFillProgress(15);
-        const pr = await handleAutoGeneratePromptOnlyForNextStepAutoFill();
-        if (pr && pr?.prompt) {
-          try { setNextStepAutoFillSummaryLines((prev) => [...(Array.isArray(prev) ? prev : []), '프롬프트 자동 생성']); } catch (_) {}
-          setNextStepAutoFillProgress(100);
-          setNextStepAutoFillLabel('완료되었습니다. 내용을 확인해주세요.');
-          return;
-        }
-        if (pr && pr?.skipped) {
-          try { setNextStepAutoFillSummaryLines((prev) => [...(Array.isArray(prev) ? prev : []), '프롬프트: 기존 입력 감지로 자동완성 생략']); } catch (_) {}
-          setNextStepAutoFillProgress(100);
-          setNextStepAutoFillLabel('이미 입력된 프롬프트가 있어 자동완성을 생략했어요.');
-          return;
-        }
-
-        setNextStepAutoFillError('prompt_autofill_failed');
-        setNextStepAutoFillProgress(100);
-        setNextStepAutoFillLabel('프롬프트 자동완성에 실패했습니다. 잠시 후 다시 시도해주세요.');
-        return;
-      }
-
-      if (nextId === 'image') {
-        // ✅ 자동완성 대상 없음 → 그냥 이동(모달로 방해하지 않음)
-        try { setNextStepAutoFillOpen(false); } catch (_) {}
-        return;
-      }
-
-      if (nextId === 'first_start') {
-        // 선택 오프닝(세트) 1개만 자동 생성
-        setNextStepAutoFillLabel('오프닝 자동완성 확인 중...');
-        setNextStepAutoFillProgress(15);
-        const ss = (formData?.basic_info?.start_sets && typeof formData.basic_info.start_sets === 'object')
-          ? formData.basic_info.start_sets
-          : null;
-        const items = Array.isArray(ss?.items) ? ss.items : [];
-        const sel = String(ss?.selectedId || '').trim() || String(items?.[0]?.id || '').trim();
-        if (!sel) {
-          setNextStepAutoFillError('start_set_not_found');
-          setNextStepAutoFillProgress(100);
-          setNextStepAutoFillLabel('오프닝(시작 설정)이 없어 자동완성을 진행할 수 없습니다.');
-          return;
-        }
-
-        const active = items.find((x) => String(x?.id || '').trim() === sel) || items[0] || {};
-        const introExisting = String(active?.intro || '').trim();
-        const firstExisting = String(active?.firstLine || '').trim();
-        const turnEventsExisting = Array.isArray(active?.turn_events) ? active.turn_events : [];
-        const hasTrace = !!(introExisting || firstExisting || (turnEventsExisting.length > 0));
-
-        // ✅ 한 글자라도 입력 흔적이 있으면(오프닝/턴사건 포함) 자동완성 금지
-        if (hasTrace) {
-          try { setNextStepAutoFillSummaryLines((prev) => [...(Array.isArray(prev) ? prev : []), '오프닝: 기존 입력 감지로 자동완성 생략']); } catch (_) {}
-          setNextStepAutoFillProgress(100);
-          setNextStepAutoFillLabel('이미 입력된 값이 있어 오프닝 자동완성을 생략했어요.');
-          return;
-        }
-
-        setNextStepAutoFillLabel('오프닝(첫 상황/첫 대사) 자동 생성 중...');
-        setNextStepAutoFillProgress(25);
-        const firstRes = await handleAutoGenerateFirstStart(sel);
-        if (!firstRes || !String(firstRes?.intro || '').trim() || !String(firstRes?.firstLine || '').trim()) {
-          setNextStepAutoFillError('first_start_failed');
-          setNextStepAutoFillProgress(100);
-          setNextStepAutoFillLabel('오프닝 자동완성에 실패했습니다. 잠시 후 다시 시도해주세요.');
-          return;
-        }
-        try { setNextStepAutoFillSummaryLines((prev) => [...(Array.isArray(prev) ? prev : []), '오프닝(첫 상황/첫 대사) 자동 생성']); } catch (_) {}
-
-        // ✅ 연쇄: 오프닝 생성 직후 턴수별 사건까지 자동 생성(덮어쓰기 방지)
-        setNextStepAutoFillLabel('턴수별 사건 자동 생성 중...');
-        setNextStepAutoFillProgress(65);
-        const sim = (ss && typeof ss?.sim_options === 'object' && ss.sim_options) ? ss.sim_options : {};
-        const maxTurnsRaw = Number(sim?.max_turns ?? 200);
-        const maxTurns = Number.isFinite(maxTurnsRaw) ? Math.floor(maxTurnsRaw) : 200;
-        const turnRes = await handleAutoGenerateTurnEvents(sel, {
-          opening_intro: String(firstRes.intro || '').trim(),
-          opening_first_line: String(firstRes.firstLine || '').trim(),
-          max_turns: Math.max(50, maxTurns || 200),
-          skipOverwrite: true,
-          silent: true,
-        });
-        if (turnRes && turnRes?.turn_events && Array.isArray(turnRes.turn_events)) {
-          try { setNextStepAutoFillSummaryLines((prev) => [...(Array.isArray(prev) ? prev : []), `턴수별 사건 자동 생성 (${turnRes.turn_events.length}개)`]); } catch (_) {}
-        } else if (turnRes && turnRes?.skipped) {
-          try { setNextStepAutoFillSummaryLines((prev) => [...(Array.isArray(prev) ? prev : []), '턴수별 사건: 기존 값 유지(자동생성 생략)']); } catch (_) {}
-        } else {
-          try { setNextStepAutoFillSummaryLines((prev) => [...(Array.isArray(prev) ? prev : []), '턴수별 사건: 자동생성 실패(수동으로 진행 가능)']); } catch (_) {}
-        }
-
-        setNextStepAutoFillProgress(100);
-        setNextStepAutoFillLabel('완료되었습니다. 내용을 확인해주세요.');
-        return;
-      }
-
-      if (nextId === 'detail') {
-        // ✅ 한 글자라도 입력 흔적이 있으면 자동완성 금지
-        const hasPersonality = !!String(formData?.basic_info?.personality || '').trim();
-        const hasSpeech = !!String(formData?.basic_info?.speech_style || '').trim();
-        const hasChips = (() => {
-          try {
-            const i = Array.isArray(detailPrefs?.interests) ? detailPrefs.interests : [];
-            const l = Array.isArray(detailPrefs?.likes) ? detailPrefs.likes : [];
-            const d = Array.isArray(detailPrefs?.dislikes) ? detailPrefs.dislikes : [];
-            return [...i, ...l, ...d].some((x) => String(x || '').trim());
-          } catch (_) {
-            return false;
-          }
-        })();
-        if (hasPersonality || hasSpeech || hasChips) {
-          try { setNextStepAutoFillSummaryLines((prev) => [...(Array.isArray(prev) ? prev : []), '디테일: 기존 입력 감지로 자동완성 생략']); } catch (_) {}
-          setNextStepAutoFillProgress(100);
-          setNextStepAutoFillLabel('이미 입력된 디테일이 있어 자동완성을 생략했어요.');
-          return;
-        }
-
-        setNextStepAutoFillLabel('디테일(성격/말투/키워드) 자동 생성 중...');
-        setNextStepAutoFillProgress(20);
-        await handleAutoGenerateDetail();
-        try { setNextStepAutoFillSummaryLines((prev) => [...(Array.isArray(prev) ? prev : []), '디테일(성격/말투/키워드) 자동 생성']); } catch (_) {}
-        setNextStepAutoFillProgress(100);
-        setNextStepAutoFillLabel('완료되었습니다. 내용을 확인해주세요.');
-        return;
-      }
-
-      if (nextId === 'stat') {
-        setNextStepAutoFillProgress(100);
-        setNextStepAutoFillLabel('스탯은 보통 “프롬프트 자동 생성”과 함께 채워져요. (필요하면 스탯 탭에서 수정해주세요)');
-        return;
-      }
-
-      if (nextId === 'setting_book') {
-        // ✅ 자동완성 대상 없음 → 그냥 이동(모달로 방해하지 않음)
-        try { setNextStepAutoFillOpen(false); } catch (_) {}
-        return;
-      }
-
-      if (nextId === 'ending') {
-        /**
-         * ✅ 엔딩 자동완성(요구사항)
-         *
-         * 원리:
-         * - 오프닝(첫 상황/첫대사)이 이미 만들어진 상태에서,
-         *   오프닝당 엔딩 2개를 자동 생성한다. (제목/기본조건/힌트/턴 + 에필로그)
-         *
-         * 방어:
-         * - 기존 엔딩이 있으면 "비어있는 경우만" 채운다(덮어쓰기 방지).
-         */
-        const nm = String(formData?.basic_info?.name || '').trim();
-        const ds = String(formData?.basic_info?.description || '').trim();
-        const wd = String(formData?.basic_info?.world_setting || '').trim();
-        if (!nm || !ds || !wd) {
-          setNextStepAutoFillError('ending_prereq_missing');
-          setNextStepAutoFillProgress(100);
-          setNextStepAutoFillLabel('프로필/프롬프트를 먼저 완성해주세요.');
-          return;
-        }
-
-        const ss = (formData?.basic_info?.start_sets && typeof formData.basic_info.start_sets === 'object')
-          ? formData.basic_info.start_sets
-          : null;
-        const items = Array.isArray(ss?.items) ? ss.items : [];
-        const sel = String(ss?.selectedId || '').trim() || String(items?.[0]?.id || '').trim();
-        const active = items.find((x) => String(x?.id || '').trim() === sel) || items[0] || {};
-        const openingIntro = String(active?.intro || '').trim();
-        const openingFirstLine = String(active?.firstLine || '').trim();
-        if (!openingIntro || !openingFirstLine) {
-          setNextStepAutoFillError('opening_missing');
-          setNextStepAutoFillProgress(100);
-          setNextStepAutoFillLabel('오프닝(첫 상황/첫 대사)을 먼저 생성/입력해주세요.');
-          return;
-        }
-
-        const sim = (ss && typeof ss?.sim_options === 'object' && ss.sim_options) ? ss.sim_options : {};
-        const maxTurnsRaw = Number(sim?.max_turns ?? 200);
-        const maxTurns = Number.isFinite(maxTurnsRaw) ? Math.floor(maxTurnsRaw) : 200;
-        const es = (active?.ending_settings && typeof active.ending_settings === 'object') ? active.ending_settings : {};
-        const minTurnsRaw = Number(es?.min_turns ?? 30);
-        const minTurns = Number.isFinite(minTurnsRaw) ? Math.max(10, Math.floor(minTurnsRaw)) : 30;
-
-        const aiModel = String(user?.preferred_model || 'claude').trim().toLowerCase() || 'claude';
-        const model = (aiModel === 'gpt' ? 'gpt' : (aiModel === 'gemini' ? 'gemini' : 'claude'));
-
-        const WANT_ENDINGS = 2;
-        const existingEnds = Array.isArray(active?.ending_settings?.endings) ? active.ending_settings.endings : [];
-        const hasAnyText = (v) => {
-          try { return !!String(v ?? '').trim(); } catch (_) { return false; }
-        };
-        const hasAnyEndingTrace = (() => {
-          try {
-            return (Array.isArray(existingEnds) ? existingEnds : []).some((e) => {
-              // ✅ 한 글자라도 입력 흔적이 있으면 자동완성 금지(요구사항)
-              return !!(hasAnyText(e?.title) || hasAnyText(e?.base_condition) || hasAnyText(e?.hint) || hasAnyText(e?.epilogue));
-            });
-          } catch (_) {
-            return false;
-          }
-        })();
-        if (hasAnyEndingTrace) {
-          try { setNextStepAutoFillSummaryLines((prev) => [...(Array.isArray(prev) ? prev : []), '엔딩: 기존 입력 감지로 자동완성 생략']); } catch (_) {}
-          setNextStepAutoFillProgress(100);
-          setNextStepAutoFillLabel('이미 입력된 값이 있어 엔딩 자동완성을 생략했어요.');
-          return;
-        }
-
-        const clampTurn = (t) => {
-          try {
-            const v = Number(t);
-            const n = Number.isFinite(v) ? Math.floor(v) : 0;
-            if (!n) return Math.max(minTurns, Math.min(maxTurns, minTurns));
-            return Math.max(minTurns, Math.min(maxTurns, n));
-          } catch (_) {
-            return Math.max(minTurns, Math.min(maxTurns, minTurns));
-          }
-        };
-        const genEndingId = () => {
-          try { return `ending_${Date.now()}_${Math.random().toString(16).slice(2, 7)}`; }
-          catch (_) { return `ending_${Date.now()}`; }
-        };
-
-        const built = [];
-        for (let idx = 0; idx < WANT_ENDINGS; idx += 1) {
-          const base = (existingEnds[idx] && typeof existingEnds[idx] === 'object') ? existingEnds[idx] : null;
-          const baseId = String(base?.id || '').trim() || genEndingId();
-          const baseTitle = String(base?.title || '').trim();
-          const baseCond = String(base?.base_condition || '').trim();
-          const baseHint = String(base?.hint || '').trim();
-          const baseEpilogue = String(base?.epilogue || '').trim();
-          const baseExtra = Array.isArray(base?.extra_conditions) ? base.extra_conditions : [];
-
-          // 1) 제목/조건이 비어있으면 초안 생성
-          let title = baseTitle;
-          let cond = baseCond;
-          let hint = baseHint;
-          let suggestedTurn = 0;
-
-          if (!title || !cond) {
-            setNextStepAutoFillLabel(`엔딩 ${idx + 1}/2 (제목/기본조건) 자동 생성 중...`);
-            setNextStepAutoFillProgress(idx === 0 ? 18 : 55);
-            const draftRes = await charactersAPI.quickGenerateEndingDraft({
-              name: nm,
-              description: ds,
-              world_setting: wd,
-              opening_intro: openingIntro,
-              opening_first_line: openingFirstLine,
-              max_turns: Math.max(50, maxTurns || 200),
-              min_turns: Math.max(10, minTurns || 30),
-              tags: Array.isArray(selectedTagSlugs) ? selectedTagSlugs : [],
-              ai_model: model,
-            });
-            title = title || String(draftRes?.data?.title || '').trim();
-            cond = cond || String(draftRes?.data?.base_condition || '').trim();
-            hint = hint || String(draftRes?.data?.hint || '').trim();
-            const suggestedTurnRaw = Number(draftRes?.data?.suggested_turn ?? 0);
-            suggestedTurn = Number.isFinite(suggestedTurnRaw) ? Math.floor(suggestedTurnRaw) : 0;
-            if (!title || !cond) {
-              setNextStepAutoFillError('ending_draft_empty');
-              setNextStepAutoFillProgress(100);
-              setNextStepAutoFillLabel('엔딩 초안 생성 결과가 비어있습니다. 잠시 후 다시 시도해주세요.');
-              return;
+        let minValue = '';
+        let maxValue = '';
+        let baseValue = '';
+        if (meta) {
+          const parts = meta.split(',').map((p) => p.trim()).filter(Boolean);
+          for (const p of parts) {
+            if (p.includes('~')) {
+              const [a, b] = p.split('~').map((x) => String(x || '').trim());
+              const na = Number(a);
+              const nb = Number(b);
+              if (Number.isFinite(na)) minValue = na;
+              if (Number.isFinite(nb)) maxValue = nb;
+              continue;
             }
-            try { setNextStepAutoFillSummaryLines((prev) => [...(Array.isArray(prev) ? prev : []), `엔딩 ${idx + 1}: 제목/기본조건 자동 생성`]); } catch (_) {}
-          }
-
-          // 2) 에필로그가 비어있으면 생성
-          let epilogue = baseEpilogue;
-          if (!epilogue) {
-            setNextStepAutoFillLabel(`엔딩 ${idx + 1}/2 (에필로그) 자동 생성 중...`);
-            setNextStepAutoFillProgress(idx === 0 ? 35 : 72);
-            const epRes = await charactersAPI.quickGenerateEndingEpilogueDraft({
-              name: nm,
-              description: ds,
-              world_setting: wd,
-              opening_intro: openingIntro,
-              opening_first_line: openingFirstLine,
-              ending_title: title,
-              base_condition: cond,
-              hint,
-              extra_conditions: baseExtra,
-              tags: Array.isArray(selectedTagSlugs) ? selectedTagSlugs : [],
-              ai_model: model,
-            });
-            epilogue = String(epRes?.data?.epilogue || '').trim();
-            if (!epilogue) {
-              try { setNextStepAutoFillSummaryLines((prev) => [...(Array.isArray(prev) ? prev : []), `엔딩 ${idx + 1}: 에필로그 생성 실패(수동 가능)`]); } catch (_) {}
-            } else {
-              try { setNextStepAutoFillSummaryLines((prev) => [...(Array.isArray(prev) ? prev : []), `엔딩 ${idx + 1}: 에필로그 자동 생성`]); } catch (_) {}
+            if (p.startsWith('기본')) {
+              const raw = p.replace(/^기본\s*/g, '').trim();
+              const nv = Number(raw);
+              if (Number.isFinite(nv)) baseValue = nv;
+              continue;
             }
           }
-
-          const turnRaw = (base?.turn != null && base?.turn !== '') ? Number(base.turn) : (suggestedTurn || minTurns);
-          const turn = clampTurn(turnRaw);
-          built.push({
-            id: baseId,
-            turn,
-            title,
-            base_condition: cond,
-            hint: hint || '',
-            epilogue: epilogue || '',
-            extra_conditions: baseExtra,
-          });
         }
 
-        // ✅ start_sets에 "앞 2개 엔딩"을 보장(기존 데이터는 뒤에 유지)
-        setNextStepAutoFillProgress(88);
-        updateStartSets((prev) => {
-          const cur = (prev && typeof prev === 'object') ? prev : {};
-          const curItems = Array.isArray(cur.items) ? cur.items : [];
-          const sid = String(cur.selectedId || '').trim() || sel;
-          const nextItems = curItems.map((it) => {
-            const iid = String(it?.id || '').trim();
-            if (iid !== sid) return it;
-            const base = (it && typeof it === 'object') ? it : {};
-            const curEs = (base.ending_settings && typeof base.ending_settings === 'object') ? base.ending_settings : {};
-            const curEnds = Array.isArray(curEs?.endings) ? curEs.endings : [];
-            const tail = curEnds.slice(WANT_ENDINGS);
-            return {
-              ...base,
-              ending_settings: {
-                ...curEs,
-                min_turns: Number.isFinite(Number(curEs?.min_turns)) ? curEs.min_turns : minTurns,
-                endings: [...built, ...tail],
-              },
-            };
-          });
-          return { ...cur, items: nextItems };
+        let desc = '';
+        if (i + 1 < lines.length) {
+          const next = String(lines[i + 1] || '');
+          const dm = next.match(/^\s*-\s*설명:\s*(.*)$/);
+          if (dm) {
+            desc = String(dm[1] || '').trim();
+            i += 1;
+          }
+        }
+
+        parsed.push({
+          id: `stat_${Date.now()}_${Math.random().toString(16).slice(2, 7)}`,
+          name: name.slice(0, 20),
+          min_value: minValue,
+          max_value: maxValue,
+          base_value: baseValue,
+          unit: unit.slice(0, 10),
+          description: desc.slice(0, 200),
         });
-
-        setNextStepAutoFillProgress(100);
-        setNextStepAutoFillLabel('완료되었습니다. 내용을 확인해주세요.');
-        return;
+        if (parsed.length >= HARD_MAX_STATS_PER_OPENING) break;
       }
-
-      if (nextId === 'options') {
-        setNextStepAutoFillProgress(100);
-        setNextStepAutoFillLabel('이 단계는 자동완성할 항목이 없어요.');
-        return;
-      }
-
-      // 기타 단계(예외): 안내만
-      setNextStepAutoFillProgress(100);
-      setNextStepAutoFillLabel('이 단계는 자동완성할 항목이 없어요.');
-    } catch (e) {
-      try { console.error('[CreateCharacterPage] next step auto-fill failed:', e); } catch (_) {}
-      setNextStepAutoFillError(String(e?.message || e || 'unknown_error'));
-      setNextStepAutoFillProgress(100);
-      setNextStepAutoFillLabel('자동완성에 실패했습니다. 잠시 후 다시 시도해주세요.');
-      try { dispatchToast('error', '다음단계 자동완성에 실패했습니다.'); } catch (_) {}
-    } finally {
-      nextStepAutoFillRunningRef.current = false;
+      return parsed.filter((s) => String(s?.name || '').trim() && String(s?.description || '').trim());
+    } catch (_) {
+      return [];
     }
-  }, [
-    useNormalCreateWizard,
-    wizardStepIndex,
-    NORMAL_CREATE_WIZARD_STEPS,
-    formData,
-    dispatchToast,
-    handleAutoGeneratePromptOnlyForNextStepAutoFill,
-    handleAutoGenerateFirstStart,
-    handleAutoGenerateTurnEvents,
-    handleAutoGenerateDetail,
-    selectedTagSlugs,
-    user,
-    updateStartSets,
-    detailPrefs,
-  ]);
+  };
+
+  const handleAutoGeneratePromptOnlyForNextStepAutoFill = useCallback(async () => {
+    /**
+     * ✅ 다음단계 자동완성 전용: "프롬프트(world_setting)만" 자동 생성
+     *
+     * 의도/원리:
+     * - 기존 `handleAutoGeneratePrompt`는 프롬프트 생성과 함께 스탯/디테일까지 자동 채움(올인원)으로 동작한다.
+     * - 하지만 자동완성 요구사항은 "한 글자라도 입력 흔적이 있으면 자동완성 금지"이므로,
+     *   다음 단계 자동완성에서는 world_setting만 채우고 다른 필드는 절대 건드리지 않는다.
+     *
+     * ⚠️ 중요:
+     * - 이 함수는 `handleNextStepAutoFill`에서 dependency로 사용되므로,
+     *   선언 순서가 아래에 있으면 TDZ(선언 전 참조)로 런타임 에러가 날 수 있다.
+     */
+    try {
+      const existing = String(formData?.basic_info?.world_setting || '').trim();
+      if (existing) return { skipped: true, reason: 'already_filled' };
+
+      const mode = String(formData?.basic_info?.character_type || 'roleplay').trim();
+      if (mode !== 'simulator' && mode !== 'roleplay') {
+        dispatchToast('error', '이 모드에서는 자동생성을 사용할 수 없어요.');
+        return null;
+      }
+
+      const name = String(formData?.basic_info?.name || '').trim();
+      const desc = String(formData?.basic_info?.description || '').trim();
+      const concept = (() => {
+        try {
+          const ss = (formData?.basic_info?.start_sets && typeof formData.basic_info.start_sets === 'object')
+            ? formData.basic_info.start_sets
+            : null;
+          const pc = (ss && typeof ss.profile_concept === 'object' && ss.profile_concept) ? ss.profile_concept : null;
+          const enabled = !!pc?.enabled;
+          if (!enabled) return '';
+          return String(pc?.text || '').trim().slice(0, PROFILE_CONCEPT_MAX_LEN);
+        } catch (_) {
+          return '';
+        }
+      })();
+      const descForPrompt = concept ? `${desc}\n\n[작품 컨셉(추가 참고)]\n${concept}` : desc;
+      if (!name || !desc) {
+        dispatchToast('error', '프로필 정보를 먼저 입력해주세요.');
+        return null;
+      }
+
+      // ✅ 요구사항: "위저드만" 제미니 고정(다른 화면/로직에는 영향 주지 않음)
+      const aiModel = useNormalCreateWizard
+        ? 'gemini'
+        : (String(user?.preferred_model || 'claude').trim().toLowerCase() || 'claude');
+      const ss = (formData?.basic_info?.start_sets && typeof formData.basic_info.start_sets === 'object')
+        ? formData.basic_info.start_sets
+        : null;
+      const sim = (ss && typeof ss.sim_options === 'object' && ss.sim_options) ? ss.sim_options : {};
+      const maxTurnsRaw = Number(sim?.max_turns ?? 200);
+      const maxTurns = Number.isFinite(maxTurnsRaw) && maxTurnsRaw >= 50 ? Math.floor(maxTurnsRaw) : 200;
+      const simDatingElements = !!sim?.sim_dating_elements;
+
+      const res = await charactersAPI.quickGeneratePromptDraft({
+        name,
+        description: descForPrompt,
+        mode: (mode === 'simulator' ? 'simulator' : 'roleplay'),
+        max_turns: maxTurns,
+        sim_dating_elements: (mode === 'simulator' ? simDatingElements : undefined),
+        tags: Array.isArray(selectedTagSlugs) ? selectedTagSlugs : [],
+        ai_model: (aiModel === 'gpt' ? 'gpt' : (aiModel === 'gemini' ? 'gemini' : 'claude')),
+      });
+
+      const promptText = String(res?.data?.prompt || '').trim();
+      if (!promptText) {
+        dispatchToast('error', '프롬프트 생성 결과가 비어있습니다. 잠시 후 다시 시도해주세요.');
+        return null;
+      }
+
+      // ✅ 다음단계 자동완성에서도 "프롬프트 안의 스탯 블록"은 같이 들어가야 한다(요구사항).
+      // - 단, stats 탭(start_sets.stat_settings)까지는 건드리지 않는다(이 함수의 역할: world_setting만).
+      let nextPromptText = promptText.slice(0, 6000);
+      try {
+        const rawStats = Array.isArray(res?.data?.stats) ? res.data.stats : [];
+        const normalized = rawStats
+          .map((s) => ({
+            name: String(s?.name || '').trim().slice(0, 20),
+            min_value: Number.isFinite(Number(s?.min_value)) ? Number(s.min_value) : '',
+            max_value: Number.isFinite(Number(s?.max_value)) ? Number(s.max_value) : '',
+            base_value: Number.isFinite(Number(s?.base_value)) ? Number(s.base_value) : '',
+            unit: String(s?.unit || '').trim().slice(0, 10),
+            description: String(s?.description || '').trim().slice(0, 200),
+          }))
+          .filter((s) => s.name && s.description)
+          .slice(0, HARD_MAX_STATS_PER_OPENING);
+        if (normalized.length) {
+          nextPromptText = syncStatsIntoPromptText(nextPromptText, normalized).slice(0, 6000);
+        } else {
+          // 방어: stats가 비어있으면 알려주기(침묵 금지)
+          dispatchToast('warning', '스탯을 불러오지 못했습니다. (프롬프트는 생성됨)');
+        }
+      } catch (e2) {
+        try { console.error('[CreateCharacterPage] prompt-only stats inject failed:', e2); } catch (_) {}
+      }
+
+      setFormData((prev) => ({
+        ...prev,
+        basic_info: {
+          ...prev.basic_info,
+          world_setting: nextPromptText,
+        },
+      }));
+      return { prompt: nextPromptText };
+    } catch (e) {
+      try { console.error('[CreateCharacterPage] prompt-only autofill failed:', e); } catch (_) {}
+      try { dispatchToast('error', '프롬프트 자동 생성에 실패했습니다. 잠시 후 다시 시도해주세요.'); } catch (_) {}
+      return null;
+    }
+  }, [formData, selectedTagSlugs, user, dispatchToast]);
 
   const genStartSetId = useCallback(() => {
     try {
@@ -1533,6 +1954,14 @@ const CreateCharacterPage = () => {
           return false;
         }
       })();
+      const promptTypeOk = (() => {
+        try {
+          const t = String(formData?.basic_info?.character_type || '').trim();
+          return t === 'roleplay' || t === 'simulator' || t === 'custom';
+        } catch (_) {
+          return false;
+        }
+      })();
       const firstLineOk = (() => {
         const ss = formData?.basic_info?.start_sets;
         const items = Array.isArray(ss?.items) ? ss.items : [];
@@ -1542,10 +1971,11 @@ const CreateCharacterPage = () => {
       })();
 
       if (step === 'profile') {
-        if (!nameOk) return '프로필에서 캐릭터 이름을 먼저 입력해주세요.';
+        if (!nameOk) return '프로필에서 작품명을 먼저 입력해주세요.';
         if (!audienceOk) return '프로필에서 남성향/여성향/전체 중 하나를 먼저 선택해주세요.';
-        if (!descOk) return '프로필에서 캐릭터소개를 먼저 입력해주세요.';
+        if (!descOk) return '프로필에서 한줄소개를 먼저 입력해주세요.';
         if (!profileImageOk) return '프로필에서 대표 이미지를 먼저 등록해주세요.';
+        if (!promptTypeOk) return '프로필에서 프롬프트 타입(롤플레잉/시뮬레이션/커스텀)을 먼저 선택해주세요.';
         if (!turnsOk) return '프로필에서 진행 턴수를 50턴 이상으로 선택/입력해주세요.';
       }
       if (step === 'prompt') {
@@ -1564,73 +1994,73 @@ const CreateCharacterPage = () => {
     }
   }, [useNormalCreateWizard, normalWizardStep, formData, selectedTagSlugs]);
 
-  const resetChatPreview = useCallback(() => {
-    try { chatPreviewEpochRef.current += 1; } catch (_) {}
-    setChatPreviewMessages([]);
-    setChatPreviewInput('');
-    try { setChatPreviewMagicChoices([]); } catch (_) {}
-    try { setChatPreviewMagicLoading(false); } catch (_) {}
-    try { setChatPreviewBusy(false); } catch (_) {}
-    // ✅ 프리뷰 A안(가짜 스트리밍) 상태도 함께 리셋(상태 누수 방지)
-    try {
-      chatPreviewUiStreamCancelSeqRef.current += 1;
-      if (chatPreviewUiStreamTimerRef.current) clearInterval(chatPreviewUiStreamTimerRef.current);
-      chatPreviewUiStreamTimerRef.current = null;
-    } catch (_) {}
-    try { setChatPreviewUiStream({ id: '', full: '', shown: '' }); } catch (_) {}
-    try { chatPreviewUiStreamHydratedRef.current = false; } catch (_) {}
-    try { chatPreviewUiStreamPrevLastIdRef.current = ''; } catch (_) {}
-    try { chatPreviewUiStreamDoneByIdRef.current = {}; } catch (_) {}
-    try { chatPreviewPendingMagicRef.current = null; } catch (_) {}
-    // ✅ 선택지 점진 노출 상태 리셋
-    try {
-      chatPreviewMagicRevealCancelSeqRef.current += 1;
-      if (chatPreviewMagicRevealTimerRef.current) clearInterval(chatPreviewMagicRevealTimerRef.current);
-      chatPreviewMagicRevealTimerRef.current = null;
-    } catch (_) {}
-    try { setChatPreviewMagicRevealCount(0); } catch (_) {}
-    // ✅ 첫대사 스트리밍 상태 리셋
-    try {
-      chatPreviewFirstLineCancelSeqRef.current += 1;
-      if (chatPreviewFirstLineTimerRef.current) clearInterval(chatPreviewFirstLineTimerRef.current);
-      chatPreviewFirstLineTimerRef.current = null;
-    } catch (_) {}
-    try { setChatPreviewFirstLineUiStream({ id: '', full: '', shown: '' }); } catch (_) {}
-    try { chatPreviewFirstLineHydratedRef.current = false; } catch (_) {}
-    try { chatPreviewFirstLinePrevFullRef.current = ''; } catch (_) {}
-  }, []);
-
-  const refreshChatPreviewSnapshot = useCallback(() => {
-    try {
-      const bi = formData?.basic_info || {};
-      const name = String(bi?.name || '').trim() || '캐릭터';
-      const ss = bi?.start_sets;
-      const items = Array.isArray(ss?.items) ? ss.items : [];
-      const sel = String(ss?.selectedId || '').trim();
-      const picked = items.find((x) => String(x?.id || '').trim() === sel) || items[0] || {};
-      const intro = String(picked?.intro || '').trim();
-      const firstLine = String(picked?.firstLine || '').trim();
-      setChatPreviewSnapshot({ name, intro, firstLine });
-    } catch (_) {}
-  }, [formData]);
-
-  useEffect(() => {
+  const buildPreviewStatInfoText = useCallback(() => {
     /**
-     * ✅ 경쟁사 방식(가장 안정적): 위저드 입력값이 바뀌면 채팅 프리뷰를 항상 0/10으로 리셋
+     * ✅ 프리뷰: "!스탯" 상태창 텍스트 생성(실채팅 느낌 최소 구현)
      *
      * 의도/원리:
-     * - 프리뷰 채팅은 "현재 입력 폼 스냅샷"에 종속된 임시 세션이다.
-     * - 입력값이 1글자라도 바뀌면(태그/이미지/성향 포함) 기존 프리뷰 대화는 더 이상 일관성을 보장할 수 없으므로 폐기한다.
-     * - 따라서 모든 변경을 동일하게 처리: intro/firstLine만 다시 보여주고, 대화 턴은 0으로 초기화한다.
+     * - 실채팅(ChatPage)은 room meta(stat_state/stat_defs)를 읽어 상태창을 렌더한다.
+     * - 프리뷰는 room/db가 없으므로, start_sets(오프닝 단위)의 stat_settings.stats(base_value)를 사용한다.
+     * - 출력 포맷은 ChatPage의 `INFO(스탯)` 텍스트 직렬화와 유사하게 맞춘다.
      */
-    if (!useNormalCreateWizard) return;
-    try { refreshChatPreviewSnapshot(); } catch (_) {}
-    // ✅ 중요: 프리뷰 채팅 입력(chatPreviewInput) 자체는 "위저드 입력값"이 아니다.
-    // - chatPreviewInput을 의존/참조하면, 프리뷰에 타이핑하는 순간 입력이 리셋되는 UX 버그가 발생한다.
-    // - 따라서 위저드 폼(formData/태그/디테일) 변경에만 반응해 프리뷰를 리셋한다.
-    try { resetChatPreview(); } catch (_) {}
-  }, [useNormalCreateWizard, formData, selectedTagSlugs, detailPrefs, refreshChatPreviewSnapshot, resetChatPreview]);
+    try {
+      const bi = formData?.basic_info || {};
+      const ss = bi?.start_sets;
+      const items = Array.isArray(ss?.items) ? ss.items : [];
+      const sel = String(ss?.selectedId || '').trim() || String(items?.[0]?.id || '').trim();
+      const picked = items.find((x) => String(x?.id || '').trim() === sel) || items[0] || {};
+      const st = (picked?.stat_settings && typeof picked.stat_settings === 'object') ? picked.stat_settings : null;
+      const stats = Array.isArray(st?.stats) ? st.stats : [];
+      const out = ['INFO(스탯)'];
+      if (!stats.length) {
+        out.push('스탯이 설정되어 있지 않습니다.');
+        return out.join('\\n');
+      }
+      for (const s0 of stats.slice(0, 12)) {
+        const label = String(s0?.name || s0?.id || '').trim();
+        if (!label) continue;
+        const vRaw = (s0?.base_value !== null && s0?.base_value !== undefined) ? Number(s0.base_value) : 0;
+        const value = Number.isFinite(vRaw) ? Math.trunc(vRaw) : 0;
+        out.push(`${label} : ${value}`);
+      }
+      return out.join('\\n').trim();
+    } catch (_) {
+      return 'INFO(스탯)';
+    }
+  }, [formData]);
 
+  const chatPreviewTurnEvents = useMemo(() => {
+    /**
+     * ✅ 프리뷰 "턴사건 프리뷰" 버튼용 사건 목록(선택 오프닝 기준)
+     *
+     * 의도:
+     * - turn_events는 start_sets.items[] 단위(오프닝 단위) 데이터다.
+     * - 테스트는 "중간 턴 강제 삽입"이 아니라, 1턴에서 '선택한 사건'을 미리보기로 확인한다.
+     */
+    try {
+      const ss = formData?.basic_info?.start_sets;
+      const items = Array.isArray(ss?.items) ? ss.items : [];
+      const selectedId = String(ss?.selectedId || '').trim() || String(items?.[0]?.id || '').trim();
+      const active = items.find((x) => String(x?.id || '').trim() === selectedId) || items[0] || null;
+      const evsRaw = Array.isArray(active?.turn_events) ? active.turn_events : [];
+      const evs = evsRaw
+        .map((ev) => {
+          const id = String(ev?.id || '').trim();
+          const title = String(ev?.title || '').trim();
+          const summary = String(ev?.summary || '').trim();
+          const aboutRaw = Number(ev?.about_turn);
+          const about = (Number.isFinite(aboutRaw) && aboutRaw > 0) ? Math.floor(aboutRaw) : 0;
+          return { id, title, summary, about };
+        })
+        .filter((x) => x.id || x.title || x.summary || (Number(x.about) > 0));
+      return [...evs].sort((a, b) => (Number(a?.about || 0) - Number(b?.about || 0)));
+    } catch (_) {
+      return [];
+    }
+  }, [formData]);
+
+  // ⚠️ 중요(운영 안정): 아래 함수들은 다른 useCallback의 dependency로 사용되므로
+  // TDZ(초기화 전 참조) 방지를 위해 먼저 선언해야 한다.
   const buildPersonalityWithDetailPrefs = useCallback((rawPersonality, prefs) => {
     /**
      * personality(기존 필드)에 디테일(관심사/좋아하는 것/싫어하는 것)을 섹션으로 병합한다.
@@ -1703,6 +2133,261 @@ const CreateCharacterPage = () => {
     }
   }, []);
 
+  // ⚠️ 중요(운영 안정): 아래 함수들은 다른 useCallback의 dependency로 사용되므로
+  // TDZ(초기화 전 참조) 방지를 위해 먼저 선언해야 한다.
+  const resetChatPreview = useCallback(() => {
+    try { chatPreviewEpochRef.current += 1; } catch (_) {}
+    setChatPreviewMessages([]);
+    setChatPreviewInput('');
+    try { setChatPreviewSuggestedImageById({}); } catch (_) {}
+    try { setChatPreviewMagicChoices([]); } catch (_) {}
+    try { setChatPreviewMagicLoading(false); } catch (_) {}
+    try { setChatPreviewBusy(false); } catch (_) {}
+    // ✅ 프리뷰 A안(가짜 스트리밍) 상태도 함께 리셋(상태 누수 방지)
+    try {
+      chatPreviewUiStreamCancelSeqRef.current += 1;
+      if (chatPreviewUiStreamTimerRef.current) clearInterval(chatPreviewUiStreamTimerRef.current);
+      chatPreviewUiStreamTimerRef.current = null;
+    } catch (_) {}
+    try { setChatPreviewUiStream({ id: '', full: '', shown: '' }); } catch (_) {}
+    try { chatPreviewUiStreamHydratedRef.current = false; } catch (_) {}
+    try { chatPreviewUiStreamPrevLastIdRef.current = ''; } catch (_) {}
+    try { chatPreviewUiStreamDoneByIdRef.current = {}; } catch (_) {}
+    try { chatPreviewPendingMagicRef.current = null; } catch (_) {}
+    // ✅ 선택지 점진 노출 상태 리셋
+    try {
+      chatPreviewMagicRevealCancelSeqRef.current += 1;
+      if (chatPreviewMagicRevealTimerRef.current) clearInterval(chatPreviewMagicRevealTimerRef.current);
+      chatPreviewMagicRevealTimerRef.current = null;
+    } catch (_) {}
+    try { setChatPreviewMagicRevealCount(0); } catch (_) {}
+    // ✅ 첫대사 스트리밍 상태 리셋
+    try {
+      chatPreviewFirstLineCancelSeqRef.current += 1;
+      if (chatPreviewFirstLineTimerRef.current) clearInterval(chatPreviewFirstLineTimerRef.current);
+      chatPreviewFirstLineTimerRef.current = null;
+    } catch (_) {}
+    try { setChatPreviewFirstLineUiStream({ id: '', full: '', shown: '' }); } catch (_) {}
+    try { chatPreviewFirstLineHydratedRef.current = false; } catch (_) {}
+    try { chatPreviewFirstLinePrevFullRef.current = ''; } catch (_) {}
+  }, []);
+
+  const refreshChatPreviewSnapshot = useCallback(() => {
+    try {
+      const bi = formData?.basic_info || {};
+      const name = String(bi?.name || '').trim() || '캐릭터';
+      const ss = bi?.start_sets;
+      const items = Array.isArray(ss?.items) ? ss.items : [];
+      const sel = String(ss?.selectedId || '').trim();
+      const picked = items.find((x) => String(x?.id || '').trim() === sel) || items[0] || {};
+      const intro = String(picked?.intro || '').trim();
+      const firstLine = String(picked?.firstLine || '').trim();
+      setChatPreviewSnapshot({ name, intro, firstLine });
+    } catch (_) {}
+  }, [formData]);
+
+  const runTurnEventPreview = useCallback(async (turnEventId) => {
+    /**
+     * ✅ "턴사건 프리뷰" 실행(요구사항)
+     *
+     * 원리:
+     * - 중간 턴 강제 삽입은 흐름을 깨므로 금지.
+     * - 따라서 프리뷰를 리셋하고(=1턴), 선택한 사건을 '1턴 테스트 모드'로만 호출한다.
+     */
+    if (chatPreviewGateReason) return;
+    if (chatPreviewBusy) return;
+    const evId = String(turnEventId || '').trim();
+    if (!evId) return;
+
+    // ✅ 1턴 테스트를 위해 프리뷰를 초기화(대화 흐름 보호)
+    try { setTurnEventPreviewOpen(false); } catch (_) {}
+    try { resetChatPreview(); } catch (_) {}
+    try { refreshChatPreviewSnapshot(); } catch (_) {}
+
+    const epoch = chatPreviewEpochRef.current;
+    const msg = '턴사건 프리뷰';
+
+    // 유저 메시지를 먼저 UI에 넣고(턴 1), 응답을 비동기로 추가한다.
+    try { chatPreviewAutoScrollRef.current = true; } catch (_) {}
+    setChatPreviewMessages((prev) => {
+      const base = Array.isArray(prev) ? prev : [];
+      return [...base, { id: `pv-u-${Date.now()}`, role: 'user', content: msg }];
+    });
+    try { setChatPreviewBusy(true); } catch (_) {}
+
+    try {
+      const previewPersonality = sanitizePromptTokens(
+        buildPersonalityWithDetailPrefs(formData?.basic_info?.personality || '', detailPrefs)
+      );
+      const previewCharacterData = {
+        basic_info: {
+          name: String(formData?.basic_info?.name || ''),
+          description: String(formData?.basic_info?.description || ''),
+          personality: String(previewPersonality || ''),
+          speech_style: String(formData?.basic_info?.speech_style || ''),
+          greeting: String(formData?.basic_info?.greeting || ''),
+          world_setting: String(formData?.basic_info?.world_setting || ''),
+          user_display_description: String(formData?.basic_info?.user_display_description || ''),
+          use_custom_description: !!formData?.basic_info?.use_custom_description,
+          introduction_scenes: Array.isArray(formData?.basic_info?.introduction_scenes) ? formData.basic_info.introduction_scenes : [],
+          start_sets: (formData?.basic_info?.start_sets && typeof formData.basic_info.start_sets === 'object') ? formData.basic_info.start_sets : null,
+          character_type: String(formData?.basic_info?.character_type || 'roleplay'),
+          base_language: String(formData?.basic_info?.base_language || 'ko'),
+          tags: Array.isArray(selectedTagSlugs) ? selectedTagSlugs : [],
+        },
+        media_settings: {
+          avatar_url: String(formData?.media_settings?.avatar_url || ''),
+          image_descriptions: Array.isArray(formData?.media_settings?.image_descriptions) ? formData.media_settings.image_descriptions : [],
+          voice_settings: formData?.media_settings?.voice_settings || null,
+        },
+        example_dialogues: {
+          dialogues: Array.isArray(formData?.example_dialogues?.dialogues) ? formData.example_dialogues.dialogues : [],
+        },
+        affinity_system: formData?.affinity_system || null,
+        publish_settings: formData?.publish_settings || { is_public: true, custom_module_id: null, use_translation: true },
+      };
+
+      const payload = {
+        character_data: previewCharacterData,
+        user_message: msg,
+        history: [],
+        response_length_pref: 'short',
+        turn_event_preview_mode: true,
+        turn_event_id_override: evId,
+        turn_no_override: 1,
+      };
+      const res = await api.post('/chat/preview', payload);
+      const assistantText = String(res?.data?.assistant_message || '').trim();
+      if (!assistantText) throw new Error('Empty assistant_message');
+      if (chatPreviewEpochRef.current !== epoch) return;
+      const aiId = `pv-a-${Date.now()}`;
+      setChatPreviewMessages((prev) => {
+        const base = Array.isArray(prev) ? prev : [];
+        return [...base, { id: aiId, role: 'assistant', content: assistantText }];
+      });
+    } catch (e) {
+      if (chatPreviewEpochRef.current !== epoch) return;
+      try { console.error('[CreateCharacterPage] turn_event preview failed:', e); } catch (_) {}
+      try { dispatchToast('error', '턴사건 프리뷰에 실패했습니다.'); } catch (_) {}
+      const fallback = '(턴사건 프리뷰) 실행에 실패했어요. 잠시 후 다시 시도해주세요.';
+      const aiId = `pv-a-${Date.now()}`;
+      setChatPreviewMessages((prev) => {
+        const base = Array.isArray(prev) ? prev : [];
+        return [...base, { id: aiId, role: 'assistant', content: fallback }];
+      });
+    }
+    try { setChatPreviewBusy(false); } catch (_) {}
+  }, [
+    chatPreviewGateReason,
+    chatPreviewBusy,
+    resetChatPreview,
+    refreshChatPreviewSnapshot,
+    buildPersonalityWithDetailPrefs,
+    formData,
+    detailPrefs,
+    selectedTagSlugs,
+  ]);
+
+  useEffect(() => {
+    /**
+     * ✅ 프리뷰 리셋 정책(요구사항):
+     * - "정보가 수정될 때만" 채팅 프리뷰를 0/10으로 리셋한다.
+     * - 오프닝 탭 전환(= start_sets.selectedId 변경)은 '선택' 변경일 뿐, 채팅 내역을 날려서는 안 된다.
+     *   (단, 상단에 보이는 intro/firstLine 스냅샷은 선택 오프닝에 맞게 갱신한다)
+     *
+     * 의도/원리:
+     * - 프리뷰 채팅은 "현재 입력 폼 스냅샷"에 종속된 임시 세션이다.
+     * - 다만 오프닝 "선택"만 바꾸는 동작은 크리에이터 테스트/비교 UX에서 빈번하므로,
+     *   대화 내역은 유지하고 스냅샷만 갱신한다.
+     */
+    if (!useNormalCreateWizard) return;
+    // 1) 항상: 스냅샷(name/intro/firstLine)은 최신 선택 오프닝 기준으로 갱신
+    try { refreshChatPreviewSnapshot(); } catch (_) {}
+
+    // 2) 조건부: "정보 수정"일 때만 프리뷰 채팅을 리셋
+    // - start_sets.selectedId(오프닝 선택) 변화는 리셋 트리거에서 제외한다.
+    try {
+      const buildResetSignature = () => {
+        const bi = formData?.basic_info || {};
+        const ss = bi?.start_sets || {};
+        const items = Array.isArray(ss?.items) ? ss.items : [];
+        const sb = (ss && typeof ss === 'object' && ss.setting_book && typeof ss.setting_book === 'object') ? ss.setting_book : null;
+        const imgDescs = Array.isArray(formData?.media_settings?.image_descriptions) ? formData.media_settings.image_descriptions : [];
+
+        // ✅ 핵심: selectedId는 제외(오프닝 탭 전환 시 리셋 금지)
+        const ssSig = {
+          items: items.map((it) => ({
+            id: String(it?.id || ''),
+            title: String(it?.title || ''),
+            intro: String(it?.intro || ''),
+            firstLine: String(it?.firstLine || ''),
+            // turn_events도 "정보"로 취급(수정 시 리셋)
+            turn_events: Array.isArray(it?.turn_events)
+              ? it.turn_events.map((ev) => ({
+                id: String(ev?.id || ''),
+                about_turn: Number(ev?.about_turn || 0),
+                title: String(ev?.title || ''),
+                summary: String(ev?.summary || ''),
+                required_narration: String(ev?.required_narration || ''),
+                required_dialogue: String(ev?.required_dialogue || ''),
+              }))
+              : [],
+            stat_settings: it?.stat_settings || null,
+            ending_settings: it?.ending_settings || null,
+          })),
+          // ✅ 선택 변경은 리셋 금지: setting_book.selectedId는 제외한다.
+          setting_book: sb ? { items: Array.isArray(sb?.items) ? sb.items : [] } : null,
+          sim_options: ss?.sim_options || null,
+        };
+
+        const sigObj = {
+          bi: {
+            name: String(bi?.name || ''),
+            description: String(bi?.description || ''),
+            personality: String(bi?.personality || ''),
+            speech_style: String(bi?.speech_style || ''),
+            world_setting: String(bi?.world_setting || ''),
+            user_display_description: String(bi?.user_display_description || ''),
+            use_custom_description: !!bi?.use_custom_description,
+            character_type: String(bi?.character_type || ''),
+            base_language: String(bi?.base_language || ''),
+          },
+          tags: Array.isArray(selectedTagSlugs) ? selectedTagSlugs : [],
+          detailPrefs: detailPrefs || {},
+          media: {
+            avatar_url: String(formData?.media_settings?.avatar_url || ''),
+            images: imgDescs.map((img) => ({
+              url: String(img?.url || ''),
+              keywords: Array.isArray(img?.keywords) ? img.keywords.map((k) => String(k || '')) : [],
+            })),
+          },
+          start_sets: ssSig,
+        };
+        return JSON.stringify(sigObj);
+      };
+
+      const prev = String(chatPreviewResetSigRef.current || '');
+      const next = buildResetSignature();
+      if (!prev) {
+        chatPreviewResetSigRef.current = next;
+        // 최초 진입에서는 기존 정책 유지(안전): 리셋
+        try { resetChatPreview(); } catch (_) {}
+        return;
+      }
+      if (prev !== next) {
+        chatPreviewResetSigRef.current = next;
+        // ✅ 중요: 프리뷰 채팅 입력(chatPreviewInput) 자체는 "위저드 입력값"이 아니다.
+        // - chatPreviewInput을 의존/참조하면, 프리뷰에 타이핑하는 순간 입력이 리셋되는 UX 버그가 발생한다.
+        // - 따라서 위저드 폼(formData/태그/디테일) 변경에만 반응해 프리뷰를 리셋한다.
+        try { resetChatPreview(); } catch (_) {}
+      }
+    } catch (_) {
+      // 방어: 시그니처 계산 실패 시에는 기존처럼 리셋(일관성 우선)
+      try { resetChatPreview(); } catch (_) {}
+    }
+  }, [useNormalCreateWizard, formData, selectedTagSlugs, detailPrefs, refreshChatPreviewSnapshot, resetChatPreview]);
+
+
   const requestChatPreviewMagicChoices = useCallback(async ({ seedHint = '', seedMessageId = '', epoch: epochParam = null } = {}) => {
     /**
      * ✅ 채팅 프리뷰: 요술봉 선택지(3개) 생성
@@ -1747,6 +2432,8 @@ const CreateCharacterPage = () => {
           start_sets: (formData?.basic_info?.start_sets && typeof formData.basic_info.start_sets === 'object') ? formData.basic_info.start_sets : null,
           character_type: String(formData?.basic_info?.character_type || 'roleplay'),
           base_language: String(formData?.basic_info?.base_language || 'ko'),
+          // ✅ 프리뷰에서도 태그 영향 반영(실채팅과 동일하게 체감)
+          tags: Array.isArray(selectedTagSlugs) ? selectedTagSlugs : [],
         },
         media_settings: {
           avatar_url: String(formData?.media_settings?.avatar_url || ''),
@@ -1766,6 +2453,19 @@ const CreateCharacterPage = () => {
         n: 3,
         seed_hint: String(seedHint || '').trim() || undefined,
         seed_message_id: String(seedMessageId || '').trim() || undefined,
+        // ✅ 크리에이터 테스트용: 프리뷰 턴 강제 지정(선택지 생성에도 동일 턴 컨텍스트 적용)
+        turn_no_override: (() => {
+          try {
+            const raw = String(chatPreviewTurnOverride || '').trim();
+            if (!raw) return null;
+            const n = Number(raw);
+            if (!Number.isFinite(n)) return null;
+            const v = Math.max(1, Math.floor(n));
+            return v;
+          } catch (_) {
+            return null;
+          }
+        })(),
       };
       const res = await api.post('/chat/preview-magic-choices', payload);
       if (chatPreviewEpochRef.current !== epoch) return;
@@ -1798,6 +2498,7 @@ const CreateCharacterPage = () => {
     chatPreviewMessages,
     formData,
     detailPrefs,
+    chatPreviewTurnOverride,
     buildPersonalityWithDetailPrefs,
   ]);
 
@@ -1878,6 +2579,28 @@ const CreateCharacterPage = () => {
     const safeOverride = (overrideText && typeof overrideText === 'object') ? null : overrideText;
     const msg = String((safeOverride == null ? chatPreviewInput : safeOverride) || '').trim();
     if (!msg) return;
+    // ✅ "!스탯" 명령: 프리뷰에서도 실채팅처럼 "상태창 말풍선"을 즉시 출력(턴/카운트 소비 없음)
+    // - 오타 허용: "!스탯!", "!스탯??", "!stat", "!status"
+    try {
+      const firstToken = String(msg.split(/\s+/)[0] || '').trim();
+      const tokenNoSpace = firstToken.replace(/\s+/g, '').trim();
+      const tokenLower = tokenNoSpace.toLowerCase();
+      const isStatCmd =
+        tokenNoSpace.startsWith('!스탯') ||
+        tokenLower.startsWith('!stat') ||
+        tokenLower.startsWith('!status');
+      if (isStatCmd) {
+        try { setChatPreviewInput(''); } catch (_) {}
+        const aiId = `pv-a-${Date.now()}`;
+        const txt = buildPreviewStatInfoText();
+        setChatPreviewMessages((prev) => {
+          const base = Array.isArray(prev) ? prev : [];
+          return [...base, { id: aiId, role: 'assistant', content: String(txt || 'INFO(스탯)') }];
+        });
+        try { chatPreviewAutoScrollRef.current = true; } catch (_) {}
+        return;
+      }
+    } catch (_) {}
     if (chatPreviewUserCount >= 10) return;
 
     const epoch = chatPreviewEpochRef.current;
@@ -1907,6 +2630,8 @@ const CreateCharacterPage = () => {
         start_sets: (formData?.basic_info?.start_sets && typeof formData.basic_info.start_sets === 'object') ? formData.basic_info.start_sets : null,
         character_type: String(formData?.basic_info?.character_type || 'roleplay'),
         base_language: String(formData?.basic_info?.base_language || 'ko'),
+        // ✅ 프리뷰에서도 태그 영향 반영(실채팅과 동일하게 체감)
+        tags: Array.isArray(selectedTagSlugs) ? selectedTagSlugs : [],
       },
       media_settings: {
         avatar_url: String(formData?.media_settings?.avatar_url || ''),
@@ -1933,11 +2658,35 @@ const CreateCharacterPage = () => {
 
     (async () => {
       try {
+        // ✅ 프리뷰 응답(suggested_image_index) 해석용: 전송 시점의 이미지 URL 스냅샷
+        const previewImageUrlsAtSend = (() => {
+          try {
+            const imgs = previewCharacterData?.media_settings?.image_descriptions;
+            const arr = Array.isArray(imgs) ? imgs : [];
+            return arr.map((x) => String(x?.url || '').trim()).filter(Boolean);
+          } catch (_) {
+            return [];
+          }
+        })();
+
         const payload = {
           character_data: previewCharacterData,
           user_message: msg,
           history: historyTurns,
           response_length_pref: 'short',
+          // ✅ 크리에이터 테스트용: 프리뷰 턴 강제 지정(선택)
+          turn_no_override: (() => {
+            try {
+              const raw = String(chatPreviewTurnOverride || '').trim();
+              if (!raw) return null;
+              const n = Number(raw);
+              if (!Number.isFinite(n)) return null;
+              const v = Math.max(1, Math.floor(n));
+              return v;
+            } catch (_) {
+              return null;
+            }
+          })(),
         };
         const res = await api.post('/chat/preview', payload);
         const assistantText = String(res?.data?.assistant_message || '').trim();
@@ -1949,6 +2698,16 @@ const CreateCharacterPage = () => {
           const base = Array.isArray(prev) ? prev : [];
           return [...base, { id: aiId, role: 'assistant', content: assistantText }];
         });
+        // ✅ 키워드 트리거 이미지: 프리뷰에서도 실채팅처럼 말풍선에 노출
+        try {
+          const idxRaw = Number(res?.data?.suggested_image_index);
+          const idx = (Number.isFinite(idxRaw) && idxRaw >= 0) ? Math.floor(idxRaw) : -1;
+          const rawUrl = (idx >= 0 && idx < previewImageUrlsAtSend.length) ? previewImageUrlsAtSend[idx] : '';
+          const resolved = rawUrl ? resolveImageUrl(rawUrl) : '';
+          if (resolved) {
+            setChatPreviewSuggestedImageById((prev) => ({ ...(prev || {}), [aiId]: resolved }));
+          }
+        } catch (_) {}
         // ✅ 요술봉 ON이면, "답변이 다 출력된 뒤" 다음 선택지를 생성한다(A안 동기화)
         if (magicOnAtSend) {
           try { chatPreviewPendingMagicRef.current = { epoch, seedHint: 'after_assistant' }; } catch (_) {}
@@ -1977,6 +2736,8 @@ const CreateCharacterPage = () => {
     chatPreviewUiStream,
     formData,
     detailPrefs,
+    chatPreviewTurnOverride,
+    buildPreviewStatInfoText,
     buildPersonalityWithDetailPrefs,
     requestChatPreviewMagicChoices,
   ]);
@@ -2018,6 +2779,90 @@ const CreateCharacterPage = () => {
       setChatPreviewMagicMode((prev) => !prev);
     } catch (_) {}
   }, [chatPreviewGateReason, chatPreviewUserCount]);
+
+  const requestTurnEventPreview = useCallback(async (turnEventId) => {
+    /**
+     * ✅ 크리에이터 테스트(요구사항): "턴사건 프리뷰" 실행(1턴 전용)
+     *
+     * 의도/원리:
+     * - 턴수별 사건을 '중간 턴에 억지 삽입'하면 대화 흐름이 깨진다.
+     * - 따라서 프리뷰에서는 사건을 "1턴 테스트 모드"로만 실행해, 사건 지문/대사가 어떤 톤으로 나오는지 확인한다.
+     * - 이 요청은 채팅 프리뷰 히스토리(chatPreviewMessages)를 건드리지 않는다(읽기/테스트 전용).
+     */
+    try {
+      if (chatPreviewGateReason) {
+        dispatchToast('error', String(chatPreviewGateReason));
+        return;
+      }
+      const evId = String(turnEventId || '').trim();
+      if (!evId) {
+        dispatchToast('error', '턴사건을 선택해주세요.');
+        return;
+      }
+      setTurnEventPreviewLoading(true);
+      setTurnEventPreviewError('');
+      setTurnEventPreviewText('');
+      setTurnEventPreviewPickedId(evId);
+
+      // sendChatPreview와 동일한 형태로 character_data를 구성(SSOT: formData)
+      const previewPersonality = sanitizePromptTokens(
+        buildPersonalityWithDetailPrefs(formData?.basic_info?.personality || '', detailPrefs)
+      );
+      const previewCharacterData = {
+        basic_info: {
+          name: String(formData?.basic_info?.name || ''),
+          description: String(formData?.basic_info?.description || ''),
+          personality: String(previewPersonality || ''),
+          speech_style: String(formData?.basic_info?.speech_style || ''),
+          greeting: String(formData?.basic_info?.greeting || ''),
+          world_setting: String(formData?.basic_info?.world_setting || ''),
+          user_display_description: String(formData?.basic_info?.user_display_description || ''),
+          use_custom_description: !!formData?.basic_info?.use_custom_description,
+          introduction_scenes: Array.isArray(formData?.basic_info?.introduction_scenes) ? formData.basic_info.introduction_scenes : [],
+          start_sets: (formData?.basic_info?.start_sets && typeof formData.basic_info.start_sets === 'object') ? formData.basic_info.start_sets : null,
+          character_type: String(formData?.basic_info?.character_type || 'roleplay'),
+          base_language: String(formData?.basic_info?.base_language || 'ko'),
+          tags: Array.isArray(selectedTagSlugs) ? selectedTagSlugs : [],
+        },
+        media_settings: {
+          avatar_url: String(formData?.media_settings?.avatar_url || ''),
+          image_descriptions: Array.isArray(formData?.media_settings?.image_descriptions) ? formData.media_settings.image_descriptions : [],
+          voice_settings: formData?.media_settings?.voice_settings || null,
+        },
+        example_dialogues: {
+          dialogues: Array.isArray(formData?.example_dialogues?.dialogues) ? formData.example_dialogues.dialogues : [],
+        },
+        affinity_system: formData?.affinity_system || null,
+        publish_settings: formData?.publish_settings || { is_public: true, custom_module_id: null, use_translation: true },
+      };
+
+      const payload = {
+        character_data: previewCharacterData,
+        user_message: '턴사건 프리뷰',
+        history: [],
+        response_length_pref: 'short',
+        turn_no_override: 1,
+        turn_event_preview_mode: true,
+        turn_event_id_override: evId,
+      };
+      const res = await api.post('/chat/preview', payload);
+      const txt = String(res?.data?.assistant_message || '').trim();
+      if (!txt) throw new Error('Empty assistant_message');
+      setTurnEventPreviewText(txt);
+    } catch (e) {
+      try { console.error('[CreateCharacterPage] turn event preview failed:', e); } catch (_) {}
+      setTurnEventPreviewError('failed');
+      dispatchToast('error', '턴사건 프리뷰 실행에 실패했습니다.');
+    } finally {
+      setTurnEventPreviewLoading(false);
+    }
+  }, [
+    chatPreviewGateReason,
+    formData,
+    detailPrefs,
+    selectedTagSlugs,
+    buildPersonalityWithDetailPrefs,
+  ]);
 
   useEffect(() => {
     try {
@@ -2298,10 +3143,41 @@ const CreateCharacterPage = () => {
   }, [formData?.basic_info?.personality, extractDetailPrefsFromPersonality]);
 
   const [quickDetailGenLoading, setQuickDetailGenLoading] = useState(false);
+  // ✅ 디테일 자동생성 취소용 ref
+  const quickDetailGenAbortRef = useRef(false);
+  const detailAutoGenPrevRef = useRef({ personality: '', speech_style: '', prefs: null });
   const [quickSecretGenLoading, setQuickSecretGenLoading] = useState(false);
   const [quickEndingEpilogueGenLoadingId, setQuickEndingEpilogueGenLoadingId] = useState('');
   const [quickEndingBulkGenLoading, setQuickEndingBulkGenLoading] = useState(false);
-  const handleAutoGenerateDetail = useCallback(async () => {
+  // ✅ 엔딩 2개 자동생성 취소용 ref
+  const quickEndingBulkGenAbortRef = useRef(false);
+  const endingsAutoGenPrevRef = useRef([]);
+
+  const inferAutoGenModeFromCharacterTypeAndWorld = useCallback((characterTypeRaw, worldSettingRaw) => {
+    /**
+     * ✅ 커스텀 프롬프트 지원(요구사항):
+     * - character_type이 'custom'이면, 프롬프트(world_setting) 내용을 근거로 'roleplay' vs 'simulator'를 추정해
+     *   자동생성(오프닝/사건/엔딩/디테일) 결과가 프롬프트 의도와 어긋나지 않게 한다.
+     *
+     * 제약(SSOT):
+     * - 백엔드 quick-* 스키마는 mode='roleplay'|'simulator'만 받는다.
+     * - 따라서 이 함수도 그 둘만 반환한다.
+     */
+    const t = String(characterTypeRaw || '').trim().toLowerCase();
+    if (t === 'simulator' || t === 'simulation') return 'simulator';
+    if (t === 'roleplay') return 'roleplay';
+
+    // custom(또는 알 수 없음) → 프롬프트 텍스트 기반 추정(가벼운 휴리스틱, KISS)
+    const w = String(worldSettingRaw || '');
+    const wl = w.toLowerCase();
+    const looksLikeSimulator =
+      wl.includes('simulator')
+      || /시뮬/.test(w)
+      || /턴\s*수|max_turns|max turns|목표|미션|페널티|선택지|분기|엔딩|상태창|스탯/.test(w);
+    return looksLikeSimulator ? 'simulator' : 'roleplay';
+  }, []);
+
+  const handleAutoGenerateDetail = useCallback(async (opts) => {
     /**
      * 디테일 자동 생성(요구사항):
      * - 프롬프트(world_setting)가 필수
@@ -2310,9 +3186,12 @@ const CreateCharacterPage = () => {
      */
     if (quickDetailGenLoading) return;
     try {
+      const forceOverwrite = opts?.forceOverwrite === true;
       const name = String(formData?.basic_info?.name || '').trim();
       const desc = String(formData?.basic_info?.description || '').trim();
       const world = String(formData?.basic_info?.world_setting || '').trim();
+      const promptType = String(formData?.basic_info?.character_type || 'roleplay').trim();
+      const mode = inferAutoGenModeFromCharacterTypeAndWorld(promptType, world);
       if (!world) {
         dispatchToast('error', '프롬프트를 먼저 작성해주세요.');
         return;
@@ -2322,15 +3201,56 @@ const CreateCharacterPage = () => {
         return;
       }
 
+      // ✅ 덮어쓰기 허용(요구사항): 기존 입력이 있으면 경고 모달 후 진행
+      const hasAny = (v) => { try { return !!String(v ?? '').trim(); } catch (_) { return false; } };
+      const hasPrefs =
+        (Array.isArray(detailPrefs?.interests) && detailPrefs.interests.some((x) => hasAny(x)))
+        || (Array.isArray(detailPrefs?.likes) && detailPrefs.likes.some((x) => hasAny(x)))
+        || (Array.isArray(detailPrefs?.dislikes) && detailPrefs.dislikes.some((x) => hasAny(x)));
+      const hasExisting =
+        hasAny(formData?.basic_info?.personality)
+        || hasAny(formData?.basic_info?.speech_style)
+        || hasPrefs;
+      if (hasExisting && !forceOverwrite) {
+        openAutoGenOverwriteConfirm(
+          '디테일(성격/말투/칩)',
+          async () => { await handleAutoGenerateDetail({ forceOverwrite: true }); }
+        );
+        return;
+      }
+
+      // ✅ 원문 저장 (취소 시 복구용)
+      detailAutoGenPrevRef.current = {
+        personality: String(formData?.basic_info?.personality || ''),
+        speech_style: String(formData?.basic_info?.speech_style || ''),
+        prefs: detailPrefs ? { ...detailPrefs } : null,
+      };
+      quickDetailGenAbortRef.current = false;
+
       setQuickDetailGenLoading(true);
-      const aiModel = String(user?.preferred_model || 'claude').trim().toLowerCase() || 'claude';
+      // ✅ 요구사항: "위저드만" 제미니 고정(다른 화면/로직에는 영향 주지 않음)
+      const aiModel = useNormalCreateWizard
+        ? 'gemini'
+        : (String(user?.preferred_model || 'claude').trim().toLowerCase() || 'claude');
       const res = await charactersAPI.quickGenerateDetailDraft({
         name,
         description: desc,
         world_setting: world,
+        // ✅ 타입/토글 기반 모드: 자동생성 결과가 입력 의미(룰/트리거)와 일치해야 한다.
+        mode,
+        section_modes: {
+          personality: getEffectiveDetailMode('personality'),
+          speech_style: getEffectiveDetailMode('speech_style'),
+          interests: getEffectiveDetailMode('interests'),
+          likes: getEffectiveDetailMode('likes'),
+          dislikes: getEffectiveDetailMode('dislikes'),
+        },
         tags: Array.isArray(selectedTagSlugs) ? selectedTagSlugs : [],
         ai_model: (aiModel === 'gpt' ? 'gpt' : (aiModel === 'gemini' ? 'gemini' : 'claude')),
       });
+
+      // ✅ 취소됐으면 결과 반영 안 함
+      if (quickDetailGenAbortRef.current) return;
 
       const d = res?.data || {};
       const nextPersonality = String(d?.personality || '').trim();
@@ -2365,8 +3285,8 @@ const CreateCharacterPage = () => {
         ...prev,
         basic_info: {
           ...prev.basic_info,
-          personality: nextPersonality.slice(0, 2000),
-          speech_style: nextSpeech.slice(0, 2000),
+          personality: nextPersonality.slice(0, 300),
+          speech_style: nextSpeech.slice(0, 300),
         },
         ...(nextExampleDialogues.length
           ? { example_dialogues: { ...(prev.example_dialogues || {}), dialogues: nextExampleDialogues } }
@@ -2386,9 +3306,43 @@ const CreateCharacterPage = () => {
     } finally {
       setQuickDetailGenLoading(false);
     }
-  }, [quickDetailGenLoading, formData, selectedTagSlugs, user]);
+  }, [quickDetailGenLoading, formData, selectedTagSlugs, user, getEffectiveDetailMode, detailPrefs, openAutoGenOverwriteConfirm, inferAutoGenModeFromCharacterTypeAndWorld]);
 
-  const handleAutoGenerateSecretInfo = useCallback(async () => {
+  // ✅ 디테일 자동생성 취소 핸들러
+  const handleCancelDetailGeneration = useCallback(() => {
+    try {
+      quickDetailGenAbortRef.current = true;
+      setQuickDetailGenLoading(false);
+      
+      // ✅ 취소 시 원문 복구 (원문이 있든 없든)
+      const prev = detailAutoGenPrevRef.current || {};
+      const prevPersonality = String(prev.personality || '');
+      const prevSpeechStyle = String(prev.speech_style || '');
+      const prevPrefs = prev.prefs;
+      
+      setFormData((fd) => ({
+        ...fd,
+        basic_info: {
+          ...fd.basic_info,
+          personality: prevPersonality.slice(0, 300),
+          speech_style: prevSpeechStyle.slice(0, 300),
+        },
+      }));
+      
+      if (prevPrefs) {
+        setDetailPrefs(prevPrefs);
+      }
+      
+      // ✅ 취소 시 프리뷰 채팅방 리셋
+      try { resetChatPreview(); } catch (_) {}
+      
+      dispatchToast('info', '디테일 자동 생성이 취소되었습니다.');
+    } catch (e) {
+      try { console.error('[CreateCharacterPage] cancel detail generation failed:', e); } catch (_) {}
+    }
+  }, [dispatchToast, resetChatPreview]);
+
+  const handleAutoGenerateSecretInfo = useCallback(async (opts) => {
     /**
      * ✅ 비밀정보 자동 생성(요구사항):
      * - 프롬프트(world_setting)가 작성되어 있어야 실행한다.
@@ -2396,6 +3350,7 @@ const CreateCharacterPage = () => {
      */
     if (quickSecretGenLoading) return;
     try {
+      const forceOverwrite = opts?.forceOverwrite === true;
       const name = String(formData?.basic_info?.name || '').trim();
       const desc = String(formData?.basic_info?.description || '').trim();
       const world = String(formData?.basic_info?.world_setting || '').trim();
@@ -2408,8 +3363,26 @@ const CreateCharacterPage = () => {
         return;
       }
 
+      // ✅ 덮어쓰기 허용(요구사항): 기존 비밀정보가 있으면 경고 모달 후 진행
+      const scenes = Array.isArray(formData?.basic_info?.introduction_scenes)
+        ? formData.basic_info.introduction_scenes
+        : [];
+      const existingSecret = scenes.some((s) => {
+        try { return !!String(s?.secret || '').trim(); } catch (_) { return false; }
+      });
+      if (existingSecret && !forceOverwrite) {
+        openAutoGenOverwriteConfirm(
+          '비밀정보',
+          async () => { await handleAutoGenerateSecretInfo({ forceOverwrite: true }); }
+        );
+        return;
+      }
+
       setQuickSecretGenLoading(true);
-      const aiModel = String(user?.preferred_model || 'claude').trim().toLowerCase() || 'claude';
+      // ✅ 요구사항: "위저드만" 제미니 고정(다른 화면/로직에는 영향 주지 않음)
+      const aiModel = useNormalCreateWizard
+        ? 'gemini'
+        : (String(user?.preferred_model || 'claude').trim().toLowerCase() || 'claude');
       const res = await charactersAPI.quickGenerateSecretDraft({
         name,
         description: desc,
@@ -2448,7 +3421,7 @@ const CreateCharacterPage = () => {
     } finally {
       setQuickSecretGenLoading(false);
     }
-  }, [quickSecretGenLoading, formData, selectedTagSlugs, user]);
+  }, [quickSecretGenLoading, formData, selectedTagSlugs, user, openAutoGenOverwriteConfirm]);
 
   // ✅ 위저드: start_sets 선택값 방어 보정(훅은 컴포넌트 최상위에서만 사용)
   useEffect(() => {
@@ -2502,6 +3475,26 @@ const CreateCharacterPage = () => {
       }
     } catch (_) {}
 
+    // 2.3) ✅ QuickMeet(30초)와 일관: 장르/유형/소재(훅) 필수 선택(위저드 생성에서만 강제)
+    // - 프로필 자동생성/프롬프트/오프닝 품질과 흐름이 여기에서 결정되므로, 비어있으면 다음 단계가 꼬인다.
+    try {
+      if (!isEditMode && useNormalCreateWizard && !isOrigChatCharacter) {
+        const slugs = Array.isArray(selectedTagSlugs) ? selectedTagSlugs : [];
+        const hasGenre = slugs.some((s) => (Array.isArray(QUICK_MEET_GENRE_CHIPS) ? QUICK_MEET_GENRE_CHIPS : []).includes(s));
+        const hasType = slugs.some((s) => (Array.isArray(QUICK_MEET_TYPE_CHIPS) ? QUICK_MEET_TYPE_CHIPS : []).includes(s));
+        const hasHook = slugs.some((s) => {
+          const pool = [
+            ...(Array.isArray(QUICK_MEET_HOOK_CHIPS) ? QUICK_MEET_HOOK_CHIPS : []),
+            ...(Array.isArray(QUICK_MEET_HOOK_CHIPS_SIMULATOR) ? QUICK_MEET_HOOK_CHIPS_SIMULATOR : []),
+          ];
+          return pool.includes(s);
+        });
+        if (!hasGenre) map['tags.quickmeet.genre'] = '장르를 1개 이상 선택해주세요.';
+        if (!hasType) map['tags.quickmeet.type'] = '캐릭터 유형을 1개 선택해주세요.';
+        if (!hasHook) map['tags.quickmeet.hook'] = '소재를 1개 선택해주세요.';
+      }
+    } catch (_) {}
+
     // 2.5) ✅ 진행 턴수(필수) 검증 - start_sets.sim_options.max_turns
     try {
       if (!isEditMode) {
@@ -2515,8 +3508,20 @@ const CreateCharacterPage = () => {
       }
     } catch (_) {}
 
+    // 2.6) ✅ 프롬프트 타입(필수) 검증 - basic_info.character_type
+    // - UI에서 버튼을 통해 선택되지만, 비정상 값(빈 문자열/알 수 없는 값) 유입 시 이후 단계가 꼬이므로 여기서 방어한다.
+    try {
+      if (!isEditMode) {
+        const t = String(formData?.basic_info?.character_type || '').trim();
+        const ok = (t === 'roleplay' || t === 'simulator' || t === 'custom');
+        if (!ok) {
+          map['basic_info.character_type'] = '프롬프트 타입(롤플레잉/시뮬레이션/커스텀) 중 하나를 선택해주세요.';
+        }
+      }
+    } catch (_) {}
+
     // 3) ✅ 생성(Create) 필수 입력 검증(요구사항)
-    // 필수: 이미지/캐릭터이름/필수태그/캐릭터설명/세계관설정/크리에이터 코멘트
+    // 필수: 이미지/캐릭터이름/필수태그/캐릭터설명/세계관설정
     // - 편집(Edit)에서는 기존 데이터가 깨지지 않도록 강제하지 않는다(최소 수정/안전).
     try {
       if (!isEditMode) {
@@ -2530,14 +3535,13 @@ const CreateCharacterPage = () => {
           map['media_settings.image_descriptions'] = '캐릭터 이미지를 최소 1장 추가하세요.';
         }
 
-        if (!String(formData?.basic_info?.description || '').trim()) {
+        // ✅ 위저드(일반 생성)에서는 "한줄소개" 아래에 별도 경고를 이미 렌더링한다.
+        // 중복 경고(두 줄)가 뜨지 않도록, 이 공통 검증 메시지는 위저드에서는 생략한다.
+        if (!useNormalCreateWizard && !String(formData?.basic_info?.description || '').trim()) {
           map['basic_info.description'] = '캐릭터 설명을 입력하세요.';
         }
         if (!String(formData?.basic_info?.world_setting || '').trim()) {
           map['basic_info.world_setting'] = '세계관 설정을 입력하세요.';
-        }
-        if (!String(formData?.basic_info?.user_display_description || '').trim()) {
-          map['basic_info.user_display_description'] = '크리에이터 코멘트를 입력하세요.';
         }
       }
     } catch (_) {}
@@ -2546,12 +3550,17 @@ const CreateCharacterPage = () => {
     setFieldErrors(map);
     if (ok) return { success: true, data: result.success ? result.data : formData };
     return { success: false, errors: map };
-  }, [formData, validationSchema, isEditMode, selectedTagSlugs, isOrigChatCharacter]);
+  }, [formData, validationSchema, isEditMode, selectedTagSlugs, isOrigChatCharacter, useNormalCreateWizard]);
 
   // 입력 디바운스 검증
   useEffect(() => {
     const t = setTimeout(() => {
-      try { validateForm(); } catch (_) {}
+      try {
+        const result = validateForm();
+        // ✅ 검증 통과 시 상단 에러 메시지 초기화 (유저 경험)
+        // - 저장 실패 후 입력을 수정해 조건을 충족하면 에러 메시지를 숨긴다.
+        if (result?.success) setError('');
+      } catch (_) {}
     }, 300);
     return () => clearTimeout(t);
   }, [formData, validateForm]);
@@ -2610,6 +3619,16 @@ const CreateCharacterPage = () => {
               const nextSelectedTagSlugs = Array.isArray(draft?.selectedTagSlugs) ? draft.selectedTagSlugs : null;
               if (nextSelectedTagSlugs) setSelectedTagSlugs(nextSelectedTagSlugs);
             } catch (_) {}
+            // ✅ 디테일 모드 토글(억지 전환)도 초안에 포함(요구사항)
+            try {
+              const m = draft?.detailModeOverrides;
+              if (m && typeof m === 'object') {
+                setDetailModeOverrides((prev) => ({
+                  ...(prev || {}),
+                  ...(m || {}),
+                }));
+              }
+            } catch (_) {}
             setFormData((prev) => ({
               ...prev,
               ...draft,
@@ -2641,6 +3660,8 @@ const CreateCharacterPage = () => {
           ...formData,
           // ✅ 성향/스타일 등 "필수 태그"는 formData가 아닌 selectedTagSlugs에 있음 → 같이 저장
           selectedTagSlugs: Array.isArray(selectedTagSlugs) ? selectedTagSlugs : [],
+          // ✅ 디테일 모드 토글(억지 전환) 상태도 같이 저장(복원 UX)
+          detailModeOverrides: (detailModeOverrides && typeof detailModeOverrides === 'object') ? detailModeOverrides : {},
           media_settings: {
             ...(formData?.media_settings || {}),
             newly_added_files: [], // File은 직렬화 불가/의미 없음 → 저장하지 않음
@@ -2653,7 +3674,50 @@ const CreateCharacterPage = () => {
       setIsAutoSaving(false);
     }, 1500);
     return () => clearTimeout(t);
-  }, [formData, selectedTagSlugs, isEditMode, characterId, draftRestored, isDraftEnabled]);
+  }, [formData, selectedTagSlugs, detailModeOverrides, isEditMode, characterId, draftRestored, isDraftEnabled]);
+
+  useEffect(() => {
+    /**
+     * ✅ 신규 캐릭터 생성: 성향/이미지스타일 기본값(남성향/애니풍) 자동 선택
+     *
+     * 의도/원리:
+     * - 성향/스타일은 필수값이므로, 최초 진입에서 빈 값이면 UX가 불리하다.
+     * - 단, 초안 복원/사용자 입력이 조금이라도 있으면 절대 덮어쓰지 않는다(노-오버라이트).
+     */
+    try {
+      if (isEditMode) return;
+      if (!useNormalCreateWizard) return;
+      if (isOrigChatCharacter) return;
+      if (!draftRestored) return;
+
+      const slugs = Array.isArray(selectedTagSlugs) ? selectedTagSlugs : [];
+      const hasAudience = slugs.some((s) => REQUIRED_AUDIENCE_SLUGS.includes(s));
+      const hasStyle = slugs.some((s) => REQUIRED_STYLE_SLUGS.includes(s));
+      if (hasAudience && hasStyle) return;
+
+      const defaultAudienceSlug = String(REQUIRED_AUDIENCE_CHOICES?.[0]?.slug || '남성향').trim() || '남성향';
+      const defaultStyleSlug = String(REQUIRED_STYLE_CHOICES?.[0]?.slug || '애니풍').trim() || '애니풍';
+
+      setSelectedTagSlugs((prev) => {
+        const arr = Array.isArray(prev) ? prev : [];
+        const next = [...arr];
+        const prevHasAudience = next.some((s) => REQUIRED_AUDIENCE_SLUGS.includes(s));
+        const prevHasStyle = next.some((s) => REQUIRED_STYLE_SLUGS.includes(s));
+        if (!prevHasAudience) {
+          // 기존 그룹 선택값이 없을 때만 기본값을 추가한다.
+          next.push(defaultAudienceSlug);
+        }
+        if (!prevHasStyle) {
+          next.push(defaultStyleSlug);
+        }
+        // 중복 제거 + 빈값 제거
+        return Array.from(new Set(next)).filter(Boolean);
+      });
+    } catch (e) {
+      // 사용자 입력 흐름을 깨지 않기 위해 안전하게 로그만 남긴다.
+      try { console.error('[CreateCharacterPage] default tags init failed:', e); } catch (_) {}
+    }
+  }, [isEditMode, useNormalCreateWizard, isOrigChatCharacter, draftRestored, selectedTagSlugs]);
 
   const handleManualDraftSave = () => {
     try {
@@ -2685,22 +3749,215 @@ const CreateCharacterPage = () => {
     }
   };
 
+  const hasAnyUserInput = useMemo(() => {
+    /**
+     * ✅ 이탈 경고 방지용 "실입력 감지"
+     *
+     * 요구사항:
+     * - 캐릭터 생성 페이지에서 **아무것도 입력한 게 없으면** 경고 모달/브라우저 이탈 경고가 뜨지 않아야 한다.
+     *
+     * 의도/원리:
+     * - formData에는 기본값(빈 배열/빈 문자열 등)이 항상 존재할 수 있다.
+     * - 따라서 "유저가 실제로 입력/선택/업로드했는지"만 최소 기준으로 판단한다.
+     */
+    try {
+      const t = (v) => String(v ?? '').trim();
+
+      // 텍스트 입력(대표)
+      if (t(formData?.basic_info?.name)) return true;
+      if (t(formData?.basic_info?.description)) return true;
+      if (t(formData?.basic_info?.world_setting)) return true;
+      if (t(formData?.basic_info?.personality)) return true;
+      if (t(formData?.basic_info?.speech_style)) return true;
+      if (t(formData?.basic_info?.greeting)) return true;
+      if (t(formData?.basic_info?.user_display_description)) return true;
+      if (t(formData?.affinity_system?.affinity_rules)) return true;
+      if (t(formData?.publish_settings?.custom_module_id)) return true;
+
+      // 소개/비밀정보/예시대화 등
+      try {
+        const scenes = Array.isArray(formData?.basic_info?.introduction_scenes) ? formData.basic_info.introduction_scenes : [];
+        if (scenes.some((s) => t(s?.content) || t(s?.secret))) return true;
+      } catch (_) {}
+      try {
+        const ds = Array.isArray(formData?.example_dialogues?.dialogues) ? formData.example_dialogues.dialogues : [];
+        if (ds.some((d) => t(d?.user_message) || t(d?.character_response))) return true;
+      } catch (_) {}
+
+      // 이미지/업로드
+      try {
+        if (t(formData?.media_settings?.avatar_url)) return true;
+        const imgs = Array.isArray(formData?.media_settings?.image_descriptions) ? formData.media_settings.image_descriptions : [];
+        if (imgs.some((img) => t(img?.url) || t(img?.description))) return true;
+        const files = Array.isArray(formData?.media_settings?.newly_added_files) ? formData.media_settings.newly_added_files : [];
+        if (files.length > 0) return true;
+      } catch (_) {}
+
+      // 태그 선택
+      if (Array.isArray(selectedTagSlugs) && selectedTagSlugs.length > 0) return true;
+
+      // ✅ 위저드 SSOT: start_sets (오프닝/스탯/턴사건/엔딩/작품컨셉 등)
+      // - 기존 hasAnyUserInput이 basic_info만 보게 되면, 오프닝/스탯만 입력한 경우 이탈 경고가 누락될 수 있다.
+      try {
+        const ss = (formData?.basic_info?.start_sets && typeof formData.basic_info.start_sets === 'object')
+          ? formData.basic_info.start_sets
+          : null;
+        const pc = (ss && typeof ss.profile_concept === 'object' && ss.profile_concept) ? ss.profile_concept : null;
+        if (pc && (t(pc?.text) || t(pc?.enabled))) return true;
+
+        const items = Array.isArray(ss?.items) ? ss.items : [];
+        for (const it of items) {
+          if (t(it?.title) || t(it?.intro) || t(it?.firstLine)) return true;
+          // 턴수별 사건
+          const evs = Array.isArray(it?.turn_events) ? it.turn_events : [];
+          if (evs.some((ev) => t(ev?.title) || t(ev?.summary) || t(ev?.required_narration) || t(ev?.required_dialogue))) return true;
+          // 스탯
+          const stats = (it?.stat_settings && typeof it.stat_settings === 'object' && Array.isArray(it.stat_settings.stats))
+            ? it.stat_settings.stats
+            : [];
+          if (stats.some((st) => t(st?.name) || t(st?.description) || t(st?.unit) || t(st?.min_value) || t(st?.max_value) || t(st?.base_value))) return true;
+          // 엔딩
+          const endings = (it?.ending_settings && typeof it.ending_settings === 'object' && Array.isArray(it.ending_settings.endings))
+            ? it.ending_settings.endings
+            : [];
+          if (endings.some((en) => t(en?.title) || t(en?.base_condition) || t(en?.hint) || t(en?.epilogue))) return true;
+          const extraConds = endings.flatMap((en) => (Array.isArray(en?.extra_conditions) ? en.extra_conditions : []));
+          if (extraConds.some((c) => t(c?.text) || t(c?.stat) || t(c?.op) || t(c?.value))) return true;
+        }
+      } catch (_) {}
+
+      return false;
+    } catch (e) {
+      try { console.warn('[CreateCharacterPage] hasAnyUserInput check failed:', e); } catch (_) {}
+      return false;
+    }
+  }, [formData, selectedTagSlugs]);
+
   // 폼 변경 시 이탈 경고 플래그 설정
   useEffect(() => {
     setHasUnsavedChanges(true);
-  }, [formData]);
+  }, [formData, selectedTagSlugs, detailModeOverrides]);
 
   // 브라우저 이탈 경고
   useEffect(() => {
     const handler = (e) => {
-      if (hasUnsavedChanges) {
+      if (hasUnsavedChanges && hasAnyUserInput) {
         e.preventDefault();
         e.returnValue = '';
       }
     };
     window.addEventListener('beforeunload', handler);
     return () => window.removeEventListener('beforeunload', handler);
-  }, [hasUnsavedChanges]);
+  }, [hasUnsavedChanges, hasAnyUserInput]);
+
+  const confirmLeaveIfUnsaved = useCallback(() => {
+    /**
+     * ✅ 이탈(뒤로가기) 확인
+     *
+     * 의도/원리:
+     * - 임시저장/등록 전 이탈 시 입력 유실을 막는다.
+     * - hasAnyUserInput은 "실제 입력" 기준이라 초기 로딩/기본값으로는 경고하지 않는다.
+     */
+    try {
+      // ✅ 방어: 일부 입력은 onBlur에서 커밋될 수 있으므로, 이탈 체크 전에 현재 포커스를 정리한다.
+      try {
+        const el = (typeof document !== 'undefined') ? document.activeElement : null;
+        if (el && typeof el.blur === 'function') el.blur();
+      } catch (_) {}
+      if (hasUnsavedChanges && hasAnyUserInput) {
+        return window.confirm('작성 중인 내용이 저장되지 않았습니다.\n이 페이지를 나가면 입력한 내용이 사라질 수 있어요.\n그래도 나가시겠어요?');
+      }
+      return true;
+    } catch (_) {
+      // 방어: confirm 실패 시 보수적으로 막지 않고 진행(기존 동작 유지)
+      return true;
+    }
+  }, [hasUnsavedChanges, hasAnyUserInput]);
+
+  // ✅ 브라우저 "뒤로가기" 가드(popstate)
+  useEffect(() => {
+    /**
+     * 요구사항:
+     * - 임시저장/등록 전 이탈(뒤로가기) 시, 변경사항이 있으면 반드시 경고한다.
+     *
+     * 원리:
+     * - SPA에서 popstate는 취소 불가이므로, 현재 URL로 1회 pushState해 "가짜 히스토리"를 만든 뒤,
+     *   뒤로가기를 누르면 먼저 이 가짜 엔트리로 돌아오게 해서 confirm을 띄운다.
+     * - 사용자가 "나가기"를 선택하면 history.back()을 한 번 더 호출해 실제 이전 페이지로 이동한다.
+     */
+    /**
+     * ✅ 문제/원인(버그):
+     * - popstate 가드가 중복(혹은 재실행마다 pushState)되면, 뒤로가기 히스토리가 누적되어 UX가 붕괴한다.
+     *
+     * 해결:
+     * - "변경사항이 있을 때만" 1회 arm(pushState)하고,
+     * - 변경사항이 사라지면(임시저장 등) 가드 엔트리를 제거해 "뒤로가기 2번"을 방지한다.
+     */
+    if (typeof window === 'undefined' || !window.history || !window.location) return undefined;
+
+    const shouldGuard = Boolean(hasUnsavedChanges && hasAnyUserInput);
+    const KEY = '__cc_leave_guard';
+    const msg = '작성 중인 내용이 저장되지 않았습니다.\n이 페이지를 나가면 입력한 내용이 사라질 수 있어요.\n그래도 나가시겠어요?';
+
+    const pushGuard = () => {
+      try {
+        const cur = window.history.state || {};
+        if (cur && cur[KEY] === true) return;
+        window.history.pushState({ ...(cur || {}), [KEY]: true }, '', window.location.href);
+      } catch (_) {}
+    };
+
+    const popGuardIfNeeded = () => {
+      if (!leaveGuardArmedRef.current) return;
+      try {
+        const cur = window.history.state || {};
+        if (cur && cur[KEY] === true) {
+          leaveBypassRef.current = true;
+          window.history.back(); // 동일 URL 가드 엔트리 제거
+        }
+      } catch (_) {}
+      leaveGuardArmedRef.current = false;
+    };
+
+    const onPopState = () => {
+      try {
+        if (leaveBypassRef.current) {
+          leaveBypassRef.current = false;
+          return;
+        }
+        if (!(hasUnsavedChanges && hasAnyUserInput)) return;
+        const ok = window.confirm(msg);
+        if (ok) {
+          // 실제 이전 페이지로 이동: 리스너 제거 + back 1회(가드 엔트리 제거 직후 이동)
+          try { window.removeEventListener('popstate', onPopState); } catch (_) {}
+          leaveGuardArmedRef.current = false;
+          leaveBypassRef.current = true;
+          try { window.history.back(); } catch (_) {}
+          return;
+        }
+        // 취소: 현재 페이지 유지 위해 다시 가드 엔트리 주입
+        pushGuard();
+        leaveGuardArmedRef.current = true;
+      } catch (e) {
+        try { console.warn('[CreateCharacterPage] popstate guard failed:', e); } catch (_) {}
+      }
+    };
+
+    if (shouldGuard) {
+      if (!leaveGuardArmedRef.current) {
+        pushGuard();
+        leaveGuardArmedRef.current = true;
+      }
+      try { window.addEventListener('popstate', onPopState); } catch (_) {}
+      return () => {
+        try { window.removeEventListener('popstate', onPopState); } catch (_) {}
+      };
+    }
+
+    // 변경사항이 없으면 가드 정리
+    popGuardIfNeeded();
+    return undefined;
+  }, [hasUnsavedChanges, hasAnyUserInput]);
 
   // 섹션별 검증(필수값/토큰/리스트 유효성)
   const sectionErrors = useMemo(() => {
@@ -2713,7 +3970,7 @@ const CreateCharacterPage = () => {
       total: 0,
     };
     // ✅ 기본 정보 필수값(요구사항 / 생성 Create 기준):
-    // 이미지, 이름, 필수태그, 캐릭터설명, 세계관설정, 크리에이터 코멘트
+    // 이미지, 이름, 필수태그, 캐릭터설명, 세계관설정
     if (!formData.basic_info.name?.trim()) errors.basic += 1;
 
     if (!isEditMode) {
@@ -2730,7 +3987,6 @@ const CreateCharacterPage = () => {
       // 필수 텍스트
       if (!String(formData.basic_info.description || '').trim()) errors.basic += 1;
       if (!String(formData.basic_info.world_setting || '').trim()) errors.basic += 1;
-      if (!String(formData.basic_info.user_display_description || '').trim()) errors.basic += 1;
     }
 
     // ✅ 필수 태그(성향/스타일): 생성/편집 모두 강제(요구사항), 단 원작챗 캐릭터 제외
@@ -2827,6 +4083,7 @@ const CreateCharacterPage = () => {
       // 레거시/신규 토큰 모두 동일하게 처리
       .replaceAll(TOKEN_ASSISTANT, formData.basic_info.name || '캐릭터')
       .replaceAll(TOKEN_CHARACTER, formData.basic_info.name || '캐릭터')
+      .replaceAll(TOKEN_CHAR, formData.basic_info.name || '캐릭터')
       .replaceAll(TOKEN_USER, '나');
     return {
       id: 'preview',
@@ -3209,6 +4466,80 @@ const CreateCharacterPage = () => {
     setError('');
 
     try {
+      // ✅ 요구사항: 글자수 초과는 "오류"가 아니라 인라인 경고로 안내한다.
+      // - 저장 버튼은 가능하면 비활성화되지만, 방어적으로 저장 진입도 차단한다.
+      if (useNormalCreateWizard) {
+        try {
+          const nameLen = String(formData?.basic_info?.name || '').length;
+          const descLen = String(formData?.basic_info?.description || '').length;
+          const worldLen = String(formData?.basic_info?.world_setting || '').length;
+          const secretLen = String(formData?.basic_info?.introduction_scenes?.[0]?.secret || '').length;
+          const commentLen = String(formData?.basic_info?.user_display_description || '').length;
+          const personalityLen = String(formData?.basic_info?.personality || '').length;
+          const speechLen = String(formData?.basic_info?.speech_style || '').length;
+          const nameTrimLen = String(formData?.basic_info?.name || '').trim().length;
+          const descTrimLen = String(formData?.basic_info?.description || '').trim().length;
+          const openingAnyOver = (() => {
+            /**
+             * ✅ 오프닝(위저드) 글자수 방어
+             *
+             * - maxLength를 제거했으므로(초과 허용 UI), 저장 시점에 초과를 반드시 차단한다.
+             * - start_sets.items[] 전체를 검사해, 하나라도 초과면 저장을 막는다(서버 422 방지).
+             */
+            try {
+              const ss = formData?.basic_info?.start_sets;
+              const items = Array.isArray(ss?.items) ? ss.items : [];
+              for (const it of items) {
+                const t = String(it?.title || '');
+                const intro = String(it?.intro || '');
+                const first = String(it?.firstLine || '');
+                if (t.length > 100 || intro.length > 2000 || first.length > 500) return true;
+              }
+              return false;
+            } catch (_) {
+              return true;
+            }
+          })();
+          const dialoguesAnyOver = (() => {
+            /**
+             * ✅ 예시대화 글자수 방어
+             *
+             * - maxLength를 제거했으므로(초과 허용 UI), 저장 시점에 초과를 반드시 차단한다.
+             */
+            try {
+              const ds = Array.isArray(formData?.example_dialogues?.dialogues) ? formData.example_dialogues.dialogues : [];
+              for (const d of ds) {
+                const u = String(d?.user_message || '');
+                const a = String(d?.character_response || '');
+                if (u.length > 500 || a.length > 1000) return true;
+              }
+              return false;
+            } catch (_) {
+              return true;
+            }
+          })();
+          if (
+            nameLen > PROFILE_NAME_MAX_LEN
+            || nameTrimLen === 0
+            || descLen > PROFILE_ONE_LINE_MAX_LEN
+            || descTrimLen === 0
+            || worldLen > 6000
+            || (isSecretInfoEnabled && secretLen > 1000)
+            || (!!formData?.basic_info?.use_custom_description && commentLen > 1000)
+            || personalityLen > 300
+            || speechLen > 300
+            || openingAnyOver
+            || dialoguesAnyOver
+          ) {
+            // setError로 상단 에러(Alert)를 띄우지 않는다(요구사항).
+            setLoading(false);
+            return;
+          }
+        } catch (_) {
+          setLoading(false);
+          return;
+        }
+      }
       // Zod 검증
       const validation = validateForm();
       if (!validation.success) {
@@ -3261,6 +4592,92 @@ const CreateCharacterPage = () => {
         buildPersonalityWithDetailPrefs(formData.basic_info.personality, detailPrefs)
       );
       const useCustomDescription = Boolean((safeUserDisplay || '').trim());
+
+      /**
+       * ✅ 작품 컨셉(선택, 고급) → 프롬프트 수동입력에도 반영
+       *
+       * 의도/원리:
+       * - 사용자가 프롬프트를 직접 작성하더라도, "작품 컨셉"이 있으면 모델이 더 잘 이해할 수 있다.
+       * - 별도 DB 컬럼 없이 start_sets(JSON)에 저장된 컨셉을 world_setting에 안전하게 포함시켜 저장한다.
+       * - CC_STATS 블록을 깨지 않도록, 스탯 블록이 있으면 그 앞에 삽입한다.
+       *
+       * 방어:
+       * - 최대 6000자 제한 유지(초과 시 컨셉을 자동으로 잘라 넣고 warning 토스트로 알림)
+       * - 중복 삽입 방지(마커 블록이 있으면 교체)
+       */
+      const buildWorldSettingWithConcept = (baseWorld, conceptTextRaw) => {
+        const MAX = 6000;
+        const CONCEPT_START = '<!-- CC_CONCEPT_START -->';
+        const CONCEPT_END = '<!-- CC_CONCEPT_END -->';
+        const STATS_START = '<!-- CC_STATS_START -->';
+
+        const base0 = String(baseWorld ?? '');
+        const concept0 = String(conceptTextRaw ?? '').trim();
+        if (!concept0) return { text: base0, clipped: false, used: false };
+
+        // 1) 기존 컨셉 블록 제거(중복 방지)
+        let base = base0;
+        try {
+          const s = base.indexOf(CONCEPT_START);
+          const e = base.indexOf(CONCEPT_END);
+          if (s >= 0 && e > s) {
+            const before = base.slice(0, s).trimEnd();
+            const after = base.slice(e + CONCEPT_END.length).trimStart();
+            base = [before, after].filter(Boolean).join('\n\n');
+          }
+        } catch (_) {}
+
+        // 2) 삽입 위치: 스탯 블록 앞(있으면) / 없으면 끝
+        const statsIdx = (() => {
+          try { return base.indexOf(STATS_START); } catch (_) { return -1; }
+        })();
+        const before = statsIdx >= 0 ? base.slice(0, statsIdx).trimEnd() : base.trimEnd();
+        const after = statsIdx >= 0 ? base.slice(statsIdx).trimStart() : '';
+
+        const header = '## 작품 컨셉(추가 참고)\n';
+        const blockPrefix = `${CONCEPT_START}\n${header}`;
+        const blockSuffix = `\n${CONCEPT_END}`;
+        const joinBefore = before ? `${before}\n\n` : '';
+        const joinAfter = after ? `\n\n${after}` : '';
+
+        // 3) 길이 계산 후 컨셉을 가능한 만큼만 삽입(스탯 블록 보호)
+        const fixedLen = (joinBefore + blockPrefix + blockSuffix + joinAfter).length;
+        const available = Math.max(0, MAX - fixedLen);
+        const concept = concept0.length > available ? concept0.slice(0, available) : concept0;
+        const clipped = concept !== concept0;
+        const text = (joinBefore + blockPrefix + concept + blockSuffix + joinAfter).slice(0, MAX);
+        return { text, clipped, used: true };
+      };
+
+      const conceptForPrompt = (() => {
+        try {
+          if (!useNormalCreateWizard) return '';
+          const ss = (formData?.basic_info?.start_sets && typeof formData.basic_info.start_sets === 'object')
+            ? formData.basic_info.start_sets
+            : null;
+          const pc = (ss && typeof ss.profile_concept === 'object' && ss.profile_concept) ? ss.profile_concept : null;
+          if (!pc?.enabled) return '';
+          const raw = String(pc?.text || '').trim();
+          if (!raw) return '';
+          // ✅ 길이/토큰 방어(컨셉도 prompt로 들어가므로 동일 정책 적용)
+          return sanitizePromptTokens(raw).slice(0, PROFILE_CONCEPT_MAX_LEN);
+        } catch (_) {
+          return '';
+        }
+      })();
+
+      const worldWithConcept = (() => {
+        try {
+          const base = String(formData?.basic_info?.world_setting || '');
+          const { text, clipped, used } = buildWorldSettingWithConcept(base, conceptForPrompt);
+          if (used && clipped) {
+            try { dispatchToast('warning', '작품 컨셉이 길어 프롬프트에 일부만 반영되었습니다.'); } catch (_) {}
+          }
+          return text;
+        } catch (_) {
+          return String(formData?.basic_info?.world_setting || '');
+        }
+      })();
 
       // greetings 배열을 greeting 단일 문자열로 변환
       // UI에서는 greetings 배열을 사용하지만, 백엔드는 greeting 단일 문자열을 기대함
@@ -3336,13 +4753,127 @@ const CreateCharacterPage = () => {
         }
       })();
 
+      /**
+       * ✅ 오프닝/엔딩 정규화 (저장 전)
+       * 
+       * 요구사항:
+       * - 비어있는 오프닝(firstLine 없음) → 자동 삭제
+       * - 비어있는 엔딩(title/base_condition/epilogue/hint 모두 없음) → 자동 삭제
+       * - 오프닝 최소 1개 필수
+       * - 각 오프닝에 엔딩 최소 1개 필수
+       */
+      const normalizedStartSets = (() => {
+        try {
+          const ss = formData?.basic_info?.start_sets;
+          if (!ss || typeof ss !== 'object') return ss;
+          
+          const rawItems = Array.isArray(ss.items) ? ss.items : [];
+          
+          // 비어있지 않은 오프닝만 필터링 (firstLine이 있어야 함)
+          const isOpeningValid = (item) => {
+            const firstLine = String(item?.firstLine || '').trim();
+            return !!firstLine;
+          };
+          
+          // 비어있지 않은 엔딩만 필터링
+          const isEndingValid = (ending) => {
+            const title = String(ending?.title || '').trim();
+            const baseCond = String(ending?.base_condition || '').trim();
+            const epilogue = String(ending?.epilogue || '').trim();
+            const hint = String(ending?.hint || '').trim();
+            return !!(title || baseCond || epilogue || hint);
+          };
+          
+          // 각 오프닝의 엔딩도 정규화
+          const normalizedItems = rawItems
+            .filter(isOpeningValid)
+            .map((item) => {
+              const endings = Array.isArray(item?.ending_settings?.endings)
+                ? item.ending_settings.endings.filter(isEndingValid)
+                : [];
+              return {
+                ...item,
+                ending_settings: {
+                  ...(item?.ending_settings || {}),
+                  endings,
+                },
+              };
+            });
+          
+          // 오프닝 최소 1개 필수 검증
+          if (normalizedItems.length === 0) {
+            dispatchToast('error', '오프닝(첫대사)을 최소 1개 입력해주세요.');
+            return null; // null 반환 시 저장 중단
+          }
+          
+          // 각 오프닝에 엔딩 최소 1개 필수 검증
+          for (let i = 0; i < normalizedItems.length; i++) {
+            const item = normalizedItems[i];
+            const endings = item?.ending_settings?.endings || [];
+            if (endings.length === 0) {
+              const title = String(item?.title || '').trim() || `오프닝 ${i + 1}`;
+              dispatchToast('error', `"${title}"에 엔딩을 최소 1개 입력해주세요.`);
+              return null; // null 반환 시 저장 중단
+            }
+          }
+          
+          return {
+            ...ss,
+            items: normalizedItems,
+          };
+        } catch (_) {
+          return formData?.basic_info?.start_sets;
+        }
+      })();
+      
+      // 오프닝/엔딩 검증 실패 시 저장 중단
+      if (normalizedStartSets === null) {
+        setLoading(false);
+        return;
+      }
+
+      // ✅ 스탯 숫자 범위 검증 (모든 오프닝)
+      const allItems = normalizedStartSets?.items || [];
+      for (let itemIdx = 0; itemIdx < allItems.length; itemIdx++) {
+        const statsToValidate = allItems[itemIdx]?.stat_settings?.stats || [];
+        for (let i = 0; i < statsToValidate.length; i++) {
+          const st = statsToValidate[i];
+          const minNum = (st?.min_value !== '' && st?.min_value != null) ? Number(st.min_value) : null;
+          const maxNum = (st?.max_value !== '' && st?.max_value != null) ? Number(st.max_value) : null;
+          const baseNum = (st?.base_value !== '' && st?.base_value != null) ? Number(st.base_value) : null;
+          const label = st?.name || `스탯 ${i + 1}`;
+          const openingLabel = allItems.length > 1 ? `오프닝 ${itemIdx + 1} - ` : '';
+          // 최소 > 최대 검증
+          if (minNum !== null && maxNum !== null && Number.isFinite(minNum) && Number.isFinite(maxNum) && minNum > maxNum) {
+            dispatch({ type: 'SHOW_TOAST', payload: { message: `${openingLabel}${label}: 최소값이 최대값보다 큽니다.`, type: 'error' } });
+            setLoading(false);
+            return;
+          }
+          // 기본값 < 최소 검증
+          if (baseNum !== null && Number.isFinite(baseNum) && minNum !== null && Number.isFinite(minNum) && baseNum < minNum) {
+            dispatch({ type: 'SHOW_TOAST', payload: { message: `${openingLabel}${label}: 기본값이 최소값보다 작습니다.`, type: 'error' } });
+            setLoading(false);
+            return;
+          }
+          // 기본값 > 최대 검증
+          if (baseNum !== null && Number.isFinite(baseNum) && maxNum !== null && Number.isFinite(maxNum) && baseNum > maxNum) {
+            dispatch({ type: 'SHOW_TOAST', payload: { message: `${openingLabel}${label}: 기본값이 최대값보다 큽니다.`, type: 'error' } });
+            setLoading(false);
+            return;
+          }
+        }
+      }
+
       const characterData = {
         ...formData,
         basic_info: {
           ...formData.basic_info,
+          start_sets: normalizedStartSets, // 정규화된 start_sets 사용
           description: safeDescription,
           personality: safePersonality,
           user_display_description: safeUserDisplay,
+          // ✅ 위저드(일반 생성)에서만: 작품 컨셉을 프롬프트에 포함시켜 저장
+          ...(useNormalCreateWizard ? { world_setting: worldWithConcept } : {}),
           // ✅ 방어: 코멘트가 비어있으면 별도 설명을 쓰지 않도록 보정(빈 텍스트 노출 방지)
           use_custom_description: useCustomDescription,
           greeting: greetingValue, // greetings 배열을 greeting 단일 문자열로 변환
@@ -3467,7 +4998,7 @@ const CreateCharacterPage = () => {
           const toLabel = (k) => {
             try {
               const s = String(k || '');
-              if (s === 'basic_info.name') return '캐릭터 이름';
+            if (s === 'basic_info.name') return '작품명';
               if (s === 'basic_info.description') return '캐릭터 설명';
               if (s === 'basic_info.world_setting') return '세계관 설정';
               if (s === 'basic_info.user_display_description') return '크리에이터 코멘트';
@@ -3570,9 +5101,9 @@ const CreateCharacterPage = () => {
     const nextName = clip(data?.name, 100) || '';
     const nextDesc = clip(data?.description, 3000) || '';
     const nextWorld = clip(data?.world_setting, 5000) || '';
-    const nextPersonality = clip(data?.personality, 2000) || '';
-    const nextSpeech = clip(data?.speech_style, 2000) || '';
-    const nextUserDisplay = clip(data?.user_display_description, 3000) || '';
+    const nextPersonality = clip(data?.personality, 300) || '';
+    const nextSpeech = clip(data?.speech_style, 300) || '';
+    const nextUserDisplay = clip(data?.user_display_description, 1000) || '';
     const greetings = toGreetings(data?.greetings);
     const exampleDialogues = toExampleDialogues(data?.example_dialogues);
     const introScenes = toIntroScenes(data?.introduction_scenes);
@@ -3642,17 +5173,72 @@ const CreateCharacterPage = () => {
 
   // ✅ 프로필: "자동 생성" 버튼
   const [quickGenLoading, setQuickGenLoading] = useState(false);
+  // ✅ 프로필 자동생성 취소/원문복구
+  const quickGenAbortRef = useRef(false);
+  const profileAutoGenPrevNameRef = useRef('');
+  const profileAutoGenPrevDescRef = useRef('');
+  const profileAutoGenPrevConceptRef = useRef(null); // { enabled: boolean, text: string } | null
+  // ✅ 프로필 자동 생성 옵션: "제목형/문장형 이름" 허용
+  const [quickGenTitleNameMode, setQuickGenTitleNameMode] = useState(false);
+  // ✅ 프로필 자동생성: "이미지 정보 포함" 토글(QuickMeet와 동일한 의미)
+  // - OFF: 빠르고 트렌디하게 생성(이미지 분석 없이도 되는, 가벼운 후킹 중심)
+  // - ON : 삽입한 이미지에 정확하게 생성(이미지 단서 기반 앵커 강화)
+  const [profileAutoGenUseImage, setProfileAutoGenUseImage] = useState(false);
+  const hasProfileImageForAutoGen = useMemo(() => {
+    /**
+     * ✅ 위저드 프로필 자동생성: 이미지 존재 여부
+     *
+     * 원리(QuickMeet와 동일):
+     * - 이미지가 없으면 "이미지 정보 포함" 토글은 활성화될 수 없다(ON 의미가 없음).
+     * - 따라서 UI는 disabled 처리하고, state도 방어적으로 OFF로 되돌린다.
+     */
+    try {
+      const avatar = String(formData?.media_settings?.avatar_url || '').trim();
+      if (avatar) return true;
+      const imgs = Array.isArray(formData?.media_settings?.image_descriptions) ? formData.media_settings.image_descriptions : [];
+      return imgs.some((x) => String(x?.url || '').trim());
+    } catch (_) {
+      return false;
+    }
+  }, [formData?.media_settings?.avatar_url, formData?.media_settings?.image_descriptions]);
+  useEffect(() => {
+    // ✅ 방어: 이미지가 없는데 ON 상태면 강제로 OFF
+    if (!hasProfileImageForAutoGen && profileAutoGenUseImage) {
+      try { setProfileAutoGenUseImage(false); } catch (_) {}
+    }
+  }, [hasProfileImageForAutoGen, profileAutoGenUseImage]);
   // ✅ 프롬프트(시뮬레이터): "자동 생성" 버튼
   const [quickPromptGenLoading, setQuickPromptGenLoading] = useState(false);
+  // ✅ 프롬프트 자동생성 단계 표시 (여러 단계 동시 표시)
+  const [quickPromptGenSteps, setQuickPromptGenSteps] = useState([]);
+  // ✅ 프롬프트 자동생성 중지 플래그
+  const quickPromptGenAbortRef = useRef(false);
+  // ✅ 프롬프트 자동생성 UX: 덮어쓰기 시 즉시 비우고, 실패하면 복구 (올인원이므로 모든 필드 백업)
+  const promptAutoGenPrevWorldRef = useRef('');
+  const promptAutoGenPrevStatsRef = useRef(null); // start_sets 내 stat_settings.stats
+  const promptAutoGenPrevPersonalityRef = useRef('');
+  const promptAutoGenPrevSpeechStyleRef = useRef('');
+  const promptAutoGenPrevDetailPrefsRef = useRef(null); // { interests, likes, dislikes }
   // ✅ 첫시작(도입부+첫대사): "자동 생성" 버튼 (선택 세트에만 적용)
   const [quickFirstStartGenLoadingId, setQuickFirstStartGenLoadingId] = useState('');
+  // ✅ 오프닝(첫시작) 자동생성 중지 플래그 및 원문 복구용 ref
+  const quickFirstStartGenAbortRef = useRef(false);
+  const firstStartAutoGenPrevIntroRef = useRef('');
+  const firstStartAutoGenPrevFirstLineRef = useRef('');
   // ✅ 턴수별 사건(오프닝 내): "자동 생성" 버튼 (선택 세트에만 적용)
   const [quickTurnEventsGenLoadingId, setQuickTurnEventsGenLoadingId] = useState('');
+  // ✅ 턴수별 사건 자동생성 중지 플래그 및 원문 복구용 ref
+  const quickTurnEventsGenAbortRef = useRef(false);
+  const turnEventsAutoGenPrevRef = useRef([]);
+  // ✅ 스탯 자동생성: 로딩 상태 및 취소용 ref
+  const [quickStatsGenLoadingId, setQuickStatsGenLoadingId] = useState('');
+  const quickStatsGenAbortRef = useRef(false);
+  const statsAutoGenPrevRef = useRef([]);
   const [turnEventsGenConfirmOpen, setTurnEventsGenConfirmOpen] = useState(false);
   const [turnEventsGenPendingSetId, setTurnEventsGenPendingSetId] = useState('');
   const [turnEventsGenPendingEvents, setTurnEventsGenPendingEvents] = useState([]);
 
-  const handleAutoGenerateFirstStart = useCallback(async (targetSetId) => {
+  const handleAutoGenerateFirstStart = useCallback(async (targetSetId, opts) => {
     /**
      * 첫시작 자동 생성(요구사항):
      * - 프롬프트(world_setting)가 작성되어 있어야 실행한다.
@@ -3662,9 +5248,12 @@ const CreateCharacterPage = () => {
     if (!sid) return null;
     if (quickFirstStartGenLoadingId) return null;
     try {
+      const forceOverwrite = opts?.forceOverwrite === true;
       const name = String(formData?.basic_info?.name || '').trim();
       const desc = String(formData?.basic_info?.description || '').trim();
       const world = String(formData?.basic_info?.world_setting || '').trim();
+      // ✅ RP/시뮬 분기(요구사항): 백엔드가 모드별 첫시작 규칙을 선택할 수 있도록 mode를 전달한다.
+      const mode = inferAutoGenModeFromCharacterTypeAndWorld(formData?.basic_info?.character_type, world);
       if (!name || !desc) {
         dispatchToast('error', '프로필 정보를 먼저 입력해주세요.');
         return null;
@@ -3674,15 +5263,47 @@ const CreateCharacterPage = () => {
         return null;
       }
 
+      // ✅ 덮어쓰기 허용(요구사항): 해당 오프닝에 이미 첫시작이 있으면 경고 모달 후 덮어쓰기
+      const ss = (formData?.basic_info?.start_sets && typeof formData.basic_info.start_sets === 'object')
+        ? formData.basic_info.start_sets
+        : null;
+      const items = Array.isArray(ss?.items) ? ss.items : [];
+      const active = items.find((x) => String(x?.id || '').trim() === sid) || null;
+      const hasExisting = !!(String(active?.intro || '').trim() || String(active?.firstLine || '').trim());
+      if (hasExisting && !forceOverwrite) {
+        openAutoGenOverwriteConfirm(
+          '오프닝(첫 상황/첫 대사)',
+          async () => { await handleAutoGenerateFirstStart(sid, { forceOverwrite: true }); }
+        );
+        return null;
+      }
+
+      // ✅ 원문 저장 (취소 시 복구용)
+      firstStartAutoGenPrevIntroRef.current = String(active?.intro || '');
+      firstStartAutoGenPrevFirstLineRef.current = String(active?.firstLine || '');
+      quickFirstStartGenAbortRef.current = false;
+
       setQuickFirstStartGenLoadingId(sid);
-      const aiModel = String(user?.preferred_model || 'claude').trim().toLowerCase() || 'claude';
+      // ✅ 요구사항: "위저드만" 제미니 고정(다른 화면/로직에는 영향 주지 않음)
+      const aiModel = useNormalCreateWizard
+        ? 'gemini'
+        : (String(user?.preferred_model || 'claude').trim().toLowerCase() || 'claude');
+      const sim = (ss && typeof ss?.sim_options === 'object' && ss.sim_options) ? ss.sim_options : {};
+      const simDatingElements = !!sim?.sim_dating_elements;
       const res = await charactersAPI.quickGenerateFirstStartDraft({
         name,
         description: desc,
         world_setting: world,
+        mode,
+        sim_dating_elements: (mode === 'simulator' ? simDatingElements : undefined),
         tags: Array.isArray(selectedTagSlugs) ? selectedTagSlugs : [],
         ai_model: (aiModel === 'gpt' ? 'gpt' : (aiModel === 'gemini' ? 'gemini' : 'claude')),
       });
+
+      // ✅ 취소됐으면 결과 반영 안 함
+      if (quickFirstStartGenAbortRef.current) {
+        return null;
+      }
 
       const intro = String(res?.data?.intro || '').trim();
       const firstLine = String(res?.data?.first_line || '').trim();
@@ -3691,13 +5312,22 @@ const CreateCharacterPage = () => {
         return null;
       }
 
+      // ✅ 방어: 자동생성 결과도 UI 제한을 절대 넘기지 않게 클램프한다.
+      // - maxLength는 "사용자 입력"만 막고, setState로 주입되는 값은 그대로 들어올 수 있다.
+      const introClamped = intro.length > 2000 ? intro.slice(0, 2000) : intro;
+      const firstLineClamped = firstLine.length > 500 ? firstLine.slice(0, 500) : firstLine;
+      if (introClamped !== intro || firstLineClamped !== firstLine) {
+        try { console.warn('[CreateCharacterPage] opening auto-generate clipped:', { introLen: intro.length, firstLineLen: firstLine.length }); } catch (_) {}
+        try { dispatchToast('warning', '오프닝 자동생성 결과가 길어 일부가 잘렸습니다. 내용을 확인해주세요.'); } catch (_) {}
+      }
+
       updateStartSets((prev) => {
         const cur = (prev && typeof prev === 'object') ? prev : {};
         const curItems = Array.isArray(cur.items) ? cur.items : [];
         const nextItems = curItems.map((x) => {
           const xid = String(x?.id || '').trim();
           if (xid !== sid) return x;
-          return { ...(x || {}), intro, firstLine };
+          return { ...(x || {}), intro: introClamped, firstLine: firstLineClamped };
         });
         const nextSelected = String(cur.selectedId || '').trim() || sid;
         return { ...cur, selectedId: nextSelected, items: nextItems };
@@ -3705,7 +5335,7 @@ const CreateCharacterPage = () => {
 
       try { refreshChatPreviewSnapshot(); } catch (_) {}
       dispatchToast('success', '첫시작(도입부+첫대사)이 자동 생성되었습니다. 내용을 확인해주세요.');
-      return { intro, firstLine };
+      return { intro: introClamped, firstLine: firstLineClamped };
     } catch (e) {
       console.error('[CreateCharacterPage] quick-generate-first-start failed:', e);
       dispatchToast('error', '첫시작 자동 생성에 실패했습니다. 잠시 후 다시 시도해주세요.');
@@ -3713,7 +5343,7 @@ const CreateCharacterPage = () => {
     } finally {
       setQuickFirstStartGenLoadingId('');
     }
-  }, [quickFirstStartGenLoadingId, formData, selectedTagSlugs, user, updateStartSets, refreshChatPreviewSnapshot]);
+  }, [quickFirstStartGenLoadingId, formData, selectedTagSlugs, user, updateStartSets, refreshChatPreviewSnapshot, openAutoGenOverwriteConfirm, inferAutoGenModeFromCharacterTypeAndWorld]);
 
   const handleAutoGenerateTurnEvents = useCallback(async (targetSetId, opts) => {
     /**
@@ -3733,6 +5363,8 @@ const CreateCharacterPage = () => {
     const name = String(formData?.basic_info?.name || '').trim();
     const desc = String(formData?.basic_info?.description || '').trim();
     const world = String(formData?.basic_info?.world_setting || '').trim();
+    // ✅ RP/시뮬 분기(요구사항)
+    const mode = inferAutoGenModeFromCharacterTypeAndWorld(formData?.basic_info?.character_type, world);
     if (!name || !desc) {
       if (!silent) dispatchToast('error', '프로필 정보를 먼저 입력해주세요.');
       return null;
@@ -3777,18 +5409,34 @@ const CreateCharacterPage = () => {
     }
 
     try {
+      // ✅ 원문 저장 (취소 시 복구용)
+      const existingEvents = Array.isArray(activeSet?.turn_events) ? activeSet.turn_events : [];
+      turnEventsAutoGenPrevRef.current = existingEvents;
+      quickTurnEventsGenAbortRef.current = false;
+
       setQuickTurnEventsGenLoadingId(sid);
-      const aiModel = String(user?.preferred_model || 'claude').trim().toLowerCase() || 'claude';
+      // ✅ 요구사항: "위저드만" 제미니 고정(다른 화면/로직에는 영향 주지 않음)
+      const aiModel = useNormalCreateWizard
+        ? 'gemini'
+        : (String(user?.preferred_model || 'claude').trim().toLowerCase() || 'claude');
+      const simDatingElements = !!sim?.sim_dating_elements;
       const res = await charactersAPI.quickGenerateTurnEventsDraft({
         name,
         description: desc,
         world_setting: world,
         opening_intro: openingIntro,
         opening_first_line: openingFirstLine,
+        mode,
         max_turns: maxTurns,
+        sim_dating_elements: (mode === 'simulator' ? simDatingElements : undefined),
         tags: Array.isArray(selectedTagSlugs) ? selectedTagSlugs : [],
         ai_model: (aiModel === 'gpt' ? 'gpt' : (aiModel === 'gemini' ? 'gemini' : 'claude')),
       });
+
+      // ✅ 취소됐으면 결과 반영 안 함
+      if (quickTurnEventsGenAbortRef.current) {
+        return null;
+      }
 
       const rawEvents = Array.isArray(res?.data?.turn_events) ? res.data.turn_events : [];
       if (!rawEvents.length) {
@@ -3859,75 +5507,638 @@ const CreateCharacterPage = () => {
     } finally {
       setQuickTurnEventsGenLoadingId('');
     }
-  }, [quickTurnEventsGenLoadingId, formData, selectedTagSlugs, user, updateStartSets]);
+  }, [quickTurnEventsGenLoadingId, formData, selectedTagSlugs, user, updateStartSets, inferAutoGenModeFromCharacterTypeAndWorld]);
 
-  const handleAutoGeneratePromptOnlyForNextStepAutoFill = useCallback(async () => {
+  const handleNextStepAutoFill = useCallback(async () => {
     /**
-     * ✅ 다음단계 자동완성 전용: "프롬프트(world_setting)만" 자동 생성
+     * ✅ 다음단계 자동완성(요구사항)
      *
      * 의도/원리:
-     * - 기존 `handleAutoGeneratePrompt`는 프롬프트 생성과 함께 스탯/디테일까지 자동 채움(올인원)으로 동작한다.
-     * - 하지만 자동완성 요구사항은 "한 글자라도 입력 흔적이 있으면 자동완성 금지"이므로,
-     *   다음 단계 자동완성에서는 world_setting만 채우고 다른 필드는 절대 건드리지 않는다.
+     * - 사용자가 현재 단계의 최소 입력을 마치면, "다음 단계"로 이동하면서
+     *   다음 단계에서 자동생성이 가능한 항목만 1회 채운다.
+     * - 경쟁사 UX처럼 진행 모달을 띄워, "무엇을 작성 중인지"와 진행률을 보여준다.
+     *
+     * 방어:
+     * - 동시 실행 방지(중복 API 호출/데이터 경합 방지)
+     * - 자동생성 불가 단계(이미지/설정집/옵션 등)는 안내만 하고 종료
+     *
+     * ⚠️ 중요:
+     * - 이 함수는 오프닝/턴사건/디테일 자동생성 핸들러들을 참조한다.
+     *   (TDZ 방지) 반드시 해당 핸들러 선언 이후에 위치해야 한다.
      */
+    if (!useNormalCreateWizard) return;
+    if (nextStepAutoFillRunningRef.current) return;
     try {
-      const existing = String(formData?.basic_info?.world_setting || '').trim();
-      if (existing) return { skipped: true, reason: 'already_filled' };
-
-      const mode = String(formData?.basic_info?.character_type || 'roleplay').trim();
-      if (mode !== 'simulator' && mode !== 'roleplay') {
-        dispatchToast('error', '이 모드에서는 자동생성을 사용할 수 없어요.');
-        return null;
+      // 다음 단계가 없으면 종료
+      if (wizardStepIndex >= NORMAL_CREATE_WIZARD_STEPS.length - 1) {
+        dispatchToast('error', '이미 마지막 단계입니다.');
+        return;
       }
 
-      const name = String(formData?.basic_info?.name || '').trim();
-      const desc = String(formData?.basic_info?.description || '').trim();
-      if (!name || !desc) {
-        dispatchToast('error', '프로필 정보를 먼저 입력해주세요.');
-        return null;
+      nextStepAutoFillRunningRef.current = true;
+      setNextStepAutoFillError('');
+      setNextStepAutoFillProgress(0);
+      setNextStepAutoFillLabel('다음 단계 자동완성 준비 중...');
+      setNextStepAutoFillOpen(true);
+      setNextStepAutoFillSummaryLines([]);
+
+      // ✅ blur 강제(다음단계 이동 전 커밋 보장)
+      try {
+        const el = (typeof document !== 'undefined') ? document.activeElement : null;
+        if (el && typeof el.blur === 'function') el.blur();
+      } catch (_) {}
+
+      const nextIdx = Math.min(NORMAL_CREATE_WIZARD_STEPS.length - 1, wizardStepIndex + 1);
+      const nextId = String(NORMAL_CREATE_WIZARD_STEPS[nextIdx]?.id || '').trim();
+      if (!nextId) {
+        dispatchToast('error', '다음 단계를 찾을 수 없습니다.');
+        setNextStepAutoFillError('next_step_not_found');
+        setNextStepAutoFillProgress(100);
+        return;
       }
 
-      const aiModel = String(user?.preferred_model || 'claude').trim().toLowerCase() || 'claude';
-      const ss = (formData?.basic_info?.start_sets && typeof formData.basic_info.start_sets === 'object')
-        ? formData.basic_info.start_sets
-        : null;
-      const sim = (ss && typeof ss.sim_options === 'object' && ss.sim_options) ? ss.sim_options : {};
-      const maxTurnsRaw = Number(sim?.max_turns ?? 200);
-      const maxTurns = Number.isFinite(maxTurnsRaw) && maxTurnsRaw >= 50 ? Math.floor(maxTurnsRaw) : 200;
-      const allowInfiniteMode = !!sim?.allow_infinite_mode;
+      // ✅ UX(수정): 자동완성은 "채우기"만 수행하고, 단계 이동은 자동으로 하지 않는다.
+      // - 이유: 자동완성 대상이 없는 단계(이미지/옵션 등)에서 버튼을 누르면 빈 단계를 스킵해버리는 문제가 발생함.
+      // - 사용자는 자동완성 완료 후 '다음단계' 버튼으로 직접 이동한다.
 
-      const res = await charactersAPI.quickGeneratePromptDraft({
-        name,
-        description: desc,
-        mode: (mode === 'simulator' ? 'simulator' : 'roleplay'),
-        max_turns: maxTurns,
-        allow_infinite_mode: allowInfiniteMode,
-        tags: Array.isArray(selectedTagSlugs) ? selectedTagSlugs : [],
-        ai_model: (aiModel === 'gpt' ? 'gpt' : (aiModel === 'gemini' ? 'gemini' : 'claude')),
-      });
+      // 단계별 자동완성 실행
+      if (nextId === 'prompt') {
+        // ✅ 한 글자라도 입력 흔적이 있으면 자동완성 금지
+        const existing = String(formData?.basic_info?.world_setting || '').trim();
+        if (existing) {
+          try { setNextStepAutoFillSummaryLines((prev) => [...(Array.isArray(prev) ? prev : []), '프롬프트: 기존 입력 감지로 자동완성 생략']); } catch (_) {}
+          setNextStepAutoFillProgress(100);
+          setNextStepAutoFillLabel('이미 입력된 프롬프트가 있어 자동완성을 생략했어요.');
+          return;
+        }
 
-      const promptText = String(res?.data?.prompt || '').trim();
-      if (!promptText) {
-        dispatchToast('error', '프롬프트 생성 결과가 비어있습니다. 잠시 후 다시 시도해주세요.');
-        return null;
+        setNextStepAutoFillLabel('프롬프트 자동 생성 중...');
+        setNextStepAutoFillProgress(15);
+        const pr = await handleAutoGeneratePromptOnlyForNextStepAutoFill();
+        if (pr && pr?.prompt) {
+          try { setNextStepAutoFillSummaryLines((prev) => [...(Array.isArray(prev) ? prev : []), '프롬프트 자동 생성']); } catch (_) {}
+          setNextStepAutoFillProgress(100);
+          setNextStepAutoFillLabel('완료되었습니다. 내용을 확인해주세요.');
+          return;
+        }
+        if (pr && pr?.skipped) {
+          try { setNextStepAutoFillSummaryLines((prev) => [...(Array.isArray(prev) ? prev : []), '프롬프트: 기존 입력 감지로 자동완성 생략']); } catch (_) {}
+          setNextStepAutoFillProgress(100);
+          setNextStepAutoFillLabel('이미 입력된 프롬프트가 있어 자동완성을 생략했어요.');
+          return;
+        }
+
+        setNextStepAutoFillError('prompt_autofill_failed');
+        setNextStepAutoFillProgress(100);
+        setNextStepAutoFillLabel('프롬프트 자동완성에 실패했습니다. 잠시 후 다시 시도해주세요.');
+        return;
       }
 
-      setFormData((prev) => ({
-        ...prev,
-        basic_info: {
-          ...prev.basic_info,
-          world_setting: promptText.slice(0, 6000),
-        },
-      }));
-      return { prompt: promptText.slice(0, 6000) };
+      if (nextId === 'image') {
+        // ✅ 자동완성 대상 없음 → 안내만 (단계 이동 금지)
+        setNextStepAutoFillProgress(100);
+        setNextStepAutoFillLabel('다음 단계(이미지)는 자동완성할 항목이 없어요. 직접 업로드 후 “다음단계”를 눌러주세요.');
+        return;
+      }
+
+      if (nextId === 'first_start') {
+        // 선택 오프닝(세트) 1개만 자동 생성
+        setNextStepAutoFillLabel('오프닝 자동완성 확인 중...');
+        setNextStepAutoFillProgress(15);
+        const ss = (formData?.basic_info?.start_sets && typeof formData.basic_info.start_sets === 'object')
+          ? formData.basic_info.start_sets
+          : null;
+        const items = Array.isArray(ss?.items) ? ss.items : [];
+        const sel = String(ss?.selectedId || '').trim() || String(items?.[0]?.id || '').trim();
+        if (!sel) {
+          setNextStepAutoFillError('start_set_not_found');
+          setNextStepAutoFillProgress(100);
+          setNextStepAutoFillLabel('오프닝(시작 설정)이 없어 자동완성을 진행할 수 없습니다.');
+          return;
+        }
+
+        const active = items.find((x) => String(x?.id || '').trim() === sel) || items[0] || {};
+        const introExisting = String(active?.intro || '').trim();
+        const firstExisting = String(active?.firstLine || '').trim();
+        const turnEventsExisting = Array.isArray(active?.turn_events) ? active.turn_events : [];
+        const hasTrace = !!(introExisting || firstExisting || (turnEventsExisting.length > 0));
+
+        // ✅ 한 글자라도 입력 흔적이 있으면(오프닝/턴사건 포함) 자동완성 금지
+        if (hasTrace) {
+          try { setNextStepAutoFillSummaryLines((prev) => [...(Array.isArray(prev) ? prev : []), '오프닝: 기존 입력 감지로 자동완성 생략']); } catch (_) {}
+          setNextStepAutoFillProgress(100);
+          setNextStepAutoFillLabel('이미 입력된 값이 있어 오프닝 자동완성을 생략했어요.');
+          return;
+        }
+
+        setNextStepAutoFillLabel('오프닝(첫 상황/첫 대사) 자동 생성 중...');
+        setNextStepAutoFillProgress(25);
+        const firstRes = await handleAutoGenerateFirstStart(sel);
+        if (!firstRes || !String(firstRes?.intro || '').trim() || !String(firstRes?.firstLine || '').trim()) {
+          setNextStepAutoFillError('first_start_failed');
+          setNextStepAutoFillProgress(100);
+          setNextStepAutoFillLabel('오프닝 자동완성에 실패했습니다. 잠시 후 다시 시도해주세요.');
+          return;
+        }
+        try { setNextStepAutoFillSummaryLines((prev) => [...(Array.isArray(prev) ? prev : []), '오프닝(첫 상황/첫 대사) 자동 생성']); } catch (_) {}
+
+        // ✅ 연쇄: 오프닝 생성 직후 턴수별 사건까지 자동 생성(덮어쓰기 방지)
+        setNextStepAutoFillLabel('턴수별 사건 자동 생성 중...');
+        setNextStepAutoFillProgress(65);
+        const sim = (ss && typeof ss?.sim_options === 'object' && ss.sim_options) ? ss.sim_options : {};
+        const maxTurnsRaw = Number(sim?.max_turns ?? 200);
+        const maxTurns = Number.isFinite(maxTurnsRaw) ? Math.floor(maxTurnsRaw) : 200;
+        const turnRes = await handleAutoGenerateTurnEvents(sel, {
+          opening_intro: String(firstRes.intro || '').trim(),
+          opening_first_line: String(firstRes.firstLine || '').trim(),
+          max_turns: Math.max(50, maxTurns || 200),
+          skipOverwrite: true,
+          silent: true,
+        });
+        if (turnRes && turnRes?.turn_events && Array.isArray(turnRes.turn_events)) {
+          try { setNextStepAutoFillSummaryLines((prev) => [...(Array.isArray(prev) ? prev : []), `턴수별 사건 자동 생성 (${turnRes.turn_events.length}개)`]); } catch (_) {}
+        } else if (turnRes && turnRes?.skipped) {
+          try { setNextStepAutoFillSummaryLines((prev) => [...(Array.isArray(prev) ? prev : []), '턴수별 사건: 기존 값 유지(자동생성 생략)']); } catch (_) {}
+        } else {
+          try { setNextStepAutoFillSummaryLines((prev) => [...(Array.isArray(prev) ? prev : []), '턴수별 사건: 자동생성 실패(수동으로 진행 가능)']); } catch (_) {}
+        }
+
+        setNextStepAutoFillProgress(100);
+        setNextStepAutoFillLabel('완료되었습니다. 내용을 확인해주세요.');
+        return;
+      }
+
+      if (nextId === 'detail') {
+        // ✅ 한 글자라도 입력 흔적이 있으면 자동완성 금지
+        const hasPersonality = !!String(formData?.basic_info?.personality || '').trim();
+        const hasSpeech = !!String(formData?.basic_info?.speech_style || '').trim();
+        const hasChips = (() => {
+          try {
+            const i = Array.isArray(detailPrefs?.interests) ? detailPrefs.interests : [];
+            const l = Array.isArray(detailPrefs?.likes) ? detailPrefs.likes : [];
+            const d = Array.isArray(detailPrefs?.dislikes) ? detailPrefs.dislikes : [];
+            return [...i, ...l, ...d].some((x) => String(x || '').trim());
+          } catch (_) {
+            return false;
+          }
+        })();
+        if (hasPersonality || hasSpeech || hasChips) {
+          try { setNextStepAutoFillSummaryLines((prev) => [...(Array.isArray(prev) ? prev : []), '디테일: 기존 입력 감지로 자동완성 생략']); } catch (_) {}
+          setNextStepAutoFillProgress(100);
+          setNextStepAutoFillLabel('이미 입력된 디테일이 있어 자동완성을 생략했어요.');
+          return;
+        }
+
+        setNextStepAutoFillLabel('디테일(성격/말투/키워드) 자동 생성 중...');
+        setNextStepAutoFillProgress(20);
+        await handleAutoGenerateDetail();
+        try { setNextStepAutoFillSummaryLines((prev) => [...(Array.isArray(prev) ? prev : []), '디테일(성격/말투/키워드) 자동 생성']); } catch (_) {}
+        setNextStepAutoFillProgress(100);
+        setNextStepAutoFillLabel('완료되었습니다. 내용을 확인해주세요.');
+        return;
+      }
+
+      if (nextId === 'stat') {
+        /**
+         * ✅ 스탯 단계 자동완성(요구사항)
+         *
+         * 동작:
+         * - 1) 프롬프트에 스탯 블록이 있으면 → 그 블록을 파싱해서 스탯 탭을 채운다.
+         * - 2) 없으면(수동 프롬프트 등) → 프로필/태그/프롬프트(+작품컨셉/오프닝 참고)로 스탯을 생성해 채운다.
+         *
+         * 주의:
+         * - 스탯은 start_sets(오프닝 단위)에 저장된다.
+         */
+        const nm = String(formData?.basic_info?.name || '').trim();
+        const ds = String(formData?.basic_info?.description || '').trim();
+        const wd = String(formData?.basic_info?.world_setting || '').trim();
+        if (!nm || !ds || !wd) {
+          setNextStepAutoFillError('stat_prereq_missing');
+          setNextStepAutoFillProgress(100);
+          setNextStepAutoFillLabel('프로필/프롬프트를 먼저 완성해주세요.');
+          return;
+        }
+
+        // 현재 오프닝(세트) 찾기
+        const ss = (formData?.basic_info?.start_sets && typeof formData.basic_info.start_sets === 'object')
+          ? formData.basic_info.start_sets
+          : null;
+        const items = Array.isArray(ss?.items) ? ss.items : [];
+        const sel = String(ss?.selectedId || '').trim() || String(items?.[0]?.id || '').trim();
+        const active = items.find((x) => String(x?.id || '').trim() === sel) || items[0] || {};
+        const activeId = String(active?.id || '').trim() || sel;
+        if (!activeId) {
+          setNextStepAutoFillError('stat_opening_missing');
+          setNextStepAutoFillProgress(100);
+          setNextStepAutoFillLabel('오프닝(시작 설정)이 없어 스탯 자동완성을 진행할 수 없습니다.');
+          return;
+        }
+
+        // ✅ 한 글자라도 입력 흔적이 있으면 자동완성 금지(운영 안전)
+        const existingStats = (active?.stat_settings && typeof active.stat_settings === 'object' && Array.isArray(active.stat_settings.stats))
+          ? active.stat_settings.stats
+          : [];
+        const hasAnyText = (v) => { try { return !!String(v ?? '').trim(); } catch (_) { return false; } };
+        const hasExistingTrace = (Array.isArray(existingStats) ? existingStats : []).some((s) => hasAnyText(s?.name) || hasAnyText(s?.description));
+        if (hasExistingTrace) {
+          try { setNextStepAutoFillSummaryLines((prev) => [...(Array.isArray(prev) ? prev : []), '스탯: 기존 입력 감지로 자동완성 생략']); } catch (_) {}
+          setNextStepAutoFillProgress(100);
+          setNextStepAutoFillLabel('이미 입력된 스탯이 있어 자동완성을 생략했어요.');
+          return;
+        }
+
+        setNextStepAutoFillLabel('스탯 자동완성 확인 중...');
+        setNextStepAutoFillProgress(15);
+
+        // 1) 프롬프트의 스탯 블록이 있으면 파싱해서 적용
+        const parsedFromPrompt = extractStatsFromPromptStatsBlock(wd);
+        if (parsedFromPrompt.length) {
+          updateStartSets((prev) => {
+            const cur = (prev && typeof prev === 'object') ? prev : {};
+            const curItems = Array.isArray(cur.items) ? cur.items : [];
+            const nextItems = curItems.map((it, idx) => {
+              const iid = String(it?.id || '').trim() || `set_${idx + 1}`;
+              if (iid !== activeId) return it;
+              const base = (it && typeof it === 'object') ? it : {};
+              const st = (base.stat_settings && typeof base.stat_settings === 'object') ? base.stat_settings : {};
+              return { ...base, stat_settings: { ...st, stats: parsedFromPrompt.slice(0, HARD_MAX_STATS_PER_OPENING) } };
+            });
+            return { ...cur, items: nextItems };
+          });
+          // ✅ 프롬프트 블록 기준으로 채운 것이므로 dirty 해제
+          try { setStatsDirtyByStartSetId((prev) => ({ ...(prev || {}), [activeId]: false })); } catch (_) {}
+          try { setNextStepAutoFillSummaryLines((prev) => [...(Array.isArray(prev) ? prev : []), '스탯: 프롬프트 스탯 블록으로 자동 채움']); } catch (_) {}
+          setNextStepAutoFillProgress(100);
+          setNextStepAutoFillLabel('완료되었습니다. 스탯 탭에서 내용을 확인해주세요.');
+          return;
+        }
+
+        // 2) 없으면 서버에서 스탯 초안 생성
+        setNextStepAutoFillLabel('스탯(프롬프트 기반) 자동 생성 중...');
+        setNextStepAutoFillProgress(40);
+        try {
+          const promptType = String(formData?.basic_info?.character_type || 'roleplay').trim();
+          const mode = inferAutoGenModeFromCharacterTypeAndWorld(promptType, wd);
+          const openingIntro = String(active?.intro || '').trim();
+          const openingFirstLine = String(active?.firstLine || '').trim();
+          const concept = (() => {
+            try {
+              const pc = (ss && typeof ss.profile_concept === 'object' && ss.profile_concept) ? ss.profile_concept : null;
+              const enabled = !!pc?.enabled;
+              if (!enabled) return '';
+              return String(pc?.text || '').trim().slice(0, PROFILE_CONCEPT_MAX_LEN);
+            } catch (_) {
+              return '';
+            }
+          })();
+          const worldForStat = (() => {
+            const parts = [wd];
+            if (concept) parts.push(`[작품 컨셉(추가 참고)]\n${concept}`);
+            if (openingIntro || openingFirstLine) {
+              parts.push('[오프닝(추가 참고)]');
+              if (openingIntro) parts.push(`- 첫 상황: ${openingIntro}`);
+              if (openingFirstLine) parts.push(`- 첫 대사: ${openingFirstLine}`);
+            }
+            return parts.filter(Boolean).join('\n\n').slice(0, 6000);
+          })();
+
+          const statRes = await charactersAPI.quickGenerateStatDraft({
+            name: nm,
+            description: ds,
+            world_setting: worldForStat,
+            mode,
+            tags: Array.isArray(selectedTagSlugs) ? selectedTagSlugs : [],
+            ai_model: (useNormalCreateWizard ? 'gemini' : (String(user?.preferred_model || 'claude').trim().toLowerCase() || 'claude')),
+          });
+
+          const raw = Array.isArray(statRes?.data?.stats) ? statRes.data.stats : [];
+          const normalized = raw
+            .map((s, idx) => ({
+              id: String(s?.id || '').trim() || `stat_${Date.now()}_${Math.random().toString(16).slice(2, 7)}_${idx}`,
+              name: String(s?.name || '').trim().slice(0, 20),
+              min_value: Number.isFinite(Number(s?.min_value)) ? Number(s.min_value) : '',
+              max_value: Number.isFinite(Number(s?.max_value)) ? Number(s.max_value) : '',
+              base_value: Number.isFinite(Number(s?.base_value)) ? Number(s.base_value) : '',
+              unit: String(s?.unit || '').trim().slice(0, 10),
+              description: String(s?.description || '').trim().slice(0, 200),
+            }))
+            .filter((s) => s.name && s.description)
+            .slice(0, HARD_MAX_STATS_PER_OPENING);
+
+          if (!normalized.length) {
+            setNextStepAutoFillError('stat_generate_empty');
+            setNextStepAutoFillProgress(100);
+            setNextStepAutoFillLabel('스탯 생성 결과가 비어있습니다. 스탯 탭에서 “프롬프트의 스탯 블록을 스탯에 적용” 또는 수동 입력으로 진행해주세요.');
+            return;
+          }
+
+          updateStartSets((prev) => {
+            const cur = (prev && typeof prev === 'object') ? prev : {};
+            const curItems = Array.isArray(cur.items) ? cur.items : [];
+            const nextItems = curItems.map((it, idx) => {
+              const iid = String(it?.id || '').trim() || `set_${idx + 1}`;
+              if (iid !== activeId) return it;
+              const base = (it && typeof it === 'object') ? it : {};
+              const st = (base.stat_settings && typeof base.stat_settings === 'object') ? base.stat_settings : {};
+              return { ...base, stat_settings: { ...st, stats: normalized } };
+            });
+            return { ...cur, items: nextItems };
+          });
+          // ✅ 자동완성 직후 1회: 프롬프트에도 스탯 블록을 함께 삽입(일관 UX)
+          try {
+            const nextPrompt = syncStatsIntoPromptText(wd, normalized);
+            const nextText = String(nextPrompt || '').trim() ? String(nextPrompt || '') : wd;
+            setFormData((prev) => ({
+              ...prev,
+              basic_info: {
+                ...prev.basic_info,
+                world_setting: nextText.slice(0, 6000),
+              },
+            }));
+          } catch (_) {}
+
+          // ✅ 프롬프트에도 동일 내용이 반영되었으므로 dirty 해제
+          try { setStatsDirtyByStartSetId((prev) => ({ ...(prev || {}), [activeId]: false })); } catch (_) {}
+
+          try {
+            setNextStepAutoFillSummaryLines((prev) => [
+              ...(Array.isArray(prev) ? prev : []),
+              `스탯: 자동 생성 (${normalized.length}개)`,
+              '프롬프트: 스탯 블록 자동 반영',
+            ]);
+          } catch (_) {}
+          setNextStepAutoFillProgress(100);
+          setNextStepAutoFillLabel('완료되었습니다. 프롬프트/스탯 탭에서 내용을 확인해주세요.');
+          return;
+        } catch (eStat) {
+          try { console.error('[CreateCharacterPage] stat autofill failed:', eStat); } catch (_) {}
+          setNextStepAutoFillError('stat_autofill_failed');
+          setNextStepAutoFillProgress(100);
+          setNextStepAutoFillLabel('스탯 자동완성에 실패했습니다. 잠시 후 다시 시도해주세요.');
+          return;
+        }
+        // no-op
+        return;
+      }
+
+      if (nextId === 'setting_book') {
+        // ✅ 자동완성 대상 없음 → 그냥 이동(모달로 방해하지 않음)
+        try { setNextStepAutoFillOpen(false); } catch (_) {}
+        return;
+      }
+
+      if (nextId === 'ending') {
+        /**
+         * ✅ 엔딩 자동완성(요구사항)
+         *
+         * 원리:
+         * - 오프닝(첫 상황/첫대사)이 이미 만들어진 상태에서,
+         *   오프닝당 엔딩 2개를 자동 생성한다. (제목/기본조건/힌트/턴 + 에필로그)
+         *
+         * 방어:
+         * - 기존 엔딩이 있으면 "비어있는 경우만" 채운다(덮어쓰기 방지).
+         */
+        const nm = String(formData?.basic_info?.name || '').trim();
+        const ds = String(formData?.basic_info?.description || '').trim();
+        const wd = String(formData?.basic_info?.world_setting || '').trim();
+        if (!nm || !ds || !wd) {
+          setNextStepAutoFillError('ending_prereq_missing');
+          setNextStepAutoFillProgress(100);
+          setNextStepAutoFillLabel('프로필/프롬프트를 먼저 완성해주세요.');
+          return;
+        }
+
+        const ss = (formData?.basic_info?.start_sets && typeof formData.basic_info.start_sets === 'object')
+          ? formData.basic_info.start_sets
+          : null;
+        const items = Array.isArray(ss?.items) ? ss.items : [];
+        const sel = String(ss?.selectedId || '').trim() || String(items?.[0]?.id || '').trim();
+        const active = items.find((x) => String(x?.id || '').trim() === sel) || items[0] || {};
+        const openingIntro = String(active?.intro || '').trim();
+        const openingFirstLine = String(active?.firstLine || '').trim();
+        if (!openingIntro || !openingFirstLine) {
+          setNextStepAutoFillError('opening_missing');
+          setNextStepAutoFillProgress(100);
+          setNextStepAutoFillLabel('오프닝(첫 상황/첫 대사)을 먼저 생성/입력해주세요.');
+          return;
+        }
+
+        const sim = (ss && typeof ss?.sim_options === 'object' && ss.sim_options) ? ss.sim_options : {};
+        const maxTurnsRaw = Number(sim?.max_turns ?? 200);
+        const maxTurns = Number.isFinite(maxTurnsRaw) ? Math.floor(maxTurnsRaw) : 200;
+        const es = (active?.ending_settings && typeof active.ending_settings === 'object') ? active.ending_settings : {};
+        const minTurnsRaw = Number(es?.min_turns ?? 30);
+        const minTurns = Number.isFinite(minTurnsRaw) ? Math.max(10, Math.floor(minTurnsRaw)) : 30;
+
+        // ✅ 요구사항: "위저드만" 제미니 고정(다른 화면/로직에는 영향 주지 않음)
+        const aiModel = useNormalCreateWizard
+          ? 'gemini'
+          : (String(user?.preferred_model || 'claude').trim().toLowerCase() || 'claude');
+        const model = (aiModel === 'gpt' ? 'gpt' : (aiModel === 'gemini' ? 'gemini' : 'claude'));
+
+        const WANT_ENDINGS = 2;
+        const existingEnds = Array.isArray(active?.ending_settings?.endings) ? active.ending_settings.endings : [];
+        const hasAnyText = (v) => {
+          try { return !!String(v ?? '').trim(); } catch (_) { return false; }
+        };
+        const hasAnyEndingTrace = (() => {
+          try {
+            return (Array.isArray(existingEnds) ? existingEnds : []).some((e) => {
+              // ✅ 한 글자라도 입력 흔적이 있으면 자동완성 금지(요구사항)
+              return !!(hasAnyText(e?.title) || hasAnyText(e?.base_condition) || hasAnyText(e?.hint) || hasAnyText(e?.epilogue));
+            });
+          } catch (_) {
+            return false;
+          }
+        })();
+        if (hasAnyEndingTrace) {
+          try { setNextStepAutoFillSummaryLines((prev) => [...(Array.isArray(prev) ? prev : []), '엔딩: 기존 입력 감지로 자동완성 생략']); } catch (_) {}
+          setNextStepAutoFillProgress(100);
+          setNextStepAutoFillLabel('이미 입력된 값이 있어 엔딩 자동완성을 생략했어요.');
+          return;
+        }
+
+        const clampTurn = (t) => {
+          try {
+            const v = Number(t);
+            const n = Number.isFinite(v) ? Math.floor(v) : 0;
+            if (!n) return Math.max(minTurns, Math.min(maxTurns, minTurns));
+            return Math.max(minTurns, Math.min(maxTurns, n));
+          } catch (_) {
+            return Math.max(minTurns, Math.min(maxTurns, minTurns));
+          }
+        };
+        const genEndingId = () => {
+          try { return `ending_${Date.now()}_${Math.random().toString(16).slice(2, 7)}`; }
+          catch (_) { return `ending_${Date.now()}`; }
+        };
+
+        const built = [];
+        for (let idx = 0; idx < WANT_ENDINGS; idx += 1) {
+          const base = (existingEnds[idx] && typeof existingEnds[idx] === 'object') ? existingEnds[idx] : null;
+          const baseId = String(base?.id || '').trim() || genEndingId();
+          const baseTitle = String(base?.title || '').trim();
+          const baseCond = String(base?.base_condition || '').trim();
+          const baseHint = String(base?.hint || '').trim();
+          const baseEpilogue = String(base?.epilogue || '').trim();
+          const baseExtra = Array.isArray(base?.extra_conditions) ? base.extra_conditions : [];
+
+          // 1) 제목/조건이 비어있으면 초안 생성
+          let title = baseTitle;
+          let cond = baseCond;
+          let hint = baseHint;
+          let suggestedTurn = 0;
+
+          if (!title || !cond) {
+            setNextStepAutoFillLabel(`엔딩 ${idx + 1}/2 (제목/기본조건) 자동 생성 중...`);
+            setNextStepAutoFillProgress(idx === 0 ? 18 : 55);
+            // ✅ RP/시뮬 분기(요구사항) + 커스텀 프롬프트 지원
+            const mode = inferAutoGenModeFromCharacterTypeAndWorld(formData?.basic_info?.character_type, wd);
+            const sim = (formData?.basic_info?.start_sets && typeof formData.basic_info.start_sets === 'object')
+              ? formData.basic_info.start_sets?.sim_options
+              : null;
+            const simDatingElements = !!sim?.sim_dating_elements;
+            const draftRes = await charactersAPI.quickGenerateEndingDraft({
+              name: nm,
+              description: ds,
+              world_setting: wd,
+              opening_intro: openingIntro,
+              opening_first_line: openingFirstLine,
+              mode,
+              max_turns: Math.max(50, maxTurns || 200),
+              min_turns: Math.max(10, minTurns || 30),
+              sim_dating_elements: (mode === 'simulator' ? simDatingElements : undefined),
+              tags: Array.isArray(selectedTagSlugs) ? selectedTagSlugs : [],
+              ai_model: model,
+            });
+            title = title || String(draftRes?.data?.title || '').trim();
+            cond = cond || String(draftRes?.data?.base_condition || '').trim();
+            hint = hint || String(draftRes?.data?.hint || '').trim();
+            const suggestedTurnRaw = Number(draftRes?.data?.suggested_turn ?? 0);
+            suggestedTurn = Number.isFinite(suggestedTurnRaw) ? Math.floor(suggestedTurnRaw) : 0;
+            if (!title || !cond) {
+              setNextStepAutoFillError('ending_draft_empty');
+              setNextStepAutoFillProgress(100);
+              setNextStepAutoFillLabel('엔딩 초안 생성 결과가 비어있습니다. 잠시 후 다시 시도해주세요.');
+              return;
+            }
+            try { setNextStepAutoFillSummaryLines((prev) => [...(Array.isArray(prev) ? prev : []), `엔딩 ${idx + 1}: 제목/기본조건 자동 생성`]); } catch (_) {}
+          }
+
+          // 2) 에필로그가 비어있으면 생성
+          let epilogue = baseEpilogue;
+          if (!epilogue) {
+            setNextStepAutoFillLabel(`엔딩 ${idx + 1}/2 (에필로그) 자동 생성 중...`);
+            setNextStepAutoFillProgress(idx === 0 ? 35 : 72);
+            // ✅ RP/시뮬 분기(요구사항) + 커스텀 프롬프트 지원
+            const mode2 = inferAutoGenModeFromCharacterTypeAndWorld(formData?.basic_info?.character_type, wd);
+            const sim2 = (formData?.basic_info?.start_sets && typeof formData.basic_info.start_sets === 'object')
+              ? formData.basic_info.start_sets?.sim_options
+              : null;
+            const simDatingElements2 = !!sim2?.sim_dating_elements;
+            const epRes = await charactersAPI.quickGenerateEndingEpilogueDraft({
+              name: nm,
+              description: ds,
+              world_setting: wd,
+              opening_intro: openingIntro,
+              opening_first_line: openingFirstLine,
+              ending_title: title,
+              base_condition: cond,
+              hint,
+              extra_conditions: baseExtra,
+              mode: mode2,
+              sim_dating_elements: (mode2 === 'simulator' ? simDatingElements2 : undefined),
+              tags: Array.isArray(selectedTagSlugs) ? selectedTagSlugs : [],
+              ai_model: model,
+            });
+            epilogue = String(epRes?.data?.epilogue || '').trim();
+            if (!epilogue) {
+              try { setNextStepAutoFillSummaryLines((prev) => [...(Array.isArray(prev) ? prev : []), `엔딩 ${idx + 1}: 에필로그 생성 실패(수동 가능)`]); } catch (_) {}
+            } else {
+              try { setNextStepAutoFillSummaryLines((prev) => [...(Array.isArray(prev) ? prev : []), `엔딩 ${idx + 1}: 에필로그 자동 생성`]); } catch (_) {}
+            }
+          }
+
+          const turnRaw = (base?.turn != null && base?.turn !== '') ? Number(base.turn) : (suggestedTurn || minTurns);
+          const turn = clampTurn(turnRaw);
+          built.push({
+            id: baseId,
+            turn,
+            // ✅ 방어: 자동생성 결과도 UI 제한을 넘기지 않게 클램프(엔딩 탭 maxLength와 일치)
+            title: String(title || '').slice(0, 20),
+            base_condition: String(cond || '').slice(0, 500),
+            hint: String(hint || '').slice(0, 20),
+            epilogue: String(epilogue || '').slice(0, 1000),
+            extra_conditions: baseExtra,
+          });
+        }
+
+        // ✅ start_sets에 "앞 2개 엔딩"을 보장(기존 데이터는 뒤에 유지)
+        setNextStepAutoFillProgress(88);
+        updateStartSets((prev) => {
+          const cur = (prev && typeof prev === 'object') ? prev : {};
+          const curItems = Array.isArray(cur.items) ? cur.items : [];
+          const sid = String(cur.selectedId || '').trim() || sel;
+          const nextItems = curItems.map((it) => {
+            const iid = String(it?.id || '').trim();
+            if (iid !== sid) return it;
+            const base = (it && typeof it === 'object') ? it : {};
+            const curEs = (base.ending_settings && typeof base.ending_settings === 'object') ? base.ending_settings : {};
+            const curEnds = Array.isArray(curEs?.endings) ? curEs.endings : [];
+            const tail = curEnds.slice(WANT_ENDINGS);
+            return {
+              ...base,
+              ending_settings: {
+                ...curEs,
+                min_turns: Number.isFinite(Number(curEs?.min_turns)) ? curEs.min_turns : minTurns,
+                endings: [...built, ...tail],
+              },
+            };
+          });
+          return { ...cur, items: nextItems };
+        });
+
+        setNextStepAutoFillProgress(100);
+        setNextStepAutoFillLabel('완료되었습니다. 내용을 확인해주세요.');
+        return;
+      }
+
+      if (nextId === 'options') {
+        // ✅ 자동완성 대상 없음 → 안내만 (단계 이동 금지)
+        setNextStepAutoFillProgress(100);
+        setNextStepAutoFillLabel('다음 단계(옵션)는 자동완성할 항목이 없어요. 필요한 내용을 직접 입력 후 “다음단계”를 눌러주세요.');
+        return;
+      }
+
+      // 기타 단계(예외): 안내만
+      setNextStepAutoFillProgress(100);
+      setNextStepAutoFillLabel('이 단계는 자동완성할 항목이 없어요.');
     } catch (e) {
-      try { console.error('[CreateCharacterPage] prompt-only autofill failed:', e); } catch (_) {}
-      try { dispatchToast('error', '프롬프트 자동 생성에 실패했습니다. 잠시 후 다시 시도해주세요.'); } catch (_) {}
-      return null;
+      try { console.error('[CreateCharacterPage] next step auto-fill failed:', e); } catch (_) {}
+      setNextStepAutoFillError(String(e?.message || e || 'unknown_error'));
+      setNextStepAutoFillProgress(100);
+      setNextStepAutoFillLabel('자동완성에 실패했습니다. 잠시 후 다시 시도해주세요.');
+      try { dispatchToast('error', '다음단계 자동완성에 실패했습니다.'); } catch (_) {}
+    } finally {
+      nextStepAutoFillRunningRef.current = false;
     }
-  }, [formData, selectedTagSlugs, user, dispatchToast]);
+  }, [
+    useNormalCreateWizard,
+    wizardStepIndex,
+    NORMAL_CREATE_WIZARD_STEPS,
+    formData,
+    dispatchToast,
+    handleAutoGeneratePromptOnlyForNextStepAutoFill,
+    handleAutoGenerateFirstStart,
+    handleAutoGenerateTurnEvents,
+    handleAutoGenerateDetail,
+    selectedTagSlugs,
+    user,
+    updateStartSets,
+    detailPrefs,
+  ]);
 
-  const handleAutoGeneratePrompt = useCallback(async () => {
+  const handleAutoGeneratePrompt = useCallback(async (opts) => {
     /**
      * 프롬프트 자동 생성(요구사항):
      * - 프로필(이름/소개) 2개가 모두 입력되어야만 실행한다.
@@ -3936,6 +6147,7 @@ const CreateCharacterPage = () => {
      */
     if (quickPromptGenLoading) return;
     try {
+      const forceOverwrite = opts?.forceOverwrite === true;
       const mode = String(formData?.basic_info?.character_type || 'roleplay').trim();
       if (mode !== 'simulator' && mode !== 'roleplay') {
         dispatchToast('error', '이 모드에서는 자동생성을 사용할 수 없어요.');
@@ -3949,27 +6161,132 @@ const CreateCharacterPage = () => {
         return;
       }
 
+      // ✅ 덮어쓰기 허용(요구사항): 기존 프롬프트가 있으면 경고 모달 후 진행
+      // - 이 버튼은 프롬프트 뿐 아니라 스탯/디테일까지 일부 바뀔 수 있다(올인원 동작).
+      const existing = String(formData?.basic_info?.world_setting || '').trim();
+      if (existing && !forceOverwrite) {
+        openAutoGenOverwriteConfirm(
+          '프롬프트(세계관 설정)',
+          async () => { await handleAutoGeneratePrompt({ forceOverwrite: true }); }
+        );
+        return;
+      }
+
       setQuickPromptGenLoading(true);
-      const aiModel = String(user?.preferred_model || 'claude').trim().toLowerCase() || 'claude';
+      setQuickPromptGenSteps(['1/3 프롬프트 생성 준비 중...']);
+      quickPromptGenAbortRef.current = false;
+      /**
+       * ✅ UX(요구사항): 자동생성 버튼을 누르면 즉시 텍스트박스를 비우고 스피너 상태가 체감되게 한다.
+       * - 실패 시에는 원문 복구(침묵/유실 금지).
+       * - 프롬프트 자동생성은 올인원(스탯/디테일 포함)이므로 모든 필드 백업
+       */
+      try {
+        // 프롬프트 원문 저장
+        promptAutoGenPrevWorldRef.current = String(formData?.basic_info?.world_setting || '');
+        // 성격/말투 원문 저장
+        promptAutoGenPrevPersonalityRef.current = String(formData?.basic_info?.personality || '');
+        promptAutoGenPrevSpeechStyleRef.current = String(formData?.basic_info?.speech_style || '');
+        // 스탯 원문 저장 (현재 선택된 오프닝의 스탯)
+        try {
+          const ss = (formData?.basic_info?.start_sets && typeof formData.basic_info.start_sets === 'object')
+            ? formData.basic_info.start_sets
+            : null;
+          const statSettings = ss?.stat_settings;
+          promptAutoGenPrevStatsRef.current = (statSettings?.stats && Array.isArray(statSettings.stats))
+            ? JSON.parse(JSON.stringify(statSettings.stats))
+            : null;
+        } catch (_) {
+          promptAutoGenPrevStatsRef.current = null;
+        }
+        // detailPrefs 원문 저장 (interests, likes, dislikes)
+        try {
+          promptAutoGenPrevDetailPrefsRef.current = detailPrefs
+            ? JSON.parse(JSON.stringify(detailPrefs))
+            : null;
+        } catch (_) {
+          promptAutoGenPrevDetailPrefsRef.current = null;
+        }
+        setFormData((prev) => ({
+          ...prev,
+          basic_info: {
+            ...prev.basic_info,
+            world_setting: '',
+          },
+        }));
+      } catch (_) {}
+      
+      // 중지 체크
+      if (quickPromptGenAbortRef.current) {
+        // ✅ 취소 시 원문 복구 (원문이 비어있든 안 비어있든)
+        try {
+          const prevWorld = String(promptAutoGenPrevWorldRef.current || '');
+          setFormData((prev) => ({
+            ...prev,
+            basic_info: {
+              ...prev.basic_info,
+              world_setting: prevWorld.slice(0, 6000),
+            },
+          }));
+        } catch (_) {}
+        setQuickPromptGenLoading(false);
+        setQuickPromptGenSteps([]);
+        return;
+      }
+      // ✅ 요구사항: "위저드만" 제미니 고정(다른 화면/로직에는 영향 주지 않음)
+      const aiModel = useNormalCreateWizard
+        ? 'gemini'
+        : (String(user?.preferred_model || 'claude').trim().toLowerCase() || 'claude');
       const ss = (formData?.basic_info?.start_sets && typeof formData.basic_info.start_sets === 'object')
         ? formData.basic_info.start_sets
         : null;
       const sim = (ss && typeof ss.sim_options === 'object' && ss.sim_options) ? ss.sim_options : {};
       const maxTurnsRaw = Number(sim?.max_turns ?? 200);
       const maxTurns = Number.isFinite(maxTurnsRaw) && maxTurnsRaw >= 50 ? Math.floor(maxTurnsRaw) : 200;
-      const allowInfiniteMode = !!sim?.allow_infinite_mode;
+      const simDatingElements = !!sim?.sim_dating_elements;
+      // ✅ 단계 표시: 프롬프트 생성 중
+      setQuickPromptGenSteps(['1/3 프롬프트 생성 중...']);
+      
       const res = await charactersAPI.quickGeneratePromptDraft({
         name,
-        description: desc,
+        description: (() => {
+          // ✅ 작품 컨셉(선택, 고급): 프롬프트 자동생성에만 참고로 추가한다.
+          // - 비필수/옵션이며, 입력되어도 원문을 그대로 전달해 모델 이해를 돕는다.
+          try {
+            const ss2 = (formData?.basic_info?.start_sets && typeof formData.basic_info.start_sets === 'object')
+              ? formData.basic_info.start_sets
+              : null;
+            const pc = (ss2 && typeof ss2.profile_concept === 'object' && ss2.profile_concept) ? ss2.profile_concept : null;
+            const enabled = !!pc?.enabled;
+            const concept = enabled ? String(pc?.text || '').trim().slice(0, PROFILE_CONCEPT_MAX_LEN) : '';
+            return concept ? `${desc}\n\n[작품 컨셉(추가 참고)]\n${concept}` : desc;
+          } catch (_) {
+            return desc;
+          }
+        })(),
         mode: (mode === 'simulator' ? 'simulator' : 'roleplay'),
         max_turns: maxTurns,
-        allow_infinite_mode: allowInfiniteMode,
+        sim_dating_elements: (mode === 'simulator' ? simDatingElements : undefined),
         tags: Array.isArray(selectedTagSlugs) ? selectedTagSlugs : [],
         ai_model: (aiModel === 'gpt' ? 'gpt' : (aiModel === 'gemini' ? 'gemini' : 'claude')),
       });
 
+      // ✅ 단계 표시: 프롬프트 완료
+      setQuickPromptGenSteps(['✓ 1/3 프롬프트 생성 완료', '2/3 스탯 처리 중...']);
+
       const promptText = String(res?.data?.prompt || '').trim();
       if (!promptText) {
+        // 방어: 비정상 응답이면 원문 복구
+        try {
+          const prevWorld = String(promptAutoGenPrevWorldRef.current || '');
+          if (prevWorld.trim()) {
+            setFormData((prev) => ({
+              ...prev,
+              basic_info: { ...prev.basic_info, world_setting: prevWorld.slice(0, 6000) },
+            }));
+          }
+        } catch (_) {}
+        setQuickPromptGenSteps([]);
+        setQuickPromptGenLoading(false);
         dispatchToast('error', '프롬프트 생성 결과가 비어있습니다. 잠시 후 다시 시도해주세요.');
         return;
       }
@@ -3990,44 +6307,6 @@ const CreateCharacterPage = () => {
        * - 대신 "동기화 버튼" 또는 "자동생성 직후 1회"처럼 명시적인 타이밍에만, 프롬프트의 관리 블록을 갱신한다.
        * - 블록은 마커로 감싸 안전하게 교체한다(사용자 작성 영역 침범 방지).
        */
-      const _syncStatsIntoPromptText = (baseText, statsList) => {
-        try {
-          const START = '<!-- CC_STATS_START -->';
-          const END = '<!-- CC_STATS_END -->';
-          const header = '## 스탯 설정 (자동 동기화)\n';
-          const body = (Array.isArray(statsList) ? statsList : []).map((s) => {
-            const nm = String(s?.name || '').trim();
-            if (!nm) return null;
-            const mn = (s?.min_value === '' || s?.min_value == null) ? '' : String(s.min_value);
-            const mx = (s?.max_value === '' || s?.max_value == null) ? '' : String(s.max_value);
-            const bv = (s?.base_value === '' || s?.base_value == null) ? '' : String(s.base_value);
-            const unit = String(s?.unit || '').trim();
-            const desc = String(s?.description || '').trim();
-            const range = (mn !== '' && mx !== '') ? `${mn}~${mx}` : '';
-            const base = (bv !== '') ? `기본 ${bv}` : '';
-            const unitPart = unit ? `(${unit})` : '';
-            const meta = [range, base].filter(Boolean).join(', ');
-            const metaPart = meta ? ` — ${meta}` : '';
-            const descPart = desc ? `\n  - 설명: ${desc}` : '';
-            return `- **${nm}** ${unitPart}${metaPart}${descPart}`;
-          }).filter(Boolean).join('\n');
-          const block = [START, header + (body || '- (스탯 없음)'), END].join('\n');
-
-          const text = String(baseText || '');
-          const sIdx = text.indexOf(START);
-          const eIdx = text.indexOf(END);
-          if (sIdx >= 0 && eIdx > sIdx) {
-            const before = text.slice(0, sIdx).trimEnd();
-            const after = text.slice(eIdx + END.length).trimStart();
-            return [before, block, after].filter(Boolean).join('\n\n').trim().slice(0, 6000);
-          }
-          // 없으면 마지막에 추가
-          return [text.trim(), block].filter(Boolean).join('\n\n').trim().slice(0, 6000);
-        } catch (_) {
-          return String(baseText || '').slice(0, 6000);
-        }
-      };
-
       // ✅ 스탯 자동 입력(요구사항): 프롬프트 생성 시 '스탯 설정' 탭도 함께 채운다.
       // - 태그칩처럼 "자동입력"되어야 사용자가 수정/검증할 수 있다.
       try {
@@ -4039,12 +6318,12 @@ const CreateCharacterPage = () => {
         const normalized = rawStats
           .map((s) => ({
             id: `stat_${Date.now()}_${Math.random().toString(16).slice(2, 7)}`,
-            name: String(s?.name || '').trim(),
+            name: String(s?.name || '').trim().slice(0, 20),
             min_value: Number.isFinite(Number(s?.min_value)) ? Number(s.min_value) : '',
             max_value: Number.isFinite(Number(s?.max_value)) ? Number(s.max_value) : '',
             base_value: Number.isFinite(Number(s?.base_value)) ? Number(s.base_value) : '',
-            unit: String(s?.unit || '').trim(),
-            description: String(s?.description || '').trim(),
+            unit: String(s?.unit || '').trim().slice(0, 10),
+            description: String(s?.description || '').trim().slice(0, 200),
           }))
           .filter((s) => s.name && s.description)
           .slice(0, HARD_MAX_STATS_PER_OPENING);
@@ -4052,7 +6331,7 @@ const CreateCharacterPage = () => {
         if (normalized.length) {
           // ✅ 자동생성 직후 1회: 프롬프트에도 스탯 블록을 함께 삽입(사용자가 프롬프트에서 확인 가능)
           try {
-            const nextPrompt = _syncStatsIntoPromptText(promptText, normalized);
+            const nextPrompt = syncStatsIntoPromptText(promptText, normalized);
             setFormData((prev) => ({
               ...prev,
               basic_info: {
@@ -4099,20 +6378,62 @@ const CreateCharacterPage = () => {
             const sel = String(ss2?.selectedId || '').trim() || String(items2?.[0]?.id || '').trim();
             if (sel) setStatsDirtyByStartSetId((prev) => ({ ...(prev || {}), [sel]: false }));
           } catch (_) {}
+          // ✅ 단계 표시: 스탯 처리 완료
+          setQuickPromptGenSteps(['✓ 1/3 프롬프트 생성 완료', '✓ 2/3 스탯 처리 완료']);
         }
       } catch (e3) {
         try { console.error('[CreateCharacterPage] stat auto-fill failed:', e3); } catch (_) {}
+        setQuickPromptGenSteps(['✓ 1/3 프롬프트 생성 완료', '⚠ 2/3 스탯 처리 실패']);
       }
 
+      // 중지 체크
+      if (quickPromptGenAbortRef.current) {
+        // ✅ 취소 시 원문 복구 (원문이 비어있든 안 비어있든)
+        try {
+          const prevWorld = String(promptAutoGenPrevWorldRef.current || '');
+          setFormData((prev) => ({
+            ...prev,
+            basic_info: {
+              ...prev.basic_info,
+              world_setting: prevWorld.slice(0, 6000),
+            },
+          }));
+        } catch (_) {}
+        setQuickPromptGenLoading(false);
+        setQuickPromptGenSteps([]);
+        return;
+      }
+      
+      // ✅ 디테일 생성 전 취소 체크 - 취소됐으면 디테일 생성 없이 즉시 종료
+      if (quickPromptGenAbortRef.current) {
+        setQuickPromptGenLoading(false);
+        setQuickPromptGenSteps([]);
+        return;
+      }
+      
       // ✅ 경쟁사 UX: 프롬프트 자동 생성 시 디테일도 함께 자동 생성
       // - 디테일 탭의 "자동 생성" 버튼은 유지하되, 프롬프트 버튼은 올인원으로 동작하게 한다.
       try {
         if (!quickDetailGenLoading) {
+          setQuickPromptGenSteps((prev) => {
+            const base = Array.isArray(prev) ? prev : [];
+            return [...base.filter((s) => !s.includes('3/3')), '3/3 디테일 생성 중...'];
+          });
           setQuickDetailGenLoading(true);
+          const promptType = String(formData?.basic_info?.character_type || 'roleplay').trim();
+          const mode = (promptType === 'simulator' ? 'simulator' : 'roleplay');
           const detailRes = await charactersAPI.quickGenerateDetailDraft({
             name,
             description: desc,
             world_setting: promptText,
+            mode,
+            section_modes: {
+              personality: getEffectiveDetailMode('personality'),
+              speech_style: getEffectiveDetailMode('speech_style'),
+              interests: getEffectiveDetailMode('interests'),
+              likes: getEffectiveDetailMode('likes'),
+              dislikes: getEffectiveDetailMode('dislikes'),
+            },
             tags: Array.isArray(selectedTagSlugs) ? selectedTagSlugs : [],
             ai_model: (aiModel === 'gpt' ? 'gpt' : (aiModel === 'gemini' ? 'gemini' : 'claude')),
           });
@@ -4129,8 +6450,8 @@ const CreateCharacterPage = () => {
               ...prev,
               basic_info: {
                 ...prev.basic_info,
-                personality: nextPersonality.slice(0, 2000),
-                speech_style: nextSpeech.slice(0, 2000),
+                personality: nextPersonality.slice(0, 300),
+                speech_style: nextSpeech.slice(0, 300),
               },
             }));
           }
@@ -4144,18 +6465,405 @@ const CreateCharacterPage = () => {
       } catch (e2) {
         console.error('[CreateCharacterPage] quick-generate-detail (via prompt) failed:', e2);
         dispatchToast('error', '디테일 자동 생성에 실패했습니다. 잠시 후 다시 시도해주세요.');
+        setQuickPromptGenSteps((prev) => {
+          const base = Array.isArray(prev) ? prev : [];
+          return [...base.filter((s) => !s.includes('3/3')), '⚠ 3/3 디테일 생성 실패'];
+        });
       } finally {
-        try { setQuickDetailGenLoading(false); } catch (_) {}
+        try { 
+          setQuickDetailGenLoading(false);
+          // ✅ 단계 표시: 모든 단계 완료 (성공한 경우만)
+          setQuickPromptGenSteps((prev) => {
+            const base = Array.isArray(prev) ? prev : [];
+            const hasFailure = base.some((s) => s.includes('실패') || s.includes('❌') || s.includes('⚠'));
+            if (!hasFailure) {
+              return ['✓ 1/3 프롬프트 생성 완료', '✓ 2/3 스탯 생성 완료', '✓ 3/3 디테일 생성 완료'];
+            }
+            return base;
+          });
+        } catch (_) {}
       }
 
       dispatchToast('success', '프롬프트/디테일이 자동 생성되었습니다. 내용을 확인해주세요.');
-    } catch (e) {
-      console.error('[CreateCharacterPage] quick-generate-prompt failed:', e);
-      dispatchToast('error', '프롬프트 자동 생성에 실패했습니다. 잠시 후 다시 시도해주세요.');
-    } finally {
+      } catch (e) {
+        console.error('[CreateCharacterPage] quick-generate-prompt failed:', e);
+        // ✅ 실패 시 원문 복구(유실 방지)
+        try {
+          const prevWorld = String(promptAutoGenPrevWorldRef.current || '');
+          if (prevWorld.trim()) {
+            setFormData((prev) => ({
+              ...prev,
+              basic_info: { ...prev.basic_info, world_setting: prevWorld.slice(0, 6000) },
+            }));
+          }
+        } catch (_) {}
+        setQuickPromptGenSteps(['❌ 프롬프트 생성 실패']);
+        dispatchToast('error', '프롬프트 자동 생성에 실패했습니다. 잠시 후 다시 시도해주세요.');
+      } finally {
+        setQuickPromptGenLoading(false);
+        // ✅ 완료 후 1초 뒤 단계 표시 초기화 (사용자가 완료 메시지를 볼 수 있게)
+        setTimeout(() => {
+          setQuickPromptGenSteps([]);
+        }, 1000);
+      }
+  }, [quickPromptGenLoading, quickDetailGenLoading, formData, selectedTagSlugs, user, setDetailPrefs, setDetailChipInputs, getEffectiveDetailMode, openAutoGenOverwriteConfirm]);
+
+  // ✅ 프롬프트 자동생성 취소 핸들러 - 올인원이므로 모든 필드(프롬프트/스탯/성격/말투/디테일) 복구
+  const handleCancelPromptGeneration = useCallback(() => {
+    try {
+      quickPromptGenAbortRef.current = true;
       setQuickPromptGenLoading(false);
+      setQuickPromptGenSteps([]);
+      
+      // ✅ 취소 시 원문 복구 - 프롬프트, 성격, 말투
+      const prevWorld = String(promptAutoGenPrevWorldRef.current || '');
+      const prevPersonality = String(promptAutoGenPrevPersonalityRef.current || '');
+      const prevSpeechStyle = String(promptAutoGenPrevSpeechStyleRef.current || '');
+      setFormData((prev) => ({
+        ...prev,
+        basic_info: {
+          ...prev.basic_info,
+          world_setting: prevWorld.slice(0, 6000),
+          personality: prevPersonality.slice(0, 300),
+          speech_style: prevSpeechStyle.slice(0, 300),
+        },
+      }));
+      
+      // ✅ 취소 시 원문 복구 - 스탯 (start_sets 내 stat_settings.stats)
+      const prevStats = promptAutoGenPrevStatsRef.current;
+      if (prevStats !== null) {
+        updateStartSets((prev) => {
+          const cur = (prev && typeof prev === 'object') ? prev : {};
+          const existingStatSettings = (cur.stat_settings && typeof cur.stat_settings === 'object') ? cur.stat_settings : {};
+          return {
+            ...cur,
+            stat_settings: {
+              ...existingStatSettings,
+              stats: prevStats,
+            },
+          };
+        });
+      }
+      
+      // ✅ 취소 시 원문 복구 - detailPrefs (interests, likes, dislikes)
+      const prevDetailPrefs = promptAutoGenPrevDetailPrefsRef.current;
+      if (prevDetailPrefs !== null && setDetailPrefs) {
+        try {
+          setDetailPrefs(prevDetailPrefs);
+        } catch (_) {}
+      }
+      
+      // ✅ 취소 시 프리뷰 채팅방 리셋
+      try { resetChatPreview(); } catch (_) {}
+      
+      dispatchToast('info', '프롬프트 자동 생성이 취소되었습니다.');
+    } catch (e) {
+      try { console.error('[CreateCharacterPage] cancel prompt generation failed:', e); } catch (_) {}
     }
-  }, [quickPromptGenLoading, quickDetailGenLoading, formData, selectedTagSlugs, user, setDetailPrefs, setDetailChipInputs]);
+  }, [dispatchToast, updateStartSets, setDetailPrefs, resetChatPreview]);
+
+  // ✅ 프로필 자동생성 취소 핸들러 - 작품명/한줄소개/작품컨셉 모두 복구
+  const handleCancelProfileGeneration = useCallback(() => {
+    try {
+      quickGenAbortRef.current = true;
+      setQuickGenLoading(false);
+      
+      // ✅ 취소 시 원문 복구 (원문이 있든 없든) - 3개 필드 모두
+      const prevName = String(profileAutoGenPrevNameRef.current || '');
+      const prevDesc = String(profileAutoGenPrevDescRef.current || '');
+      const prevConcept = profileAutoGenPrevConceptRef.current; // { enabled, text } | null
+      
+      setFormData((prev) => ({
+        ...prev,
+        basic_info: {
+          ...prev.basic_info,
+          name: prevName.slice(0, 100),
+          description: prevDesc.slice(0, 300),
+        },
+      }));
+      
+      // ✅ 작품컨셉 원문 복구
+      if (prevConcept !== null) {
+        updateStartSets((prev) => {
+          const cur = (prev && typeof prev === 'object') ? prev : {};
+          return {
+            ...cur,
+            profile_concept: {
+              enabled: !!prevConcept.enabled,
+              text: String(prevConcept.text || ''),
+            },
+          };
+        });
+      }
+      
+      // ✅ 취소 시 프리뷰 채팅방 리셋
+      try { resetChatPreview(); } catch (_) {}
+      
+      dispatchToast('info', '프로필 자동 생성이 취소되었습니다.');
+    } catch (e) {
+      try { console.error('[CreateCharacterPage] cancel profile generation failed:', e); } catch (_) {}
+    }
+  }, [dispatchToast, updateStartSets, resetChatPreview]);
+
+  // ✅ 오프닝(첫시작) 자동생성 취소 핸들러
+  const handleCancelFirstStartGeneration = useCallback(() => {
+    try {
+      quickFirstStartGenAbortRef.current = true;
+      const cancelledSetId = quickFirstStartGenLoadingId;
+      setQuickFirstStartGenLoadingId('');
+      
+      // ✅ 취소 시 원문 복구 (원문이 있든 없든)
+      const prevIntro = String(firstStartAutoGenPrevIntroRef.current || '');
+      const prevFirstLine = String(firstStartAutoGenPrevFirstLineRef.current || '');
+      
+      if (cancelledSetId) {
+        updateStartSets((prev) => {
+          const cur = (prev && typeof prev === 'object') ? prev : {};
+          const curItems = Array.isArray(cur.items) ? cur.items : [];
+          const nextItems = curItems.map((x) => {
+            const xid = String(x?.id || '').trim();
+            if (xid !== cancelledSetId) return x;
+            return { ...(x || {}), intro: prevIntro.slice(0, 2000), firstLine: prevFirstLine.slice(0, 500) };
+          });
+          return { ...cur, items: nextItems };
+        });
+      }
+      
+      // ✅ 취소 시 프리뷰 채팅방 리셋
+      try { resetChatPreview(); } catch (_) {}
+      
+      dispatchToast('info', '오프닝 자동 생성이 취소되었습니다.');
+    } catch (e) {
+      try { console.error('[CreateCharacterPage] cancel first-start generation failed:', e); } catch (_) {}
+    }
+  }, [quickFirstStartGenLoadingId, updateStartSets, dispatchToast, resetChatPreview]);
+
+  // ✅ 턴수별 사건 자동생성 취소 핸들러
+  const handleCancelTurnEventsGeneration = useCallback(() => {
+    try {
+      quickTurnEventsGenAbortRef.current = true;
+      const cancelledSetId = quickTurnEventsGenLoadingId;
+      setQuickTurnEventsGenLoadingId('');
+      
+      // ✅ 취소 시 원문 복구 (원문이 있든 없든)
+      const prevEvents = Array.isArray(turnEventsAutoGenPrevRef.current) ? turnEventsAutoGenPrevRef.current : [];
+      
+      if (cancelledSetId) {
+        updateStartSets((prev) => {
+          const cur = (prev && typeof prev === 'object') ? prev : {};
+          const curItems = Array.isArray(cur.items) ? cur.items : [];
+          const nextItems = curItems.map((x) => {
+            const xid = String(x?.id || '').trim();
+            if (xid !== cancelledSetId) return x;
+            return { ...(x || {}), turn_events: prevEvents };
+          });
+          return { ...cur, items: nextItems };
+        });
+      }
+      
+      // ✅ 취소 시 프리뷰 채팅방 리셋
+      try { resetChatPreview(); } catch (_) {}
+      
+      dispatchToast('info', '턴수별 사건 자동 생성이 취소되었습니다.');
+    } catch (e) {
+      try { console.error('[CreateCharacterPage] cancel turn-events generation failed:', e); } catch (_) {}
+    }
+  }, [quickTurnEventsGenLoadingId, updateStartSets, dispatchToast, resetChatPreview]);
+
+  // ✅ 스탯 자동생성 함수 (스탯 탭 전용)
+  const handleAutoGenerateStats = useCallback(async (targetSetId, opts) => {
+    /**
+     * 스탯 자동 생성(요구사항):
+     * - 프로필(name/description) + 프롬프트(world_setting)가 있어야 실행한다.
+     * - 기존 스탯이 있으면 덮어쓰기 확인 모달을 띄운다.
+     * - 프롬프트 기반으로 AI가 스탯을 생성한다.
+     */
+    const sid = String(targetSetId || '').trim();
+    if (!sid) return null;
+    if (quickStatsGenLoadingId) return null;
+
+    const options = (opts && typeof opts === 'object') ? opts : {};
+    const forceOverwrite = options?.forceOverwrite === true;
+
+    const name = String(formData?.basic_info?.name || '').trim();
+    const desc = String(formData?.basic_info?.description || '').trim();
+    const world = String(formData?.basic_info?.world_setting || '').trim();
+    const promptType = String(formData?.basic_info?.character_type || 'roleplay').trim();
+    const mode = inferAutoGenModeFromCharacterTypeAndWorld(promptType, world);
+
+    if (!name || !desc) {
+      dispatchToast('error', '프로필 정보를 먼저 입력해주세요.');
+      return null;
+    }
+    if (!world) {
+      dispatchToast('error', '프롬프트 정보를 먼저 입력해주세요.');
+      return null;
+    }
+
+    // start_sets / active opening 찾기
+    const ss = (formData?.basic_info?.start_sets && typeof formData.basic_info.start_sets === 'object')
+      ? formData.basic_info.start_sets
+      : null;
+    const items = Array.isArray(ss?.items) ? ss.items : [];
+    const activeSet = items.find((x) => String(x?.id || '').trim() === sid) || null;
+    
+    // 기존 스탯 확인
+    const existingStats = (activeSet?.stat_settings && typeof activeSet.stat_settings === 'object' && Array.isArray(activeSet.stat_settings.stats))
+      ? activeSet.stat_settings.stats
+      : [];
+    const hasExisting = existingStats.some((s) => String(s?.name || '').trim() || String(s?.description || '').trim());
+    
+    if (hasExisting && !forceOverwrite) {
+      openAutoGenOverwriteConfirm(
+        '스탯',
+        async () => { await handleAutoGenerateStats(sid, { forceOverwrite: true }); }
+      );
+      return null;
+    }
+
+    try {
+      // ✅ 원문 저장 (취소 시 복구용)
+      statsAutoGenPrevRef.current = existingStats;
+      quickStatsGenAbortRef.current = false;
+
+      setQuickStatsGenLoadingId(sid);
+
+      // 오프닝 정보 (참고용)
+      const openingIntro = String(activeSet?.intro || '').trim();
+      const openingFirstLine = String(activeSet?.firstLine || '').trim();
+      const concept = (() => {
+        try {
+          const pc = (ss && typeof ss.profile_concept === 'object' && ss.profile_concept) ? ss.profile_concept : null;
+          const enabled = !!pc?.enabled;
+          if (!enabled) return '';
+          return String(pc?.text || '').trim().slice(0, PROFILE_CONCEPT_MAX_LEN);
+        } catch (_) {
+          return '';
+        }
+      })();
+      const worldForStat = (() => {
+        const parts = [world];
+        if (concept) parts.push(`[작품 컨셉(추가 참고)]\n${concept}`);
+        if (openingIntro || openingFirstLine) {
+          parts.push('[오프닝(추가 참고)]');
+          if (openingIntro) parts.push(`- 첫 상황: ${openingIntro}`);
+          if (openingFirstLine) parts.push(`- 첫 대사: ${openingFirstLine}`);
+        }
+        return parts.filter(Boolean).join('\n\n').slice(0, 6000);
+      })();
+
+      // ✅ 요구사항: "위저드만" 제미니 고정
+      const aiModel = useNormalCreateWizard
+        ? 'gemini'
+        : (String(user?.preferred_model || 'claude').trim().toLowerCase() || 'claude');
+
+      const statRes = await charactersAPI.quickGenerateStatDraft({
+        name,
+        description: desc,
+        world_setting: worldForStat,
+        mode,
+        tags: Array.isArray(selectedTagSlugs) ? selectedTagSlugs : [],
+        ai_model: (aiModel === 'gpt' ? 'gpt' : (aiModel === 'gemini' ? 'gemini' : 'claude')),
+      });
+
+      // ✅ 취소됐으면 결과 반영 안 함
+      if (quickStatsGenAbortRef.current) {
+        return null;
+      }
+
+      const raw = Array.isArray(statRes?.data?.stats) ? statRes.data.stats : [];
+      const normalized = raw
+        .map((s, idx) => ({
+          id: String(s?.id || '').trim() || `stat_${Date.now()}_${Math.random().toString(16).slice(2, 7)}_${idx}`,
+          name: String(s?.name || '').trim().slice(0, 20),
+          min_value: Number.isFinite(Number(s?.min_value)) ? Number(s.min_value) : '',
+          max_value: Number.isFinite(Number(s?.max_value)) ? Number(s.max_value) : '',
+          base_value: Number.isFinite(Number(s?.base_value)) ? Number(s.base_value) : '',
+          unit: String(s?.unit || '').trim().slice(0, 10),
+          description: String(s?.description || '').trim().slice(0, 200),
+        }))
+        .filter((s) => s.name && s.description)
+        .slice(0, HARD_MAX_STATS_PER_OPENING);
+
+      if (!normalized.length) {
+        dispatchToast('error', '스탯 생성 결과가 비어있습니다. 잠시 후 다시 시도해주세요.');
+        return null;
+      }
+
+      // ✅ 스탯 저장 (start_sets.items[].stat_settings.stats)
+      updateStartSets((prev) => {
+        const cur = (prev && typeof prev === 'object') ? prev : {};
+        const curItems = Array.isArray(cur.items) ? cur.items : [];
+        const nextItems = curItems.map((it, idx) => {
+          const iid = String(it?.id || '').trim() || `set_${idx + 1}`;
+          if (iid !== sid) return it;
+          const base = (it && typeof it === 'object') ? it : {};
+          const st = (base.stat_settings && typeof base.stat_settings === 'object') ? base.stat_settings : {};
+          return { ...base, stat_settings: { ...st, stats: normalized } };
+        });
+        return { ...cur, items: nextItems };
+      });
+
+      // ✅ 프롬프트에도 스탯 블록 반영 (일관 UX)
+      try {
+        const nextPrompt = syncStatsIntoPromptText(world, normalized);
+        const nextText = String(nextPrompt || '').trim() ? String(nextPrompt || '') : world;
+        setFormData((prev) => ({
+          ...prev,
+          basic_info: {
+            ...prev.basic_info,
+            world_setting: nextText.slice(0, 6000),
+          },
+        }));
+      } catch (_) {}
+
+      // ✅ 프롬프트에도 동일 내용이 반영되었으므로 dirty 해제
+      try { setStatsDirtyByStartSetId((prev) => ({ ...(prev || {}), [sid]: false })); } catch (_) {}
+
+      dispatchToast('success', '스탯이 자동 생성되었습니다. 내용을 확인해주세요.');
+      return { stats: normalized };
+    } catch (e) {
+      console.error('[CreateCharacterPage] quick-generate-stats failed:', e);
+      dispatchToast('error', '스탯 자동 생성에 실패했습니다. 잠시 후 다시 시도해주세요.');
+      return null;
+    } finally {
+      setQuickStatsGenLoadingId('');
+    }
+  }, [quickStatsGenLoadingId, formData, selectedTagSlugs, user, updateStartSets, openAutoGenOverwriteConfirm, inferAutoGenModeFromCharacterTypeAndWorld, syncStatsIntoPromptText]);
+
+  // ✅ 스탯 자동생성 취소 핸들러
+  const handleCancelStatsGeneration = useCallback(() => {
+    try {
+      quickStatsGenAbortRef.current = true;
+      const cancelledSetId = quickStatsGenLoadingId;
+      setQuickStatsGenLoadingId('');
+      
+      // ✅ 취소 시 원문 복구 (원문이 있든 없든)
+      const prevStats = Array.isArray(statsAutoGenPrevRef.current) ? statsAutoGenPrevRef.current : [];
+      
+      if (cancelledSetId) {
+        updateStartSets((prev) => {
+          const cur = (prev && typeof prev === 'object') ? prev : {};
+          const curItems = Array.isArray(cur.items) ? cur.items : [];
+          const nextItems = curItems.map((x) => {
+            const xid = String(x?.id || '').trim();
+            if (xid !== cancelledSetId) return x;
+            const base = (x && typeof x === 'object') ? x : {};
+            const st = (base.stat_settings && typeof base.stat_settings === 'object') ? base.stat_settings : {};
+            return { ...base, stat_settings: { ...st, stats: prevStats } };
+          });
+          return { ...cur, items: nextItems };
+        });
+      }
+      
+      // ✅ 취소 시 프리뷰 채팅방 리셋
+      try { resetChatPreview(); } catch (_) {}
+      
+      dispatchToast('info', '스탯 자동 생성이 취소되었습니다.');
+    } catch (e) {
+      try { console.error('[CreateCharacterPage] cancel stats generation failed:', e); } catch (_) {}
+    }
+  }, [quickStatsGenLoadingId, updateStartSets, dispatchToast, resetChatPreview]);
 
   const handleSyncStatsToPrompt = useCallback(() => {
     /**
@@ -4446,32 +7154,490 @@ const CreateCharacterPage = () => {
      */
     if (quickGenLoading) return;
     try {
-      // ✅ 경쟁사 UX: 버튼을 누를 때마다 "이름+소개"까지 자동 채움
-      // - name/description이 비어도 동작해야 한다.
-      // - 백엔드 quick-generate는 name/seed_text가 필수이므로, 비어있을 땐 placeholder + 태그 기반 seed를 사용한다.
+      /**
+       * ✅ 2단계 자동생성(요구사항):
+       * 1) 남성향/여성향 + 롤플레잉/시뮬 + 대표이미지 기반으로 "작품명" 먼저 생성
+       * 2) 위 선택값 + 대표이미지 + (1)에서 생성된 작품명 기반으로 "한줄소개" 생성
+       *
+       * 이유:
+       * - 한번에 name/description을 같이 만들면 description이 이미지/네이밍과 엇나가거나,
+       *   대사/지문 톤이 섞이는 확률이 높다.
+       * - name을 먼저 고정해두면 description의 일관성이 훨씬 올라간다.
+       */
       const nameRaw = String(formData?.basic_info?.name || '').trim();
-      const descRaw = String(formData?.basic_info?.description || '').trim();
       const audienceSlug = (selectedTagSlugs || []).find((s) => REQUIRED_AUDIENCE_SLUGS.includes(s)) || '';
       const styleSlug = (selectedTagSlugs || []).find((s) => REQUIRED_STYLE_SLUGS.includes(s)) || '';
+      const promptType = String(formData?.basic_info?.character_type || 'roleplay').trim();
+      const promptTypeLabel = (promptType === 'simulator' ? '시뮬레이션' : (promptType === 'custom' ? '커스텀' : '롤플레잉'));
+      const coreUserTags = (() => {
+        /**
+         * ✅ 유저 태그(뼈대) 추출
+         *
+         * 의도/원리:
+         * - 요구사항: "롤플/시뮬 + 유저 태그"를 뼈대로 유지하고, 성향은 테이스트로 재해석한다.
+         * - 따라서 성향/스타일 같은 필수 메타 태그는 제외하고, 나머지를 "핵심 태그"로 간주한다.
+         */
+        try {
+          const slugs = Array.isArray(selectedTagSlugs) ? selectedTagSlugs : [];
+          const filtered = slugs
+            .map((x) => String(x || '').trim())
+            .filter(Boolean)
+            .filter((s) => !REQUIRED_AUDIENCE_SLUGS.includes(s) && !REQUIRED_STYLE_SLUGS.includes(s));
+          // 너무 길면 모델이 본질을 놓칠 수 있어 상위 N개만
+          return filtered.slice(0, 10);
+        } catch (_) {
+          return [];
+        }
+      })();
+      const coreTagHint = coreUserTags.length
+        ? [
+          `핵심 태그(뼈대): ${coreUserTags.join(', ')}`,
+          '중요: 위 핵심 태그의 "장르/관계 구도/핵심 소재"를 절대 바꾸지 마. (태그 본질 유지)',
+          '성향(남/여/전체)은 같은 뼈대를 "표현/후킹/어조"만 다르게 재해석하는 용도다. (본질 변형 금지)',
+        ].join('\n')
+        : [
+          '중요: 선택된 모드(RP/시뮬)의 본질을 유지하라.',
+          '성향(남/여/전체)은 표현/후킹/어조만 조절하고, 이야기 본질을 바꾸지 마.',
+        ].join('\n');
+      const profileTagBalanceHint = (() => {
+        /**
+         * ✅ 태그 "쏠림" 방지 유도(프로필용, 금지 없이)
+         *
+         * 배경/문제:
+         * - 유저는 여러 태그를 고르지만, 모델은 '사건 엔진 태그'(감시/통제/권력/위험 등)에 과도하게 쏠려
+         *   나머지 태그(일상/순애/힐링/성장/코미디 등)가 묻히는 문제가 있었다.
+         *
+         * 의도/원리:
+         * - 금지로 막지 않고, 태그를 2축으로 해석해 "둘 다" 프로필에 드러나게 유도한다.
+         *   1) 사건/갈등 축(엔진): 목표/리스크/비밀/제약
+         *   2) 감정/리듬 축(결): 관계의 결/일상 리듬/설렘/안전감/성장
+         * - 핵심 태그(뼈대)는 유지하되, 한쪽(특히 엔진 축)으로만 몰리지 않게 "분산 반영"한다.
+         */
+        try {
+          const tagSet = new Set(coreUserTags.map((x) => String(x || '').trim()).filter(Boolean));
+          const has = (k) => tagSet.has(k);
+          const hasSoftTone = (
+            has('순애')
+            || has('로맨스')
+            || has('연애')
+            || has('일상')
+            || has('힐링')
+            || has('코미디')
+            || has('성장')
+            // ✅ 크랙/바베챗 빈출(톤 훅): UI 칩 확장에 맞춰 "관계 결" 유도 대상으로 포함
+            || has('달달')
+            || has('로코')
+            || has('귀여움')
+            || has('소꿉친구')
+            || has('짝사랑')
+            || has('오해→해소')
+          );
+          return [
+            '중요(태그 균형 유도): 선택한 태그를 스스로 2축으로 나눠라. (A=사건/갈등 축, B=감정/리듬 축)',
+            '규칙: (A)만 과도하게 반복하지 말고, (B)의 결이 최소 1회 이상 "문장으로" 분명히 드러나게 작성하라. (태그 나열 금지)',
+            hasSoftTone
+              ? '유도: 로맨스/일상/힐링/성장/코미디 같은 (B) 태그가 있으면, 같은 사건이라도 "보호/배려/선택권/존중" 방식으로 풀어 관계 결이 살아나게 하라.'
+              : '유도: (B) 태그가 약하더라도, 관계 결(거리감 변화/신뢰/약속/긴장)을 최소 1문장 포함해 몰입감을 확보하라.',
+          ].join('\n');
+        } catch (_) {
+          return [
+            '중요(태그 균형 유도): 선택한 태그를 2축(사건/갈등 vs 감정/리듬)으로 나눠 둘 다 반영하라.',
+            '규칙: 태그 나열 금지. 한쪽으로만 쏠리지 말고 문장으로 구현하라.',
+          ].join('\n');
+        }
+      })();
+      const audienceGuardHint = (() => {
+        /**
+         * ✅ 성향(남/여/전체) 강제 가드(중요 요구사항)
+         *
+         * 의도/원리:
+         * - 단순히 `성향: 남성향` 같은 "정보"만 주면 모델이 여성향 클리셰(로판/공작/황태자/남주/여주 등)로 새는 경우가 있다.
+         * - 따라서 '강제/금지' 규칙을 명시해, 제목/한줄소개가 성향을 벗어나지 않게 방어적으로 고정한다.
+         */
+        try {
+          const a = String(audienceSlug || '').trim();
+          if (!a) return null;
+          const tagSet = new Set(coreUserTags.map((x) => String(x || '').trim()).filter(Boolean));
+          const hasCore = (k) => tagSet.has(k);
+          // ⚠️ 유저 태그가 뼈대(SSOT)이므로, 특정 클리셰/키워드는 "유저가 선택하지 않은 경우에만" 금지/회피한다.
+          const femaleCoded = ['로판', '궁정', '황태자', '공작', '백작', '영애', '성녀', '남주', '여주'];
+          const maleCoded = ['하렘', '치트', '레벨업', '헌터', '던전', '각성', '스탯'];
+          const allowFemaleCodedByTags = femaleCoded.some((k) => hasCore(k));
+          const allowMaleCodedByTags = maleCoded.some((k) => hasCore(k));
+          if (a === '전체') {
+            return [
+              '중요(성향 테이스트): 전체(중립). 남성향/여성향 어느 한쪽의 클리셰로 과도하게 치우치지 말고 균형 있게.',
+              '금지: 특정 성향을 전제하는 메타 문구(예: "여성향/남성향이라서" 같은 설명) 넣지 마.',
+              '중요: 모드(RP/시뮬) + 핵심 태그(뼈대)는 유지하고, 표현만 중립 톤으로 조절하라.',
+            ].join('\n');
+          }
+          if (a === '남성향') {
+            return [
+              '중요(성향 테이스트): 남성향. 모드(RP/시뮬)+핵심 태그(뼈대)를 유지한 채, 남성향 톤/후킹/표현으로 재해석하라.',
+              '지시: 남성향 유저가 클릭할 만한 직관적/강한 후킹(상황/리스크/보상)을 우선.',
+              allowFemaleCodedByTags
+                ? '주의: 일부 여성향 클리셰 단어가 태그(뼈대)에 포함되어 있으므로, 본질은 유지하되 남성향 톤으로만 재해석하라.'
+                : '금지(여성향 틱 방지): 로판/궁정(공작/황태자/백작/영애/성녀), "남주/여주" 호칭, 감성 서정 과다, 여성향 클리셰 중심 표현.',
+            ].join('\n');
+          }
+          if (a === '여성향') {
+            return [
+              '중요(성향 테이스트): 여성향. 모드(RP/시뮬)+핵심 태그(뼈대)를 유지한 채, 여성향 톤/후킹/표현으로 재해석하라.',
+              '지시: 감정선/관계의 긴장/설렘/금기가 느껴지는 후킹을 우선.',
+              allowMaleCodedByTags
+                ? '주의: 일부 남성향 클리셰 단어가 태그(뼈대)에 포함되어 있으므로, 본질은 유지하되 여성향 톤으로만 재해석하라.'
+                : '금지(남성향 틱 방지): 하렘/치트/레벨업/헌터/던전/각성/스탯 등 남성향 클리셰 중심 표현.',
+            ].join('\n');
+          }
+          return `중요(성향 테이스트): ${a}. 모드+핵심 태그는 유지하고, 표현/후킹만 이 성향에 맞춰라.`;
+        } catch (_) {
+          return null;
+        }
+      })();
+      const autoGenModeHintForName = buildAutoGenModeHint({
+        mode: (promptType === 'simulator' ? 'simulator' : (promptType === 'custom' ? 'custom' : 'roleplay')),
+        isDescription: false,
+      });
+      const autoGenModeHintForDesc = buildAutoGenModeHint({
+        mode: (promptType === 'simulator' ? 'simulator' : (promptType === 'custom' ? 'custom' : 'roleplay')),
+        isDescription: true,
+      });
+      const autoGenToneHintForName = buildAutoGenToneHint({
+        tags: coreUserTags,
+        mode: (promptType === 'simulator' ? 'simulator' : (promptType === 'custom' ? 'custom' : 'roleplay')),
+        audienceSlug,
+        isDescription: false,
+      });
+      const autoGenToneHintForDesc = buildAutoGenToneHint({
+        tags: coreUserTags,
+        mode: (promptType === 'simulator' ? 'simulator' : (promptType === 'custom' ? 'custom' : 'roleplay')),
+        audienceSlug,
+        isDescription: true,
+      });
+      const maxTurns = (() => {
+        try {
+          const ss = (formData?.basic_info?.start_sets && typeof formData.basic_info.start_sets === 'object')
+            ? formData.basic_info.start_sets
+            : null;
+          const sim = (ss && typeof ss.sim_options === 'object' && ss.sim_options) ? ss.sim_options : null;
+          const n = Number(sim?.max_turns ?? NaN);
+          return Number.isFinite(n) && n >= 50 ? Math.floor(n) : null;
+        } catch (_) {
+          return null;
+        }
+      })();
+      const simDatingElements = (() => {
+        /**
+         * ✅ 시뮬 자동생성 옵션(위저드 SSOT: start_sets.sim_options)
+         * - sim_dating_elements: 시뮬 내 미연시 요소(루트/호감도/공략) 포함 여부
+         */
+        try {
+          if (promptType !== 'simulator') return false;
+          const ss = (formData?.basic_info?.start_sets && typeof formData.basic_info.start_sets === 'object')
+            ? formData.basic_info.start_sets
+            : null;
+          const sim = (ss && typeof ss.sim_options === 'object' && ss.sim_options) ? ss.sim_options : {};
+          return !!sim?.sim_dating_elements;
+        } catch (_) {
+          return false;
+        }
+      })();
+
+      const buildAutoProfileConceptDraftText = ({ name, desc, isSim, simDatingOn } = {}) => {
+        /**
+         * ✅ 작품 컨셉: 프로필 자동생성 시 "전체 덮어쓰기"용 자동 초안 텍스트를 만든다.
+         *
+         * 의도/원리:
+         * - 유저 요구: 자동생성 시 작품 컨셉도 "크게" 바뀌어야 한다.
+         * - 별도 AI 호출 없이, 현재 SSOT(선택 태그/칩/모드)를 근거로 초안 텍스트를 구성한다.
+         * - 길이 제한(PROFILE_CONCEPT_MAX_LEN)은 유지한다.
+         */
+        try {
+          const nm = String(name || '').trim();
+          const ds = String(desc || '').trim();
+          const headLines = [
+            nm ? `작품명: ${nm}` : null,
+            ds ? `한줄소개: ${ds}` : null,
+            audienceSlug ? `성향: ${audienceSlug}` : null,
+            isSim ? '모드: 시뮬레이션' : null,
+            simDatingOn ? '시뮬 내 미연시 요소(가중): ON' : null,
+          ].filter(Boolean);
+          const headerBlock = headLines.length ? `${headLines.join('\n')}\n\n` : '';
+
+          const pick = (arr) => (Array.isArray(arr) ? arr.map((x) => String(x || '').trim()).filter(Boolean) : []);
+          const genres = pick(qmSelectedGenres).slice(0, 2);
+          const type = String(qmSelectedType || '').trim();
+          const hook = String(qmSelectedHook || '').trim();
+
+          const tagSet = new Set((Array.isArray(selectedTagSlugs) ? selectedTagSlugs : []).map((x) => String(x || '').trim()).filter(Boolean));
+          const has = (k) => tagSet.has(k);
+          const tone = (() => {
+            if (isSim) return '목표/리스크 중심, 선택과 결과 누적';
+            // ✅ 본질(태그)을 우선 유지하고, 성향은 "테이스트"로만 반영한다.
+            const romanceCore = has('순애') || has('로맨스') || has('연애') || hook === '순애';
+            if (romanceCore && audienceSlug === '남성향') return '남성향 로맨스: 직관적/강한 후킹, 감정선은 빠르게 진입';
+            if (romanceCore && audienceSlug === '여성향') return '여성향 로맨스: 감정선/관계 텐션, 설렘/금기 중심';
+            if (romanceCore && audienceSlug === '전체') return '중립 로맨스: 관계 변화 중심, 과도한 클리셰 치우침 없음';
+            if (audienceSlug === '남성향') return '남성향 테이스트: 직관적/강한 후킹, 쾌감/성취';
+            if (audienceSlug === '여성향') return '여성향 테이스트: 감정선/관계의 미묘함, 설렘/긴장';
+            if (audienceSlug === '전체') return '중립 테이스트: 균형, 과도한 치우침 없음';
+            if (has('순애') || hook === '순애') return '달달한 순애, 생활 밀착 오피스 로맨스';
+            if (has('로맨스') || has('연애')) return '설렘 중심 로맨스, 관계 변화';
+            if (has('일상')) return '일상/루틴, 서서히 깊어지는 관계';
+            return '관계/거리감 변화 중심 롤플레잉';
+          })();
+
+          const conflictGoal = (() => {
+            if (isSim) return '목표 1개 + 즉시 제약/리스크 1개를 명확히.';
+            if (hook) return `${hook} 키워드를 중심으로, 직장 규칙/소문/비밀 중 1개를 갈등으로 얹기.`;
+            return '업무 규칙/소문/비밀 중 1개를 갈등으로 얹기.';
+          })();
+
+          const relRole = (() => {
+            const base = [];
+            if (type) base.push(type);
+            if (has('비서') || hook === '비서') base.push('비서(상대)');
+            if (has('오피스') || has('직장')) base.push('오피스');
+            return base.length ? base.join(' · ') : '유저 ↔ 상대 캐릭터 (업무 관계에서 시작하는 감정선)';
+          })();
+
+          const worldRule = (() => {
+            if (isSim) return '규칙/자원/시간/서열 중 1개를 시스템 룰로 고정.';
+            return '금기: 사내 규정/비밀 유지/소문 확산 중 1개를 명확히.';
+          })();
+
+          const progression = (() => {
+            /**
+             * ✅ 전개 포인트(턴 진행 방식) 다양화
+             *
+             * 의도/원리:
+             * - 기존은 고정 문구라 자동생성할 때마다 동일하게 보여 UX가 단조로웠다.
+             * - 모드(RP/시뮬) + 유저 태그(뼈대) + 훅을 기준으로 "몇 가지 후보 템플릿" 중 하나를 선택한다.
+             * - 난수는 nonce(자동생성 1회마다 달라짐)를 시드로 사용해 "매번 조금씩" 달라지게 한다.
+             */
+            try {
+              const romanceCore = has('순애') || has('로맨스') || has('연애') || hook === '순애';
+              const schoolCore = has('학교') || has('학원') || has('아카데미');
+              const actionCore = has('액션') || has('전투') || has('싸움');
+              const fantasyCore = has('판타지') || has('이세계') || has('중세판타지');
+
+              const poolSim = [];
+              if (romanceCore) {
+                poolSim.push(
+                  '초반 1~3턴: 관계/호감도(또는 루트) 조건 노출 → 선택지 → 결과 누적(분기 암시).',
+                  '초반: 첫 만남 + 금기/제약 1개 노출 → 중반: 호감도 이벤트/갈등 분기 → 후반: 루트 확정/엔딩 조건 충족.'
+                );
+              }
+              if (actionCore || fantasyCore) {
+                poolSim.push(
+                  '초반 1~3턴: 목표/룰/리스크 노출 → 선택지 → 결과 누적.',
+                  '초반: 자원/제약 1개 제시 → 중반: 난관/전투(또는 사건) 분기 → 후반: 성과/대가로 엔딩 조건 조정.'
+                );
+              }
+              if (schoolCore) {
+                poolSim.push(
+                  '초반: 규칙/서열/평가 기준 노출 → 중반: 경쟁/라이벌 이벤트 → 후반: 선택으로 결과(평판/관계) 확정.'
+                );
+              }
+              // 기본 풀백(시뮬)
+              if (poolSim.length === 0) {
+                poolSim.push(
+                  '초반 1~3턴: 목표/룰/리스크 노출 → 선택지 → 결과 누적.',
+                  '초반: 목표/제약 제시 → 중반: 분기 이벤트 → 후반: 누적 결과로 엔딩 조건 확정.'
+                );
+              }
+
+              const poolRp = [];
+              if (romanceCore) {
+                poolRp.push(
+                  '초반: 첫 인상/거리감 → 중반: 금기/비밀로 긴장 → 후반: 선택으로 관계 확정.',
+                  '초반: 티키타카로 결 얹기 → 중반: 오해/질투/소문으로 흔들기 → 후반: 고백/결단으로 수습.'
+                );
+              }
+              if (actionCore) {
+                poolRp.push(
+                  '초반: 사건 발생(충돌) → 중반: 공조/대립으로 관계 재정의 → 후반: 한 번의 선택으로 판을 뒤집기.'
+                );
+              }
+              if (schoolCore) {
+                poolRp.push(
+                  '초반: 학교/동아리/과제 장면 → 중반: 서열/소문/라이벌 → 후반: 관계/평판이 갈리는 선택.'
+                );
+              }
+              // 기본 풀백(RP)
+              if (poolRp.length === 0) {
+                poolRp.push(
+                  '초반: 업무/거리감 → 중반: 소문/비밀로 긴장 → 후반: 선택으로 관계 확정.',
+                  '초반: 상황 던지기 → 중반: 갈등을 키우기 → 후반: 선택으로 관계/목표를 고정.'
+                );
+              }
+
+              // 간단한 문자열 해시(외부 라이브러리 없이)로 풀에서 1개 선택
+              const seed = `${nonce || ''}|${audienceSlug || ''}|${hook || ''}|${type || ''}|${(genres || []).join(',')}`;
+              let h = 0;
+              for (let i = 0; i < seed.length; i += 1) {
+                h = ((h << 5) - h) + seed.charCodeAt(i);
+                h |= 0;
+              }
+              const pool = isSim ? poolSim : poolRp;
+              const idx = Math.abs(h) % Math.max(1, pool.length);
+              return pool[idx] || (isSim ? '초반 1~3턴: 목표/룰/리스크 노출 → 선택지 → 결과 누적.' : '초반: 업무/거리감 → 중반: 소문/비밀로 긴장 → 후반: 선택으로 관계 확정.');
+            } catch (_) {
+              return isSim ? '초반 1~3턴: 목표/룰/리스크 노출 → 선택지 → 결과 누적.' : '초반: 업무/거리감 → 중반: 소문/비밀로 긴장 → 후반: 선택으로 관계 확정.';
+            }
+          })();
+
+          const keywords = (() => {
+            const extra = [];
+            for (const k of [hook, type, ...genres]) {
+              const s = String(k || '').trim();
+              if (s && !extra.includes(s)) extra.push(s);
+            }
+            for (const s0 of (Array.isArray(selectedTagSlugs) ? selectedTagSlugs : [])) {
+              const s = String(s0 || '').trim();
+              if (!s) continue;
+              if (extra.includes(s)) continue;
+              extra.push(s);
+              if (extra.length >= 6) break;
+            }
+            return extra;
+          })();
+
+          const coreTagsLine = (() => {
+            /**
+             * ✅ 작품 컨셉 초안 보강: 핵심 태그(뼈대) 라인
+             * - 유저가 선택한 태그가 "무엇을 의도했는지" 컨셉에서 한눈에 보이게 한다.
+             */
+            try {
+              const arr = Array.isArray(coreUserTags) ? coreUserTags : [];
+              const list = arr.map((x) => String(x || '').trim()).filter(Boolean).slice(0, 10);
+              return list.length ? `- 핵심 태그(뼈대): ${list.join(', ')}` : null;
+            } catch (_) {
+              return null;
+            }
+          })();
+          const romanceCore = has('순애') || has('로맨스') || has('연애') || hook === '순애';
+          const engineCore = (() => {
+            /**
+             * ✅ 엔진(사건/갈등) 축 감지(컨셉 보강용)
+             * - 감시/통제/거래 같은 엔진이 "희미해지는" 것을 막기 위해, 컨셉에서 최소 1줄은 구조를 고정한다.
+             * - 강화가 아니라 "형태 유지"가 목적이므로, 과도한 강제/반복은 금지한다.
+             */
+            try {
+              const keys = ['감시', '통제', '거래', '협박', '권력', '약점', '비밀', '계약', '도청', '지배', '조종'];
+              return keys.some((k) => has(k)) || (hook === '정체 숨김');
+            } catch (_) {
+              return false;
+            }
+          })();
+          const framingLine = (() => {
+            /**
+             * ✅ 프레이밍 1줄 보강(드리프트 방지)
+             * - 로맨스가 있으면 "강압만"으로 수렴하지 않게 합의/선택권 프레임을 같이 둔다.
+             * - 엔진만 있을 때는 리스크/대가가 흐릿해지지 않게 1줄만 고정한다.
+             */
+            try {
+              if (romanceCore) {
+                return '- 프레이밍(중요): 사건/거래가 있어도 “합의/선택권/자기 억제/보호” 결을 반드시 같이 둔다. (강압 단독 수렴 금지)';
+              }
+              if (engineCore) {
+                return '- 프레이밍(중요): 리스크/대가가 보이는 거래/권력/비밀 구조를 1줄로 분명히 유지한다. (갑툭튀 해결/무효화 금지)';
+              }
+              return null;
+            } catch (_) {
+              return null;
+            }
+          })();
+          const earlyBeats = (() => {
+            /**
+             * ✅ 초반 전개(예시) 3포인트
+             * - 유저가 "컨셉이 짧다"는 체감을 줄이기 위해, 프롬프트 자동생성에서 바로 활용 가능한 전개 스케치를 넣는다.
+             * - SSOT(태그/훅/모드)를 바꾸지 않고, "표현/리듬"만 제안한다.
+             */
+            try {
+              if (isSim) {
+                return [
+                  '- 초반(1~3턴): 목표/제약/리스크 1개를 상황/선택지로 노출.',
+                  '- 중반(4~10턴): 분기 이벤트 1개 + 누적 결과(보상/대가) 암시.',
+                  '- 후반: 누적 선택으로 엔딩 조건에 수렴(결말 조건 1~2개 힌트).',
+                ].join('\n');
+              }
+              if (romanceCore && engineCore) {
+                return [
+                  '- 초반: “거래/비밀”의 제약 1개를 먼저 깔고, 동시에 “챙김/보호 행동” 1개로 순애 결을 즉시 체감시킨다.',
+                  '- 중반: 제3자/감사/소문 등 외부 압박 1개로 긴장을 올리되, 둘의 선택(신뢰/거리)이 분기 포인트가 되게 한다.',
+                  '- 후반: 계약의 끝/고백/결단으로 관계 정의를 확정(달달/긴장 균형).',
+                ].join('\n');
+              }
+              if (romanceCore) {
+                return [
+                  '- 초반: 거리감/호감도 변곡점 1개(챙김/오해/질투)를 빠르게 배치.',
+                  '- 중반: 금기/비밀/약속 중 1개로 긴장을 올리고 관계의 선택을 요구.',
+                  '- 후반: 고백/결단/재회로 관계를 확정.',
+                ].join('\n');
+              }
+              if (engineCore) {
+                return [
+                  '- 초반: 리스크/대가 1개를 명확히 제시(거래/권력/비밀).',
+                  '- 중반: 흔들리는 증거/의심/방문자 등 사건 1개로 압박.',
+                  '- 후반: 선택(협력/배신/고립/폭로)로 관계/목표가 갈리는 포인트.',
+                ].join('\n');
+              }
+              return [
+                '- 초반: 상황/갈등 1개를 던지고 관계의 거리감을 고정.',
+                '- 중반: 오해/소문/비밀로 긴장을 올림.',
+                '- 후반: 선택으로 관계/목표 확정.',
+              ].join('\n');
+            } catch (_) {
+              return '';
+            }
+          })();
+
+          const body = [
+            '## 작품 컨셉(자동 생성)',
+            `- 장르/톤: ${genres.length ? `${genres.join(', ')} / ${tone}` : tone}`,
+            `- 핵심 갈등/목표: ${conflictGoal}`,
+            `- 관계/역할(혐관/서브캐/삼각관계 등): ${relRole}`,
+            `- 세계관 규칙/금기: ${worldRule}`,
+            `- 전개 포인트(턴 진행 방식): ${progression}`,
+            keywords.length ? `- 참고 키워드: ${keywords.join(', ')}` : null,
+            coreTagsLine,
+            framingLine,
+            '',
+            '## 초반 전개(예시)',
+            earlyBeats || null,
+            '',
+            '(이 내용은 프롬프트 자동생성 시 참고합니다.)',
+            '(직접 수정은 우상단 연필로 잠금 해제 후, 체크로 확정하세요. 자동생성은 이 내용을 덮어쓸 수 있습니다.)',
+          ].filter(Boolean).join('\n');
+
+          return String((headerBlock + body) || '').slice(0, PROFILE_CONCEPT_MAX_LEN);
+        } catch (_) {
+          return '';
+        }
+      };
       // ✅ 이름이 비어있는 초기 상태에서도 "랜덤 생성"이 동작해야 한다.
       // - 백엔드가 name을 필수로 받으므로, 의미없는 placeholder는 '캐릭터'로 통일하고
       //   seed_text에 랜덤성을 강하게 요구한다.
-      const name = nameRaw || '캐릭터';
-      // ✅ 혼입 방지(요구사항):
-      // - 자동 생성은 "완전히 새로" 만들어야 하므로, 기존 소개(descRaw)를 seed로 사용하지 않는다.
-      const seedText = [
-        `랜덤 시드: ${Date.now()}`,
-        '기존에 입력된 이름/소개/설정 문구가 있더라도 참고하거나 이어붙이지 말고, 완전히 새로 작성해줘.',
-        '아무 입력이 없어도 캐릭터챗에 적합한 오리지널 캐릭터를 랜덤으로 만들어줘.',
-        '이름(고유한 한국어 이름/별명)과 캐릭터 소개(2~4문장, 500자 이내)를 생성해줘.',
-        '매번 다른 콘셉트/직업/분위기가 나오게 해줘. 흔한 이름(예: 미정/캐릭터)은 쓰지 마.',
-        audienceSlug ? `성향: ${audienceSlug}` : null,
-        styleSlug ? `이미지 스타일: ${styleSlug}` : null,
-        '형식: 이름은 2~12자, 소개는 2~4문장.',
-      ].filter(Boolean).join('\n');
+      // ✅ 독립 시행(핵심):
+      // - 직전 자동생성으로 채워진 name을 다시 입력값으로 보내면 "같은 이름"이 반복될 수 있다.
+      // - 사용자가 수동으로 바꾼 이름은 유지하되, 자동생성 이름(직전 값과 동일)은 placeholder로 취급한다.
+      const isAutoGeneratedName = !!nameRaw && (String(lastAutoGeneratedProfileNameRef.current || '') === nameRaw);
+      const placeholderName = (!nameRaw || isAutoGeneratedName) ? '캐릭터' : nameRaw;
+      // ✅ 독립 시행(추가 보강): 같은 조건이면 모델이 같은 제목을 다시 뱉는 경우가 있어,
+      // seed에 강한 nonce + 직전 결과 제목은 "금지" 힌트를 함께 넣는다.
+      const prevAutoName = String(lastAutoGeneratedProfileNameRef.current || '').trim();
+      const nonce = (() => {
+        try { return `${Date.now()}_${Math.random().toString(16).slice(2, 8)}`; } catch (_) { return String(Date.now()); }
+      })();
 
+      // ✅ 이미지 기반 생성(스토리 에이전트 느낌):
+      // - 대표 이미지(avatar_url)가 있으면 그걸 우선 사용한다.
+      // - 없으면 업로드된 이미지 목록 첫 장을 사용한다.
       const firstImageUrl = (() => {
         try {
+          const avatar = String(formData?.media_settings?.avatar_url || '').trim();
+          if (avatar) return avatar;
           const imgs = Array.isArray(formData?.media_settings?.image_descriptions) ? formData.media_settings.image_descriptions : [];
           const first = imgs.find((x) => String(x?.url || '').trim());
           return String(first?.url || '').trim() || null;
@@ -4480,54 +7646,273 @@ const CreateCharacterPage = () => {
         }
       })();
 
+      // ✅ 프로필 자동생성: 원문 저장 (취소 시 복구용) - 작품명/한줄소개/작품컨셉 모두
+      profileAutoGenPrevNameRef.current = String(formData?.basic_info?.name || '');
+      profileAutoGenPrevDescRef.current = String(formData?.basic_info?.description || '');
+      // 작품컨셉 원문 저장
+      try {
+        const ss = (formData?.basic_info?.start_sets && typeof formData.basic_info.start_sets === 'object')
+          ? formData.basic_info.start_sets
+          : null;
+        const pc = (ss && typeof ss.profile_concept === 'object' && ss.profile_concept) ? ss.profile_concept : null;
+        profileAutoGenPrevConceptRef.current = pc ? { enabled: !!pc.enabled, text: String(pc.text || '') } : null;
+      } catch (_) {
+        profileAutoGenPrevConceptRef.current = null;
+      }
+      quickGenAbortRef.current = false;
+      
       setQuickGenLoading(true);
-      const aiModel = String(user?.preferred_model || 'claude').trim().toLowerCase() || 'claude';
-      const res = await charactersAPI.quickGenerateCharacterDraft({
-        name,
-        seed_text: seedText,
-        image_url: firstImageUrl,
+      // ✅ 요구사항: "위저드만" 제미니 고정(다른 화면/로직에는 영향 주지 않음)
+      const aiModel = useNormalCreateWizard
+        ? 'gemini'
+        : (String(user?.preferred_model || 'claude').trim().toLowerCase() || 'claude');
+      const resolvedImageUrlForAi = (() => {
+        try {
+          const raw = String(firstImageUrl || '').trim();
+          if (!raw) return null;
+          const resolved = resolveImageUrl(raw);
+          return String(resolved || raw).trim() || null;
+        } catch (_) {
+          return firstImageUrl || null;
+        }
+      })();
+      // ✅ QuickMeet와 동일: 이미지 정보 포함 OFF면 image_url을 보내지 않는다.
+      const imageUrlForAi = profileAutoGenUseImage ? resolvedImageUrlForAi : null;
+
+      // 1) 작품명 생성(이미지+선택값 기반)
+      const seedNameOnly = [
+        `랜덤 시드: ${nonce}`,
+        prevAutoName ? `직전 생성된 작품명(중복 금지): ${prevAutoName}` : null,
+        prevAutoName ? '중요: 이번에는 위 작품명과 "절대" 같은 작품명을 쓰지 마. 완전히 다른 이름으로 새로 만들어.' : null,
+        autoGenModeHintForName,
+        coreTagHint,
+        profileTagBalanceHint,
+        autoGenToneHintForName,
+        audienceGuardHint,
+        profileAutoGenUseImage
+          ? '가능하면 제공된 대표이미지의 인물/의상/표정/배경/분위기와 일치하는 콘셉트로 만들어줘. (이미지와 무관한 설정은 피하기)'
+          : '이미지 분석 없이도 성향/타입/태그에 맞는 “클릭을 부르는 후킹”으로 간결하게 만들어줘. (추상/메타 문구 금지)',
+        '출력은 작품명(name)만. description/대사/지문/키워드/첫대사/대화 시작 문구 등 다른 텍스트는 절대 포함하지 마.',
+        (promptType === 'simulator' && simDatingElements)
+          ? '시뮬 내 미연시 요소: ON. 공략 인물(핵심 3~6명)과 각 인물의 루트/호감도 이벤트(최소 2개)를 암시하되, 운영 공지/업데이트/명령어/스펙 나열은 금지.'
+          : null,
+        // ✅ 시뮬 vs RP: 위저드에서도 한줄소개를 먼저 머릿속으로 구상 후 제목
+        promptType === 'simulator'
+          ? [
+              `[생성 순서] 머릿속으로 한줄소개(세계관, 상황, 규칙, 유저 역할)를 먼저 구상한 뒤, 그것을 바탕으로 작품명을 지어라.`,
+              `[작품명 역할·시뮬] 크랙/바베챗 인기 시뮬 크리에이터로서 제목을 지어라. 세계관/장소/시스템/상황이 제목에서 바로 보여야 함. 캐릭터 이름보다 "어디서/무엇을" 하는지가 핵심. 짧고 직관적, 밈/구어체 허용.`,
+              `- 길이: ${PROFILE_NAME_MIN_LEN}~${PROFILE_NAME_MAX_LEN}자, 따옴표/마침표/이모지 금지`,
+            ].join('\n')
+          : (quickGenTitleNameMode
+            ? [
+                `[생성 순서] 머릿속으로 한줄소개(캐릭터 고유 이름, 상황, 갈등)를 먼저 구상한 뒤, 그 이름을 포함한 작품명을 지어라. 종족/직업명 대체 금지.`,
+                `[작품명 역할] 너는 노벨피아/카카오페이지 베테랑 웹소설 작가다. 반전/떡밥을 밈·가십 톤으로 함축해 제목을 지어라. 필수: 반말 구어체 종결(~함, ~임, ~됨, ~해버림, ~인데, ~했음, ~음). 금지: 문학체(~하다/~이다/~지다), 명사 종결.`,
+                `- 길이: ${PROFILE_NAME_MIN_LEN}~${PROFILE_NAME_MAX_LEN}자, 따옴표/마침표/이모지 금지`,
+              ].join('\n')
+            : [
+                `[생성 순서] 머릿속으로 한줄소개(캐릭터 고유 이름, 상황, 갈등)를 먼저 구상한 뒤, 그 이름을 포함한 작품명을 지어라. 종족/직업명 대체 금지.`,
+                `[작품명 역할] 너는 캐릭터챗 인기 크리에이터다. 클릭을 부르는 제목을 지어라. 캐릭터 고유 이름 포함 필수. 스타일은 65%는 짧고 강한 형태(이름+수식어/상황), 35%는 웹소설 밈 톤 문장형(반말 구어체 ~함/~됨/~인데/~해버림 종결) 중 자연스럽게 선택.`,
+                `- 길이: ${PROFILE_NAME_MIN_LEN}~${PROFILE_NAME_MAX_LEN}자, 따옴표/마침표/이모지 금지`,
+              ].join('\n')
+          ),
+        audienceSlug ? `성향: ${audienceSlug}` : null,
+        styleSlug ? `이미지 스타일: ${styleSlug}` : null,
+        promptTypeLabel ? `프롬프트 타입: ${promptTypeLabel}` : null,
+        maxTurns ? `분량(진행 턴수): ${maxTurns}턴` : null,
+      ].filter(Boolean).join('\n');
+
+      const resName = await charactersAPI.quickGenerateCharacterDraft({
+        name: placeholderName,
+        seed_text: seedNameOnly,
+        image_url: imageUrlForAi,
         tags: Array.isArray(selectedTagSlugs) ? selectedTagSlugs : [],
+        // ✅ SSOT: 유저가 선택한 모드(롤플/시뮬/커스텀)를 서버에 명시 전달
+        // - 서버는 이 값이 있을 때만 1순위로 사용하고, 없으면 레거시(키워드 추정)로 폴백한다.
+        character_type: (promptType === 'simulator' ? 'simulator' : (promptType === 'custom' ? 'custom' : 'roleplay')),
         ai_model: (aiModel === 'gpt' ? 'gpt' : (aiModel === 'gemini' ? 'gemini' : 'claude')),
       });
 
-      const draft = res?.data || null;
-      const bi = draft?.basic_info || {};
-      // NOTE: 프로필 자동 생성은 "이름/소개"만 적용한다(다른 탭 영역과 독립 유지).
+      // ✅ 작품명 API 완료 후 취소 체크 - 취소됐으면 한줄소개 생성 없이 즉시 종료
+      if (quickGenAbortRef.current) {
+        setQuickGenLoading(false);
+        return;
+      }
 
-      setFormData((prev) => {
-        // ✅ 요구사항: 프로필 자동 생성은 "프로필(이름/소개)"만 다룬다.
-        // - 첫시작(도입부/첫대사)은 별도 영역(start_sets)이며, 여기서 절대 변경하지 않는다.
-        return {
-          ...prev,
-          basic_info: {
-            ...prev.basic_info,
-            name: String(bi?.name || prev.basic_info.name || '').slice(0, 100),
-            description: String(bi?.description || prev.basic_info.description || '').slice(0, 3000),
-            // 크리에이터 코멘트는 옵션 탭에서 입력하는 게 기준이므로, 여기서는 기존값 보존
-            greeting: prev.basic_info.greeting, // ✅ 첫대사(첫시작) 영역은 변경 금지
-            greetings: prev.basic_info.greetings, // 유지(첫시작에서 미러링)
-            introduction_scenes: prev.basic_info.introduction_scenes, // 유지(첫시작에서 미러링)
-            start_sets: prev.basic_info.start_sets, // ✅ 첫시작(도입부/첫대사) 유지
-          },
-        };
+      const biName = resName?.data?.basic_info || {};
+      const nextNameRaw = String(biName?.name || '').trim();
+      const nextName = nextNameRaw; // ✅ 요구사항: 초과/미달이면 재생성으로 처리(아래 검증)
+      if (!nextName) {
+        throw new Error('name_missing');
+      }
+      if (nextName.length < PROFILE_NAME_MIN_LEN || nextName.length > PROFILE_NAME_MAX_LEN) {
+        throw new Error('name_len_invalid');
+      }
+
+      // 1) 적용: 작품명 (덮어쓰기)
+      setFormData((prev) => ({
+        ...prev,
+        basic_info: {
+          ...prev.basic_info,
+          name: nextName,
+          greeting: prev.basic_info.greeting,
+          greetings: prev.basic_info.greetings,
+          introduction_scenes: prev.basic_info.introduction_scenes,
+          start_sets: prev.basic_info.start_sets,
+        },
+      }));
+      // ✅ 독립 시행(SSOT): "직전 자동생성 name"을 기록해,
+      // 다음 번 자동생성에서 입력값 앵커로 재사용되지 않게 한다.
+      try { lastAutoGeneratedProfileNameRef.current = nextName; } catch (_) {}
+      try { setChatPreviewSnapshot((prev) => ({ ...prev, name: nextName })); } catch (_) {}
+
+      // 2) 한줄소개 생성(이미지+선택값+작품명 기반)
+      const seedDescOnly = [
+        `랜덤 시드: ${nonce}_desc`,
+        `작품명(name): ${nextName}`,
+        autoGenModeHintForDesc,
+        coreTagHint,
+        profileTagBalanceHint,
+        autoGenToneHintForDesc,
+        audienceGuardHint,
+        profileAutoGenUseImage
+          ? '가능하면 제공된 대표이미지의 인물/의상/표정/배경/분위기와 일치하는 콘셉트로 작성해줘. (이미지와 무관한 설정은 피하기)'
+          : '이미지 없이도 “구체 디테일 1개 + 갈등/목표/제약 1개”가 느껴지게 4~5문장으로 후킹해줘. (추상/메타 문장 금지)',
+        '출력은 한줄소개(description)만. name/대사/지문/키워드/첫대사/대화 시작 문구 등 다른 텍스트는 절대 포함하지 마.',
+        '구성 유도(중요): 4~5문장 중 최소 1문장은 (A=사건/갈등: 목표/리스크/비밀/제약), 최소 1문장은 (B=감정/리듬: 관계 결/일상 리듬/설렘/안전감) 이 분명히 드러나야 한다.',
+        `한줄소개(description)는 "대사"가 아니라 소개 문장이다. 4~5문장, ${PROFILE_ONE_LINE_MIN_LEN}~${PROFILE_ONE_LINE_MAX_LEN}자, 줄바꿈 금지.`,
+        '문장 끝은 마침표로 끝내라. (문장 수 검증을 위해 중요)',
+        (promptType === 'simulator' && simDatingElements)
+          ? '시뮬 내 미연시 요소: ON. 한줄소개에 (공략 인물/루트 느낌 1개 + 호감도 이벤트/분기 암시 1개)를 자연스럽게 포함하라. 메타/운영 문구 금지.'
+          : null,
+        audienceSlug ? `성향: ${audienceSlug}` : null,
+        styleSlug ? `이미지 스타일: ${styleSlug}` : null,
+        promptTypeLabel ? `프롬프트 타입: ${promptTypeLabel}` : null,
+        maxTurns ? `분량(진행 턴수): ${maxTurns}턴` : null,
+      ].filter(Boolean).join('\n');
+
+      const resDesc = await charactersAPI.quickGenerateCharacterDraft({
+        name: nextName,
+        seed_text: seedDescOnly,
+        image_url: imageUrlForAi,
+        tags: Array.isArray(selectedTagSlugs) ? selectedTagSlugs : [],
+        // ✅ SSOT: 유저가 선택한 모드(롤플/시뮬/커스텀)를 서버에 명시 전달
+        character_type: (promptType === 'simulator' ? 'simulator' : (promptType === 'custom' ? 'custom' : 'roleplay')),
+        ai_model: (aiModel === 'gpt' ? 'gpt' : (aiModel === 'gemini' ? 'gemini' : 'claude')),
       });
 
-      try { dispatchToast('success', '자동 생성이 적용되었습니다. 내용을 확인해주세요.'); } catch (_) {}
-      // ✅ 요구사항: 생성 직후/다른 곳 클릭 시 채팅 프리뷰 이름이 즉시 바뀌어야 한다.
-      // - setFormData 직후 refreshChatPreviewSnapshot은 상태 반영 타이밍 때문에 stale일 수 있어,
-      //   서버 응답(bi)을 기준으로 스냅샷을 직접 갱신한다.
+      // ✅ 한줄소개 API 완료 후 취소 체크 - 취소됐으면 작품컨셉 생성 없이 즉시 종료
+      if (quickGenAbortRef.current) {
+        setQuickGenLoading(false);
+        return;
+      }
+
+      const biDesc = resDesc?.data?.basic_info || {};
+      const nextDescRaw = String(biDesc?.description || '').replace(/\s*\n+\s*/g, ' ').trim();
+      const nextDesc0 = nextDescRaw.length > PROFILE_ONE_LINE_MAX_LEN ? nextDescRaw.slice(0, PROFILE_ONE_LINE_MAX_LEN) : nextDescRaw;
+      if (!nextDesc0) {
+        throw new Error('description_missing');
+      }
+      if (nextDesc0.length < PROFILE_ONE_LINE_MIN_LEN) {
+        throw new Error('description_too_short');
+      }
+      let nextDescFinal = nextDesc0;
+      // ✅ 요구사항: 4~5문장 강제(1회 보정). 길이만 맞추면 여전히 2~3문장으로 수렴하는 문제가 있어 방어적으로 보정한다.
+      const sentenceCount = countSentencesRoughKo(nextDesc0);
+      if (sentenceCount < 4 || sentenceCount > 5) {
+        const seedDescRetry = [
+          seedDescOnly,
+          `중요: 한줄소개(description)는 반드시 4~5문장이어야 한다. 문장 끝은 마침표로 끝내라. (${PROFILE_ONE_LINE_MIN_LEN}~${PROFILE_ONE_LINE_MAX_LEN}자, 줄바꿈 금지)`,
+        ].join('\n');
+        const resDesc2 = await charactersAPI.quickGenerateCharacterDraft({
+          name: nextName,
+          seed_text: seedDescRetry,
+          image_url: imageUrlForAi,
+          tags: Array.isArray(selectedTagSlugs) ? selectedTagSlugs : [],
+          // ✅ SSOT: 유저가 선택한 모드(롤플/시뮬/커스텀)를 서버에 명시 전달
+          character_type: (promptType === 'simulator' ? 'simulator' : (promptType === 'custom' ? 'custom' : 'roleplay')),
+          ai_model: (aiModel === 'gpt' ? 'gpt' : (aiModel === 'gemini' ? 'gemini' : 'claude')),
+        });
+        // ✅ 재시도 API 완료 후 취소 체크
+        if (quickGenAbortRef.current) {
+          setQuickGenLoading(false);
+          return;
+        }
+        const biDesc2 = resDesc2?.data?.basic_info || {};
+        const raw2 = String(biDesc2?.description || '').replace(/\s*\n+\s*/g, ' ').trim();
+        const cand = raw2.length > PROFILE_ONE_LINE_MAX_LEN ? raw2.slice(0, PROFILE_ONE_LINE_MAX_LEN) : raw2;
+        const sc2 = countSentencesRoughKo(cand);
+        if (cand && cand.length >= PROFILE_ONE_LINE_MIN_LEN && sc2 >= 4 && sc2 <= 5) {
+          // ✅ 더 좋은 결과만 채택
+          nextDescFinal = cand;
+        }
+      }
+
+      // ✅ 자동생성 버튼을 1회라도 눌렀다면, 작품 컨셉(고급/선택) 토글을 자동으로 ON.
+      // - 처음부터 노출하면 부담이 크므로, 자동생성 흐름에서만 자연스럽게 보여준다.
+      // - 내용이 비어있다면 기본 템플릿을 채워 "무엇을 쓰면 되는지" 즉시 보이게 한다.
       try {
-        // ✅ 첫시작(도입부/첫대사)은 건드리지 않고, 이름만 반영한다.
-        const nextName = String(bi?.name || formData?.basic_info?.name || '캐릭터').trim() || '캐릭터';
-        setChatPreviewSnapshot((prev) => ({ ...prev, name: nextName }));
+        updateStartSets((prev) => {
+          const cur = (prev && typeof prev === 'object') ? prev : {};
+          const existing = (cur.profile_concept && typeof cur.profile_concept === 'object') ? cur.profile_concept : {};
+          const existingText = String(existing?.text || '').trim();
+          // ✅ 시뮬 옵션(SSOT: start_sets.sim_options) 기반으로 작품 컨셉 템플릿에 상태를 반영
+          // - "까먹지 않게" 하는 정보는 프롬프트 조립(payload)에서도 들어가지만,
+          //   유저가 작품 컨셉을 보는 순간에도 시뮬/미연시 ON 여부가 한눈에 보이도록 최소 문장만 추가한다.
+          const simOptions = (cur?.sim_options && typeof cur.sim_options === 'object') ? cur.sim_options : {};
+          const isSim = String(formData?.basic_info?.character_type || 'roleplay').trim() === 'simulator';
+          const simDatingOn = isSim && !!simOptions?.sim_dating_elements;
+          const defaultText = [
+            `작품명: ${nextName}`,
+            `한줄소개: ${nextDescFinal}`,
+            ...(isSim ? ['모드: 시뮬레이션'] : []),
+            ...(simDatingOn ? ['시뮬 내 미연시 요소(가중): ON'] : []),
+            '',
+            '## 작품 컨셉(선택, 고급)',
+            '- 장르/톤:',
+            '- 핵심 갈등/목표:',
+            '- 관계/역할(혐관/서브캐/삼각관계 등):',
+            '- 세계관 규칙/금기:',
+            '- 전개 포인트(턴 진행 방식):',
+            '',
+            '(이 내용은 프롬프트 자동생성 시 참고합니다.)',
+          ].join('\n');
+          // ✅ 요구사항: 프로필 자동생성 시 작품 컨셉도 "전체 덮어쓰기"로 크게 갱신
+          const nextText = buildAutoProfileConceptDraftText({ name: nextName, desc: nextDescFinal, isSim, simDatingOn }) || defaultText;
+          return {
+            ...cur,
+            profile_concept: {
+              ...(existing || {}),
+              enabled: true,
+              text: nextText,
+            },
+          };
+        });
       } catch (_) {}
+      // 자동생성 후에는 기본 잠금 상태로 복귀(요구사항)
+      try { setProfileConceptEditMode(false); } catch (_) {}
+
+      // 2) 적용: 한줄소개 (덮어쓰기)
+      setFormData((prev) => ({
+        ...prev,
+        basic_info: {
+          ...prev.basic_info,
+          name: nextName,
+          description: nextDescFinal,
+          greeting: prev.basic_info.greeting,
+          greetings: prev.basic_info.greetings,
+          introduction_scenes: prev.basic_info.introduction_scenes,
+          start_sets: prev.basic_info.start_sets,
+        },
+      }));
+
+      try { dispatchToast('success', '작품명/한줄소개가 자동 생성되었습니다. 내용을 확인해주세요.'); } catch (_) {}
     } catch (e) {
       console.error('[CreateCharacterPage] quick-generate failed:', e);
       dispatchToast('error', '자동 생성에 실패했습니다. 잠시 후 다시 시도해주세요.');
     } finally {
       setQuickGenLoading(false);
     }
-  }, [quickGenLoading, formData, selectedTagSlugs, user, refreshChatPreviewSnapshot]);
+  }, [quickGenLoading, quickGenTitleNameMode, profileAutoGenUseImage, formData, selectedTagSlugs, user, refreshChatPreviewSnapshot]);
 
 
   const renderBasicInfoTab = () => (
@@ -4564,7 +7949,7 @@ const CreateCharacterPage = () => {
         <div className="rounded-xl border border-gray-700/70 bg-gray-900/40 p-4 text-gray-100">
           <div className="text-sm font-semibold">필수 입력</div>
           <div className="mt-1 text-xs text-gray-300">
-            이미지, 캐릭터 이름, 필수 태그, 캐릭터 설명, 세계관 설정, 크리에이터 코멘트
+            이미지, 작품명, 필수 태그, 한줄소개, 세계관 설정
           </div>
           <div className="mt-1 text-xs text-gray-500">그 외 항목은 선택입니다.</div>
         </div>
@@ -4576,20 +7961,40 @@ const CreateCharacterPage = () => {
 
         <div>
           <Label htmlFor="name">
-            캐릭터 이름 <span className="text-red-400 ml-1">*</span>
+            작품명 <span className="text-red-400 ml-1">*</span>
           </Label>
-          <Input
-            id="name"
-            className="mt-4"
-            value={formData.basic_info.name}
-            onChange={(e) => updateFormData('basic_info', 'name', e.target.value)}
-            onBlur={refreshChatPreviewSnapshot}
-            placeholder="캐릭터 이름을 입력하세요"
-            required
-            maxLength={100}
-          />
+          <div className="relative mt-4">
+            {quickGenLoading ? (
+              <>
+                <Input
+                  id="name"
+                  className="bg-gray-950/40 border-gray-700 text-transparent caret-transparent"
+                  value=""
+                  onChange={() => {}}
+                  placeholder=""
+                  disabled
+                  readOnly
+                  aria-busy="true"
+                />
+                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                  <Loader2 className="h-5 w-5 animate-spin text-gray-200" aria-hidden="true" />
+                </div>
+              </>
+            ) : (
+              <Input
+                id="name"
+                className="bg-gray-950/40 border-gray-700 text-gray-100 placeholder:text-gray-500"
+                value={formData.basic_info.name}
+                onChange={(e) => updateFormData('basic_info', 'name', e.target.value)}
+                onBlur={refreshChatPreviewSnapshot}
+                placeholder="작품명을 입력하세요"
+                required
+                maxLength={100}
+              />
+            )}
+          </div>
           <p className="text-sm text-gray-500 mt-1">
-            명확하고 기억하기 쉬운 이름을 사용하세요.
+            명확하고 기억하기 쉬운 작품명을 사용하세요.
           </p>
         </div>
 
@@ -4609,21 +8014,22 @@ const CreateCharacterPage = () => {
                 </div>
                 <div className="text-xs text-gray-500">클릭하면 선택, 다시 클릭하면 해제</div>
               </div>
-              <div className="mt-2 grid grid-cols-3 overflow-hidden rounded-lg border border-gray-700/80 bg-gray-900/30">
+              <div className="mt-2 grid grid-cols-3 gap-2 rounded-xl border border-gray-800 bg-gray-950/40 p-2">
                 {REQUIRED_AUDIENCE_CHOICES.map((opt, idx) => {
                   const selected = Array.isArray(selectedTagSlugs) && selectedTagSlugs.includes(opt.slug);
-                  const isLast = idx === REQUIRED_AUDIENCE_CHOICES.length - 1;
                   return (
                     <button
                       key={opt.slug}
                       type="button"
                       onClick={() => toggleExclusiveTag(opt.slug, REQUIRED_AUDIENCE_SLUGS)}
                       aria-pressed={selected}
-                      className={`h-10 px-3 text-sm font-medium transition-colors ${
-                        isLast ? '' : 'border-r border-gray-700/80'
-                      } ${
-                        selected ? 'bg-purple-600 text-white' : 'bg-transparent text-gray-200 hover:bg-gray-800/60'
-                      } focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-500/30`}
+                      className={[
+                        'h-10 rounded-lg px-3 text-sm font-semibold transition-all',
+                        'outline-none focus-visible:ring-2 focus-visible:ring-purple-500/30',
+                        selected
+                          ? 'bg-gradient-to-br from-purple-600 to-indigo-600 text-white shadow-sm ring-1 ring-purple-400/40'
+                          : 'bg-gray-900/30 text-gray-200 hover:bg-gray-800/60 ring-1 ring-transparent',
+                      ].join(' ')}
                     >
                       <span className="block w-full truncate">{opt.label}</span>
                     </button>
@@ -4643,21 +8049,22 @@ const CreateCharacterPage = () => {
                 </div>
                 <div className="text-xs text-gray-500">레퍼런스 느낌을 선택하세요</div>
               </div>
-              <div className="mt-2 grid grid-cols-4 overflow-hidden rounded-lg border border-gray-700/80 bg-gray-900/30">
+              <div className="mt-2 grid grid-cols-4 gap-2 rounded-xl border border-gray-800 bg-gray-950/40 p-2">
                 {REQUIRED_STYLE_CHOICES.map((opt, idx) => {
                   const selected = Array.isArray(selectedTagSlugs) && selectedTagSlugs.includes(opt.slug);
-                  const isLast = idx === REQUIRED_STYLE_CHOICES.length - 1;
                   return (
                     <button
                       key={opt.slug}
                       type="button"
                       onClick={() => toggleExclusiveTag(opt.slug, REQUIRED_STYLE_SLUGS)}
                       aria-pressed={selected}
-                      className={`h-10 px-2 text-xs sm:text-sm font-medium transition-colors ${
-                        isLast ? '' : 'border-r border-gray-700/80'
-                      } ${
-                        selected ? 'bg-purple-600 text-white' : 'bg-transparent text-gray-200 hover:bg-gray-800/60'
-                      } focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-500/30`}
+                      className={[
+                        'h-10 rounded-lg px-2 text-xs sm:text-sm font-semibold transition-all',
+                        'outline-none focus-visible:ring-2 focus-visible:ring-purple-500/30',
+                        selected
+                          ? 'bg-gradient-to-br from-purple-600 to-indigo-600 text-white shadow-sm ring-1 ring-purple-400/40'
+                          : 'bg-gray-900/30 text-gray-200 hover:bg-gray-800/60 ring-1 ring-transparent',
+                      ].join(' ')}
                     >
                       <span className="block w-full truncate">{opt.label}</span>
                     </button>
@@ -4676,20 +8083,43 @@ const CreateCharacterPage = () => {
           <Label htmlFor="description">
             캐릭터 설명 {!isEditMode && <span className="text-red-400 ml-1">*</span>}
           </Label>
-          <Textarea
-            id="description"
-            data-autogrow="1"
-            onInput={handleAutoGrowTextarea}
-            className="mt-4 resize-none overflow-hidden"
-            value={formData.basic_info.description}
-            onChange={(e) => updateFormData('basic_info', 'description', e.target.value)}
-            placeholder="캐릭터에 대한 설명입니다 (캐릭터 설명은 다른 사용자에게도 공개 됩니다)"
-            rows={3}
-            required={!isEditMode}
-            maxLength={1000}
-          />
+          <div className="relative mt-4">
+            {quickGenLoading ? (
+              <>
+                <Textarea
+                  id="description"
+                  data-autogrow="1"
+                  onInput={handleAutoGrowTextarea}
+                  className="resize-none overflow-hidden text-transparent caret-transparent"
+                  value=""
+                  onChange={() => {}}
+                  placeholder=""
+                  rows={3}
+                  disabled
+                  readOnly
+                  aria-busy="true"
+                />
+                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                  <Loader2 className="h-6 w-6 animate-spin text-gray-200" aria-hidden="true" />
+                </div>
+              </>
+            ) : (
+              <Textarea
+                id="description"
+                data-autogrow="1"
+                onInput={handleAutoGrowTextarea}
+                className="resize-none overflow-hidden"
+                value={formData.basic_info.description}
+                onChange={(e) => updateFormData('basic_info', 'description', e.target.value)}
+                placeholder="캐릭터에 대한 설명입니다 (캐릭터 설명은 다른 사용자에게도 공개 됩니다)"
+                rows={3}
+                required={!isEditMode}
+                maxLength={3000}
+              />
+            )}
+          </div>
           {fieldErrors['basic_info.description'] && (
-            <p className="text-xs text-red-500">{fieldErrors['basic_info.description']}</p>
+            quickGenLoading ? null : <p className="text-xs text-red-500">{fieldErrors['basic_info.description']}</p>
           )}
           <div className="flex items-center gap-2 mt-2">
             <span className="text-xs text-gray-500">토큰 삽입:</span>
@@ -4699,18 +8129,45 @@ const CreateCharacterPage = () => {
         </div>
 
         <div>
-          <Label htmlFor="personality">성격 및 특징</Label>
-          <Textarea
-            id="personality"
-            data-autogrow="1"
-            onInput={handleAutoGrowTextarea}
-            className="mt-4 resize-none overflow-hidden"
-            value={formData.basic_info.personality}
-            onChange={(e) => updateFormData('basic_info', 'personality', e.target.value)}
-            placeholder="캐릭터의 성격과 특징을 자세히 설명해주세요"
-            rows={4}
-            maxLength={2000}
-          />
+          {(() => {
+            const mode = getEffectiveDetailMode('personality');
+            const copy = (mode === 'simulator' ? detailFieldCopy.simulator : detailFieldCopy.roleplay).personality;
+            const forced = isDetailModeForced('personality');
+            return (
+              <>
+                <div className="flex items-center justify-between gap-3">
+                  <Label htmlFor="personality">{copy.label}</Label>
+                  <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-gray-400 select-none">시뮬 방식</span>
+                      <Switch
+                        id="detail_personality_mode_switch"
+                        checked={mode === 'simulator'}
+                        onCheckedChange={() => toggleDetailMode('personality')}
+                      />
+                    </div>
+                  </div>
+                </div>
+                {forced && (
+                  <div className="mt-2 rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+                    <div className="font-semibold">경고: 현재 타입과 다른 방식으로 입력 중입니다.</div>
+                    <div className="mt-1 text-amber-100/90">타입에 맞는 항목이 권장됩니다.</div>
+                  </div>
+                )}
+                <Textarea
+                  id="personality"
+                  data-autogrow="1"
+                  onInput={handleAutoGrowTextarea}
+                  className="mt-4 resize-none overflow-hidden"
+                  value={formData.basic_info.personality}
+                  onChange={(e) => updateFormData('basic_info', 'personality', e.target.value)}
+                  placeholder={copy.placeholder}
+                  rows={4}
+                  maxLength={300}
+                />
+              </>
+            );
+          })()}
           {fieldErrors['basic_info.personality'] && (
             <p className="text-xs text-red-500">{fieldErrors['basic_info.personality']}</p>
           )}
@@ -4722,18 +8179,45 @@ const CreateCharacterPage = () => {
         </div>
 
         <div>
-          <Label htmlFor="speech_style">말투</Label>
-          <Textarea
-            id="speech_style"
-            data-autogrow="1"
-            onInput={handleAutoGrowTextarea}
-            className="mt-4 resize-none overflow-hidden"
-            value={formData.basic_info.speech_style}
-            onChange={(e) => updateFormData('basic_info', 'speech_style', e.target.value)}
-            placeholder="캐릭터의 말투를 구체적으로 설명해주세요"
-            rows={2}
-            maxLength={1000}
-          />
+          {(() => {
+            const mode = getEffectiveDetailMode('speech_style');
+            const copy = (mode === 'simulator' ? detailFieldCopy.simulator : detailFieldCopy.roleplay).speech_style;
+            const forced = isDetailModeForced('speech_style');
+            return (
+              <>
+                <div className="flex items-center justify-between gap-3">
+                  <Label htmlFor="speech_style">{copy.label}</Label>
+                  <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-gray-400 select-none">시뮬 방식</span>
+                      <Switch
+                        id="detail_speech_style_mode_switch"
+                        checked={mode === 'simulator'}
+                        onCheckedChange={() => toggleDetailMode('speech_style')}
+                      />
+                    </div>
+                  </div>
+                </div>
+                {forced && (
+                  <div className="mt-2 rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+                    <div className="font-semibold">경고: 현재 타입과 다른 방식으로 입력 중입니다.</div>
+                    <div className="mt-1 text-amber-100/90">타입에 맞는 항목이 권장됩니다.</div>
+                  </div>
+                )}
+                <Textarea
+                  id="speech_style"
+                  data-autogrow="1"
+                  onInput={handleAutoGrowTextarea}
+                  className="mt-4 resize-none overflow-hidden"
+                  value={formData.basic_info.speech_style}
+                  onChange={(e) => updateFormData('basic_info', 'speech_style', e.target.value)}
+                  placeholder={copy.placeholder}
+                  rows={2}
+                  maxLength={300}
+                />
+              </>
+            );
+          })()}
           {fieldErrors['basic_info.speech_style'] && (
             <p className="text-xs text-red-500">{fieldErrors['basic_info.speech_style']}</p>
           )}
@@ -4912,31 +8396,52 @@ const CreateCharacterPage = () => {
           </div>
         </div>
 
-        {/* ✅ 요구사항: '사용자용 설명' → '크리에이터 코멘트' (생성 Create 시 필수) */}
+        {/* ✅ 요구사항: '사용자용 설명' → '크리에이터 코멘트' (토글 ON일 때만 입력 박스 노출) */}
         <div>
-          <Label htmlFor="user_display_description">
-            크리에이터 코멘트 {!isEditMode && <span className="text-red-400 ml-1">*</span>}
-          </Label>
-          <Textarea
-            id="user_display_description"
-            data-autogrow="1"
-            onInput={handleAutoGrowTextarea}
-            className="mt-2 resize-none overflow-hidden"
-            value={formData.basic_info.user_display_description}
-            onChange={(e) => updateFormData('basic_info', 'user_display_description', e.target.value)}
-            placeholder="유저에게 보여줄 크리에이터 코멘트를 작성하세요"
-            rows={3}
-            maxLength={2000}
-            required={!isEditMode}
-          />
-          {fieldErrors['basic_info.user_display_description'] && (
-            <p className="text-xs text-red-500">{fieldErrors['basic_info.user_display_description']}</p>
-          )}
-          <div className="flex items-center gap-2 mt-2">
-            <span className="text-xs text-gray-500">토큰 삽입:</span>
-            <Button type="button" variant="secondary" size="sm" title="{{character}} 삽입" onClick={() => insertBasicToken('user_display_description','user_display_description', TOKEN_CHARACTER)}>캐릭터</Button>
-            <Button type="button" variant="secondary" size="sm" title="{{user}} 삽입" onClick={() => insertBasicToken('user_display_description','user_display_description', TOKEN_USER)}>유저</Button>
+          <div className="flex items-center justify-between gap-3">
+            <Label htmlFor="user_display_description">
+              크리에이터 코멘트 <span className="text-xs text-gray-500 ml-2">(선택)</span>
+            </Label>
+            <div className="flex items-center gap-2">
+              <Switch
+                id="creator_comment_toggle"
+                checked={!!formData?.basic_info?.use_custom_description}
+                onCheckedChange={(checked) => {
+                  try {
+                    updateFormData('basic_info', 'use_custom_description', !!checked);
+                  } catch (e) {
+                    try { console.error('[CreateCharacterPage] creator comment toggle failed:', e); } catch (_) {}
+                  }
+                }}
+                aria-label="크리에이터 코멘트 사용"
+              />
+            </div>
           </div>
+          {!!formData?.basic_info?.use_custom_description ? (
+            <>
+              <Textarea
+                id="user_display_description"
+                data-autogrow="1"
+                onInput={handleAutoGrowTextarea}
+                className="mt-3 resize-none overflow-hidden bg-gray-950/30 border-gray-700 text-gray-100 placeholder:text-gray-500"
+                value={formData.basic_info.user_display_description}
+                onChange={(e) => updateFormData('basic_info', 'user_display_description', e.target.value)}
+                placeholder="유저에게 보여줄 크리에이터 코멘트를 작성하세요"
+                rows={3}
+                maxLength={1000}
+              />
+              {fieldErrors['basic_info.user_display_description'] && (
+                <p className="text-xs text-red-500 mt-2">{fieldErrors['basic_info.user_display_description']}</p>
+              )}
+              <div className="flex items-center gap-2 mt-2">
+                <span className="text-xs text-gray-500">토큰 삽입:</span>
+                <Button type="button" variant="secondary" size="sm" title="{{character}} 삽입" onClick={() => insertBasicToken('user_display_description','user_display_description', TOKEN_CHARACTER)}>캐릭터</Button>
+                <Button type="button" variant="secondary" size="sm" title="{{user}} 삽입" onClick={() => insertBasicToken('user_display_description','user_display_description', TOKEN_USER)}>유저</Button>
+              </div>
+            </>
+          ) : (
+            <div className="mt-2 text-xs text-gray-500">원하면 켜고 작성할 수 있어요.</div>
+          )}
         </div>
       </div>
 
@@ -5131,7 +8636,9 @@ const CreateCharacterPage = () => {
     };
 
     return (
-      <div className="space-y-6 p-6">
+      <div className="relative space-y-6 p-6">
+        {/* ✅ 토큰 안내(i): 오프닝에서 {{char}}/{{user}} 지원 */}
+        <WizardTokenHelpIcon />
         <div className="flex items-start justify-between gap-3">
           <div>
             <div className="text-sm text-gray-300">
@@ -5236,14 +8743,19 @@ const CreateCharacterPage = () => {
               <div className="space-y-4">
                 <div>
                   <Label className="text-white">오프닝 이름(탭 제목)</Label>
-                  <Input
-                    value={activeTitleRaw}
-                    onChange={(e) => updateSetField(activeId, { title: e.target.value })}
-                    onBlur={refreshChatPreviewSnapshot}
-                    className="mt-2 bg-gray-950/40 border-white/10 text-white placeholder:text-gray-500"
-                    maxLength={100}
-                    placeholder={`예: ${activeTitleDisplay}`}
-                  />
+                  <div className="relative mt-2">
+                    <Input
+                      value={activeTitleRaw}
+                      onChange={(e) => updateSetField(activeId, { title: e.target.value })}
+                      onBlur={refreshChatPreviewSnapshot}
+                      className="bg-gray-950/40 border-white/10 text-white placeholder:text-gray-500 pr-16"
+                      placeholder={`예: ${activeTitleDisplay}`}
+                    />
+                    <CharLimitCounter value={activeTitleRaw} max={100} />
+                  </div>
+                  {String(activeTitleRaw || '').length > 100 ? (
+                    <p className="mt-1 text-xs text-rose-400">최대 100자까지 입력할 수 있어요.</p>
+                  ) : null}
                   {!String(activeTitleRaw || '').trim() && (
                     <p className="mt-2 text-xs text-red-400 font-semibold">오프닝 이름을 입력해주세요.</p>
                   )}
@@ -5251,38 +8763,86 @@ const CreateCharacterPage = () => {
 
                 <div>
                   <Label className="text-white">첫 상황(도입부)</Label>
-                  <Textarea
-                    data-autogrow="1"
-                    onInput={handleAutoGrowTextarea}
-                    value={String(activeSet?.intro || '')}
-                    onChange={(e) => updateSetField(activeId, { intro: e.target.value })}
-                    onBlur={refreshChatPreviewSnapshot}
-                    className="mt-2 bg-gray-950/40 border border-white/10 text-white placeholder:text-gray-500 resize-none overflow-hidden"
-                    rows={4}
-                    maxLength={2000}
-                    placeholder="예: 당신은 비 오는 밤, 낡은 서점에서 그를 만난다..."
-                  />
+                  <div className="relative mt-2">
+                    <Textarea
+                      data-autogrow="1"
+                      onInput={handleAutoGrowTextarea}
+                      value={String(activeSet?.intro || '')}
+                      onChange={(e) => updateSetField(activeId, { intro: e.target.value })}
+                      onBlur={refreshChatPreviewSnapshot}
+                      className="bg-gray-950/40 border border-white/10 text-white placeholder:text-gray-500 resize-none overflow-hidden pr-16 pb-6"
+                      rows={4}
+                      placeholder="예: 당신은 비 오는 밤, 낡은 서점에서 그를 만난다..."
+                      disabled={quickFirstStartGenLoadingId === activeId}
+                      readOnly={quickFirstStartGenLoadingId === activeId}
+                      aria-busy={quickFirstStartGenLoadingId === activeId}
+                    />
+                    <CharLimitCounter value={String(activeSet?.intro || '')} max={2000} />
+                    {quickFirstStartGenLoadingId === activeId ? (
+                      <div className="absolute inset-0 flex items-center justify-center rounded-md bg-black/20 cursor-wait">
+                        <div className="relative flex items-center justify-center">
+                          <Loader2 className="h-6 w-6 animate-spin text-gray-200" aria-hidden="true" />
+                          <button
+                            type="button"
+                            onClick={handleCancelFirstStartGeneration}
+                            className="absolute -top-1 -right-4 p-1 rounded-full bg-red-500/20 hover:bg-red-500/30 text-red-300 hover:text-red-200 transition-colors pointer-events-auto z-10"
+                            aria-label="오프닝 자동 생성 취소"
+                            title="오프닝 자동 생성 취소"
+                          >
+                            <X className="h-3 w-3" aria-hidden="true" />
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                  {String(activeSet?.intro || '').length > 2000 ? (
+                    <p className="mt-1 text-xs text-rose-400">최대 2000자까지 입력할 수 있어요.</p>
+                  ) : null}
                 </div>
 
                 <div>
-                  <Label className="text-white">첫 대사</Label>
-                  <Textarea
-                    data-autogrow="1"
-                    onInput={handleAutoGrowTextarea}
-                    value={String(activeSet?.firstLine || '')}
-                    onChange={(e) => updateSetField(activeId, { firstLine: e.target.value })}
-                    onBlur={refreshChatPreviewSnapshot}
-                    className="mt-2 bg-gray-950/40 border border-white/10 text-white placeholder:text-gray-500 resize-none overflow-hidden"
-                    rows={2}
-                    maxLength={500}
-                    placeholder="예: ...드디어 왔네. 기다리고 있었어."
-                  />
+                  <Label className="text-white">첫 대사 <span className="text-red-400">*</span></Label>
+                  <div className="relative mt-2">
+                    <Textarea
+                      data-autogrow="1"
+                      onInput={handleAutoGrowTextarea}
+                      value={String(activeSet?.firstLine || '')}
+                      onChange={(e) => updateSetField(activeId, { firstLine: e.target.value })}
+                      onBlur={refreshChatPreviewSnapshot}
+                      className="bg-gray-950/40 border border-white/10 text-white placeholder:text-gray-500 resize-none overflow-hidden pr-16 pb-6"
+                      rows={2}
+                      placeholder="예: ...드디어 왔네. 기다리고 있었어."
+                      disabled={quickFirstStartGenLoadingId === activeId}
+                      readOnly={quickFirstStartGenLoadingId === activeId}
+                      aria-busy={quickFirstStartGenLoadingId === activeId}
+                    />
+                    <CharLimitCounter value={String(activeSet?.firstLine || '')} max={500} />
+                    {quickFirstStartGenLoadingId === activeId ? (
+                      <div className="absolute inset-0 flex items-center justify-center rounded-md bg-black/20 cursor-wait">
+                        <div className="relative flex items-center justify-center">
+                          <Loader2 className="h-6 w-6 animate-spin text-gray-200" aria-hidden="true" />
+                          <button
+                            type="button"
+                            onClick={handleCancelFirstStartGeneration}
+                            className="absolute -top-1 -right-4 p-1 rounded-full bg-red-500/20 hover:bg-red-500/30 text-red-300 hover:text-red-200 transition-colors pointer-events-auto z-10"
+                            aria-label="오프닝 자동 생성 취소"
+                            title="오프닝 자동 생성 취소"
+                          >
+                            <X className="h-3 w-3" aria-hidden="true" />
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                  {String(activeSet?.firstLine || '').length > 500 ? (
+                    <p className="mt-1 text-xs text-rose-400">최대 500자까지 입력할 수 있어요.</p>
+                  ) : null}
                   <div className="mt-3 flex justify-end">
                     <button
                       type="button"
                       onClick={() => handleAutoGenerateFirstStart(activeId)}
                       disabled={quickFirstStartGenLoadingId === activeId}
-                      className="h-9 px-3 rounded-lg bg-purple-600 text-white text-sm font-semibold hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
+                      className="h-9 px-3 rounded-lg bg-white/10 text-white text-sm font-semibold hover:bg-white/15 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
                       aria-label="오프닝 자동 생성"
                       title="오프닝 자동 생성"
                     >
@@ -5350,8 +8910,27 @@ const CreateCharacterPage = () => {
                     }
                   })();
 
+                  const isTurnEventsAutoGenBusy = (quickTurnEventsGenLoadingId === activeId);
+
                   return (
-                    <div className="pt-2">
+                    <div className="relative pt-2">
+                      {/* ✅ 요구사항: 턴수별 사건 자동생성 중 입력박스 스피너(오버레이) */}
+                      {isTurnEventsAutoGenBusy ? (
+                        <div className="absolute inset-0 z-10 flex items-center justify-center rounded-lg bg-black/25 cursor-wait">
+                          <div className="relative flex items-center justify-center">
+                            <Loader2 className="h-7 w-7 animate-spin text-gray-200" aria-hidden="true" />
+                            <button
+                              type="button"
+                              onClick={handleCancelTurnEventsGeneration}
+                              className="absolute -top-1 -right-4 p-1 rounded-full bg-red-500/20 hover:bg-red-500/30 text-red-300 hover:text-red-200 transition-colors pointer-events-auto z-10"
+                              aria-label="턴수별 사건 자동 생성 취소"
+                              title="턴수별 사건 자동 생성 취소"
+                            >
+                              <X className="h-3 w-3" aria-hidden="true" />
+                            </button>
+                          </div>
+                        </div>
+                      ) : null}
                       <div className="flex items-start justify-between gap-3">
                         <div>
                           <div className="text-white font-semibold">턴수별 사건</div>
@@ -5366,12 +8945,12 @@ const CreateCharacterPage = () => {
                           <button
                             type="button"
                             onClick={() => handleAutoGenerateTurnEvents(activeId)}
-                            disabled={quickTurnEventsGenLoadingId === activeId}
-                            className="h-8 px-3 rounded-lg bg-purple-600 text-white text-xs font-semibold hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center justify-center"
+                            disabled={isTurnEventsAutoGenBusy}
+                            className="h-9 px-3 rounded-lg bg-white/10 text-white text-sm font-semibold hover:bg-white/15 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
                             aria-label="턴수별 사건 자동 생성"
                             title="턴수별 사건 자동 생성"
                           >
-                            {quickTurnEventsGenLoadingId === activeId ? (
+                            {isTurnEventsAutoGenBusy ? (
                               <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
                             ) : (
                               '자동 생성'
@@ -5380,7 +8959,7 @@ const CreateCharacterPage = () => {
                         </div>
                       </div>
 
-                      <div className="mt-3 space-y-3">
+                      <div className={["mt-3 space-y-3", isTurnEventsAutoGenBusy ? "pointer-events-none opacity-70" : ""].join(' ')}>
                         {turnEvents.map((ev, idx) => {
                           const eid = String(ev?.id || '').trim() || `ev_${idx + 1}`;
                           const title = String(ev?.title || '').trim();
@@ -5560,6 +9139,17 @@ const CreateCharacterPage = () => {
                                       className="bg-gray-950/40 text-white border-white/10 resize-none"
                                       placeholder="예: (여기에 지문을 입력) — 런타임에서는 `* ` 형태로 처리됩니다."
                                     />
+                                    {/* ✅ 요구사항: 필수 지문에 이미지 코드([[img:...]]/{{img:...}})가 있으면, '지문 박스' 안에서 인라인 이미지로 미리보기 */}
+                                    {(/\[\[\s*img\s*:/i.test(reqNarr) || /\{\{\s*img\s*:/i.test(reqNarr)) ? (
+                                      <div className="mt-2 rounded-lg border border-white/10 bg-black/20 px-3 py-2">
+                                        <div className="text-[11px] text-gray-400 font-semibold">미리보기</div>
+                                        <div className="mt-2 flex justify-center">
+                                          <div className="w-full my-1 whitespace-pre-line break-words rounded-md bg-[#363636]/80 px-3 py-2 text-center text-sm text-white border border-white/10">
+                                            {renderChatPreviewTextWithInlineImages(reqNarr, `turn-ev-${eid}-req-narr`)}
+                                          </div>
+                                        </div>
+                                      </div>
+                                    ) : null}
                                   </div>
 
                                   <div className="space-y-2">
@@ -5575,6 +9165,29 @@ const CreateCharacterPage = () => {
                                       className="bg-gray-950/40 text-white border-white/10 resize-none"
                                       placeholder={'예: (여기에 대사를 입력) — 런타임에서는 "..." 형태로 처리됩니다.'}
                                     />
+                                    {/* ✅ 요구사항: 필수 대사에 이미지 코드([[img:...]]/{{img:...}})가 있으면, '대사 말풍선' 안에서 인라인 이미지로 미리보기 */}
+                                    {(/\[\[\s*img\s*:/i.test(reqDlg) || /\{\{\s*img\s*:/i.test(reqDlg)) ? (
+                                      <div className="mt-2 rounded-lg border border-white/10 bg-black/20 px-3 py-2">
+                                        <div className="text-[11px] text-gray-400 font-semibold">미리보기</div>
+                                        <div className="mt-2 flex justify-start font-normal">
+                                          <div className="mr-[0.62rem] mt-2 min-w-10">
+                                            {chatPreviewAvatarUrl ? (
+                                              <img alt="" loading="lazy" className="size-10 rounded-full object-cover" src={chatPreviewAvatarUrl} />
+                                            ) : (
+                                              <div className="size-10 rounded-full bg-[#2a2a2a]" />
+                                            )}
+                                          </div>
+                                          <div className="relative max-w-[70%]">
+                                            <div className="text-[0.75rem] text-white">
+                                              {String(chatPreviewSnapshot?.name || '').trim() || '캐릭터'}
+                                            </div>
+                                            <div className="whitespace-pre-line break-words rounded-r-xl rounded-bl-xl bg-[#262727] p-2 text-sm text-white">
+                                              {renderChatPreviewTextWithInlineImages(reqDlg, `turn-ev-${eid}-req-dlg`)}
+                                            </div>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    ) : null}
                                   </div>
                                 </div>
                               )}
@@ -5885,13 +9498,12 @@ const CreateCharacterPage = () => {
       /**
        * ✅ 엔딩 2개 자동 생성 버튼 활성 조건(요구사항)
        *
-       * - 방어: 입력 흔적이 1글자라도 있으면 비활성화(덮어쓰기 방지)
+       * - 덮어쓰기 허용: 입력 흔적이 있어도 경고 후 덮어쓸 수 있다.
        * - 프로필/프롬프트/오프닝(첫상황/첫대사) 필수
        */
       try {
         if (quickEndingBulkGenLoading) return false;
         if (String(quickEndingEpilogueGenLoadingId || '').trim()) return false;
-        if (hasAnyEndingTrace) return false;
         const nm = String(formData?.basic_info?.name || '').trim();
         const ds = String(formData?.basic_info?.description || '').trim();
         const wd = String(formData?.basic_info?.world_setting || '').trim();
@@ -5905,7 +9517,7 @@ const CreateCharacterPage = () => {
       }
     })();
 
-    const handleAutoGenerateTwoEndingsInEndingTab = async () => {
+    const handleAutoGenerateTwoEndingsInEndingTab = async (opts) => {
       /**
        * ✅ 엔딩탭: 엔딩 2개 자동 생성(요구사항)
        *
@@ -5913,18 +9525,29 @@ const CreateCharacterPage = () => {
        * - 현재 선택된 오프닝 기준으로 엔딩 2개(제목/기본조건/힌트/턴 + 에필로그)를 생성한다.
        *
        * 방어:
-       * - 한 글자라도 입력 흔적이 있으면 절대 실행하지 않는다(덮어쓰기 방지).
+       * - 덮어쓰기 허용: 입력 흔적이 있으면 경고 모달 후 덮어쓴다.
        * - 로딩 중 중복 실행 방지.
        */
       if (quickEndingBulkGenLoading) return;
       if (!canAutoGenerateTwoEndings) {
         try {
-          if (hasAnyEndingTrace) dispatchToast('info', '이미 입력된 엔딩이 있어 자동 생성이 비활성화되어 있어요.');
-          else dispatchToast('error', '프로필/프롬프트/오프닝을 먼저 완성해주세요.');
+          dispatchToast('error', '프로필/프롬프트/오프닝을 먼저 완성해주세요.');
         } catch (_) {}
         return;
       }
+      const forceOverwrite = opts?.forceOverwrite === true;
+      if (hasAnyEndingTrace && !forceOverwrite) {
+        openAutoGenOverwriteConfirm(
+          '엔딩(앞 2개)',
+          async () => { await handleAutoGenerateTwoEndingsInEndingTab({ forceOverwrite: true }); }
+        );
+        return;
+      }
       try {
+        // ✅ 원문 저장 (취소 시 복구용)
+        endingsAutoGenPrevRef.current = Array.isArray(endings) ? [...endings] : [];
+        quickEndingBulkGenAbortRef.current = false;
+
         setQuickEndingBulkGenLoading(true);
         try { dispatchToast('info', '엔딩 2개 자동 생성 중...'); } catch (_) {}
 
@@ -5948,7 +9571,10 @@ const CreateCharacterPage = () => {
         })();
         const minTurnsForGen = Math.max(10, Number(endingMinTurns || 30));
 
-        const aiModel = String(user?.preferred_model || 'claude').trim().toLowerCase() || 'claude';
+        // ✅ 요구사항: "위저드만" 제미니 고정(다른 화면/로직에는 영향 주지 않음)
+        const aiModel = useNormalCreateWizard
+          ? 'gemini'
+          : (String(user?.preferred_model || 'claude').trim().toLowerCase() || 'claude');
         const model = (aiModel === 'gpt' ? 'gpt' : (aiModel === 'gemini' ? 'gemini' : 'claude'));
 
         const clampTurn = (t) => {
@@ -5969,10 +9595,10 @@ const CreateCharacterPage = () => {
         for (let idx = 0; idx < WANT_ENDINGS; idx += 1) {
           const base = (existingEnds[idx] && typeof existingEnds[idx] === 'object') ? existingEnds[idx] : null;
           const baseId = String(base?.id || '').trim() || genEndingId();
-          const baseTitle = String(base?.title || '').trim();
-          const baseCond = String(base?.base_condition || '').trim();
-          const baseHint = String(base?.hint || '').trim();
-          const baseEpilogue = String(base?.epilogue || '').trim();
+          const baseTitle = forceOverwrite ? '' : String(base?.title || '').trim();
+          const baseCond = forceOverwrite ? '' : String(base?.base_condition || '').trim();
+          const baseHint = forceOverwrite ? '' : String(base?.hint || '').trim();
+          const baseEpilogue = forceOverwrite ? '' : String(base?.epilogue || '').trim();
           const baseExtra = Array.isArray(base?.extra_conditions) ? base.extra_conditions : [];
 
           // 1) 제목/기본조건(초안)
@@ -5981,17 +9607,23 @@ const CreateCharacterPage = () => {
           let hint = baseHint;
           let suggestedTurn = 0;
           if (!title || !cond) {
+            // ✅ RP/시뮬 분기(요구사항) + 커스텀 프롬프트 지원
+            const mode = inferAutoGenModeFromCharacterTypeAndWorld(formData?.basic_info?.character_type, wd);
             const draftRes = await charactersAPI.quickGenerateEndingDraft({
               name: nm,
               description: ds,
               world_setting: wd,
               opening_intro: openingIntro,
               opening_first_line: openingFirstLine,
+              mode,
               max_turns: maxTurnsForGen,
               min_turns: minTurnsForGen,
               tags: Array.isArray(selectedTagSlugs) ? selectedTagSlugs : [],
               ai_model: model,
             });
+            // ✅ 취소됐으면 결과 반영 안 함
+            if (quickEndingBulkGenAbortRef.current) return;
+
             title = title || String(draftRes?.data?.title || '').trim();
             cond = cond || String(draftRes?.data?.base_condition || '').trim();
             hint = hint || String(draftRes?.data?.hint || '').trim();
@@ -6007,6 +9639,8 @@ const CreateCharacterPage = () => {
           // 2) 에필로그
           let epilogue = baseEpilogue;
           if (!epilogue) {
+            // ✅ RP/시뮬 분기(요구사항) + 커스텀 프롬프트 지원
+            const mode2 = inferAutoGenModeFromCharacterTypeAndWorld(formData?.basic_info?.character_type, wd);
             const epRes = await charactersAPI.quickGenerateEndingEpilogueDraft({
               name: nm,
               description: ds,
@@ -6017,25 +9651,34 @@ const CreateCharacterPage = () => {
               base_condition: cond,
               hint,
               extra_conditions: baseExtra,
+              mode: mode2,
               tags: Array.isArray(selectedTagSlugs) ? selectedTagSlugs : [],
               ai_model: model,
             });
+
+            // ✅ 취소됐으면 결과 반영 안 함
+            if (quickEndingBulkGenAbortRef.current) return;
+
             epilogue = String(epRes?.data?.epilogue || '').trim();
           }
 
-          const turnRaw = (base?.turn != null && base?.turn !== '') ? Number(base.turn) : (suggestedTurn || minTurnsForGen);
+          const turnRaw = (forceOverwrite ? (suggestedTurn || minTurnsForGen) : ((base?.turn != null && base?.turn !== '') ? Number(base.turn) : (suggestedTurn || minTurnsForGen)));
           const turn = clampTurn(turnRaw);
 
           built.push({
             id: baseId,
             turn,
-            title,
-            base_condition: cond,
-            hint: hint || '',
-            epilogue: epilogue || '',
+            // ✅ 방어: 자동생성 결과도 UI 제한을 넘기지 않게 클램프(엔딩 탭 maxLength와 일치)
+            title: String(title || '').slice(0, 20),
+            base_condition: String(cond || '').slice(0, 500),
+            hint: String(hint || '').slice(0, 20),
+            epilogue: String(epilogue || '').slice(0, 1000),
             extra_conditions: baseExtra,
           });
         }
+
+        // ✅ 취소됐으면 결과 반영 안 함
+        if (quickEndingBulkGenAbortRef.current) return;
 
         // ✅ start_sets에 "앞 2개 엔딩" 보장(기존 데이터는 뒤에 유지)
         updateActiveEndingSettings({
@@ -6061,6 +9704,25 @@ const CreateCharacterPage = () => {
         try { dispatchToast('error', '엔딩 자동 생성에 실패했습니다. 잠시 후 다시 시도해주세요.'); } catch (_) {}
       } finally {
         try { setQuickEndingBulkGenLoading(false); } catch (_) {}
+      }
+    };
+
+    // ✅ 엔딩 2개 자동생성 취소 핸들러
+    const handleCancelEndingBulkGeneration = () => {
+      try {
+        quickEndingBulkGenAbortRef.current = true;
+        setQuickEndingBulkGenLoading(false);
+        
+        // ✅ 취소 시 원문 복구 (원문이 있든 없든)
+        const prevEndings = Array.isArray(endingsAutoGenPrevRef.current) ? endingsAutoGenPrevRef.current : [];
+        updateActiveEndingSettings({ endings: prevEndings });
+        
+        // ✅ 취소 시 프리뷰 채팅방 리셋
+        try { resetChatPreview(); } catch (_) {}
+        
+        dispatchToast('info', '엔딩 자동 생성이 취소되었습니다.');
+      } catch (e) {
+        try { console.error('[CreateCharacterPage] cancel ending bulk generation failed:', e); } catch (_) {}
       }
     };
 
@@ -6108,7 +9770,7 @@ const CreateCharacterPage = () => {
         </div>
 
         <div>
-          <div className="text-lg font-semibold text-white">엔딩 설정</div>
+          <div className="text-lg font-semibold text-white">엔딩 설정 <span className="text-red-400 text-sm font-normal ml-1">* 최소 1개 필수</span></div>
           <div className="mt-1 text-sm text-gray-400">
             각 시작설정에 따른 엔딩을 설정해보세요. 가장 먼저 조건에 도달한 엔딩 <span className="text-gray-200 font-semibold">하나만</span> 제공됩니다.
           </div>
@@ -6161,25 +9823,42 @@ const CreateCharacterPage = () => {
 
         {/* ✅ 엔딩탭: 엔딩 2개 자동 생성(결과 영역 근처) */}
         <div className="flex items-center justify-end">
-          <Button
+          <button
             type="button"
-            size="sm"
-            disabled={!canAutoGenerateTwoEndings}
-            title={hasAnyEndingTrace ? '이미 입력된 엔딩이 있어 자동 생성이 비활성화됩니다' : '엔딩 2개를 자동으로 생성합니다'}
-            className={[
-              "h-8 px-3",
-              quickEndingBulkGenLoading
-                ? "bg-gray-800 text-gray-300 cursor-wait"
-                : "bg-gray-800 text-gray-200 hover:bg-gray-700",
-            ].join(' ')}
-            onClick={handleAutoGenerateTwoEndingsInEndingTab}
+            disabled={!canAutoGenerateTwoEndings || quickEndingBulkGenLoading}
+            title={hasAnyEndingTrace ? '이미 입력된 엔딩이 있어도, 경고 후 덮어쓸 수 있어요' : '엔딩 2개를 자동으로 생성합니다'}
+            className="h-9 px-3 rounded-lg bg-white/10 text-white text-sm font-semibold hover:bg-white/15 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
+            aria-label="엔딩 2개 자동 생성"
+            onClick={() => handleAutoGenerateTwoEndingsInEndingTab()}
           >
-            {quickEndingBulkGenLoading ? '생성 중...' : '엔딩 2개 자동 생성'}
-          </Button>
+            {quickEndingBulkGenLoading ? (
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+            ) : (
+              '자동 생성'
+            )}
+          </button>
         </div>
 
-        <div className="space-y-4">
-          {endings.map((ending, idx) => {
+        <div className="relative space-y-4" aria-busy={quickEndingBulkGenLoading ? 'true' : 'false'}>
+          {/* ✅ 요구사항: 엔딩 2개 자동생성 중 입력박스 스피너(오버레이) */}
+          {quickEndingBulkGenLoading ? (
+            <div className="absolute inset-0 z-10 flex items-center justify-center rounded-lg bg-black/25 cursor-wait">
+              <div className="relative flex items-center justify-center">
+                <Loader2 className="h-8 w-8 animate-spin text-gray-200" aria-hidden="true" />
+                <button
+                  type="button"
+                  onClick={handleCancelEndingBulkGeneration}
+                  className="absolute -top-1 -right-4 p-1 rounded-full bg-red-500/20 hover:bg-red-500/30 text-red-300 hover:text-red-200 transition-colors pointer-events-auto z-10"
+                  aria-label="엔딩 자동 생성 취소"
+                  title="엔딩 자동 생성 취소"
+                >
+                  <X className="h-3 w-3" aria-hidden="true" />
+                </button>
+              </div>
+            </div>
+          ) : null}
+          <div className={quickEndingBulkGenLoading ? 'pointer-events-none opacity-70' : ''}>
+            {endings.map((ending, idx) => {
             const eid = String(ending?.id || '').trim() || `ending_${idx + 1}`;
             const title = String(ending?.title || '');
             const baseCond = String(ending?.base_condition || '');
@@ -6361,6 +10040,15 @@ const CreateCharacterPage = () => {
                       className="bg-gray-950/40 text-white border-white/10 resize-none"
                       rows={6}
                     />
+                    {/* ✅ 엔딩(기본 조건): 이미지 코드([[img:...]]/{{img:...}}) 미리보기 */}
+                    {(/\[\[\s*img\s*:/i.test(baseCond) || /\{\{\s*img\s*:/i.test(baseCond)) ? (
+                      <div className="mt-2 rounded-lg border border-white/10 bg-black/20 px-3 py-2">
+                        <div className="text-[11px] text-gray-400 font-semibold">미리보기</div>
+                        <div className="mt-2 text-sm text-gray-100">
+                          {renderChatPreviewTextWithInlineImages(baseCond, `end-cond-${eid}`)}
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
 
                   <div className="space-y-2">
@@ -6409,7 +10097,13 @@ const CreateCharacterPage = () => {
                             if (!String(baseCond || '').trim()) { dispatchToast('error', '엔딩 기본 조건을 먼저 입력해주세요.'); return; }
 
                             setQuickEndingEpilogueGenLoadingId(String(eid || ''));
-                            const aiModel = String(user?.preferred_model || 'claude').trim().toLowerCase() || 'claude';
+        // ✅ 요구사항: "위저드만" 제미니 고정(다른 화면/로직에는 영향 주지 않음)
+        const aiModel = useNormalCreateWizard
+          ? 'gemini'
+          : (String(user?.preferred_model || 'claude').trim().toLowerCase() || 'claude');
+                            // ✅ RP/시뮬 분기(요구사항)
+                            const modeRaw = String(formData?.basic_info?.character_type || '').trim().toLowerCase();
+                            const mode = (modeRaw === 'simulator' || modeRaw === 'simulation') ? 'simulator' : 'roleplay';
                             const res = await charactersAPI.quickGenerateEndingEpilogueDraft({
                               name: nm,
                               description: ds,
@@ -6420,12 +10114,17 @@ const CreateCharacterPage = () => {
                               base_condition: String(baseCond || '').trim(),
                               hint: String(hint || '').trim(),
                               extra_conditions: Array.isArray(extra) ? extra : [],
+                              mode,
                               tags: Array.isArray(selectedTagSlugs) ? selectedTagSlugs : [],
                               ai_model: (aiModel === 'gpt' ? 'gpt' : (aiModel === 'gemini' ? 'gemini' : 'claude')),
                             });
-                            const next = String(res?.data?.epilogue || '').trim();
+                            const nextRaw = String(res?.data?.epilogue || '').trim();
+                            const next = nextRaw.length > 1000 ? nextRaw.slice(0, 1000) : nextRaw;
                             if (!next) { dispatchToast('error', '엔딩 내용 생성 결과가 비어있습니다. 잠시 후 다시 시도해주세요.'); return; }
                             updateEndingAt(eid, { epilogue: next });
+                            if (next !== nextRaw) {
+                              try { dispatchToast('warning', '엔딩 내용이 길어 일부가 잘렸습니다. 내용을 확인해주세요.'); } catch (_) {}
+                            }
                             dispatchToast('success', '엔딩 내용이 자동 생성되었습니다. 내용을 확인해주세요.');
                           } catch (e) {
                             dispatchToast('error', '엔딩 내용 자동 생성에 실패했습니다. 잠시 후 다시 시도해주세요.');
@@ -6434,17 +10133,43 @@ const CreateCharacterPage = () => {
                           }
                         }}
                       >
-                        {String(quickEndingEpilogueGenLoadingId || '') === String(eid || '') ? '생성 중...' : '자동생성'}
+                        {String(quickEndingEpilogueGenLoadingId || '') === String(eid || '') ? (
+                          <span className="inline-flex items-center gap-2">
+                            <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                            생성 중...
+                          </span>
+                        ) : (
+                          '자동생성'
+                        )}
                       </Button>
                     </div>
-                    <Textarea
-                      value={epilogue}
-                      maxLength={1000}
-                      onChange={(e) => updateEndingAt(eid, { epilogue: e.target.value })}
-                      placeholder="엔딩 연출(서술/대사)을 작성해 주세요 (AI가 더 자연스럽게 다듬어줄 예정)"
-                      className="bg-gray-950/40 text-white border-white/10 resize-none"
-                      rows={8}
-                    />
+                    <div className="relative">
+                      <Textarea
+                        value={epilogue}
+                        maxLength={1000}
+                        onChange={(e) => updateEndingAt(eid, { epilogue: e.target.value })}
+                        placeholder="엔딩 연출(서술/대사)을 작성해 주세요 (AI가 더 자연스럽게 다듬어줄 예정)"
+                        className="bg-gray-950/40 text-white border-white/10 resize-none"
+                        rows={8}
+                        disabled={String(quickEndingEpilogueGenLoadingId || '') === String(eid || '')}
+                        readOnly={String(quickEndingEpilogueGenLoadingId || '') === String(eid || '')}
+                        aria-busy={String(quickEndingEpilogueGenLoadingId || '') === String(eid || '')}
+                      />
+                      {String(quickEndingEpilogueGenLoadingId || '') === String(eid || '') ? (
+                        <div className="absolute inset-0 flex items-center justify-center rounded-md bg-black/20 cursor-wait">
+                          <Loader2 className="h-7 w-7 animate-spin text-gray-200" aria-hidden="true" />
+                        </div>
+                      ) : null}
+                    </div>
+                    {/* ✅ 엔딩(내용/에필로그): 이미지 코드([[img:...]]/{{img:...}}) 미리보기 */}
+                    {(/\[\[\s*img\s*:/i.test(epilogue) || /\{\{\s*img\s*:/i.test(epilogue)) ? (
+                      <div className="mt-2 rounded-lg border border-white/10 bg-black/20 px-3 py-2">
+                        <div className="text-[11px] text-gray-400 font-semibold">미리보기</div>
+                        <div className="mt-2 text-sm text-gray-100">
+                          {renderChatPreviewTextWithInlineImages(epilogue, `end-epi-${eid}`)}
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
 
                   <div className="space-y-2">
@@ -6616,7 +10341,7 @@ const CreateCharacterPage = () => {
                 )}
               </div>
             );
-          })}
+            })}
 
           <button
             type="button"
@@ -6631,6 +10356,7 @@ const CreateCharacterPage = () => {
           >
             + 엔딩 추가
           </button>
+          </div>
         </div>
       </div>
     );
@@ -6663,7 +10389,8 @@ const CreateCharacterPage = () => {
       { id: 'all', label: '전체' },
       ...startSetItems.map((x, idx) => ({
         id: String(x?.id || `set_${idx + 1}`).trim(),
-        label: `기본 설정 ${idx + 1}`,
+        // ✅ SSOT: 오프닝 이름(title)을 그대로 사용(크리에이터가 이름을 바꾸면 즉시 반영)
+        label: String(x?.title || '').trim() || `오프닝 ${idx + 1}`,
       })),
     ].filter((x) => x.id);
 
@@ -6739,7 +10466,9 @@ const CreateCharacterPage = () => {
     };
 
     return (
-      <div className="space-y-6 p-6">
+      <div className="relative space-y-6 p-6">
+        {/* ✅ 토큰 안내(i): 설정메모에서 {{char}}/{{user}} 지원 */}
+        <WizardTokenHelpIcon />
         <div>
           <div className="text-lg font-semibold text-white">설정집</div>
           <div className="mt-1 text-sm text-gray-400">
@@ -6753,8 +10482,11 @@ const CreateCharacterPage = () => {
             const detail = String(memo?.detail ?? memo?.info ?? '');
             const triggers = (() => {
               const arr = Array.isArray(memo?.triggers) ? memo.triggers : (Array.isArray(memo?.keywords) ? memo.keywords : []);
-              const cleaned = arr.map((x) => String(x ?? '').trim()).filter(Boolean).slice(0, 5);
-              return cleaned.length ? cleaned : [''];
+              const clipped = arr.map((x) => String(x ?? '').trim()).slice(0, 5);
+              const list = clipped.length ? clipped : [''];
+              // ✅ 빈 값만 있는 경우에도 입력란 1개는 유지(추가 버튼/UX 안정)
+              const hasAny = list.some((t) => String(t || '').trim());
+              return hasAny ? list : [''];
             })();
             const targets = Array.isArray(memo?.targets) ? memo.targets.map((t) => String(t || '').trim()).filter(Boolean) : ['all'];
             const isOpenMemo = !!(settingBookAccordionOpenById && settingBookAccordionOpenById[mid] !== false);
@@ -6770,6 +10502,8 @@ const CreateCharacterPage = () => {
             const addMemoTrigger = () => {
               const nonEmptyCount = triggers.filter((t) => String(t || '').trim()).length;
               if (nonEmptyCount >= 5) return;
+              // ✅ UX: 이미 빈 입력칸이 있으면 중복 추가하지 않는다.
+              if (triggers.some((t) => !String(t || '').trim())) return;
               updateMemoTriggers([...triggers, '']);
             };
             const removeMemoTriggerAt = (tidx) => {
@@ -6894,6 +10628,15 @@ const CreateCharacterPage = () => {
                         className="bg-gray-950/40 text-white border-white/10 resize-none"
                         rows={4}
                       />
+                      {/* ✅ 설정메모: 이미지 코드([[img:...]]/{{img:...}}) 미리보기 */}
+                      {(/\[\[\s*img\s*:/i.test(detail) || /\{\{\s*img\s*:/i.test(detail)) ? (
+                        <div className="mt-2 rounded-lg border border-white/10 bg-black/20 px-3 py-2">
+                          <div className="text-[11px] text-gray-400 font-semibold">미리보기</div>
+                          <div className="mt-2 text-sm text-gray-100">
+                            {renderChatPreviewTextWithInlineImages(detail, `sb-${mid}`)}
+                          </div>
+                        </div>
+                      ) : null}
                     </div>
 
                     <div className="space-y-2">
@@ -6947,7 +10690,7 @@ const CreateCharacterPage = () => {
 
                     <div className="space-y-2">
                       <Label className="text-white">적용 대상</Label>
-                      <div className="text-xs text-gray-500">이 설정메모가 어떤 오프닝(기본 설정)에 적용될지 선택하세요.</div>
+                      <div className="text-xs text-gray-500">이 설정메모가 어떤 오프닝에 적용될지 선택하세요.</div>
                       <div className="flex flex-wrap gap-2">
                         {(targets.length ? targets : ['all']).map((t) => {
                           const label = (t === 'all')
@@ -7221,12 +10964,26 @@ const CreateCharacterPage = () => {
             )}
           </div>
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => handleAutoGenerateStats(activeId)}
+              disabled={quickStatsGenLoadingId === activeId || autoGenDisabled}
+              className="h-9 px-3 rounded-lg bg-white/10 text-white text-sm font-semibold hover:bg-white/15 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
+              aria-label="스탯 자동 생성"
+              title="스탯 자동 생성"
+            >
+              {quickStatsGenLoadingId === activeId ? (
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              ) : (
+                '자동 생성'
+              )}
+            </button>
             <Button
               type="button"
               variant="secondary"
               size="sm"
               onClick={handleSyncStatsToPrompt}
-              disabled={syncDisabled}
+              disabled={syncDisabled || quickStatsGenLoadingId === activeId}
               title="프롬프트에 스탯 블록 반영"
             >
               프롬프트 동기화
@@ -7239,7 +10996,25 @@ const CreateCharacterPage = () => {
           </div>
         )}
 
-        <div className="space-y-3">
+        <div className="relative">
+          {/* ✅ 스탯 자동생성 중 오버레이 스피너 */}
+          {quickStatsGenLoadingId === activeId ? (
+            <div className="absolute inset-0 z-10 flex items-center justify-center rounded-lg bg-black/25 cursor-wait">
+              <div className="relative flex items-center justify-center">
+                <Loader2 className="h-7 w-7 animate-spin text-gray-200" aria-hidden="true" />
+                <button
+                  type="button"
+                  onClick={handleCancelStatsGeneration}
+                  className="absolute -top-1 -right-4 p-1 rounded-full bg-red-500/20 hover:bg-red-500/30 text-red-300 hover:text-red-200 transition-colors pointer-events-auto z-10"
+                  aria-label="스탯 자동 생성 취소"
+                  title="스탯 자동 생성 취소"
+                >
+                  <X className="h-3 w-3" aria-hidden="true" />
+                </button>
+              </div>
+            </div>
+          ) : null}
+        <div className={["space-y-3", quickStatsGenLoadingId === activeId ? "pointer-events-none opacity-70" : ""].join(' ')}>
           {stats.map((st, idx) => {
             const sid = String(st?.id || '').trim() || `stat_${idx + 1}`;
             const name = String(st?.name || '');
@@ -7248,6 +11023,26 @@ const CreateCharacterPage = () => {
             const minv = (st?.min_value === '' || st?.min_value == null) ? '' : String(st.min_value);
             const maxv = (st?.max_value === '' || st?.max_value == null) ? '' : String(st.max_value);
             const basev = (st?.base_value === '' || st?.base_value == null) ? '' : String(st.base_value);
+            // ✅ 숫자 범위 검증
+            const statRangeError = (() => {
+              const minNum = minv !== '' && minv !== '-' ? Number(minv) : null;
+              const maxNum = maxv !== '' && maxv !== '-' ? Number(maxv) : null;
+              const baseNum = basev !== '' && basev !== '-' ? Number(basev) : null;
+              // 최소 > 최대 검증
+              if (minNum !== null && maxNum !== null && Number.isFinite(minNum) && Number.isFinite(maxNum)) {
+                if (minNum > maxNum) return '최소값이 최대값보다 큽니다.';
+              }
+              // 기본값 범위 검증
+              if (baseNum !== null && Number.isFinite(baseNum)) {
+                if (minNum !== null && Number.isFinite(minNum) && baseNum < minNum) {
+                  return '기본값이 최소값보다 작습니다.';
+                }
+                if (maxNum !== null && Number.isFinite(maxNum) && baseNum > maxNum) {
+                  return '기본값이 최대값보다 큽니다.';
+                }
+              }
+              return null;
+            })();
             return (
               <div key={sid} className="rounded-lg border border-gray-700 bg-gray-900/20 p-4 space-y-4">
                 <div className="flex items-center justify-between gap-2">
@@ -7322,6 +11117,10 @@ const CreateCharacterPage = () => {
                     />
                   </div>
                 </div>
+                {/* ✅ 숫자 범위 에러 메시지 */}
+                {statRangeError && (
+                  <p className="text-sm text-red-400">{statRangeError}</p>
+                )}
 
                 <div className="space-y-2">
                   <Label className="text-white">설명</Label>
@@ -7357,6 +11156,7 @@ const CreateCharacterPage = () => {
             현재 {stats.length} / {HARD_MAX_STATS}
           </div>
         </div>
+        </div>
       </div>
     );
   };
@@ -7386,6 +11186,7 @@ const CreateCharacterPage = () => {
                 // ✅ 기본 공개 (undefined도 공개로 취급)
                 is_public: img?.is_public !== false,
               }))}
+              onOpenGenerate={() => { try { setImgModalOpen(true); } catch (_) {} }}
               newFiles={formData.media_settings.newly_added_files}
               onToggleExistingPublic={(index) => {
                 setFormData((prev) => {
@@ -7448,7 +11249,9 @@ const CreateCharacterPage = () => {
   };
 
   const renderProfileWizardTab = () => (
-    <div className="p-1 sm:p-3 space-y-3 sm:space-y-4">
+    <div className="relative p-1 sm:p-3 space-y-3 sm:space-y-4">
+      {/* ✅ 토큰 안내(i): 한줄소개에서 {{char}}/{{user}} 지원 */}
+      <WizardTokenHelpIcon className="top-2 right-2" />
       {/* ✅ 대표이미지(프로필 탭에서 바로 등록) */}
       {/* ✅ 경쟁사 톤: 박스(배경/테두리) 없이 시원하게 */}
       <div className="pb-4 border-b border-gray-800/70">
@@ -7470,8 +11273,16 @@ const CreateCharacterPage = () => {
                     <img
                       src={resolveImageUrl(previewUrl)}
                       alt=""
-                      className="w-full h-full object-cover"
+                      className="w-full h-full object-cover cursor-zoom-in"
                       loading="lazy"
+                      onClick={() => {
+                        try {
+                          const src = resolveImageUrl(previewUrl);
+                          if (!src) return;
+                          setImageViewerSrc(src);
+                          setImageViewerOpen(true);
+                        } catch (_) {}
+                      }}
                     />
                   ) : (
                     <div className="text-[11px] text-gray-500 text-center px-2">
@@ -7548,21 +11359,22 @@ const CreateCharacterPage = () => {
         <div className="text-sm font-semibold text-gray-200">
           남성향 / 여성향 / 전체 <span className="text-red-400">*</span>
         </div>
-        <div className="grid grid-cols-3 overflow-hidden rounded-lg border border-gray-700/80 bg-gray-900/30">
+        <div className="grid grid-cols-3 gap-2 rounded-xl border border-gray-800 bg-gray-950/40 p-2">
           {REQUIRED_AUDIENCE_CHOICES.map((opt, idx) => {
             const selected = Array.isArray(selectedTagSlugs) && selectedTagSlugs.includes(opt.slug);
-            const isLast = idx === REQUIRED_AUDIENCE_CHOICES.length - 1;
             return (
               <button
                 key={opt.slug}
                 type="button"
                 onClick={() => toggleExclusiveTag(opt.slug, REQUIRED_AUDIENCE_SLUGS)}
                 aria-pressed={selected}
-                className={`h-10 px-3 text-sm font-medium transition-colors ${
-                  isLast ? '' : 'border-r border-gray-700/80'
-                } ${
-                  selected ? 'bg-purple-600 text-white' : 'bg-transparent text-gray-200 hover:bg-gray-800/60'
-                } focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-500/30`}
+                className={[
+                  'h-10 rounded-lg px-3 text-sm font-semibold transition-all',
+                  'outline-none focus-visible:ring-2 focus-visible:ring-purple-500/30',
+                  selected
+                    ? 'bg-gradient-to-br from-purple-600 to-indigo-600 text-white shadow-sm ring-1 ring-purple-400/40'
+                    : 'bg-gray-900/30 text-gray-200 hover:bg-gray-800/60 ring-1 ring-transparent',
+                ].join(' ')}
               >
                 <span className="block w-full truncate">{opt.label}</span>
               </button>
@@ -7574,10 +11386,10 @@ const CreateCharacterPage = () => {
         )}
       </div>
 
-      {/* ✅ 진행 턴수/무한모드: 프로필 탭(남/여/전체 바로 아래) */}
+      {/* ✅ 진행 턴수: 프로필 탭(남/여/전체 바로 아래) */}
       {(() => {
         /**
-         * ✅ 프로필 탭: 턴수/무한모드 설정
+         * ✅ 프로필 탭: 턴수 설정
          *
          * 의도/원리:
          * - 옵션 탭에 있으면 프롬프트/초기 설정 흐름(앞단)과 분리되어 UX가 어긋난다.
@@ -7590,7 +11402,6 @@ const CreateCharacterPage = () => {
         const mode = String(sim?.mode || 'preset'); // 'preset' | 'custom'
         const maxTurnsRaw = Number(sim?.max_turns ?? 200);
         const maxTurns = Number.isFinite(maxTurnsRaw) && maxTurnsRaw >= 50 ? Math.floor(maxTurnsRaw) : 200;
-        const allowInfinite = !!sim?.allow_infinite_mode;
         const presets = [50, 100, 200, 300];
         const selectedPreset = presets.includes(maxTurns) && mode !== 'custom' ? maxTurns : null;
         const showCustom = mode === 'custom';
@@ -7604,9 +11415,11 @@ const CreateCharacterPage = () => {
         };
 
         return (
-          <div className="rounded-xl border border-gray-800 bg-gray-900/30 p-4">
-            <div className="text-sm font-semibold text-gray-200">진행 턴수</div>
-            <div className="mt-1 text-xs text-gray-500">스토리 진행 길이를 선택하세요. (커스텀은 최소 50턴)</div>
+          <div className="space-y-1">
+            <div className="text-sm font-semibold text-gray-200">
+              진행 턴수 <span className="text-red-400 ml-1">*</span>
+            </div>
+            <div className="text-xs text-gray-500">스토리 진행 길이를 선택하세요. (커스텀은 최소 50턴)</div>
 
             <div className="mt-3 grid grid-cols-5 overflow-hidden rounded-lg border border-gray-700/80 bg-gray-900/30">
               {[50, 100, 200, 300].map((n, idx) => {
@@ -7679,18 +11492,6 @@ const CreateCharacterPage = () => {
                 <div className="text-xs text-gray-500">입력 후 포커스를 빼면 적용돼요.</div>
               </div>
             ) : null}
-
-            <div className="mt-4 flex items-center justify-between gap-3">
-              <div>
-                <div className="text-sm font-semibold text-gray-200">무한모드 별도 허용</div>
-                <div className="text-xs text-gray-500 mt-1">곧 도입 예정이에요. (현재는 비활성화)</div>
-              </div>
-              <Switch
-                checked={false}
-                disabled
-                aria-label="무한모드 별도 허용"
-              />
-            </div>
             {fieldErrors['basic_info.sim_options.max_turns'] && (
               <p className="mt-3 text-xs text-red-400 font-semibold">{fieldErrors['basic_info.sim_options.max_turns']}</p>
             )}
@@ -7698,65 +11499,628 @@ const CreateCharacterPage = () => {
         );
       })()}
 
-      {/* 캐릭터 이름 */}
-      <div>
-        <Label htmlFor="name">
-          캐릭터 이름 <span className="text-red-400 ml-1">*</span>
-        </Label>
-        <Input
-          id="name"
-          className="mt-3"
-          value={formData.basic_info.name}
-          onChange={(e) => updateFormData('basic_info', 'name', e.target.value)}
-          onBlur={refreshChatPreviewSnapshot}
-          placeholder="캐릭터 이름을 입력하세요"
-          required
-          maxLength={100}
-        />
+      {/* ✅ 프롬프트 타입(롤플레잉/시뮬/커스텀): 프로필 단계에서 선택 */}
+      <div
+        ref={promptTypeSectionRef}
+        className={[
+          // ✅ 요구사항: "프롬프트 타입"을 박스(카드)에서 빼고 필수 영역으로 취급한다.
+          // - 기존 카드 스타일(테두리/배경)을 제거해 다른 필수 입력들과 톤을 맞춘다.
+          'space-y-1',
+          promptTypeHighlight ? 'highlight-flash' : '',
+        ].filter(Boolean).join(' ')}
+      >
+        <div className="text-sm font-semibold text-gray-200">
+          프롬프트 타입 <span className="text-red-400 ml-1">*</span>
+        </div>
+        <div className="text-xs text-gray-500">선택한 타입에 맞춰 프롬프트/자동생성이 동작합니다.</div>
+        <div className="mt-2 grid grid-cols-3 overflow-hidden rounded-lg border border-gray-700/80 bg-gray-900/30">
+          {[
+            { value: 'roleplay', label: '롤플레잉' },
+            { value: 'simulator', label: '시뮬레이션' },
+            { value: 'custom', label: '커스텀' },
+          ].map((opt, idx, arr) => {
+            const selected = String(formData?.basic_info?.character_type || 'roleplay') === opt.value;
+            const isLast = idx === arr.length - 1;
+            return (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => updateFormData('basic_info', 'character_type', opt.value)}
+                aria-pressed={selected}
+                className={`h-10 px-2 text-xs sm:text-sm font-medium transition-colors ${
+                  isLast ? '' : 'border-r border-gray-700/80'
+                } ${
+                  selected ? 'bg-purple-600 text-white' : 'bg-transparent text-gray-200 hover:bg-gray-800/60'
+                } focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-500/30`}
+              >
+                <span className="block w-full truncate">{opt.label}</span>
+              </button>
+            );
+          })}
+        </div>
+        <div className="mt-2 text-xs text-gray-500">
+          {String(formData?.basic_info?.character_type || 'roleplay') === 'roleplay' && (
+            <span>실제 사람과 대화하는 것처럼 자연스러운 소통을 즐겨보세요.</span>
+          )}
+          {String(formData?.basic_info?.character_type || 'roleplay') === 'simulator' && (
+            <span>다양한 캐릭터가 등장하는 흥미진진한 이야기를 AI가 펼쳐요.</span>
+          )}
+          {String(formData?.basic_info?.character_type || 'roleplay') === 'custom' && (
+            <span>크리에이터의 의도대로 AI를 조정할 수 있는 커스텀 설정이에요.</span>
+          )}
+        </div>
+        {fieldErrors['basic_info.character_type'] && (
+          <p className="text-xs text-red-400 mt-2">{fieldErrors['basic_info.character_type']}</p>
+        )}
       </div>
 
-      {/* 캐릭터 소개 */}
+      {/* ✅ 요구사항: 30초 모달과 동일한 "장르/캐릭터유형/소재" 햄버거(아코디언) UI를
+          위저드의 "프롬프트 타입" 아래, "작품명" 위에 배치한다. */}
+      <div className="space-y-2">
+        <div className="text-xs sm:text-sm font-semibold text-gray-200">
+          장르/캐릭터유형/소재를 골라주세요.
+        </div>
+
+        <div className="rounded-xl border border-gray-800 bg-gray-950/20 overflow-hidden">
+          {/* 장르 */}
+          <button
+            type="button"
+            onClick={() => {
+              setQmChipPanelsOpen((prev) => ({ ...(prev || {}), genre: !Boolean(prev?.genre) }));
+            }}
+            className="w-full h-11 px-3 flex items-center justify-between gap-3 bg-gray-950/10 hover:bg-gray-900/20 border-b border-gray-800"
+            aria-expanded={!!qmChipPanelsOpen?.genre}
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <Menu className="w-4 h-4 text-gray-400 flex-shrink-0" aria-hidden="true" />
+              <div className="text-xs sm:text-sm font-semibold text-gray-200 truncate">
+                장르<span className="text-rose-400"> *</span>
+              </div>
+              <div className="text-[11px] text-gray-500 flex-shrink-0">(최대 2)</div>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="text-[11px] sm:text-xs text-gray-400 max-w-[180px] truncate">
+                {(Array.isArray(qmSelectedGenres) && qmSelectedGenres.length > 0) ? qmSelectedGenres.join(', ') : '미선택'}
+              </div>
+              {qmChipPanelsOpen?.genre
+                ? <ChevronUp className="w-4 h-4 text-gray-400" aria-hidden="true" />
+                : <ChevronDown className="w-4 h-4 text-gray-400" aria-hidden="true" />}
+            </div>
+          </button>
+          {qmChipPanelsOpen?.genre ? (
+            <div className="p-3 space-y-2">
+              <div className="text-[11px] sm:text-xs text-gray-400">장르는 최대 2개까지 선택할 수 있어요.</div>
+              <div className="flex flex-wrap gap-2">
+                {(qmGenreExpanded ? qmGenreDisplay : qmGenreDisplay.slice(0, QUICK_MEET_GENRE_PREVIEW_COUNT)).map((t) => {
+                  const selected = (Array.isArray(qmSelectedGenres) ? qmSelectedGenres : []).includes(t);
+                  const atLimit = !selected && (Array.isArray(qmSelectedGenres) ? qmSelectedGenres.length : 0) >= QUICK_MEET_GENRE_MAX_SELECT;
+                  return (
+                    <button
+                      key={`wizard-genre-${t}`}
+                      type="button"
+                      disabled={atLimit}
+                      onClick={() => toggleQuickMeetGenreChip(t)}
+                      aria-pressed={selected}
+                      className={[
+                        'h-7 px-2.5 rounded-full border text-xs font-semibold transition-colors whitespace-nowrap flex-shrink-0',
+                        selected
+                          ? 'border-purple-400/50 bg-purple-600/20 text-purple-100'
+                          : 'border-gray-700/60 bg-gray-900/10 text-gray-200 hover:bg-gray-800/30',
+                        atLimit ? 'opacity-40 cursor-not-allowed' : '',
+                      ].join(' ')}
+                      title={atLimit ? '장르는 최대 2개까지 선택할 수 있어요.' : t}
+                    >
+                      {t}
+                    </button>
+                  );
+                })}
+
+                {/* 더보기/접기 */}
+                <button
+                  key="wizard-genre-more-toggle"
+                  type="button"
+                  onClick={() => setQmGenreExpanded((v) => !v)}
+                  aria-label={qmGenreExpanded ? '장르 접기' : '장르 더보기'}
+                  className="h-7 px-2.5 rounded-full border text-xs font-semibold transition-colors whitespace-nowrap flex-shrink-0 border-gray-700/60 bg-gray-900/10 text-gray-200 hover:bg-gray-800/30 inline-flex items-center gap-1"
+                  title={qmGenreExpanded ? '접기' : '더보기'}
+                >
+                  <span>{qmGenreExpanded ? '접기' : '더보기'}</span>
+                  {qmGenreExpanded
+                    ? <ChevronUp className="w-3.5 h-3.5 opacity-80" aria-hidden="true" />
+                    : <ChevronDown className="w-3.5 h-3.5 opacity-80" aria-hidden="true" />}
+                </button>
+              </div>
+              {fieldErrors['tags.quickmeet.genre'] && (
+                <p className="text-xs text-red-400 mt-2">{fieldErrors['tags.quickmeet.genre']}</p>
+              )}
+            </div>
+          ) : null}
+
+          {/* 캐릭터 유형 */}
+          <button
+            type="button"
+            onClick={() => {
+              setQmChipPanelsOpen((prev) => ({ ...(prev || {}), type: !Boolean(prev?.type) }));
+            }}
+            className="w-full h-11 px-3 flex items-center justify-between gap-3 bg-gray-950/10 hover:bg-gray-900/20 border-b border-gray-800"
+            aria-expanded={!!qmChipPanelsOpen?.type}
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <Menu className="w-4 h-4 text-gray-400 flex-shrink-0" aria-hidden="true" />
+              <div className="text-xs sm:text-sm font-semibold text-gray-200 truncate">
+                캐릭터 유형<span className="text-rose-400"> *</span>
+              </div>
+              <div className="text-[11px] text-gray-500 flex-shrink-0">(1개)</div>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="text-[11px] sm:text-xs text-gray-400 max-w-[180px] truncate">
+                {String(qmSelectedType || '').trim() ? String(qmSelectedType || '').trim() : '미선택'}
+              </div>
+              {qmChipPanelsOpen?.type
+                ? <ChevronUp className="w-4 h-4 text-gray-400" aria-hidden="true" />
+                : <ChevronDown className="w-4 h-4 text-gray-400" aria-hidden="true" />}
+            </div>
+          </button>
+          {qmChipPanelsOpen?.type ? (
+            <div className="p-3 space-y-2">
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-[11px] sm:text-xs text-gray-400">유형은 1개만 선택할 수 있어요.</div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const len = Array.isArray(qmTypeDisplay) ? qmTypeDisplay.length : 0;
+                    if (len <= 0) return;
+                    setQmTypePage((p) => ((Number(p || 0) + 1) * QUICK_MEET_TYPE_PAGE_SIZE >= len ? 0 : Number(p || 0) + 1));
+                  }}
+                  aria-label="캐릭터 유형 교체"
+                  className="h-8 w-9 rounded-lg border border-gray-800 bg-gray-950/20 hover:bg-gray-900/30 text-gray-300 inline-flex items-center justify-center disabled:opacity-50"
+                  title="교체"
+                >
+                  <RefreshCw className="w-4 h-4" aria-hidden="true" />
+                </button>
+              </div>
+              <div className="flex flex-wrap gap-2 max-h-[96px] overflow-hidden">
+                {qmTypeVisible.map((t) => {
+                  const selected = String(qmSelectedType || '') === t;
+                  return (
+                    <button
+                      key={`wizard-type-${t}`}
+                      type="button"
+                      onClick={() => toggleQuickMeetSingleChip('type', t)}
+                      aria-pressed={selected}
+                      className={[
+                        'h-7 px-2.5 rounded-full border text-xs font-semibold transition-colors whitespace-nowrap flex-shrink-0',
+                        selected
+                          ? 'border-purple-400/50 bg-purple-600/20 text-purple-100'
+                          : 'border-gray-700/60 bg-gray-900/10 text-gray-200 hover:bg-gray-800/30',
+                      ].join(' ')}
+                      title={t}
+                    >
+                      {t}
+                    </button>
+                  );
+                })}
+              </div>
+              {fieldErrors['tags.quickmeet.type'] && (
+                <p className="text-xs text-red-400 mt-2">{fieldErrors['tags.quickmeet.type']}</p>
+              )}
+            </div>
+          ) : null}
+
+          {/* 소재(훅/행동/소재) */}
+          <button
+            type="button"
+            onClick={() => {
+              setQmChipPanelsOpen((prev) => ({ ...(prev || {}), hook: !Boolean(prev?.hook) }));
+            }}
+            className="w-full h-11 px-3 flex items-center justify-between gap-3 bg-gray-950/10 hover:bg-gray-900/20"
+            aria-expanded={!!qmChipPanelsOpen?.hook}
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <Menu className="w-4 h-4 text-gray-400 flex-shrink-0" aria-hidden="true" />
+              <div className="text-xs sm:text-sm font-semibold text-gray-200 truncate">
+                소재<span className="text-rose-400"> *</span>
+              </div>
+              <div className="text-[11px] text-gray-500 flex-shrink-0">(1개)</div>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="text-[11px] sm:text-xs text-gray-400 max-w-[180px] truncate">
+                {String(qmSelectedHook || '').trim() ? String(qmSelectedHook || '').trim() : '미선택'}
+              </div>
+              {qmChipPanelsOpen?.hook
+                ? <ChevronUp className="w-4 h-4 text-gray-400" aria-hidden="true" />
+                : <ChevronDown className="w-4 h-4 text-gray-400" aria-hidden="true" />}
+            </div>
+          </button>
+          {qmChipPanelsOpen?.hook ? (
+            <div className="p-3 space-y-2">
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-[11px] sm:text-xs text-gray-400">소재는 1개만 선택할 수 있어요.</div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const len = Array.isArray(qmHookDisplay) ? qmHookDisplay.length : 0;
+                    if (len <= 0) return;
+                    setQmHookPage((p) => ((Number(p || 0) + 1) * QUICK_MEET_HOOK_PAGE_SIZE >= len ? 0 : Number(p || 0) + 1));
+                  }}
+                  aria-label="소재 교체"
+                  className="h-8 w-9 rounded-lg border border-gray-800 bg-gray-950/20 hover:bg-gray-900/30 text-gray-300 inline-flex items-center justify-center disabled:opacity-50"
+                  title="교체"
+                >
+                  <RefreshCw className="w-4 h-4" aria-hidden="true" />
+                </button>
+              </div>
+              <div className="flex flex-wrap gap-2 max-h-[64px] overflow-hidden">
+                {qmHookVisible.map((t) => {
+                  const selected = String(qmSelectedHook || '') === t;
+                  return (
+                    <button
+                      key={`wizard-hook-${t}`}
+                      type="button"
+                      onClick={() => toggleQuickMeetSingleChip('hook', t)}
+                      aria-pressed={selected}
+                      className={[
+                        'h-7 px-2.5 rounded-full border text-xs font-semibold transition-colors whitespace-nowrap flex-shrink-0',
+                        selected
+                          ? 'border-purple-400/50 bg-purple-600/20 text-purple-100'
+                          : 'border-gray-700/60 bg-gray-900/10 text-gray-200 hover:bg-gray-800/30',
+                      ].join(' ')}
+                      title={t}
+                    >
+                      {t}
+                    </button>
+                  );
+                })}
+              </div>
+              {fieldErrors['tags.quickmeet.hook'] && (
+                <p className="text-xs text-red-400 mt-2">{fieldErrors['tags.quickmeet.hook']}</p>
+              )}
+            </div>
+          ) : null}
+        </div>
+      </div>
+
+      {/* 작품명 */}
+      <div>
+        <Label htmlFor="name">
+          작품명 <span className="text-red-400 ml-1">*</span>
+        </Label>
+        <div className="relative mt-3">
+          {quickGenLoading ? (
+            /**
+             * ✅ 요구사항: 자동생성 완료 전까지 입력필드 텍스트는 비우고 스피너만 노출
+             * - 순차 자동생성(작품명 → 한줄소개) 중간 결과가 화면에 먼저 박히면 UX가 깨진다.
+             * - 상태(SSOT)는 그대로 두되, "표시"만 스피너로 잠시 대체한다.
+             */
+            <>
+              <Input
+                id="name"
+                className="bg-gray-950/40 border-gray-700 text-transparent caret-transparent pr-16"
+                value=""
+                onChange={() => {}}
+                placeholder=""
+                disabled
+                readOnly
+                aria-busy="true"
+              />
+              <div className="absolute inset-0 flex items-center justify-center">
+                <div className="relative flex items-center justify-center">
+                  <Loader2 className="h-5 w-5 animate-spin text-gray-200" aria-hidden="true" />
+                  <button
+                    type="button"
+                    onClick={handleCancelProfileGeneration}
+                    className="absolute -top-1 -right-4 p-1 rounded-full bg-red-500/20 hover:bg-red-500/30 text-red-300 hover:text-red-200 transition-colors pointer-events-auto z-10"
+                    aria-label="자동 생성 취소"
+                    title="자동 생성 취소"
+                  >
+                    <X className="h-3 w-3" aria-hidden="true" />
+                  </button>
+                </div>
+              </div>
+            </>
+          ) : (
+            <>
+              <Input
+                id="name"
+                className="bg-gray-950/40 border-gray-700 text-gray-100 placeholder:text-gray-500 pr-16"
+                value={formData.basic_info.name}
+                onChange={(e) => updateFormData('basic_info', 'name', e.target.value)}
+                onBlur={refreshChatPreviewSnapshot}
+                placeholder="작품명을 입력하세요"
+                required
+              />
+              <CharLimitCounter value={formData.basic_info.name} max={PROFILE_NAME_MAX_LEN} />
+            </>
+          )}
+        </div>
+        {(() => {
+          if (quickGenLoading) return null;
+          const raw = String(formData?.basic_info?.name || '');
+          if (raw.trim().length === 0) return <p className="text-xs text-red-400 mt-2">작품명은 필수입니다.</p>;
+          if (raw.length > PROFILE_NAME_MAX_LEN) return <p className="text-xs text-rose-400 mt-2">작품명은 최대 {PROFILE_NAME_MAX_LEN}자까지 입력할 수 있어요.</p>;
+          return null;
+        })()}
+      </div>
+
+      {/* 한줄소개 */}
       <div>
         <div className="flex items-center justify-between gap-3">
           <Label htmlFor="profile_intro">
-            캐릭터 소개 <span className="text-red-400 ml-1">*</span>
+            한줄소개 <span className="text-red-400 ml-1">*</span>
           </Label>
-          <button
-            type="button"
-            onClick={handleAutoGenerateProfile}
-            disabled={quickGenLoading}
-            className="h-9 px-3 rounded-lg bg-white/10 text-white text-sm font-semibold hover:bg-white/15 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
-            aria-label="프로필 자동 생성"
-            title="프로필 자동 생성"
-          >
-            {quickGenLoading ? (
-              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-            ) : (
-              '자동 생성'
-            )}
-          </button>
         </div>
-        <Textarea
-          id="profile_intro"
-          data-autogrow="1"
-          onInput={handleAutoGrowTextarea}
-          className="mt-3 resize-none overflow-hidden"
-          value={formData.basic_info.description}
-          onChange={(e) => updateFormData('basic_info', 'description', e.target.value)}
-          onBlur={refreshChatPreviewSnapshot}
-          placeholder="캐릭터를 간단히 소개해주세요."
-          rows={5}
-          maxLength={3000}
-          required={!isEditMode}
-        />
+        <div className="relative mt-3">
+          {(() => {
+            const descMax = getProfileOneLineMaxLenByCharacterType(formData?.basic_info?.character_type);
+            return (
+              <>
+                {quickGenLoading ? (
+                  <>
+                    <Textarea
+                      id="profile_intro"
+                      data-autogrow="1"
+                      onInput={handleAutoGrowTextarea}
+                      className="resize-none overflow-hidden pr-16 pb-6 text-transparent caret-transparent"
+                      value=""
+                      onChange={() => {}}
+                      placeholder=""
+                      rows={5}
+                      disabled
+                      readOnly
+                      aria-busy="true"
+                    />
+                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                      <Loader2 className="h-6 w-6 animate-spin text-gray-200" aria-hidden="true" />
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <Textarea
+                      id="profile_intro"
+                      data-autogrow="1"
+                      onInput={handleAutoGrowTextarea}
+                      className="resize-none overflow-hidden pr-16 pb-6"
+                      value={formData.basic_info.description}
+                      onChange={(e) => updateFormData('basic_info', 'description', e.target.value)}
+                      onBlur={refreshChatPreviewSnapshot}
+                      placeholder="캐릭터를 간단히 소개해주세요."
+                      rows={5}
+                      required={!isEditMode}
+                      maxLength={descMax}
+                    />
+                    <CharLimitCounter value={formData.basic_info.description} max={descMax} />
+                  </>
+                )}
+              </>
+            );
+          })()}
+        </div>
+        {(() => {
+          if (quickGenLoading) return null;
+          const raw = String(formData?.basic_info?.description || '');
+          if (raw.trim().length === 0) return <p className="text-xs text-red-400 mt-2">한줄소개는 필수입니다.</p>;
+          const descMax = getProfileOneLineMaxLenByCharacterType(formData?.basic_info?.character_type);
+          if (raw.length > descMax) return <p className="text-xs text-rose-400 mt-2">한줄소개는 최대 {descMax}자까지 입력할 수 있어요.</p>;
+          return null;
+        })()}
         {fieldErrors['basic_info.description'] && (
-          <p className="text-xs text-red-500 mt-2">{fieldErrors['basic_info.description']}</p>
+          quickGenLoading ? null : <p className="text-xs text-red-500 mt-2">{fieldErrors['basic_info.description']}</p>
         )}
+
+        {/* ✅ 요구사항: 자동생성 버튼을 한줄소개 박스 아래(우측 하단)로 이동 */}
+        <div className="mt-2 flex justify-end">
+          <div className="flex flex-col items-end gap-2">
+            <button
+              type="button"
+              onClick={handleAutoGenerateProfile}
+              disabled={quickGenLoading}
+              className="h-9 px-3 rounded-lg bg-white/10 text-white text-sm font-semibold hover:bg-white/15 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
+              aria-label="프로필 자동 생성"
+              title="프로필 자동 생성"
+            >
+              {quickGenLoading ? (
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              ) : (
+                '자동 생성'
+              )}
+            </button>
+
+            {/* ✅ QuickMeet와 동일 의미: 이미지 정보 포함 토글 (OFF=빠르고 트렌디하게 생성) */}
+            <label className="inline-flex items-center gap-2 text-xs text-gray-300 select-none">
+              {profileAutoGenUseImage ? '삽입한 이미지에 정확하게 생성' : '빠르고 트렌디하게 생성'}
+              <Switch
+                checked={profileAutoGenUseImage}
+                onCheckedChange={(v) => setProfileAutoGenUseImage(Boolean(v))}
+                disabled={quickGenLoading || !hasProfileImageForAutoGen}
+              />
+            </label>
+
+            {/* ✅ 30초 모달과 동일 배치: "제목 스타일 자유/작품명 구체적으로" 토글은 '빠르고 트렌디하게 생성' 바로 아래 */}
+            {String(formData?.basic_info?.character_type || 'roleplay') !== 'simulator' ? (
+              <label className="inline-flex items-center gap-2 text-xs text-gray-300 select-none">
+                {quickGenTitleNameMode ? '작품명 구체적으로' : '제목 스타일 자유'}
+                <Switch
+                  checked={quickGenTitleNameMode}
+                  onCheckedChange={(v) => setQuickGenTitleNameMode(Boolean(v))}
+                  disabled={quickGenLoading}
+                />
+              </label>
+            ) : null}
+
+            {/* ✅ 요구사항: "빠르고 트렌디하게 생성" 바로 아래에 동일한 ON/OFF 토글로 붙이기 */}
+            {String(formData?.basic_info?.character_type || 'roleplay') === 'simulator' && (() => {
+              const ss = (formData?.basic_info?.start_sets && typeof formData.basic_info.start_sets === 'object')
+                ? formData.basic_info.start_sets
+                : null;
+              const sim = (ss && typeof ss.sim_options === 'object' && ss.sim_options) ? ss.sim_options : {};
+              const simDatingElements = !!sim?.sim_dating_elements;
+              return (
+                <label className="inline-flex items-center gap-2 text-xs text-gray-300 select-none">
+                  시뮬 내 미연시 요소
+                  <Switch
+                    checked={simDatingElements}
+                    onCheckedChange={(v) => {
+                      const on = !!v;
+                      updateStartSets((prev) => {
+                        const cur = (prev && typeof prev === 'object') ? prev : {};
+                        const curSim = (cur?.sim_options && typeof cur.sim_options === 'object') ? cur.sim_options : {};
+                        return { ...cur, sim_options: { ...curSim, sim_dating_elements: on } };
+                      });
+                    }}
+                    disabled={quickGenLoading}
+                  />
+                </label>
+              );
+            })()}
+          </div>
+        </div>
       </div>
+
+      {/* ✅ 작품 컨셉(선택, 고급): 프롬프트 자동생성 보강용 */}
+      {(() => {
+        const ss = (formData?.basic_info?.start_sets && typeof formData.basic_info.start_sets === 'object')
+          ? formData.basic_info.start_sets
+          : null;
+        const pc = (ss && typeof ss.profile_concept === 'object' && ss.profile_concept) ? ss.profile_concept : null;
+        const enabled = !!pc?.enabled;
+        const text = String(pc?.text || '');
+        return (
+          <div className="rounded-xl border border-gray-800 bg-gray-900/30 p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-sm font-semibold text-gray-200">
+                  작품 컨셉 <span className="text-xs text-gray-500 font-medium">(선택 · 고급)</span>
+                </div>
+                <div className="mt-1 text-xs text-gray-500">
+                  작품의 컨셉을 모델이 좀 더 잘 이해하게 됩니다. 프롬프트 자동생성 시 참고합니다.
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                {enabled ? (
+                  profileConceptEditMode ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        // ✅ 편집 확정(잠금)
+                        try { setProfileConceptEditMode(false); } catch (_) {}
+                      }}
+                      disabled={quickGenLoading}
+                      className="h-8 w-8 inline-flex items-center justify-center rounded-md border border-gray-700 bg-gray-950/40 text-gray-200 hover:bg-gray-800/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      title="수정 확정"
+                      aria-label="작품 컨셉 수정 확정"
+                    >
+                      <Check className="h-4 w-4" aria-hidden="true" />
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        // ✅ 경고 후 편집 모드 진입(연필)
+                        try { setProfileConceptEditConfirmOpen(true); } catch (_) {}
+                      }}
+                      disabled={quickGenLoading}
+                      className="h-8 w-8 inline-flex items-center justify-center rounded-md border border-gray-700 bg-gray-950/40 text-gray-200 hover:bg-gray-800/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      title="직접 수정(잠금 해제)"
+                      aria-label="작품 컨셉 직접 수정"
+                    >
+                      <Pencil className="h-4 w-4" aria-hidden="true" />
+                    </button>
+                  )
+                ) : null}
+                <Switch
+                  id="profile_concept_toggle"
+                  checked={enabled}
+                  onCheckedChange={(v) => {
+                    const on = !!v;
+                    // ✅ 토글 OFF 시 편집/확인 모달은 강제 종료(방어)
+                    if (!on) {
+                      try { setProfileConceptEditMode(false); } catch (_) {}
+                      try { setProfileConceptEditConfirmOpen(false); } catch (_) {}
+                    }
+                    updateStartSets((prev) => {
+                      const cur = (prev && typeof prev === 'object') ? prev : {};
+                      const existing = (cur.profile_concept && typeof cur.profile_concept === 'object') ? cur.profile_concept : {};
+                      return { ...cur, profile_concept: { ...(existing || {}), enabled: on } };
+                    });
+                  }}
+                  aria-label="작품 컨셉 사용"
+                />
+              </div>
+            </div>
+
+            {enabled ? (
+              <div className="mt-3">
+                <div className="relative">
+                  {quickGenLoading ? (
+                    /**
+                     * ✅ 요구사항: 자동생성 중에는 작품 컨셉도 텍스트를 비우고 스피너만 노출
+                     * - 작품명/한줄소개가 갱신되는 동안 컨셉도 함께 "동기화 중"임을 명확히 보여준다.
+                     */
+                    <>
+                      <Textarea
+                        id="profile_concept_text"
+                        data-autogrow="1"
+                        onInput={handleAutoGrowTextarea}
+                        className="resize-none overflow-hidden pr-16 pb-6 bg-gray-950/40 border-gray-700 text-transparent caret-transparent placeholder:text-transparent"
+                        value=""
+                        onChange={() => {}}
+                        placeholder=""
+                        rows={6}
+                        disabled
+                        readOnly
+                        aria-busy="true"
+                      />
+                      <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                        <Loader2 className="h-6 w-6 animate-spin text-gray-200" aria-hidden="true" />
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <Textarea
+                        id="profile_concept_text"
+                        data-autogrow="1"
+                        onInput={handleAutoGrowTextarea}
+                        className={[
+                          'resize-none overflow-hidden pr-16 pb-6 border-gray-700 text-gray-100 placeholder:text-gray-500',
+                          profileConceptEditMode ? 'bg-gray-950/40' : 'bg-gray-950/20 opacity-90',
+                        ].join(' ')}
+                        value={text}
+                        onChange={(e) => {
+                          // ✅ 기본값은 잠금(읽기 전용). 연필로 해제한 경우에만 반영한다.
+                          if (!profileConceptEditMode) return;
+                          const v = String(e?.target?.value || '');
+                          updateStartSets((prev) => {
+                            const cur = (prev && typeof prev === 'object') ? prev : {};
+                            const existing = (cur.profile_concept && typeof cur.profile_concept === 'object') ? cur.profile_concept : {};
+                            return {
+                              ...cur,
+                              profile_concept: { ...(existing || {}), enabled: true, text: v.slice(0, PROFILE_CONCEPT_MAX_LEN) },
+                            };
+                          });
+                        }}
+                        placeholder="예) 장르/톤, 핵심 갈등, 관계/역할, 세계관 규칙, 전개 포인트 등을 적어주세요."
+                        rows={6}
+                        maxLength={PROFILE_CONCEPT_MAX_LEN}
+                        readOnly={!profileConceptEditMode}
+                      />
+                      <CharLimitCounter value={text} max={PROFILE_CONCEPT_MAX_LEN} />
+                    </>
+                  )}
+                </div>
+                <div className="mt-2 text-xs text-gray-500">
+                  {profileConceptEditMode
+                    ? '직접 수정 중입니다. 우상단 체크 버튼을 누르면 수정이 확정(잠금)됩니다.'
+                    : '기본 잠금 상태입니다. 우상단 연필로 잠금 해제 후 직접 수정할 수 있습니다.'}
+                </div>
+              </div>
+            ) : null}
+          </div>
+        );
+      })()}
     </div>
   );
 
-  const renderExistingImageUploadAndTriggers = () => (
+  const renderExistingImageUploadAndTriggers = (opts = {}) => (
     <>
       {/* 기존: 캐릭터 이미지 업로드 + 이미지 생성 트리거 + 키워드 트리거 */}
       <Card className="p-4 border border-gray-800 bg-gray-900/40 text-gray-100">
@@ -7765,18 +12129,27 @@ const CreateCharacterPage = () => {
             <Image className="w-5 h-5 mr-2" />
             캐릭터 이미지 {!isEditMode && <span className="text-red-400 ml-1">*</span>}
           </h3>
-          <Button
-            type="button"
-            size="sm"
-            className="bg-purple-600 hover:bg-purple-700 text-white"
-            onClick={() => setImgModalOpen(true)}
-          >
-            이미지 생성하기
-          </Button>
+          {opts?.hideGenerateButton ? null : (
+            <Button
+              type="button"
+              size="sm"
+              className="bg-purple-600 hover:bg-purple-700 text-white"
+              onClick={() => setImgModalOpen(true)}
+            >
+              이미지 생성하기
+            </Button>
+          )}
         </div>
         <ErrorBoundary>
           <DropzoneGallery
             tone="dark"
+            maxFiles={opts?.gallery?.maxFiles}
+            gridColumns={opts?.gallery?.gridColumns}
+            enableInfiniteScroll={!!opts?.gallery?.enableInfiniteScroll}
+            pageSize={opts?.gallery?.pageSize}
+            layoutVariant={opts?.gallery?.layoutVariant || 'with_dropzone'}
+            inlineAddSlotVariant={opts?.gallery?.inlineAddSlotVariant || 'none'}
+            onOpenGenerate={opts?.gallery?.onOpenGenerate}
             // ✅ 운영(배포)에서 API_BASE_URL이 `/api`로 끝나면 `/static/*` 이미지가 `/api/static/*`로 잘못 붙어 깨질 수 있다.
             // - 표준 유틸(`resolveImageUrl`)로만 렌더링 URL을 만든다.
             existingImages={formData.media_settings.image_descriptions.map((img) => ({
@@ -7785,6 +12158,8 @@ const CreateCharacterPage = () => {
               // ✅ 기본 공개 (undefined도 공개로 취급)
               is_public: img?.is_public !== false,
             }))}
+            // ⚠️ 중요: onOpenGenerate는 상황별 이미지 탭에서만 외부로 제어한다.
+            // - 기본(프로필/대표이미지/기타)에서는 "그리드 내부 생성 아이콘"을 노출하지 않는다.
             onToggleExistingPublic={(index) => {
               setFormData((prev) => {
                 const arr = Array.isArray(prev?.media_settings?.image_descriptions)
@@ -7962,47 +12337,45 @@ const CreateCharacterPage = () => {
   );
 
   const renderPromptWizardTab = () => (
-    <div className="p-4 space-y-4">
-      <div>
-        <div className="text-sm font-semibold text-gray-200">모드</div>
-        <div className="mt-2 grid grid-cols-3 overflow-hidden rounded-lg border border-gray-700/80 bg-gray-900/30">
-          {[
-            { value: 'roleplay', label: '롤플레잉' },
-            { value: 'simulator', label: '시뮬레이션' },
-            { value: 'custom', label: '커스텀' },
-          ].map((opt, idx, arr) => {
-            const selected = String(formData?.basic_info?.character_type || 'roleplay') === opt.value;
-            const isLast = idx === arr.length - 1;
-            return (
+    <div className="relative p-4 space-y-4">
+      {/* ✅ 토큰 안내(i): 프롬프트/비밀정보에서 {{char}}/{{user}} 지원 */}
+      {/* ✅ 프롬프트 탭: 토큰 안내(i)는 우상단 "전역 도움말"로 유지 (프롬프트 타입 변경과 맥락이 다름)
+          - 프롬프트 타입 변경 버튼과 겹치지 않도록 '더 위'로 올려 배치한다. */}
+      <WizardTokenHelpIcon className="-top-2 right-3" />
+      {/* ✅ 프롬프트 타입은 프로필 단계에서 선택(요구사항) */}
+      {(() => {
+        const t = String(formData?.basic_info?.character_type || 'roleplay').trim();
+        const label = (t === 'simulator' ? '시뮬레이션' : (t === 'custom' ? '커스텀' : '롤플레잉'));
+        const canAuto = (t === 'roleplay' || t === 'simulator');
+        return (
+          // ✅ 우상단 토큰 안내(i)가 absolute라, 우측 끝 버튼(프롬프트 타입 변경)과 겹칠 수 있다.
+          // - 요구사항: "변경 버튼을 안쪽으로 당기기" → 안내 영역에 우측 패딩을 확보한다.
+          <div className="text-gray-100 pr-12">
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-sm font-semibold text-gray-200 truncate">
+                  {label} <span className="text-gray-500 font-medium">방식으로 선택하셨습니다.</span>
+                </div>
+                <div className="mt-1 text-xs text-gray-500">
+                  그에 맞게 프롬프트를 입력해주세요{canAuto ? ' (자동생성도 프로필 정보를 반영해 생성됩니다).' : '.'}
+                </div>
+              </div>
               <button
-                key={opt.value}
                 type="button"
-                onClick={() => updateFormData('basic_info', 'character_type', opt.value)}
-                aria-pressed={selected}
-                className={`h-10 px-2 text-xs sm:text-sm font-medium transition-colors ${
-                  isLast ? '' : 'border-r border-gray-700/80'
-                } ${
-                  selected ? 'bg-purple-600 text-white' : 'bg-transparent text-gray-200 hover:bg-gray-800/60'
-                } focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-500/30`}
+                className="shrink-0 inline-flex items-center justify-center h-9 w-9 rounded-lg bg-white/10 text-white hover:bg-white/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-500/30"
+                aria-label="프롬프트 타입 변경"
+                title="프롬프트 타입 변경"
+                onClick={() => {
+                  try { setNormalWizardStep('profile'); } catch (_) {}
+                  try { setPromptTypeHighlight(true); } catch (_) {}
+                }}
               >
-                <span className="block w-full truncate">{opt.label}</span>
+                <ArrowLeftRight className="h-4 w-4" aria-hidden="true" />
               </button>
-            );
-          })}
-        </div>
-
-        <div className="mt-2 text-xs text-gray-500">
-          {String(formData?.basic_info?.character_type || 'roleplay') === 'roleplay' && (
-            <span>실제 사람과 대화하는 것처럼 자연스러운 소통을 즐겨보세요.</span>
-          )}
-          {String(formData?.basic_info?.character_type || 'roleplay') === 'simulator' && (
-            <span>다양한 캐릭터가 등장하는 흥미진진한 이야기를 AI가 펼쳐요.</span>
-          )}
-          {String(formData?.basic_info?.character_type || 'roleplay') === 'custom' && (
-            <span>크리에이터의 의도대로 AI를 조정할 수 있는 커스텀 설정이에요.</span>
-          )}
-        </div>
-      </div>
+            </div>
+          </div>
+        );
+      })()}
 
       <div>
         <div className="flex items-center justify-between gap-3">
@@ -8013,6 +12386,7 @@ const CreateCharacterPage = () => {
             <button
               type="button"
               onClick={handleApplyPromptStatsToStats}
+              disabled={quickPromptGenLoading}
               className="h-9 px-3 rounded-lg bg-white/10 text-white text-sm font-semibold hover:bg-white/15 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
               aria-label="스탯에 적용"
               title="프롬프트의 스탯 블록을 스탯 탭에 덮어쓰기"
@@ -8060,82 +12434,128 @@ const CreateCharacterPage = () => {
             return null;
           }
         })()}
-        <Textarea
-          id="world_setting"
-          data-autogrow="1"
-          data-autogrow-max="520"
-          onInput={handleAutoGrowTextarea}
-          className="mt-3 resize-none"
-          value={formData.basic_info.world_setting}
-          onChange={(e) => {
-            /**
-             * ✅ 스탯 블록 보호(요구사항)
-             *
-             * 동작:
-             * - 프롬프트 내부의 관리 블록(<!-- CC_STATS_START/END -->)을 사용자가 지우거나 수정하려고 하면
-             *   즉시 적용하지 않고 확인/취소 모달을 띄운다.
-             * - 블록 밖의 일반 텍스트 편집은 그대로 허용한다.
-             */
-            try {
-              const prevText = String(formData?.basic_info?.world_setting || '');
-              const nextText = String(e?.target?.value || '');
-              const START = '<!-- CC_STATS_START -->';
-              const END = '<!-- CC_STATS_END -->';
+        <div className="relative mt-3">
+        {quickPromptGenLoading ? (
+          <>
+            <Textarea
+              id="world_setting"
+              data-autogrow="1"
+              data-autogrow-max="520"
+              onInput={handleAutoGrowTextarea}
+              className="resize-none pr-16 pb-6 text-transparent caret-transparent"
+              value=""
+              onChange={() => {}}
+              placeholder=""
+              rows={8}
+              disabled
+              readOnly
+              aria-busy="true"
+            />
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
+              <div className="relative flex flex-col items-center gap-3">
+                {/* ✅ 스피너와 X 아이콘을 함께 배치 */}
+                <div className="relative flex items-center justify-center">
+                  <Loader2 className="h-6 w-6 animate-spin text-gray-200" aria-hidden="true" />
+                  <button
+                    type="button"
+                    onClick={handleCancelPromptGeneration}
+                    className="absolute -top-1 -right-1 p-1 rounded-full bg-red-500/20 hover:bg-red-500/30 text-red-300 hover:text-red-200 transition-colors pointer-events-auto z-10"
+                    aria-label="자동 생성 취소"
+                    title="자동 생성 취소"
+                  >
+                    <X className="h-3 w-3" aria-hidden="true" />
+                  </button>
+                </div>
+                {Array.isArray(quickPromptGenSteps) && quickPromptGenSteps.length > 0 ? (
+                  <span className="text-sm text-gray-300 font-medium pointer-events-none">{quickPromptGenSteps.join(', ')}</span>
+                ) : null}
+              </div>
+            </div>
+          </>
+        ) : (
+          <>
+            <Textarea
+              id="world_setting"
+              data-autogrow="1"
+              data-autogrow-max="520"
+              onInput={handleAutoGrowTextarea}
+              className="resize-none pr-16 pb-6"
+              value={formData.basic_info.world_setting}
+              onChange={(e) => {
+                /**
+                 * ✅ 스탯 블록 보호(요구사항)
+                 *
+                 * 동작:
+                 * - 프롬프트 내부의 관리 블록(<!-- CC_STATS_START/END -->)을 사용자가 지우거나 수정하려고 하면
+                 *   즉시 적용하지 않고 확인/취소 모달을 띄운다.
+                 * - 블록 밖의 일반 텍스트 편집은 그대로 허용한다.
+                 */
+                try {
+                  const prevText = String(formData?.basic_info?.world_setting || '');
+                  const nextText = String(e?.target?.value || '');
+                  const START = '<!-- CC_STATS_START -->';
+                  const END = '<!-- CC_STATS_END -->';
 
-              const prevS = prevText.indexOf(START);
-              const prevE = prevText.indexOf(END);
-              const prevHas = prevS >= 0 && prevE > prevS;
-              if (!prevHas) {
-                updateFormData('basic_info', 'world_setting', nextText.slice(0, 6000));
-                return;
-              }
+                  const prevS = prevText.indexOf(START);
+                  const prevE = prevText.indexOf(END);
+                  const prevHas = prevS >= 0 && prevE > prevS;
+                  if (!prevHas) {
+                    updateFormData('basic_info', 'world_setting', nextText);
+                    return;
+                  }
 
-              const nextS = nextText.indexOf(START);
-              const nextE = nextText.indexOf(END);
-              const nextHas = nextS >= 0 && nextE > nextS;
+                  const nextS = nextText.indexOf(START);
+                  const nextE = nextText.indexOf(END);
+                  const nextHas = nextS >= 0 && nextE > nextS;
 
-              // 1) 블록 자체가 사라지거나(마커 손상 포함) → 삭제 경고
-              if (!nextHas) {
-                // ✅ 최초 1회만 경고(이후엔 방해하지 않고 편집 허용)
-                if (!promptStatsBlockGuardShownOnceRef.current) {
-                  promptStatsBlockGuardShownOnceRef.current = true;
-                  setPromptStatsBlockGuardMode('delete');
-                  setPromptStatsBlockGuardPendingText(nextText.slice(0, 6000));
-                  setPromptStatsBlockGuardOpen(true);
-                  return;
+                  // 1) 블록 자체가 사라지거나(마커 손상 포함) → 삭제 경고
+                  if (!nextHas) {
+                    // ✅ 최초 1회만 경고(이후엔 방해하지 않고 편집 허용)
+                    if (!promptStatsBlockGuardShownOnceRef.current) {
+                      promptStatsBlockGuardShownOnceRef.current = true;
+                      setPromptStatsBlockGuardMode('delete');
+                      setPromptStatsBlockGuardPendingText(nextText);
+                      setPromptStatsBlockGuardOpen(true);
+                      return;
+                    }
+                    updateFormData('basic_info', 'world_setting', nextText);
+                    return;
+                  }
+
+                  // 2) 블록이 남아있지만 블록 내용이 바뀜 → 수정 경고
+                  const prevBlock = prevText.slice(prevS, prevE + END.length);
+                  const nextBlock = nextText.slice(nextS, nextE + END.length);
+                  if (prevBlock !== nextBlock) {
+                    // ✅ 최초 1회만 경고(이후엔 방해하지 않고 편집 허용)
+                    if (!promptStatsBlockGuardShownOnceRef.current) {
+                      promptStatsBlockGuardShownOnceRef.current = true;
+                      setPromptStatsBlockGuardMode('edit');
+                      setPromptStatsBlockGuardPendingText(nextText);
+                      setPromptStatsBlockGuardOpen(true);
+                      return;
+                    }
+                    updateFormData('basic_info', 'world_setting', nextText);
+                    return;
+                  }
+
+                  // 3) 블록 외부 변경만 → 정상 반영
+                  updateFormData('basic_info', 'world_setting', nextText);
+                } catch (err) {
+                  try { console.error('[CreateCharacterPage] world_setting onChange guard failed:', err); } catch (_) {}
+                  try { updateFormData('basic_info', 'world_setting', String(e?.target?.value || '')); } catch (_) {}
                 }
-                updateFormData('basic_info', 'world_setting', nextText.slice(0, 6000));
-                return;
-              }
-
-              // 2) 블록이 남아있지만 블록 내용이 바뀜 → 수정 경고
-              const prevBlock = prevText.slice(prevS, prevE + END.length);
-              const nextBlock = nextText.slice(nextS, nextE + END.length);
-              if (prevBlock !== nextBlock) {
-                // ✅ 최초 1회만 경고(이후엔 방해하지 않고 편집 허용)
-                if (!promptStatsBlockGuardShownOnceRef.current) {
-                  promptStatsBlockGuardShownOnceRef.current = true;
-                  setPromptStatsBlockGuardMode('edit');
-                  setPromptStatsBlockGuardPendingText(nextText.slice(0, 6000));
-                  setPromptStatsBlockGuardOpen(true);
-                  return;
-                }
-                updateFormData('basic_info', 'world_setting', nextText.slice(0, 6000));
-                return;
-              }
-
-              // 3) 블록 외부 변경만 → 정상 반영
-              updateFormData('basic_info', 'world_setting', nextText.slice(0, 6000));
-            } catch (err) {
-              try { console.error('[CreateCharacterPage] world_setting onChange guard failed:', err); } catch (_) {}
-              try { updateFormData('basic_info', 'world_setting', String(e?.target?.value || '').slice(0, 6000)); } catch (_) {}
-            }
-          }}
-          placeholder="세계관/관계/규칙/말투 지시 등을 포함해 프롬프트를 작성하세요."
-          rows={8}
-          maxLength={6000}
-          required={!isEditMode}
-        />
+              }}
+              placeholder="세계관/관계/규칙/말투 지시 등을 포함해 프롬프트를 작성하세요."
+              rows={8}
+              required={!isEditMode}
+            />
+            <CharLimitCounter value={formData.basic_info.world_setting} max={6000} />
+          </>
+        )}
+        </div>
+        {String(formData?.basic_info?.world_setting || '').length > 6000 ? (
+          <p className="text-xs text-rose-400 mt-1">최대 6000자까지 입력할 수 있어요.</p>
+        ) : null}
         {fieldErrors['basic_info.world_setting'] && (
           <p className="text-xs text-red-500 mt-2">{fieldErrors['basic_info.world_setting']}</p>
         )}
@@ -8155,18 +12575,48 @@ const CreateCharacterPage = () => {
 
         {isSecretInfoEnabled ? (
           <>
-            <Textarea
-              id="character_secret_info"
-              data-autogrow="1"
-              data-autogrow-max="320"
-              onInput={handleAutoGrowTextarea}
-              className="mt-3 resize-none"
-              value={formData?.basic_info?.introduction_scenes?.[0]?.secret || ''}
-              onChange={(e) => updateCharacterSecretInfo(e.target.value)}
-              placeholder="유저에게는 노출되지 않는 설정(금기/약점/숨겨진 관계/진짜 목적 등)"
-              rows={4}
-              maxLength={1000}
-            />
+            <div className="relative mt-3">
+              {/* ✅ 요구사항: 비밀정보 자동생성 중 입력박스 스피너(오버레이) */}
+              {quickSecretGenLoading ? (
+                <>
+                  <Textarea
+                    id="character_secret_info"
+                    data-autogrow="1"
+                    data-autogrow-max="320"
+                    onInput={handleAutoGrowTextarea}
+                    className="resize-none pr-16 pb-6 opacity-60"
+                    value={formData?.basic_info?.introduction_scenes?.[0]?.secret || ''}
+                    onChange={() => {}}
+                    placeholder=""
+                    rows={4}
+                    disabled
+                    readOnly
+                    aria-busy="true"
+                  />
+                  <div className="absolute inset-0 flex items-center justify-center rounded-md bg-black/20 cursor-wait">
+                    <Loader2 className="h-6 w-6 animate-spin text-gray-200" aria-hidden="true" />
+                  </div>
+                </>
+              ) : (
+                <>
+                  <Textarea
+                    id="character_secret_info"
+                    data-autogrow="1"
+                    data-autogrow-max="320"
+                    onInput={handleAutoGrowTextarea}
+                    className="resize-none pr-16 pb-6"
+                    value={formData?.basic_info?.introduction_scenes?.[0]?.secret || ''}
+                    onChange={(e) => updateCharacterSecretInfo(e.target.value)}
+                    placeholder="유저에게는 노출되지 않는 설정(금기/약점/숨겨진 관계/진짜 목적 등)"
+                    rows={4}
+                  />
+                  <CharLimitCounter value={formData?.basic_info?.introduction_scenes?.[0]?.secret || ''} max={1000} />
+                </>
+              )}
+            </div>
+            {String(formData?.basic_info?.introduction_scenes?.[0]?.secret || '').length > 1000 ? (
+              <p className="text-xs text-rose-400 mt-1">최대 1000자까지 입력할 수 있어요.</p>
+            ) : null}
             <div className="mt-3 flex items-center justify-end gap-3">
               <button
                 type="button"
@@ -8197,21 +12647,22 @@ const CreateCharacterPage = () => {
         <div className="text-sm font-semibold text-gray-200">
           이미지 스타일 <span className="text-red-400">*</span>
         </div>
-        <div className="grid grid-cols-4 overflow-hidden rounded-lg border border-gray-700/80 bg-gray-900/30">
+        <div className="grid grid-cols-4 gap-2 rounded-xl border border-gray-800 bg-gray-950/40 p-2">
           {REQUIRED_STYLE_CHOICES.map((opt, idx) => {
             const selected = Array.isArray(selectedTagSlugs) && selectedTagSlugs.includes(opt.slug);
-            const isLast = idx === REQUIRED_STYLE_CHOICES.length - 1;
             return (
               <button
                 key={opt.slug}
                 type="button"
                 onClick={() => toggleExclusiveTag(opt.slug, REQUIRED_STYLE_SLUGS)}
                 aria-pressed={selected}
-                className={`h-10 px-2 text-xs sm:text-sm font-medium transition-colors ${
-                  isLast ? '' : 'border-r border-gray-700/80'
-                } ${
-                  selected ? 'bg-purple-600 text-white' : 'bg-transparent text-gray-200 hover:bg-gray-800/60'
-                } focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-500/30`}
+                className={[
+                  'h-10 rounded-lg px-2 text-xs sm:text-sm font-semibold transition-all',
+                  'outline-none focus-visible:ring-2 focus-visible:ring-purple-500/30',
+                  selected
+                    ? 'bg-gradient-to-br from-purple-600 to-indigo-600 text-white shadow-sm ring-1 ring-purple-400/40'
+                    : 'bg-gray-900/30 text-gray-200 hover:bg-gray-800/60 ring-1 ring-transparent',
+                ].join(' ')}
               >
                 <span className="block w-full truncate">{opt.label}</span>
               </button>
@@ -8260,8 +12711,16 @@ const CreateCharacterPage = () => {
                   <img
                     src={resolveImageUrl(previewUrl)}
                     alt=""
-                    className="w-full h-full object-cover"
+                    className="w-full h-full object-cover cursor-zoom-in"
                     loading="lazy"
+                    onClick={() => {
+                      try {
+                        const src = resolveImageUrl(previewUrl);
+                        if (!src) return;
+                        setImageViewerSrc(src);
+                        setImageViewerOpen(true);
+                      } catch (_) {}
+                    }}
                   />
                 </div>
                 <div className="min-w-0">
@@ -8281,30 +12740,70 @@ const CreateCharacterPage = () => {
       })()}
 
       {/* ✅ 기존 이미지 업로드 박스/트리거를 그대로 재사용 */}
-      {renderExistingImageUploadAndTriggers()}
+      {renderExistingImageUploadAndTriggers({
+        // ✅ 상황별이미지(위저드) 전용: 3열 정사각 그리드 + 50개 단위 무한스크롤 + 최대 101장
+        // - 다른 페이지/탭은 기존 UI를 유지한다.
+        hideGenerateButton: true,
+        gallery: {
+          maxFiles: 101,
+          gridColumns: 3,
+          enableInfiniteScroll: true,
+          pageSize: 50,
+          // ✅ 상황별 이미지 탭 전용 UX: 박스 제거 + 그리드 내부 업로드/생성 슬롯
+          layoutVariant: 'grid_only',
+          inlineAddSlotVariant: 'upload_generate',
+          onOpenGenerate: () => { try { setImgModalOpen(true); } catch (_) {} },
+        },
+      })}
     </div>
   );
 
   const renderOptionsWizardTab = () => (
     <div className="p-4 space-y-4">
       <div>
-        <Label htmlFor="user_display_description">
-          크리에이터 코멘트 <span className="text-red-400 ml-1">*</span>
-        </Label>
-        <Textarea
-          id="user_display_description"
-          data-autogrow="1"
-          onInput={handleAutoGrowTextarea}
-          className="mt-3 resize-none overflow-hidden"
-          value={formData.basic_info.user_display_description}
-          onChange={(e) => updateFormData('basic_info', 'user_display_description', e.target.value)}
-          placeholder="유저에게 보여줄 크리에이터 코멘트를 작성하세요"
-          rows={4}
-          maxLength={3000}
-          required={!isEditMode}
-        />
-        {fieldErrors['basic_info.user_display_description'] && (
-          <p className="text-xs text-red-500 mt-2">{fieldErrors['basic_info.user_display_description']}</p>
+        <div className="flex items-center justify-between gap-3">
+          <Label htmlFor="user_display_description">
+            크리에이터 코멘트 <span className="text-xs text-gray-500 ml-2">(선택)</span>
+          </Label>
+          <div className="flex items-center gap-2">
+            <Switch
+              id="creator_comment_toggle_wizard"
+              checked={!!formData?.basic_info?.use_custom_description}
+              onCheckedChange={(checked) => {
+                try {
+                  updateFormData('basic_info', 'use_custom_description', !!checked);
+                } catch (e) {
+                  try { console.error('[CreateCharacterPage] creator comment toggle(wizard) failed:', e); } catch (_) {}
+                }
+              }}
+              aria-label="크리에이터 코멘트 사용"
+            />
+          </div>
+        </div>
+        {!!formData?.basic_info?.use_custom_description ? (
+          <>
+            <div className="relative mt-3">
+              <Textarea
+                id="user_display_description"
+                data-autogrow="1"
+                onInput={handleAutoGrowTextarea}
+                className="resize-none overflow-hidden bg-gray-950/30 border-gray-700 text-gray-100 placeholder:text-gray-500 pr-16 pb-6"
+                value={formData.basic_info.user_display_description}
+                onChange={(e) => updateFormData('basic_info', 'user_display_description', e.target.value)}
+                placeholder="유저에게 보여줄 크리에이터 코멘트를 작성하세요"
+                rows={4}
+              />
+              <CharLimitCounter value={formData.basic_info.user_display_description} max={1000} />
+            </div>
+            {String(formData?.basic_info?.user_display_description || '').length > 1000 ? (
+              <p className="text-xs text-rose-400 mt-1">최대 1000자까지 입력할 수 있어요.</p>
+            ) : null}
+            {fieldErrors['basic_info.user_display_description'] && (
+              <p className="text-xs text-red-500 mt-2">{fieldErrors['basic_info.user_display_description']}</p>
+            )}
+          </>
+        ) : (
+          <div className="mt-2 text-xs text-gray-500">원하면 켜고 작성할 수 있어요.</div>
         )}
       </div>
 
@@ -8315,140 +12814,225 @@ const CreateCharacterPage = () => {
     </div>
   );
 
-  const renderDetailsWizardTab = () => (
-    <div className="p-4 space-y-4">
-      <div className="flex items-center justify-end">
-        <button
-          type="button"
-          onClick={handleAutoGenerateDetail}
-          disabled={quickDetailGenLoading}
-          className="h-9 px-3 rounded-lg bg-white/10 text-white text-sm font-semibold hover:bg-white/15 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
-          aria-label="디테일 자동 생성"
-          title="디테일 자동 생성"
-        >
-          {quickDetailGenLoading ? (
-            <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-          ) : (
-            '자동 생성'
-          )}
-        </button>
-      </div>
-      <div>
-        <Label htmlFor="personality">성격 및 특징</Label>
-        <Textarea
-          id="personality"
-          className="mt-3"
-          value={formData.basic_info.personality}
-          onChange={(e) => updateFormData('basic_info', 'personality', e.target.value)}
-          onBlur={refreshChatPreviewSnapshot}
-          placeholder="캐릭터의 성격과 특징을 자세히 설명해주세요"
-          rows={4}
-          maxLength={2000}
-        />
-      </div>
+  const renderDetailsWizardTab = () => {
+    // 프롬프트 단계에서 선택한 타입
+    const charType = String(formData?.basic_info?.character_type || 'roleplay').trim();
+    // 커스텀 모드일 때 롤플/시뮬 적용 토글 상태
+    const customModeOverride = detailModeOverrides?.['_custom_toggle'] ?? null;
+    const effectiveMode = charType === 'custom'
+      ? (customModeOverride ?? 'roleplay')
+      : charType === 'simulator' ? 'simulator' : 'roleplay';
+    const copy = effectiveMode === 'simulator' ? detailFieldCopy.simulator : detailFieldCopy.roleplay;
 
-      <div>
-        <Label htmlFor="speech_style">말투</Label>
-        <Textarea
-          id="speech_style"
-          className="mt-3"
-          value={formData.basic_info.speech_style}
-          onChange={(e) => updateFormData('basic_info', 'speech_style', e.target.value)}
-          onBlur={refreshChatPreviewSnapshot}
-          placeholder="캐릭터의 말투를 구체적으로 설명해주세요"
-          rows={2}
-          maxLength={2000}
-        />
-      </div>
+    // 커스텀 모드 토글 핸들러
+    const handleCustomModeToggle = () => {
+      setDetailModeOverrides((prev) => ({
+        ...(prev || {}),
+        _custom_toggle: (prev?._custom_toggle ?? 'roleplay') === 'roleplay' ? 'simulator' : 'roleplay',
+      }));
+    };
 
-      <div className="space-y-6">
-        {[
-          { key: 'interests', label: '관심사', placeholder: '관심사를 입력해주세요.' },
-          { key: 'likes', label: '좋아하는 것', placeholder: '좋아하는 것을 입력해주세요.' },
-          { key: 'dislikes', label: '싫어하는 것', placeholder: '싫어하는 것을 입력해주세요.' },
-        ].map((cfg) => {
-          const key = cfg.key;
-          const chips = Array.isArray(detailPrefs?.[key]) ? detailPrefs[key] : [];
-          const inputVal = String(detailChipInputs?.[key] || '');
-          const addChip = () => {
-            const raw = String(inputVal || '').trim();
-            if (!raw) return;
-            const parts = raw.split(/[,|/]+/).map((p) => p.trim()).filter(Boolean);
-            setDetailPrefs((prev) => {
-              const cur = Array.isArray(prev?.[key]) ? prev[key] : [];
-              const next = [...cur];
-              for (const p of parts) {
-                const t = p.replace(/\s+/g, ' ').trim();
-                if (!t) continue;
-                if (!next.includes(t)) next.push(t);
-                if (next.length >= 12) break;
-              }
-              return { ...(prev || {}), [key]: next };
-            });
-            setDetailChipInputs((prev) => ({ ...(prev || {}), [key]: '' }));
-          };
-          const removeChip = (chip) => {
-            const c = String(chip || '').trim();
-            if (!c) return;
-            setDetailPrefs((prev) => {
-              const cur = Array.isArray(prev?.[key]) ? prev[key] : [];
-              return { ...(prev || {}), [key]: cur.filter((x) => String(x) !== c) };
-            });
-          };
-          return (
-            <div key={key} className="space-y-2">
-              <div className="text-sm font-semibold text-gray-200">{cfg.label}</div>
-              <div className="flex items-center gap-2">
-                <Input
-                  value={inputVal}
-                  onChange={(e) => setDetailChipInputs((prev) => ({ ...(prev || {}), [key]: e.target.value }))}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      addChip();
-                    }
-                  }}
-                  placeholder={cfg.placeholder}
-                  className="flex-1 min-w-0 bg-gray-900/30 border-gray-700 text-gray-100"
-                />
-                <button
-                  type="button"
-                  onClick={addChip}
-                  className="shrink-0 h-9 px-4 min-w-[64px] rounded-lg bg-purple-600 text-white text-sm font-semibold hover:bg-purple-700 whitespace-nowrap"
-                >
-                  추가
-                </button>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {chips.map((chip) => (
-                  <span
-                    key={`${key}:${chip}`}
-                    className="inline-flex items-center gap-2 rounded-full bg-white/10 text-gray-100 text-xs px-3 py-1"
-                  >
-                    <span className="truncate max-w-[180px]">{chip}</span>
-                    <button
-                      type="button"
-                      onClick={() => removeChip(chip)}
-                      className="text-gray-300 hover:text-white"
-                      aria-label={`${cfg.label} 삭제`}
-                      title={`${cfg.label} 삭제`}
-                    >
-                      ×
-                    </button>
-                  </span>
-                ))}
-              </div>
+    return (
+      <div className="relative p-4 space-y-4">
+        {/* ✅ 디테일 자동생성 중 오버레이 스피너 */}
+        {quickDetailGenLoading ? (
+          <div className="absolute inset-0 z-10 flex items-center justify-center rounded-lg bg-black/25 cursor-wait">
+            <div className="relative flex items-center justify-center">
+              <Loader2 className="h-7 w-7 animate-spin text-gray-200" aria-hidden="true" />
+              <button
+                type="button"
+                onClick={handleCancelDetailGeneration}
+                className="absolute -top-1 -right-4 p-1 rounded-full bg-red-500/20 hover:bg-red-500/30 text-red-300 hover:text-red-200 transition-colors pointer-events-auto z-10"
+                aria-label="디테일 자동 생성 취소"
+                title="디테일 자동 생성 취소"
+              >
+                <X className="h-3 w-3" aria-hidden="true" />
+              </button>
             </div>
-          );
-        })}
-      </div>
+          </div>
+        ) : null}
+        {/* ✅ 상단: 타입 안내 문구 + 토큰 안내(i) 동일 선상 */}
+        <div className="flex items-center justify-between">
+          <div className="flex flex-col gap-1">
+            <div className="flex items-center gap-3">
+              <span className="text-sm">
+                {charType === 'roleplay' && <><span className="text-white font-semibold">롤플레잉</span><span className="text-gray-400"> 방식으로 선택하셨습니다.</span></>}
+                {charType === 'simulator' && <><span className="text-white font-semibold">시뮬레이터</span><span className="text-gray-400"> 방식으로 선택하셨습니다.</span></>}
+                {charType === 'custom' && <><span className="text-white font-semibold">커스텀</span><span className="text-gray-400"> 방식으로 선택하셨습니다.</span></>}
+              </span>
+              {charType === 'custom' && (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-gray-400 select-none">
+                    {effectiveMode === 'simulator' ? '시뮬모드' : '롤플모드'} 적용
+                  </span>
+                  <Switch
+                    id="detail_wizard_custom_mode_toggle"
+                    checked={effectiveMode === 'simulator'}
+                    onCheckedChange={handleCustomModeToggle}
+                  />
+                </div>
+              )}
+            </div>
+            <span className="text-xs text-gray-500">롤플레잉/시뮬레이션/커스텀 타입 선택에 따라 디테일 항목이 변경됩니다.</span>
+          </div>
+          <WizardTokenHelpIcon inline />
+        </div>
 
-      {/* 예시대화 */}
-      <div className="rounded-xl border border-gray-800 bg-gray-900/30">
-        {renderDialoguesTab()}
+        <div>
+          {/* 성격/의사결정규칙 */}
+          <div className="flex items-center justify-between gap-3">
+            <Label htmlFor="personality">{copy.personality.label}</Label>
+          </div>
+          <div className="relative mt-3">
+            <Textarea
+              id="personality"
+              className="pr-16 pb-6"
+              value={formData.basic_info.personality}
+              onChange={(e) => updateFormData('basic_info', 'personality', e.target.value)}
+              onBlur={refreshChatPreviewSnapshot}
+              placeholder={copy.personality.placeholder}
+              rows={4}
+            />
+            <CharLimitCounter value={formData.basic_info.personality} max={300} />
+          </div>
+          {String(formData?.basic_info?.personality || '').length > 300 ? (
+            <p className="text-xs text-rose-400 mt-1">최대 300자까지 입력할 수 있어요.</p>
+          ) : null}
+        </div>
+
+        {/* 말투/출력포맷규칙 */}
+        <div>
+          <div className="flex items-center justify-between gap-3">
+            <Label htmlFor="speech_style">{copy.speech_style.label}</Label>
+          </div>
+          <div className="relative mt-3">
+            <Textarea
+              id="speech_style"
+              className="pr-16 pb-6"
+              value={formData.basic_info.speech_style}
+              onChange={(e) => updateFormData('basic_info', 'speech_style', e.target.value)}
+              onBlur={refreshChatPreviewSnapshot}
+              placeholder={copy.speech_style.placeholder}
+              rows={2}
+            />
+            <CharLimitCounter value={formData.basic_info.speech_style} max={300} />
+          </div>
+          {String(formData?.basic_info?.speech_style || '').length > 300 ? (
+            <p className="text-xs text-rose-400 mt-1">최대 300자까지 입력할 수 있어요.</p>
+          ) : null}
+        </div>
+
+        {/* 관심사/이벤트훅, 좋아하는것/보상트리거, 싫어하는것/페널티트리거 */}
+        <div className="space-y-6">
+          {[
+            { key: 'interests' },
+            { key: 'likes' },
+            { key: 'dislikes' },
+          ].map((cfg) => {
+            const key = cfg.key;
+            const fieldCopy = copy[key];
+            const chips = Array.isArray(detailPrefs?.[key]) ? detailPrefs[key] : [];
+            const inputVal = String(detailChipInputs?.[key] || '');
+            const addChip = () => {
+              const raw = String(inputVal || '').trim();
+              if (!raw) return;
+              const parts = raw.split(/[,|/]+/).map((p) => p.trim()).filter(Boolean);
+              setDetailPrefs((prev) => {
+                const cur = Array.isArray(prev?.[key]) ? prev[key] : [];
+                const next = [...cur];
+                for (const p of parts) {
+                  const t = p.replace(/\s+/g, ' ').trim();
+                  if (!t) continue;
+                  if (!next.includes(t)) next.push(t);
+                  if (next.length >= 12) break;
+                }
+                return { ...(prev || {}), [key]: next };
+              });
+              setDetailChipInputs((prev) => ({ ...(prev || {}), [key]: '' }));
+            };
+            const removeChip = (chip) => {
+              const c = String(chip || '').trim();
+              if (!c) return;
+              setDetailPrefs((prev) => {
+                const cur = Array.isArray(prev?.[key]) ? prev[key] : [];
+                return { ...(prev || {}), [key]: cur.filter((x) => String(x) !== c) };
+              });
+            };
+            return (
+              <div key={key} className="space-y-2">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-sm font-semibold text-gray-200">{fieldCopy?.label || key}</div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Input
+                    value={inputVal}
+                    onChange={(e) => setDetailChipInputs((prev) => ({ ...(prev || {}), [key]: e.target.value }))}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        addChip();
+                      }
+                    }}
+                    placeholder={fieldCopy?.placeholder || ''}
+                    className="flex-1 min-w-0 bg-gray-900/30 border-gray-700 text-gray-100"
+                  />
+                  <button
+                    type="button"
+                    onClick={addChip}
+                    className="shrink-0 h-9 px-4 min-w-[64px] rounded-lg bg-purple-600 text-white text-sm font-semibold hover:bg-purple-700 whitespace-nowrap"
+                  >
+                    추가
+                  </button>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {chips.map((chip) => (
+                    <span
+                      key={`${key}:${chip}`}
+                      className="inline-flex items-center gap-2 rounded-full bg-white/10 text-gray-100 text-xs px-3 py-1"
+                    >
+                      <span className="truncate max-w-[180px]">{chip}</span>
+                      <button
+                        type="button"
+                        onClick={() => removeChip(chip)}
+                        className="text-gray-300 hover:text-white"
+                        aria-label={`${fieldCopy?.label || key} 삭제`}
+                        title={`${fieldCopy?.label || key} 삭제`}
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+
+          {/* ✅ 디테일 자동생성 버튼: 싫어하는 것 아래 우하단 (UI 일관성) */}
+          <div className="flex justify-end pt-2">
+            <button
+              type="button"
+              onClick={handleAutoGenerateDetail}
+              disabled={quickDetailGenLoading}
+              className="h-9 px-3 rounded-lg bg-white/10 text-white text-sm font-semibold hover:bg-white/15 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
+              aria-label="디테일 자동 생성"
+              title="성격/말투/관심사/좋아하는 것/싫어하는 것 자동 생성"
+            >
+              {quickDetailGenLoading ? (
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              ) : (
+                '자동 생성'
+              )}
+            </button>
+          </div>
+        </div>
+
+        {/* 예시대화 */}
+        <div className="rounded-xl border border-gray-800 bg-gray-900/30">
+          {renderDialoguesTab()}
+        </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   const renderDialoguesTab = () => {
     /**
@@ -8528,15 +13112,20 @@ const CreateCharacterPage = () => {
           <div className="rounded-xl border border-white/10 bg-black/20 p-4 space-y-4">
             <div>
               <Label className="text-white">사용자 메시지</Label>
-              <Textarea
-                id={`dlg_user_${activeIdx}`}
-                className="mt-2 bg-gray-950/40 border-white/10 text-white placeholder:text-gray-500"
-                value={String(activeDialogue?.user_message || '')}
-                onChange={(e) => updateExampleDialogue(activeIdx, 'user_message', e.target.value)}
-                placeholder="사용자가 입력할 만한 메시지를 작성하세요"
-                rows={2}
-                maxLength={500}
-              />
+              <div className="relative mt-2">
+                <Textarea
+                  id={`dlg_user_${activeIdx}`}
+                  className="bg-gray-950/40 border-white/10 text-white placeholder:text-gray-500 pr-16 pb-6"
+                  value={String(activeDialogue?.user_message || '')}
+                  onChange={(e) => updateExampleDialogue(activeIdx, 'user_message', e.target.value)}
+                  placeholder="사용자가 입력할 만한 메시지를 작성하세요"
+                  rows={2}
+                />
+                <CharLimitCounter value={String(activeDialogue?.user_message || '')} max={500} />
+              </div>
+              {String(activeDialogue?.user_message || '').length > 500 ? (
+                <p className="mt-1 text-xs text-rose-400">최대 500자까지 입력할 수 있어요.</p>
+              ) : null}
               <div className="flex items-center gap-2 mt-2">
                 <span className="text-xs text-gray-400">토큰 삽입:</span>
                 <Button type="button" variant="secondary" size="sm" title="{{character}} 삽입" onClick={() => insertDialogueToken(activeIdx, 'user_message', TOKEN_CHARACTER)}>캐릭터</Button>
@@ -8546,15 +13135,20 @@ const CreateCharacterPage = () => {
 
             <div>
               <Label className="text-white">캐릭터 응답</Label>
-              <Textarea
-                id={`dlg_char_${activeIdx}`}
-                className="mt-2 bg-gray-950/40 border-white/10 text-white placeholder:text-gray-500"
-                value={String(activeDialogue?.character_response || '')}
-                onChange={(e) => updateExampleDialogue(activeIdx, 'character_response', e.target.value)}
-                placeholder="캐릭터가 응답할 내용을 작성하세요"
-                rows={3}
-                maxLength={1000}
-              />
+              <div className="relative mt-2">
+                <Textarea
+                  id={`dlg_char_${activeIdx}`}
+                  className="bg-gray-950/40 border-white/10 text-white placeholder:text-gray-500 pr-16 pb-6"
+                  value={String(activeDialogue?.character_response || '')}
+                  onChange={(e) => updateExampleDialogue(activeIdx, 'character_response', e.target.value)}
+                  placeholder="캐릭터가 응답할 내용을 작성하세요"
+                  rows={3}
+                />
+                <CharLimitCounter value={String(activeDialogue?.character_response || '')} max={1000} />
+              </div>
+              {String(activeDialogue?.character_response || '').length > 1000 ? (
+                <p className="mt-1 text-xs text-rose-400">최대 1000자까지 입력할 수 있어요.</p>
+              ) : null}
               <div className="flex items-center gap-2 mt-2">
                 <span className="text-xs text-gray-400">토큰 삽입:</span>
                 <Button type="button" variant="secondary" size="sm" title="{{character}} 삽입" onClick={() => insertDialogueToken(activeIdx, 'character_response', TOKEN_CHARACTER)}>캐릭터</Button>
@@ -8769,9 +13363,46 @@ const CreateCharacterPage = () => {
         <div className="max-w-[var(--page-max-width)] mx-auto px-2 sm:px-4 lg:px-4">
           <div className="flex items-center justify-between h-[62px]">
             <div className="flex items-center space-x-2">
-              <Link to="/dashboard" className="flex items-center space-x-2">
+              <button
+                type="button"
+                className="group flex items-center gap-2"
+                onClick={() => {
+                  /**
+                   * ✅ 이탈 경고 + 뒤로가기(요구사항)
+                   *
+                   * 요구사항:
+                   * - "캐릭터 만들기" 문구 옆에 '<'를 추가한다.
+                   * - '<' 또는 문구를 누르면 뒤로간다.
+                   *
+                   * 동작:
+                   * - 변경사항이 있으면 confirm으로 1회 확인한다.
+                   * - history가 없으면 대시보드로 폴백한다(방어).
+                   */
+                  try { if (!confirmLeaveIfUnsaved()) return; } catch (_) {}
+                  try {
+                    // ✅ popstate 가드가 "가짜 히스토리"를 쌓아둔 경우, -1은 같은 페이지로만 이동할 수 있다.
+                    // - confirm을 통과했으면 1회 bypass 후 -2로 실제 이전 페이지로 빠진다.
+                    try { leaveBypassRef.current = true; } catch (_) {}
+                    if (typeof window !== 'undefined' && window.history && window.history.length > 1) {
+                      const st = window.history.state || {};
+                      if (st && st.cc_leave_guard === true && window.history.length > 2) {
+                        try { window.history.go(-2); } catch (_) { navigate(-1); }
+                      } else {
+                        navigate(-1);
+                      }
+                    } else {
+                      navigate('/dashboard');
+                    }
+                  } catch (_) {
+                    try { navigate('/dashboard'); } catch (e2) { void e2; }
+                  }
+                }}
+                aria-label="뒤로가기"
+                title="뒤로가기"
+              >
+                <ChevronLeft className="w-5 h-5 text-white/80 group-hover:text-white transition-colors" aria-hidden="true" />
                 <h1 className="text-base sm:text-xl font-bold text-white whitespace-nowrap">캐릭터 만들기</h1>
-              </Link>
+              </button>
             </div>
             <div className="flex items-center space-x-2">
               <div className="text-xs text-gray-500 mr-2 hidden sm:block">
@@ -8797,7 +13428,17 @@ const CreateCharacterPage = () => {
               </button>
               <Button 
                 onClick={handleSubmit}
-                disabled={loading}
+                disabled={loading || (useNormalCreateWizard && (
+                  String(formData?.basic_info?.name || '').length > PROFILE_NAME_MAX_LEN
+                  || String(formData?.basic_info?.name || '').trim().length === 0
+                  || String(formData?.basic_info?.description || '').length > PROFILE_ONE_LINE_MAX_LEN
+                  || String(formData?.basic_info?.description || '').trim().length === 0
+                  || String(formData?.basic_info?.world_setting || '').length > 6000
+                  || (isSecretInfoEnabled && String(formData?.basic_info?.introduction_scenes?.[0]?.secret || '').length > 1000)
+                  || (!!formData?.basic_info?.use_custom_description && String(formData?.basic_info?.user_display_description || '').length > 1000)
+                  || String(formData?.basic_info?.personality || '').length > 300
+                  || String(formData?.basic_info?.speech_style || '').length > 300
+                ))}
                 className="h-8 px-3 text-xs sm:h-9 sm:px-4 sm:text-sm bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700"
               >
                 저장
@@ -8945,8 +13586,8 @@ const CreateCharacterPage = () => {
                     type="button"
                     onClick={() => setNormalWizardStep(s.id)}
                     className={[
-                      // ✅ 단계 탭이 PC에서도 아래로 밀리지 않게 크기 축소
-                      'relative -mb-px px-1 py-1.5 text-sm sm:text-base font-semibold transition-colors shrink-0',
+                      // ✅ 단계 탭이 PC에서도 아래로 밀리지 않게 크기 축소 (폰트/여백 최소화)
+                      'relative -mb-px px-0.5 py-1 text-xs sm:text-sm font-semibold transition-colors shrink-0',
                       'border-b-2',
                       active
                         ? 'text-white border-purple-500'
@@ -8954,12 +13595,12 @@ const CreateCharacterPage = () => {
                     ].join(' ')}
                     aria-current={active ? 'page' : undefined}
                   >
-                    <span className="inline-flex items-center gap-2">
+                    <span className="inline-flex items-center gap-1">
                       <span>{s.label}</span>
                       {Number(count) > 0 && (
                         <span
                           className={[
-                            'inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[11px] font-bold',
+                            'inline-flex items-center justify-center min-w-[16px] h-[16px] px-0.5 rounded-full text-[10px] font-bold',
                             active ? 'bg-purple-600 text-white' : 'bg-white/10 text-gray-200',
                           ].join(' ')}
                           aria-label={`${s.label} 개수 ${count}`}
@@ -9034,19 +13675,6 @@ const CreateCharacterPage = () => {
             <div className="my-7 space-y-2">
               <button
                 type="button"
-                onClick={handleNextStepAutoFill}
-                disabled={!wizardCanGoNext || wizardStepIndex >= NORMAL_CREATE_WIZARD_STEPS.length - 1 || nextStepAutoFillOpen}
-                className={[
-                  'h-11 w-full rounded-md font-semibold transition-colors',
-                  'bg-gray-800 hover:bg-gray-700 text-gray-100',
-                  'disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-gray-800',
-                ].join(' ')}
-                title="다음 단계로 이동하면서, 자동생성 가능한 항목을 채웁니다"
-              >
-                다음단계 자동완성
-              </button>
-              <button
-                type="button"
                 onClick={goNextWizardStep}
                 disabled={!wizardCanGoNext || wizardStepIndex >= NORMAL_CREATE_WIZARD_STEPS.length - 1 || nextStepAutoFillOpen}
                 className={[
@@ -9056,6 +13684,19 @@ const CreateCharacterPage = () => {
                 ].join(' ')}
               >
                 다음단계
+              </button>
+              <button
+                type="button"
+                onClick={handleNextStepAutoFill}
+                disabled={!wizardCanGoNext || wizardStepIndex >= NORMAL_CREATE_WIZARD_STEPS.length - 1 || nextStepAutoFillOpen}
+                className={[
+                  'h-11 w-full rounded-md font-semibold transition-colors',
+                  'bg-gray-800 hover:bg-gray-700 text-gray-100',
+                  'disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-gray-800',
+                ].join(' ')}
+                title="다음 단계의 자동생성 가능한 항목을 채웁니다 (단계 이동 없음)"
+              >
+                다음단계 자동완성
               </button>
             </div>
                 </form>
@@ -9068,10 +13709,90 @@ const CreateCharacterPage = () => {
                   채팅 프리뷰
                   <span className="text-gray-400 font-semibold">({chatPreviewUserCount}/10)</span>
                 </div>
-                <div className="rounded-md bg-[#483136] px-2 text-[11px] text-rose-200">
-                  {chatPreviewUserCount} / 10
-                </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setTurnEventPreviewOpen((v) => !v)}
+                      disabled={!!chatPreviewGateReason || chatPreviewBusy}
+                      className={[
+                        'inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold transition-colors',
+                        'bg-white/10 text-gray-100 hover:bg-white/15',
+                        'disabled:opacity-60 disabled:cursor-not-allowed',
+                      ].join(' ')}
+                      title="턴수별 사건을 1턴에서 테스트로 확인합니다(프리뷰 리셋)"
+                      aria-label="턴사건 프리뷰"
+                    >
+                      <Eye className="h-3.5 w-3.5" aria-hidden="true" />
+                      턴사건 프리뷰
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        try { setTurnEventPreviewOpen(false); } catch (_) {}
+                        try { resetChatPreview(); } catch (_) {}
+                        try { refreshChatPreviewSnapshot(); } catch (_) {}
+                      }}
+                      disabled={!!chatPreviewGateReason || chatPreviewBusy}
+                      className={[
+                        'inline-flex items-center justify-center rounded-md px-2 py-1 text-[11px] font-semibold transition-colors',
+                        'bg-white/10 text-gray-100 hover:bg-white/15',
+                        'disabled:opacity-60 disabled:cursor-not-allowed',
+                      ].join(' ')}
+                      title="프리뷰 채팅 초기화"
+                      aria-label="프리뷰 채팅 초기화"
+                    >
+                      <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
+                    </button>
+                    <div className="rounded-md bg-[#483136] px-2 text-[11px] text-rose-200">
+                      {chatPreviewUserCount} / 10
+                    </div>
+                  </div>
               </div>
+                {/* ✅ 턴사건 프리뷰 패널(오버레이 X): 채팅방을 가리지 않고 아래로 밀어내는 방식 */}
+                {turnEventPreviewOpen ? (
+                  <div className="mt-2 rounded-md border border-white/10 bg-black/40 px-3 py-2">
+                    <div className="flex items-center justify-between">
+                      <div className="text-xs font-semibold text-gray-200">턴수별 사건(1턴 테스트)</div>
+                      <button
+                        type="button"
+                        onClick={() => setTurnEventPreviewOpen(false)}
+                        className="text-xs text-gray-400 hover:text-gray-200"
+                        aria-label="닫기"
+                        title="닫기"
+                      >
+                        닫기
+                      </button>
+                    </div>
+                    <div className="mt-1 max-h-[180px] overflow-y-auto space-y-1 custom-scrollbar">
+                      {(Array.isArray(chatPreviewTurnEvents) ? chatPreviewTurnEvents : []).length > 0 ? (
+                        (chatPreviewTurnEvents || []).slice(0, 30).map((ev) => (
+                          <button
+                            key={ev.id || `${ev.about}-${ev.title}`}
+                            type="button"
+                            onClick={() => runTurnEventPreview(ev.id)}
+                            disabled={!!chatPreviewGateReason || chatPreviewBusy || !String(ev.id || '').trim()}
+                            className={[
+                              'w-full text-left rounded-md px-2 py-1.5 text-xs transition',
+                              'border border-white/10 bg-white/5 hover:bg-white/10 text-gray-100',
+                              'disabled:opacity-60 disabled:cursor-not-allowed',
+                            ].join(' ')}
+                            title="이 사건으로 1턴 테스트 실행(프리뷰 리셋)"
+                          >
+                            <span className="text-purple-200 font-semibold">{ev.about ? `${ev.about}턴` : '턴'}</span>
+                            <span className="mx-1 text-gray-500">·</span>
+                            <span className="font-semibold">{ev.title || '사건'}</span>
+                            {ev.summary ? <span className="text-gray-300"> — {ev.summary}</span> : null}
+                          </button>
+                        ))
+                      ) : (
+                        <div className="text-xs text-gray-400">턴수별 사건이 아직 없어요. 오프닝에서 턴사건을 먼저 생성해주세요.</div>
+                      )}
+                    </div>
+                    <div className="mt-2 text-[11px] text-gray-400">
+                      중간 턴 강제삽입은 흐름을 깨서 금지. 선택한 사건을 <span className="text-gray-200 font-semibold">1턴에서만</span> 테스트합니다.
+                    </div>
+                  </div>
+                ) : null}
             </div>
 
             <div className="absolute left-4 top-4 z-0 h-[calc(100dvh-62px-32px)] w-[calc(100%-32px)] overflow-hidden rounded-md border border-[#ffffff10] bg-[#212121]" />
@@ -9149,6 +13870,16 @@ const CreateCharacterPage = () => {
                       const isUser = m?.role === 'user';
                       const baseText = String(m?.content || '');
                       const mid = String(m?.id || '').trim();
+                      const suggestedImgUrl = (() => {
+                        try {
+                          if (!mid) return '';
+                          const u = chatPreviewSuggestedImageById?.[mid];
+                          const s = String(u || '').trim();
+                          return s || '';
+                        } catch (_) {
+                          return '';
+                        }
+                      })();
                       const streamingActive = Boolean(chatPreviewUiStream?.id && chatPreviewUiStream?.full && chatPreviewUiStream?.shown !== chatPreviewUiStream?.full);
                       const text = (!isUser && mid && chatPreviewUiStream?.id && String(chatPreviewUiStream.id) === mid)
                         ? String(chatPreviewUiStream.shown || '')
@@ -9170,6 +13901,30 @@ const CreateCharacterPage = () => {
                           ) : (
                             <div className="w-full">
                               {(() => {
+                                // ✅ 프리뷰: !스탯 상태창은 "캐릭터 말풍선"으로 렌더(실채팅 느낌)
+                                // - INFO(스탯) 텍스트는 parseAssistantBlocks로 분해하면 중앙 지문박스로 가버려 UX가 다르다.
+                                const statInfo = String(text || '').trim();
+                                if (statInfo.startsWith('INFO(스탯)')) {
+                                  return (
+                                    <div className="flex justify-start font-normal">
+                                      <div className="mr-[0.62rem] mt-2 min-w-10">
+                                        {chatPreviewAvatarUrl ? (
+                                          <img alt="" loading="lazy" className="size-10 rounded-full object-cover" src={chatPreviewAvatarUrl} />
+                                        ) : (
+                                          <div className="size-10 rounded-full bg-[#2a2a2a]" />
+                                        )}
+                                      </div>
+                                      <div className="relative max-w-[70%]">
+                                        <div className="text-[0.75rem] text-white">
+                                          {String(chatPreviewSnapshot?.name || '').trim() || '캐릭터'}
+                                        </div>
+                                        <div className="whitespace-pre-line break-words rounded-r-xl rounded-bl-xl bg-[#262727] p-2 text-sm text-white">
+                                          {renderChatPreviewTextWithInlineImages(statInfo, `pv-a-${mid || idx}-stat`)}
+                                        </div>
+                                      </div>
+                                    </div>
+                                  );
+                                }
                                 const blocks = parseAssistantBlocks(text);
                                 if (!Array.isArray(blocks) || blocks.length === 0) return null;
                                 return (
@@ -9211,6 +13966,38 @@ const CreateCharacterPage = () => {
                                   </div>
                                 );
                               })()}
+                              {/* ✅ 키워드 트리거 이미지: 프리뷰에서도 실채팅처럼 바로 노출 */}
+                              {suggestedImgUrl ? (
+                                <div className="mt-2 flex justify-start font-normal">
+                                  <div className="mr-[0.62rem] mt-2 min-w-10">
+                                    {chatPreviewAvatarUrl ? (
+                                      <img alt="" loading="lazy" className="size-10 rounded-full object-cover" src={chatPreviewAvatarUrl} />
+                                    ) : (
+                                      <div className="size-10 rounded-full bg-[#2a2a2a]" />
+                                    )}
+                                  </div>
+                                  <div className="relative max-w-[70%]">
+                                    <div className="text-[0.75rem] text-white">
+                                      {String(chatPreviewSnapshot?.name || '').trim() || '캐릭터'}
+                                    </div>
+                                    <div className="whitespace-pre-line break-words rounded-r-xl rounded-bl-xl bg-[#262727] p-2 text-sm text-white">
+                                      <img
+                                        src={suggestedImgUrl}
+                                        alt=""
+                                        loading="lazy"
+                                        decoding="async"
+                                        className="block w-full h-auto rounded-xl cursor-zoom-in border border-white/10"
+                                        onClick={() => {
+                                          try {
+                                            setImageViewerSrc(suggestedImgUrl);
+                                            setImageViewerOpen(true);
+                                          } catch (_) {}
+                                        }}
+                                      />
+                                    </div>
+                                  </div>
+                                </div>
+                              ) : null}
                             </div>
                           )}
                         </div>
@@ -9398,7 +14185,25 @@ const CreateCharacterPage = () => {
                 <div className="flex items-center justify-between mb-4">
                   <Button
                     variant="ghost"
-                    onClick={() => navigate(-1)}
+                    onClick={() => {
+                      try { if (!confirmLeaveIfUnsaved()) return; } catch (_) {}
+                      // ✅ popstate 가드가 있을 때는 -2로 실제 이탈(요청한 UX)
+                      try { leaveBypassRef.current = true; } catch (_) {}
+                      try {
+                        if (typeof window !== 'undefined' && window.history && window.history.length > 1) {
+                          const st = window.history.state || {};
+                          if (st && st.cc_leave_guard === true && window.history.length > 2) {
+                            try { window.history.go(-2); } catch (_) { navigate(-1); }
+                          } else {
+                            navigate(-1);
+                          }
+                        } else {
+                          navigate('/dashboard');
+                        }
+                      } catch (_) {
+                        try { navigate('/dashboard'); } catch (e2) { void e2; }
+                      }
+                    }}
                     className="text-gray-300 hover:text-gray-900 hover:bg-gray-100 dark:hover:text-white dark:hover:bg-white/10 flex items-center gap-2 rounded-md px-2 py-1 transition-colors"
                   >
                     <ArrowLeft className="w-4 h-4" />
@@ -9480,8 +14285,87 @@ const CreateCharacterPage = () => {
             <div className="px-4 py-3 border-b border-gray-800">
               <div className="flex items-center justify-between">
                 <div className="text-sm font-semibold truncate">채팅 프리뷰</div>
-                <div className="text-xs text-gray-400">{chatPreviewUserCount}/10</div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setTurnEventPreviewOpen((v) => !v)}
+                    disabled={!!chatPreviewGateReason || chatPreviewBusy}
+                    className={[
+                      'inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold transition-colors',
+                      'bg-white/10 text-gray-100 hover:bg-white/15',
+                      'disabled:opacity-60 disabled:cursor-not-allowed',
+                    ].join(' ')}
+                    title="턴수별 사건을 1턴에서 테스트로 확인합니다(프리뷰 리셋)"
+                    aria-label="턴사건 프리뷰"
+                  >
+                    <Eye className="h-3.5 w-3.5" aria-hidden="true" />
+                    턴사건 프리뷰
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      try { setTurnEventPreviewOpen(false); } catch (_) {}
+                      try { resetChatPreview(); } catch (_) {}
+                      try { refreshChatPreviewSnapshot(); } catch (_) {}
+                    }}
+                    disabled={!!chatPreviewGateReason || chatPreviewBusy}
+                    className={[
+                      'inline-flex items-center justify-center rounded-md px-2 py-1 text-[11px] font-semibold transition-colors',
+                      'bg-white/10 text-gray-100 hover:bg-white/15',
+                      'disabled:opacity-60 disabled:cursor-not-allowed',
+                    ].join(' ')}
+                    title="프리뷰 채팅 초기화"
+                    aria-label="프리뷰 채팅 초기화"
+                  >
+                    <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
+                  </button>
+                  <div className="text-xs text-gray-400">{chatPreviewUserCount}/10</div>
+                </div>
               </div>
+              {turnEventPreviewOpen ? (
+                <div className="mt-2 rounded-md border border-white/10 bg-black/40 px-3 py-2">
+                  <div className="flex items-center justify-between">
+                    <div className="text-xs font-semibold text-gray-200">턴수별 사건(1턴 테스트)</div>
+                    <button
+                      type="button"
+                      onClick={() => setTurnEventPreviewOpen(false)}
+                      className="text-xs text-gray-400 hover:text-gray-200"
+                      aria-label="닫기"
+                      title="닫기"
+                    >
+                      닫기
+                    </button>
+                  </div>
+                  <div className="mt-1 max-h-[180px] overflow-y-auto space-y-1 custom-scrollbar">
+                    {(Array.isArray(chatPreviewTurnEvents) ? chatPreviewTurnEvents : []).length > 0 ? (
+                      (chatPreviewTurnEvents || []).slice(0, 30).map((ev) => (
+                        <button
+                          key={ev.id || `${ev.about}-${ev.title}`}
+                          type="button"
+                          onClick={() => runTurnEventPreview(ev.id)}
+                          disabled={!!chatPreviewGateReason || chatPreviewBusy || !String(ev.id || '').trim()}
+                          className={[
+                            'w-full text-left rounded-md px-2 py-1.5 text-xs transition',
+                            'border border-white/10 bg-white/5 hover:bg-white/10 text-gray-100',
+                            'disabled:opacity-60 disabled:cursor-not-allowed',
+                          ].join(' ')}
+                          title="이 사건으로 1턴 테스트 실행(프리뷰 리셋)"
+                        >
+                          <span className="text-purple-200 font-semibold">{ev.about ? `${ev.about}턴` : '턴'}</span>
+                          <span className="mx-1 text-gray-500">·</span>
+                          <span className="font-semibold">{ev.title || '사건'}</span>
+                          {ev.summary ? <span className="text-gray-300"> — {ev.summary}</span> : null}
+                        </button>
+                      ))
+                    ) : (
+                      <div className="text-xs text-gray-400">턴수별 사건이 아직 없어요. 오프닝에서 턴사건을 먼저 생성해주세요.</div>
+                    )}
+                  </div>
+                  <div className="mt-2 text-[11px] text-gray-400">
+                    중간 턴 강제삽입은 흐름을 깨서 금지. 선택한 사건을 <span className="text-gray-200 font-semibold">1턴에서만</span> 테스트합니다.
+                  </div>
+                </div>
+              ) : null}
             </div>
             <div ref={chatPreviewListRef} className="h-[70vh] overflow-y-auto px-3 py-3 space-y-2" onScroll={handleChatPreviewScroll}>
               {/* ✅ 스크롤 중에도 프로필(아바타/이름)이 보이도록 상단 고정 */}
@@ -9536,6 +14420,16 @@ const CreateCharacterPage = () => {
                   const isUser = m?.role === 'user';
                   const baseText = String(m?.content || '');
                   const mid = String(m?.id || '').trim();
+                  const suggestedImgUrl = (() => {
+                    try {
+                      if (!mid) return '';
+                      const u = chatPreviewSuggestedImageById?.[mid];
+                      const s = String(u || '').trim();
+                      return s || '';
+                    } catch (_) {
+                      return '';
+                    }
+                  })();
                   const text = (!isUser && mid && chatPreviewUiStream?.id && String(chatPreviewUiStream.id) === mid)
                     ? String(chatPreviewUiStream.shown || '')
                     : baseText;
@@ -9548,6 +14442,29 @@ const CreateCharacterPage = () => {
                       ) : (
                         <div className="w-full">
                           {(() => {
+                            // ✅ 프리뷰: !스탯 상태창(텍스트)은 "캐릭터 말풍선"으로 렌더(실채팅 느낌)
+                            const statInfo = String(text || '').trim();
+                            if (statInfo.startsWith('INFO(스탯)')) {
+                              return (
+                                <div className="flex justify-start font-normal">
+                                  <div className="mr-[0.62rem] mt-1 min-w-9">
+                                    {chatPreviewAvatarUrl ? (
+                                      <img alt="" loading="lazy" className="size-9 rounded-full object-cover" src={chatPreviewAvatarUrl} />
+                                    ) : (
+                                      <div className="size-9 rounded-full bg-[#2a2a2a] border border-gray-800" />
+                                    )}
+                                  </div>
+                                  <div className="relative max-w-[85%]">
+                                    <div className="text-[0.75rem] text-gray-200">
+                                      {String(chatPreviewSnapshot?.name || '').trim() || '캐릭터'}
+                                    </div>
+                                    <div className="whitespace-pre-line break-words rounded-2xl bg-gray-800 px-3 py-2 text-sm leading-relaxed text-gray-100">
+                                      {statInfo}
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            }
                             const blocks = parseAssistantBlocks(text);
                             if (!Array.isArray(blocks) || blocks.length === 0) return null;
                             return (
@@ -9588,6 +14505,38 @@ const CreateCharacterPage = () => {
                               </div>
                             );
                           })()}
+                          {/* ✅ 키워드 트리거 이미지: 프리뷰에서도 실채팅처럼 바로 노출 */}
+                          {suggestedImgUrl ? (
+                            <div className="mt-2 flex justify-start font-normal">
+                              <div className="mr-[0.62rem] mt-1 min-w-9">
+                                {chatPreviewAvatarUrl ? (
+                                  <img alt="" loading="lazy" className="size-9 rounded-full object-cover" src={chatPreviewAvatarUrl} />
+                                ) : (
+                                  <div className="size-9 rounded-full bg-[#2a2a2a] border border-gray-800" />
+                                )}
+                              </div>
+                              <div className="relative max-w-[85%]">
+                                <div className="text-[0.75rem] text-gray-200">
+                                  {String(chatPreviewSnapshot?.name || '').trim() || '캐릭터'}
+                                </div>
+                                <div className="whitespace-pre-line break-words rounded-2xl bg-gray-800 px-3 py-2 text-sm leading-relaxed text-gray-100">
+                                  <img
+                                    src={suggestedImgUrl}
+                                    alt=""
+                                    loading="lazy"
+                                    decoding="async"
+                                    className="block w-full h-auto rounded-xl cursor-zoom-in border border-white/10"
+                                    onClick={() => {
+                                      try {
+                                        setImageViewerSrc(suggestedImgUrl);
+                                        setImageViewerOpen(true);
+                                      } catch (_) {}
+                                    }}
+                                  />
+                                </div>
+                              </div>
+                            </div>
+                          ) : null}
                         </div>
                       )}
                     </div>
@@ -9830,21 +14779,93 @@ const CreateCharacterPage = () => {
         onSave={(slugs) => setSelectedTagSlugs(slugs)}
       />
 
-      {/* 이미지 확대 모달 */}
-      <Dialog open={imageViewerOpen} onOpenChange={setImageViewerOpen}>
-        <DialogContent className="max-w-4xl p-0 bg-transparent border-none shadow-none">
-          <div className="relative w-full h-full flex items-center justify-center" onClick={() => setImageViewerOpen(false)}>
-            <img 
-              src={imageViewerSrc} 
-              alt="확대 이미지" 
-              className="max-w-full max-h-[90vh] object-contain mx-auto rounded-lg" 
-              onClick={(e) => e.stopPropagation()} 
-            />
+      {/* 이미지 확대 모달 (X 버튼만, 모바일 최적화) */}
+      <ImageZoomModal
+        open={imageViewerOpen}
+        src={imageViewerSrc}
+        alt="확대 이미지"
+        onClose={() => { try { setImageViewerOpen(false); } catch (_) {} }}
+      />
+
+      {/* ✅ 자동생성 덮어쓰기 경고 모달(공통) */}
+      <Dialog
+        open={autoGenOverwriteConfirmOpen}
+        onOpenChange={(v) => {
+          // ✅ 닫힐 때만 정리: 확인/취소/바깥클릭/ESC 모두 동일하게 처리
+          setAutoGenOverwriteConfirmOpen(!!v);
+          if (v) return;
+          setAutoGenOverwriteConfirmTargets('');
+          autoGenOverwriteConfirmActionRef.current = null;
+        }}
+      >
+        <DialogContent className="bg-[#111111] border border-purple-500/70 text-white max-w-[420px] rounded-2xl">
+          <DialogHeader>
+            <DialogTitle className="text-center text-white text-base font-semibold">
+              자동생성 결과로 덮어쓸까요?
+            </DialogTitle>
+          </DialogHeader>
+          <div className="mt-2 text-xs text-gray-400 leading-relaxed">
+            현재 입력된 <span className="text-gray-200 font-semibold">{String(autoGenOverwriteConfirmTargets || '내용')}</span>이(가)
+            자동생성 결과로 변경될 수 있어요.
+          </div>
+          <div className="mt-4 space-y-3">
             <button
-              onClick={() => setImageViewerOpen(false)}
-              className="absolute top-2 right-2 p-2 bg-black/60 text-white rounded-full hover:bg-black/80 transition-colors"
+              type="button"
+              onClick={confirmAutoGenOverwrite}
+              className="w-full h-11 rounded-md bg-purple-600 text-white font-semibold hover:bg-purple-700 transition-colors"
             >
-              <X className="w-5 h-5" />
+              덮어쓰기
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setAutoGenOverwriteConfirmOpen(false);
+                setAutoGenOverwriteConfirmTargets('');
+                autoGenOverwriteConfirmActionRef.current = null;
+              }}
+              className="w-full h-11 rounded-md bg-gray-800 text-gray-100 font-semibold hover:bg-gray-700 transition-colors"
+            >
+              취소
+            </button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* ✅ 작품 컨셉 직접 수정(잠금 해제) 확인 모달 */}
+      <Dialog
+        open={profileConceptEditConfirmOpen}
+        onOpenChange={(v) => {
+          // ✅ 닫힐 때만 정리(바깥클릭/ESC 포함)
+          try { setProfileConceptEditConfirmOpen(!!v); } catch (_) {}
+        }}
+      >
+        <DialogContent className="bg-[#111111] border border-purple-500/70 text-white max-w-[420px] rounded-2xl">
+          <DialogHeader>
+            <DialogTitle className="text-center text-white text-base font-semibold">
+              직접 수정하시겠습니까?
+              <br />
+              자동생성 시 덮어쓸 수 있습니다.
+            </DialogTitle>
+          </DialogHeader>
+          <div className="mt-4 space-y-3">
+            <button
+              type="button"
+              onClick={() => {
+                try { setProfileConceptEditConfirmOpen(false); } catch (_) {}
+              }}
+              className="w-full h-11 rounded-md bg-purple-900/60 text-white font-semibold hover:bg-purple-900/80 transition-colors"
+            >
+              취소
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                try { setProfileConceptEditConfirmOpen(false); } catch (_) {}
+                try { setProfileConceptEditMode(true); } catch (_) {}
+              }}
+              className="w-full h-11 rounded-md bg-purple-600 text-white font-semibold hover:bg-purple-700 transition-colors"
+            >
+              확인
             </button>
           </div>
         </DialogContent>
@@ -10060,17 +15081,8 @@ const CreateCharacterPage = () => {
               <button
                 type="button"
                 onClick={() => {
-                  // ✅ UX: 자동완성 완료 확인 → 다음 단계로 1번 더 이동
-                  // - 자동완성은 이미 "다음 단계" 화면에서 실행되므로,
-                  //   확인을 누르면 유저가 흐름을 끊지 않고 계속 진행할 수 있다.
+                  // ✅ UX(수정): 확인은 모달만 닫는다. (단계 자동 이동 금지)
                   try { setNextStepAutoFillOpen(false); } catch (_) {}
-                  try {
-                    const hasErr = !!String(nextStepAutoFillError || '').trim();
-                    const done = (Math.max(0, Math.min(100, Number(nextStepAutoFillProgress) || 0)) >= 100);
-                    if (!nextStepAutoFillRunningRef.current && !hasErr && done) {
-                      goNextWizardStep();
-                    }
-                  } catch (_) {}
                 }}
                 disabled={nextStepAutoFillRunningRef.current}
                 className="flex-1 h-11 rounded-md bg-purple-600 text-white font-semibold hover:bg-purple-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-purple-600"
