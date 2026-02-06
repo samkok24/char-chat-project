@@ -8,6 +8,7 @@ from app.core.database import get_db
 from app.services.ranking_service import build_daily_ranking, persist_daily_ranking, today_kst
 from app.models.story import Story
 from app.models.character import Character
+from app.services.start_sets_utils import extract_max_turns_from_start_sets
 
 router = APIRouter()
 
@@ -123,6 +124,10 @@ async def get_daily_rankings(
                 # ✅ 원작챗 카드에서 "원작 웹소설(파란 배지)"를 보여주기 위한 표시 필드
                 "origin_story_title": getattr(getattr(c, "origin_story", None), "title", None),
                 "origin_story_is_webtoon": getattr(getattr(c, "origin_story", None), "is_webtoon", None),
+                # ✅ 격자 카드 UX: 턴수 배지 표기용(SSOT: character.start_sets.sim_options.max_turns)
+                "max_turns": extract_max_turns_from_start_sets(getattr(c, "start_sets", None)),
+                # ✅ 격자 카드 UX: 배지(롤플/시뮬/커스텀) 표기용
+                "character_type": getattr(c, "character_type", None),
                 "chat_count": c.chat_count,
                 "like_count": c.like_count,
                 # ✅ NEW 배지(48h) / 캐시 버스터(avatar v=) 용 메타

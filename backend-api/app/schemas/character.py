@@ -195,7 +195,8 @@ class CharacterBasicInfo(BaseModel):
     # 세계관 설정
     # ✅ 프롬프트 상향(운영 합의): 6000자까지 허용
     world_setting: Optional[str] = Field(None, max_length=6000)
-    user_display_description: Optional[str] = Field(None, max_length=3000)
+    # ✅ 요구사항: 크리에이터 코멘트는 1000자 제한(선택)
+    user_display_description: Optional[str] = Field(None, max_length=1000)
     use_custom_description: bool = False
 
     # 도입부 시스템
@@ -247,7 +248,8 @@ class CharacterBasicInfo(BaseModel):
             'greeting': 500,
             # ✅ 프롬프트 상향(운영 합의): 6000자까지 허용
             'world_setting': 6000,
-            'user_display_description': 3000,
+            # ✅ 요구사항: 크리에이터 코멘트는 1000자 제한(선택)
+            'user_display_description': 1000,
         }
         if info.field_name == 'user_display_description':
             return _sanitize_creator_comment_html(v, max_len_map.get(info.field_name))
@@ -502,6 +504,11 @@ class CharacterListResponse(BaseModel):
     greeting: Optional[str]
     avatar_url: Optional[str]
     source_type: Optional[str] = "ORIGINAL"
+    # ✅ 목록/격자 UX 보강:
+    # - character_type: 롤플/시뮬/커스텀 배지 표시에 사용
+    # - max_turns: 격자 좌상단 '턴수 배지' 표시에 사용(start_sets SSOT에서 파생)
+    character_type: Optional[str] = None
+    max_turns: Optional[int] = None
     # 썸네일(목록/카드용): avatar가 없으면 첫 갤러리 이미지를 사용
     thumbnail_url: Optional[str] = None
     # 계산을 위해 목록 응답에도 이미지 설명 배열을 전달(옵션)

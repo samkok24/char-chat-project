@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { X, Send, Loader2, RotateCcw } from 'lucide-react';
 import { origChatAPI, storiesAPI, charactersAPI, chaptersAPI, chatAPI, userPersonasAPI } from '../lib/api';
 import { resolveImageUrl } from '../lib/images';
+import { hasChatHtmlLike } from '../lib/messageHtml';
+import RichMessageHtml from './RichMessageHtml';
 
 const MiniChatWindow = ({ open, onClose, storyId, currentChapterNo }) => {
   const [characters, setCharacters] = useState([]);
@@ -500,7 +502,13 @@ const MiniChatWindow = ({ open, onClose, storyId, currentChapterNo }) => {
                   whiteSpace: 'pre-wrap'
                 }}
               >
-                {msg.content}
+                {(() => {
+                  const txt = typeof msg?.content === 'string' ? msg.content : String(msg?.content ?? '');
+                  if (hasChatHtmlLike(txt)) {
+                    return <RichMessageHtml html={txt} className="message-rich" />;
+                  }
+                  return txt;
+                })()}
               </div>
             </div>
           ))

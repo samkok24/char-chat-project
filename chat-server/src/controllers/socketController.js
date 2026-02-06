@@ -333,7 +333,7 @@ class SocketController {
     const safeAck = (payload) => { try { if (typeof ack === 'function') ack(payload); } catch (_) {} };
 
     try {
-      const { roomId, content, messageType = 'text', settings_patch } = data || {};
+      const { roomId, content, messageType = 'text', settings_patch, client_message_kind } = data || {};
       const userId = socket.userId;
       const userInfo = socket.userInfo;
 
@@ -414,6 +414,8 @@ class SocketController {
             room_id: roomId,               // ✅ “현재 방” 정합성
             character_id: room.characterId,
             content,
+            // ✅ 클라이언트 UI 목적(서버는 허용 값만 반영)
+            client_message_kind: client_message_kind || undefined,
             // ✅ 프론트에서 넘어온 설정(temperature/응답길이 등)을 백엔드로 전달
             settings_patch: settings_patch || undefined,
           },

@@ -1,12 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { Link, NavLink, useNavigate } from 'react-router-dom';
+import { Link, NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { chatAPI, charactersAPI, storiesAPI } from '../../lib/api';
 import { useAuth } from '../../contexts/AuthContext';
 import { Avatar, AvatarFallback, AvatarImage } from '../ui/avatar';
 import { resolveImageUrl, getCharacterPrimaryImage } from '../../lib/images';
 import { getReadingProgress, getReadingProgressAt } from '../../lib/reading';
 import { Button } from '../ui/button';
-import { MessageSquare, Plus, Home, Star, Heart, User, History, UserCog, LogOut, BookOpen, LogIn, HelpCircle, Bell, Settings, Loader2 } from 'lucide-react';
+import { MessageSquare, Plus, Home, Star, Heart, User, History, Sparkles, UserCog, LogOut, BookOpen, LogIn, HelpCircle, Bell, Settings, Loader2, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Skeleton } from '../ui/skeleton';
 import { Badge } from '../ui/badge';
 import {
@@ -23,7 +23,7 @@ import { useLoginModal } from '../../contexts/LoginModalContext';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../ui/dialog';
 import { clearCreateCharacterDraft, hasCreateCharacterDraft } from '../../lib/createCharacterDraft';
 
-const Sidebar = () => {
+const Sidebar = ({ collapsed = false, onToggleCollapsed }) => {
   const [chatRooms, setChatRooms] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -32,6 +32,7 @@ const Sidebar = () => {
   const [showPersonaModal, setShowPersonaModal] = useState(false);
   const { user, logout, isAuthenticated } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const [avatarVersion, setAvatarVersion] = useState(Date.now());
   const requireAuth = useRequireAuth();
   const { openLoginModal } = useLoginModal();
@@ -295,87 +296,136 @@ const Sidebar = () => {
     <NavLink
       to={to}
       className={({ isActive }) =>
-        `flex items-center px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
+        `flex items-center ${collapsed ? 'justify-center px-2' : 'px-4'} py-2 text-sm font-medium rounded-lg transition-colors ${
           isActive
             ? 'bg-purple-600 text-white'
             : 'text-gray-300 hover:bg-gray-700 hover:text-white'
         }`
       }
+      aria-label={String(children)}
+      title={String(children)}
       onClick={(e) => {
         if (mustAuth && !requireAuth(authReason || String(children))) {
           e.preventDefault();
         }
       }}
     >
-      <Icon className="w-5 h-5 mr-3" />
-      <span>{children}</span>
+      <Icon className={`w-5 h-5 ${collapsed ? '' : 'mr-3'}`} />
+      {!collapsed ? <span>{children}</span> : null}
     </NavLink>
   );
 
   return (
-    <aside className="w-64 bg-gray-800 border-r border-gray-700 flex flex-col h-full min-h-0">
+    <aside className={`${collapsed ? 'w-16' : 'w-64'} bg-gray-800 border-r border-gray-700 flex flex-col h-full min-h-0 transition-[width] duration-200 ease-linear`}>
+      {/* ✅ (요구사항) 반응형 전용: 토글 버튼은 노출하지 않는다 */}
       {/* 로고 영역 */}
-      <div className="p-4 flex items-center justify-center">
+      <div className={`${collapsed ? 'pt-3 pb-3' : 'p-4'} flex items-center justify-center`}>
         <Link to="/" className="flex items-center justify-center w-full">
           {/* public/brand-logo.png */}
-          <img
-            src="/brand-logo.png"
-            alt="브랜드 로고"
-            // ✅ 크롭 없이(=전체 로고 노출) 가운데 정렬 + 사이드바에서 충분히 크게 보이도록 높이를 키운다.
-            // 현재 로고 파일이 정사각형이라 width를 크게 줘도 비율상 height 기준으로 스케일된다.
-            className="h-34 w-auto max-w-[180px] object-contain object-center"
-            onError={(e) => {
-              // 방어적 처리: 로고가 없거나 경로가 틀려도 UI가 깨지지 않게 한다.
-              e.currentTarget.style.display = 'none';
-              const fallback = e.currentTarget.nextElementSibling;
-              if (fallback) fallback.style.display = 'block';
-            }}
-          />
-          {/* 로고 로드 실패 시에만 표시되는 fallback 아이콘(기본 hidden) */}
-          <MessageSquare className="w-10 h-10 text-purple-500 hidden" aria-hidden="true" />
+          {!collapsed ? (
+            <>
+              <img
+                src="/brand-logo.png"
+                alt="브랜드 로고"
+                // ✅ 크롭 없이(=전체 로고 노출) 가운데 정렬 + 사이드바에서 충분히 크게 보이도록 높이를 키운다.
+                // 현재 로고 파일이 정사각형이라 width를 크게 줘도 비율상 height 기준으로 스케일된다.
+                className="h-34 w-auto max-w-[180px] object-contain object-center"
+                onError={(e) => {
+                  // 방어적 처리: 로고가 없거나 경로가 틀려도 UI가 깨지지 않게 한다.
+                  e.currentTarget.style.display = 'none';
+                  const fallback = e.currentTarget.nextElementSibling;
+                  if (fallback) fallback.style.display = 'block';
+                }}
+              />
+              {/* 로고 로드 실패 시에만 표시되는 fallback 아이콘(기본 hidden) */}
+              <MessageSquare className="w-10 h-10 text-purple-500 hidden" aria-hidden="true" />
+            </>
+          ) : (
+            <MessageSquare className="w-9 h-9 text-purple-400" aria-hidden="true" />
+          )}
         </Link>
       </div>
 
       {/* Create 버튼 */}
-      <div className="px-4 pb-2 pt-2">
-        <Link
-          to="/characters/create"
-          onClick={(e) => {
-            if (!requireAuth('캐릭터 생성')) {
-              e.preventDefault();
-              return;
-            }
-            // ✅ 경쟁사 UX: 임시저장된 초안이 있으면 모달을 먼저 띄운다.
-            try {
-              if (hasCreateCharacterDraft()) {
+      {!collapsed ? (
+        <>
+          <div className="px-4 pb-2 pt-2">
+            <Link
+              to="/characters/create"
+              onClick={(e) => {
+                if (!requireAuth('캐릭터 생성')) {
+                  e.preventDefault();
+                  return;
+                }
+                // ✅ 경쟁사 UX: 임시저장된 초안이 있으면 모달을 먼저 띄운다.
+                try {
+                  if (hasCreateCharacterDraft()) {
+                    e.preventDefault();
+                    setDraftPromptOpen(true);
+                  }
+                } catch (_) {}
+              }}
+              className="flex items-center justify-center w-full px-4 py-2.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors font-medium text-sm shadow-lg"
+            >
+              <Plus className="w-5 h-5 mr-2" />
+              캐릭터 생성
+            </Link>
+          </div>
+          <div className="px-4 pb-4">
+            <Link
+              to="/works/create"
+              onClick={(e) => {
+                if (!requireAuth('원작 쓰기')) {
+                  e.preventDefault();
+                }
+              }}
+              className="flex items-center justify-center w-full px-4 py-2.5 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors font-medium text-sm"
+            >
+              <BookOpen className="w-5 h-5 mr-2" />
+              원작 쓰기
+            </Link>
+          </div>
+        </>
+      ) : (
+        <div className="px-2 pb-4 pt-1 space-y-2">
+          <Link
+            to="/characters/create"
+            onClick={(e) => {
+              if (!requireAuth('캐릭터 생성')) {
                 e.preventDefault();
-                setDraftPromptOpen(true);
+                return;
               }
-            } catch (_) {}
-          }}
-          className="flex items-center justify-center w-full px-4 py-2.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors font-medium text-sm shadow-lg"
-        >
-          <Plus className="w-5 h-5 mr-2" />
-          캐릭터 생성
-        </Link>
-      </div>
-      <div className="px-4 pb-4">
-        <Link
-          to="/works/create"
-          onClick={(e) => {
-            if (!requireAuth('원작 쓰기')) {
-              e.preventDefault();
-            }
-          }}
-          className="flex items-center justify-center w-full px-4 py-2.5 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors font-medium text-sm"
-        >
-          <BookOpen className="w-5 h-5 mr-2" />
-          원작 쓰기
-        </Link>
-      </div>
+              try {
+                if (hasCreateCharacterDraft()) {
+                  e.preventDefault();
+                  setDraftPromptOpen(true);
+                }
+              } catch (_) {}
+            }}
+            className="h-10 w-10 mx-auto flex items-center justify-center rounded-lg bg-purple-600 hover:bg-purple-700 text-white shadow-lg transition-colors"
+            aria-label="캐릭터 생성"
+            title="캐릭터 생성"
+          >
+            <Plus className="w-5 h-5" />
+          </Link>
+          <Link
+            to="/works/create"
+            onClick={(e) => {
+              if (!requireAuth('원작 쓰기')) {
+                e.preventDefault();
+              }
+            }}
+            className="h-10 w-10 mx-auto flex items-center justify-center rounded-lg bg-gray-700 hover:bg-gray-600 text-white transition-colors"
+            aria-label="원작 쓰기"
+            title="원작 쓰기"
+          >
+            <BookOpen className="w-5 h-5" />
+          </Link>
+        </div>
+      )}
 
       {/* 메인 네비게이션 */}
-      <nav className="flex-1 min-h-0 space-y-1 overflow-y-auto overscroll-contain">
+      <nav className="flex-1 min-h-0 space-y-1 overflow-y-auto overscroll-contain scrollbar-dark">
         <NavItem to="/dashboard" icon={Home}>홈</NavItem>
         
         {/* 로그인 시에만 표시되는 메뉴들 */}
@@ -385,17 +435,21 @@ const Sidebar = () => {
             <NavItem to="/my-characters" icon={Star}>내 캐릭터</NavItem>
         <button
               onClick={() => setShowPersonaModal(true)}
-          className="flex items-center w-full px-4 py-2 text-sm font-medium rounded-lg transition-colors text-gray-300 hover:bg-gray-700 hover:text-white"
+          className={`flex items-center w-full ${collapsed ? 'justify-center px-2' : 'px-4'} py-2 text-sm font-medium rounded-lg transition-colors text-gray-300 hover:bg-gray-700 hover:text-white`}
+          aria-label="유저 페르소나"
+          title="유저 페르소나"
         >
-          <UserCog className="w-5 h-5 mr-3" />
-          <span>유저 페르소나</span>
+          <UserCog className={`w-5 h-5 ${collapsed ? '' : 'mr-3'}`} />
+          {!collapsed ? <span>유저 페르소나</span> : null}
         </button>
             <NavItem to="/history" icon={History}>대화내역</NavItem>
+            {/* ✅ 요구사항: 스토리 에이전트는 사이드바 '대화내역' 바로 아래 버튼으로 이동 */}
+            <NavItem to="/agent" icon={Sparkles}>스토리 에이전트</NavItem>
           </>
         )}
         
         {/* A While Ago - 로그인 시에만 표시 */}
-        {isAuthenticated && (
+        {isAuthenticated && !collapsed && (
         <div className="px-3 pt-4">
           <div className="flex items-center justify-between px-1 mb-2">
             <p className="text-xs text-gray-500">히스토리</p>
@@ -488,7 +542,7 @@ const Sidebar = () => {
                 }
                 // 최대 5개만 노출하여 사이드바 오버플로우로 인한 레이아웃 깨짐 방지
                 return mixed.slice(0, 5).map((item) => (
-                  <NavLink
+                  <Link
                     key={`${item.kind}-${item.id}`}
                     to={item.href}
                     onClick={(e) => {
@@ -499,13 +553,26 @@ const Sidebar = () => {
                         }
                       } catch (_) {}
                     }}
-                    className={({ isActive }) =>
-                      `flex items-center px-4 py-2 text-sm transition-colors rounded-lg ${
-                        (item.kind === 'chat' && item.blocked)
+                    className={(() => {
+                      /**
+                       * ✅ 히스토리(룸) Active 판별 버그 수정
+                       *
+                       * 문제:
+                       * - NavLink의 isActive는 기본적으로 pathname 기준이라, 같은 캐릭터(/ws/chat/:id)로 만든
+                       *   서로 다른 room(쿼리)들이 동시에 active로 찍힐 수 있다.
+                       *
+                       * 해결:
+                       * - 룸 단위는 "pathname + search(room=...)"까지 포함해 정확히 1개만 active 처리한다.
+                       */
+                      const blocked = (item.kind === 'chat' && item.blocked);
+                      const current = `${location.pathname}${location.search || ''}`;
+                      const isActiveExact = Boolean(item.href && current === String(item.href));
+                      return `flex items-center px-4 py-2 text-sm transition-colors rounded-lg ${
+                        blocked
                           ? 'text-gray-500 cursor-not-allowed opacity-60'
-                          : (isActive ? 'bg-purple-600 text-white' : 'text-gray-300 hover:bg-gray-700 hover:text-white')
-                      }`
-                    }
+                          : (isActiveExact ? 'bg-purple-600 text-white' : 'text-gray-300 hover:bg-gray-700 hover:text-white')
+                      }`;
+                    })()}
                   >
                     <Avatar className="w-8 h-8 mr-3 rounded-md">
                       <AvatarImage className="object-cover object-top" src={item.thumb} />
@@ -517,7 +584,7 @@ const Sidebar = () => {
                       <span className="truncate">{item.title}</span>
                       <span className="text-xs text-gray-400 flex-shrink-0">{item.kind==='story' ? item.badge : formatRelativeTime(item.at)}</span>
                     </div>
-                  </NavLink>
+                  </Link>
                 ));
               })()
             )}
@@ -531,28 +598,30 @@ const Sidebar = () => {
         {isAuthenticated ? (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <div className="flex items-center space-x-3 px-1 cursor-pointer hover:bg-gray-700 rounded-lg py-2 transition-colors">
+              <div className={`flex items-center ${collapsed ? 'justify-center' : 'space-x-3'} px-1 cursor-pointer hover:bg-gray-700 rounded-lg py-2 transition-colors`}>
                 <Avatar className="w-8 h-8">
                   <AvatarImage src={resolveImageUrl(user?.avatar_url ? `${user.avatar_url}${user.avatar_url.includes('?') ? '&' : '?'}v=${avatarVersion}` : '')} alt={user?.username} />
                   <AvatarFallback className="bg-purple-600 text-white text-sm">
                     {user?.username?.charAt(0)?.toUpperCase() || 'U'}
                   </AvatarFallback>
                 </Avatar>
-                <div className="flex-1 min-w-0 flex items-center gap-2">
-                  <p className="text-sm font-medium text-white truncate">{user?.username}</p>
-                  {user?.is_admin && (
-                    <Badge className="text-xs px-1.5 py-0 bg-yellow-600 hover:bg-yellow-600 text-white font-semibold">
-                      관리자
-                    </Badge>
-                  )}
-                </div>
+                {!collapsed ? (
+                  <div className="flex-1 min-w-0 flex items-center gap-2">
+                    <p className="text-sm font-medium text-white truncate">{user?.username}</p>
+                    {user?.is_admin && (
+                      <Badge className="text-xs px-1.5 py-0 bg-yellow-600 hover:bg-yellow-600 text-white font-semibold">
+                        관리자
+                      </Badge>
+                    )}
+                  </div>
+                ) : null}
               </div>
             </DropdownMenuTrigger>
-            <DropdownMenuContent className="w-56" align="start" side="top">
+            <DropdownMenuContent className="w-56 bg-gray-900 text-gray-100 border border-gray-700" align="start" side="top">
               <DropdownMenuLabel className="font-normal">
                 <div className="flex flex-col space-y-1">
-                  <p className="text-sm font-medium leading-none">{user?.username}</p>
-                  <p className="text-xs leading-none text-muted-foreground">
+                  <p className="text-sm font-medium leading-none text-gray-100">{user?.username}</p>
+                  <p className="text-xs leading-none text-gray-400">
                     {user?.email}
                   </p>
                 </div>
@@ -586,7 +655,7 @@ const Sidebar = () => {
                 <span>1:1 문의</span>
               </DropdownMenuItem>
               <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={handleLogout} className="text-red-600">
+              <DropdownMenuItem onClick={handleLogout} className="text-red-400">
                 <LogOut className="mr-2 h-4 w-4" />
                 <span>로그아웃</span>
               </DropdownMenuItem>
@@ -630,7 +699,7 @@ const Sidebar = () => {
             <button
               type="button"
               onClick={handleDraftStartFresh}
-              className="w-full h-11 rounded-md bg-purple-700 text-white font-semibold hover:bg-purple-800 transition-colors"
+              className="w-full h-11 rounded-md bg-gray-800 text-white font-semibold hover:bg-gray-700 transition-colors border border-gray-700/80"
             >
               새로 만들기
             </button>
@@ -644,7 +713,7 @@ const Sidebar = () => {
             <button
               type="button"
               onClick={() => setDraftPromptOpen(false)}
-              className="w-full h-11 rounded-md bg-purple-900/60 text-white font-semibold hover:bg-purple-900/80 transition-colors"
+              className="w-full h-11 rounded-md bg-gray-900/60 text-white font-semibold hover:bg-gray-900/80 transition-colors border border-gray-800/80"
             >
               취소
             </button>

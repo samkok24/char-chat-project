@@ -9,16 +9,12 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';  // 이 줄 추가
 import { Input } from './ui/input';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from './ui/select';
-import { Loader2, Trash2 } from 'lucide-react';
+import { Loader2, Trash2, Bot } from 'lucide-react';
 import { replacePromptTokens } from '../lib/prompt';
 import { ChevronDown } from 'lucide-react';
+import RichMessageHtml from './RichMessageHtml';
+import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
+import { getCharacterPrimaryImage } from '../lib/images';
 
 const timeAgo = (dateString) => {
   if (!dateString) return '';
@@ -51,6 +47,8 @@ const CharacterDetails = ({
   tags = [],
   originStoryCard = null,
   hideCreatorComment = false,
+  hideTags = false,
+  hideOpeningSelect = false,
   openingId = '',
   onOpeningChange = null,
 }) => {
@@ -81,12 +79,13 @@ const CharacterDetails = ({
       // 금지 토큰 제거
       s = s.split('{{system}}').join('').split('{{dev}}').join('');
       // 허용되지 않은 커스텀 토큰 제거(허용 토큰만 유지)
-      s = s.replace(/\{\{[^}]+\}\}/g, (tok) => (['{{assistant}}', '{{character}}', '{{user}}'].includes(tok) ? tok : ''));
+      s = s.replace(/\{\{[^}]+\}\}/g, (tok) => (['{{assistant}}', '{{character}}', '{{char}}', '{{user}}'].includes(tok) ? tok : ''));
       const a = escapeHtml(assistantName);
       const u = escapeHtml(userName);
       return s
         .replaceAll('{{assistant}}', a)
         .replaceAll('{{character}}', a)
+        .replaceAll('{{char}}', a)
         .replaceAll('{{user}}', u);
     } catch (_) {
       return '';
@@ -218,6 +217,8 @@ const CharacterDetails = ({
     }
   })();
 
+  const canChangeOpening = typeof onOpeningChange === 'function';
+
   return (
     <div className="space-y-8">
       {/* ✅ 일반 캐릭터챗 상세: 캐릭터소개/첫시작/크리에이터 코멘트/댓글만 노출 */}
@@ -234,8 +235,11 @@ const CharacterDetails = ({
               })()}
             </div>
 
-            {/* 태그(모달/상세 공통): 경쟁사 UX처럼 소개 아래 노출 */}
-            {Array.isArray(tags) && tags.length > 0 && (
+            {/* 태그(모달/상세 공통)
+             * - 상세 페이지(풀뷰): 소개 아래 그대로 노출
+             * - 모달(compact): '공개일 | 수정일' 아래로 이동하므로 여기서는 숨길 수 있게 한다.
+             */}
+            {!hideTags && Array.isArray(tags) && tags.length > 0 && (
               <div className="mt-3 flex flex-wrap gap-2">
                 {tags.slice(0, 12).map((t) => (
                   <Badge
@@ -352,33 +356,45 @@ const CharacterDetails = ({
             </section>
           )}
 
-          {/* 시작 설정(=첫시작) : 경쟁사 UX처럼 상세보기와 무관하게 항상 노출 */}
+          {/* 오프닝(=첫시작) : 경쟁사 UX처럼 상세보기와 무관하게 항상 노출 */}
           <section id="first-start">
-            <h2 className="text-lg font-semibold mb-2">시작 설정</h2>
-            {startSetOptions.length > 1 ? (
-              <div className="mb-3 flex items-center justify-between gap-3">
-                <div className="text-sm font-semibold text-gray-200">오프닝 선택</div>
-                <div className="w-[220px] max-w-[60%]">
-                  <Select
-                    value={effectiveOpeningId}
-                    onValueChange={(v) => {
-                      try { onOpeningChange?.(v); } catch (_) {}
-                    }}
-                  >
-                    <SelectTrigger className="h-9 bg-gray-950/40 border border-purple-500/50 text-gray-100 focus:ring-2 focus:ring-purple-500/30">
-                      <SelectValue placeholder="오프닝 선택" />
-                    </SelectTrigger>
-                    <SelectContent className="bg-gray-950 border border-gray-800 text-gray-100">
-                      {startSetOptions.map((opt) => (
-                        <SelectItem key={opt.id} value={opt.id}>
-                          {opt.title}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
+            {/* ✅ 접근성/구조 유지: 섹션 제목은 숨김 처리 */}
+            <h2 className="sr-only">오프닝</h2>
+
+            {/* ✅ 요청사항: '오프닝' 문구 대신, 크리에이터가 설정한 오프닝명 "태그형 칩"을 노출 */}
+            {!hideOpeningSelect && startSetOptions.length > 0 ? (
+              <div className="mb-3 flex flex-wrap items-center gap-2">
+                {startSetOptions.map((opt) => {
+                  const active = String(opt?.id || '') === String(effectiveOpeningId || '');
+                  const title = String(opt?.title || '').trim() || '오프닝';
+                  return (
+                    <button
+                      key={`opening-chip:${opt.id}`}
+                      type="button"
+                      disabled={!canChangeOpening}
+                      aria-pressed={active ? 'true' : 'false'}
+                      onClick={() => {
+                        if (!canChangeOpening) return;
+                        try { onOpeningChange?.(opt.id); } catch (_) {}
+                      }}
+                      // ✅ 위저드 오프닝 칩(탭) 디자인과 동일 톤으로 통일
+                      className={[
+                        'inline-flex items-center gap-2 h-9 px-3 rounded-full border transition select-none',
+                        active
+                          ? 'bg-black/20 border-purple-500 text-white'
+                          : 'bg-black/20 border-white/10 text-white/80 hover:bg-white/5 hover:text-white',
+                        canChangeOpening ? 'cursor-pointer' : 'opacity-70 cursor-default pointer-events-none',
+                      ].join(' ')}
+                      title={title}
+                    >
+                      <span className="text-sm font-semibold max-w-[220px] truncate">{title}</span>
+                    </button>
+                  );
+                })}
               </div>
-            ) : null}
+            ) : (
+              <div className="text-lg font-semibold mb-2">오프닝</div>
+            )}
             <div className="space-y-3">
               <div className="text-gray-200 whitespace-pre-wrap leading-7">
                 {(() => {
@@ -388,13 +404,28 @@ const CharacterDetails = ({
                   return rendered || '아직 도입부가 없습니다.';
                 })()}
               </div>
-              <div className="text-gray-200 whitespace-pre-wrap leading-7 font-semibold">
-                {(() => {
-                  const nm = character?.name || '캐릭터';
-                  const raw = firstStart?.firstLine || '';
-                  const rendered = replacePromptTokens(raw, { assistantName: nm, userName: '당신' }).trim();
-                  return rendered || '아직 첫대사가 없습니다.';
-                })()}
+              {/* ✅ 첫대사: 채팅창 assistant 말풍선 디자인 + 원형 아바타 + 볼드 유지 */}
+              <div className="flex items-start gap-2">
+                <Avatar className="size-10 rounded-full shrink-0">
+                  <AvatarImage className="object-cover object-top" src={getCharacterPrimaryImage(character)} alt={character?.name || '캐릭터'} />
+                  <AvatarFallback className="bg-gradient-to-r from-purple-500 to-blue-500 text-white">
+                    {character?.name?.charAt?.(0) || <Bot className="w-4 h-4" />}
+                  </AvatarFallback>
+                </Avatar>
+                <div className="relative w-fit max-w-full sm:max-w-[85%] px-3 py-2 rounded-2xl shadow-md overflow-hidden rounded-tl-none cc-assistant-speech-bubble bg-white/10 border border-white/10 text-gray-100 font-semibold">
+                  <p className="whitespace-pre-wrap break-words">
+                    {(() => {
+                      try {
+                        const nm = character?.name || '캐릭터';
+                        const raw = firstStart?.firstLine || '';
+                        const rendered = replacePromptTokens(raw, { assistantName: nm, userName: '당신' }).trim();
+                        return rendered || '아직 첫대사가 없습니다.';
+                      } catch (_) {
+                        return '아직 첫대사가 없습니다.';
+                      }
+                    })()}
+                  </p>
+                </div>
               </div>
             </div>
           </section>
@@ -414,33 +445,45 @@ const CharacterDetails = ({
             </div>
           </section>
 
-          {/* 시작 설정(=도입부/첫대사): 원작챗에서도 상단 정보로 노출 */}
+          {/* 오프닝(=도입부/첫대사): 원작챗에서도 상단 정보로 노출 */}
           <section id="first-start">
-            <h2 className="text-lg font-semibold mb-2">시작 설정</h2>
-            {startSetOptions.length > 1 ? (
-              <div className="mb-3 flex items-center justify-between gap-3">
-                <div className="text-sm font-semibold text-gray-200">오프닝 선택</div>
-                <div className="w-[220px] max-w-[60%]">
-                  <Select
-                    value={effectiveOpeningId}
-                    onValueChange={(v) => {
-                      try { onOpeningChange?.(v); } catch (_) {}
-                    }}
-                  >
-                    <SelectTrigger className="h-9 bg-gray-950/40 border border-purple-500/50 text-gray-100 focus:ring-2 focus:ring-purple-500/30">
-                      <SelectValue placeholder="오프닝 선택" />
-                    </SelectTrigger>
-                    <SelectContent className="bg-gray-950 border border-gray-800 text-gray-100">
-                      {startSetOptions.map((opt) => (
-                        <SelectItem key={opt.id} value={opt.id}>
-                          {opt.title}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
+            {/* ✅ 접근성/구조 유지: 섹션 제목은 숨김 처리 */}
+            <h2 className="sr-only">오프닝</h2>
+
+            {/* ✅ 요청사항: '오프닝' 문구 대신, 크리에이터가 설정한 오프닝명 "태그형 칩"을 노출 */}
+            {!hideOpeningSelect && startSetOptions.length > 0 ? (
+              <div className="mb-3 flex flex-wrap items-center gap-2">
+                {startSetOptions.map((opt) => {
+                  const active = String(opt?.id || '') === String(effectiveOpeningId || '');
+                  const title = String(opt?.title || '').trim() || '오프닝';
+                  return (
+                    <button
+                      key={`opening-chip:${opt.id}`}
+                      type="button"
+                      disabled={!canChangeOpening}
+                      aria-pressed={active ? 'true' : 'false'}
+                      onClick={() => {
+                        if (!canChangeOpening) return;
+                        try { onOpeningChange?.(opt.id); } catch (_) {}
+                      }}
+                      // ✅ 위저드 오프닝 칩(탭) 디자인과 동일 톤으로 통일
+                      className={[
+                        'inline-flex items-center gap-2 h-9 px-3 rounded-full border transition select-none',
+                        active
+                          ? 'bg-black/20 border-purple-500 text-white'
+                          : 'bg-black/20 border-white/10 text-white/80 hover:bg-white/5 hover:text-white',
+                        canChangeOpening ? 'cursor-pointer' : 'opacity-70 cursor-default pointer-events-none',
+                      ].join(' ')}
+                      title={title}
+                    >
+                      <span className="text-sm font-semibold max-w-[220px] truncate">{title}</span>
+                    </button>
+                  );
+                })}
               </div>
-            ) : null}
+            ) : (
+              <div className="text-lg font-semibold mb-2">오프닝</div>
+            )}
             <div className="space-y-3">
               <div className="text-gray-200 whitespace-pre-wrap leading-7">
                 {(() => {
@@ -450,13 +493,28 @@ const CharacterDetails = ({
                   return rendered || '아직 도입부가 없습니다.';
                 })()}
               </div>
-              <div className="text-gray-200 whitespace-pre-wrap leading-7 font-semibold">
-                {(() => {
-                  const nm = character?.name || '캐릭터';
-                  const raw = firstStart?.firstLine || '';
-                  const rendered = replacePromptTokens(raw, { assistantName: nm, userName: '당신' }).trim();
-                  return rendered || '아직 첫대사가 없습니다.';
-                })()}
+              {/* ✅ 첫대사: 채팅창 assistant 말풍선 디자인 + 원형 아바타 + 볼드 유지 */}
+              <div className="flex items-start gap-2">
+                <Avatar className="size-10 rounded-full shrink-0">
+                  <AvatarImage className="object-cover object-top" src={getCharacterPrimaryImage(character)} alt={character?.name || '캐릭터'} />
+                  <AvatarFallback className="bg-gradient-to-r from-purple-500 to-blue-500 text-white">
+                    {character?.name?.charAt?.(0) || <Bot className="w-4 h-4" />}
+                  </AvatarFallback>
+                </Avatar>
+                <div className="relative w-fit max-w-full sm:max-w-[85%] px-3 py-2 rounded-2xl shadow-md overflow-hidden rounded-tl-none cc-assistant-speech-bubble bg-white/10 border border-white/10 text-gray-100 font-semibold">
+                  <p className="whitespace-pre-wrap break-words">
+                    {(() => {
+                      try {
+                        const nm = character?.name || '캐릭터';
+                        const raw = firstStart?.firstLine || '';
+                        const rendered = replacePromptTokens(raw, { assistantName: nm, userName: '당신' }).trim();
+                        return rendered || '아직 첫대사가 없습니다.';
+                      } catch (_) {
+                        return '아직 첫대사가 없습니다.';
+                      }
+                    })()}
+                  </p>
+                </div>
               </div>
             </div>
           </section>
@@ -504,29 +562,22 @@ const CharacterDetails = ({
         </>
       )}
 
-      {/* 크리에이터 코멘트 (요구사항: 세계관 밑으로 이동) */}
-      {!hideCreatorComment && (
-        <section id="creator-comment">
-          <h2 className="text-lg font-semibold mb-2">크리에이터 코멘트</h2>
-          <div className="text-gray-200">
-            {(() => {
-              const nm = character?.name || '캐릭터';
-              const raw = character?.user_display_description || '';
-              const rendered = safeReplaceTokensForHtml(raw, { assistantName: nm, userName: '당신' }).trim();
-              if (!rendered) {
-                return <div className="text-gray-400 whitespace-pre-wrap">아직 크리에이터 코멘트가 없습니다.</div>;
-              }
-              // ✅ 서버 sanitize + 토큰 escape 기반으로 안전한 HTML만 렌더링
-              return (
-                <div
-                  className="whitespace-pre-wrap leading-7"
-                  dangerouslySetInnerHTML={{ __html: rendered }}
-                />
-              );
-            })()}
-          </div>
-        </section>
-      )}
+      {/* 크리에이터 코멘트 (요구사항: 선택값 / 비어있으면 비노출) */}
+      {!hideCreatorComment && (() => {
+        const nm = character?.name || '캐릭터';
+        const raw = character?.user_display_description || '';
+        const rendered = safeReplaceTokensForHtml(raw, { assistantName: nm, userName: '당신' }).trim();
+        if (!rendered) return null;
+        return (
+          <section id="creator-comment">
+            <h2 className="text-lg font-semibold mb-2">크리에이터 코멘트</h2>
+            <div className="text-gray-200">
+              {/* ✅ 안전 HTML 렌더(이미지 클릭 시 확대 모달 포함) */}
+              <RichMessageHtml html={rendered} className="message-rich whitespace-pre-wrap leading-7" />
+            </div>
+          </section>
+        );
+      })()}
 
       {/* 댓글 */}
       <section id="comments">

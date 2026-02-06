@@ -68,16 +68,38 @@ function classifyLine(line) {
   const trimmed = raw.trim();
   if (!trimmed) return { kind: 'narration', text: '' };
 
+  /**
+   * ✅ 방어: "사용자: ... / 캐릭터: ..." 라벨 노출 제거
+   *
+   * 배경:
+   * - 일부 모델/프롬프트에서 역할 라벨(사용자:/캐릭터:)을 본문에 섞어 출력하는 경우가 있다.
+   * - UI가 이를 그대로 보여주면 몰입이 깨지고, 지문/대사 분리 로직도 왜곡된다.
+   *
+   * 정책:
+   * - 표시 단계에서 라벨만 제거하고, 나머지 텍스트는 그대로 유지한다.
+   * - 라벨 제거는 "표시"에만 영향을 주며 DB/SSOT는 변경하지 않는다.
+   */
+  const stripSpeakerPrefix = (s) => {
+    try {
+      // 한글/영문 대표 케이스만 최소 허용(과도한 추론 금지)
+      return String(s || '').replace(/^(사용자|유저|플레이어|user|USER)\s*[:：]\s*/i, '').replace(/^(캐릭터|상대|npc|NPC|character|CHARACTER)\s*[:：]\s*/i, '').trim();
+    } catch (_) {
+      return String(s || '').trim();
+    }
+  };
+  const normalized = stripSpeakerPrefix(trimmed);
+  if (!normalized) return { kind: 'narration', text: '' };
+
   // ✅ 명시적 지문: "* " 프리픽스는 서술로 취급 (기존 정책과 정합)
-  if (/^\*\s/.test(trimmed)) {
-    return { kind: 'narration', text: trimmed.replace(/^\*\s*/, '') };
+  if (/^\*\s/.test(normalized)) {
+    return { kind: 'narration', text: normalized.replace(/^\*\s*/, '') };
   }
 
-  if (isLikelyDialogueLine(trimmed)) {
-    return { kind: 'dialogue', text: trimmed };
+  if (isLikelyDialogueLine(normalized)) {
+    return { kind: 'dialogue', text: normalized };
   }
 
-  return { kind: 'narration', text: trimmed };
+  return { kind: 'narration', text: normalized };
 }
 
 /**

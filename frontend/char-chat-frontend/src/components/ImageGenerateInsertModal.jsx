@@ -3,9 +3,10 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
 import { Button } from './ui/button';
 import { mediaAPI, charactersAPI, storiesAPI } from '../lib/api';
 import { resolveImageUrl } from '../lib/images';
+import { buildImageGenerationPrompt } from '../lib/imageGenerationPrompt';
 import { Loader2, Trash2 } from 'lucide-react';
 
-const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initialGallery }) => {
+const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initialGallery, initialCropIndex = -1, cropOnly = false }) => {
   // 단일 갤러리: 업로드/생성 결과를 모두 여기에 누적
   const inputRef = React.useRef(null);
   const [busy, setBusy] = React.useState(false);
@@ -21,9 +22,10 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
   const hasLoadedRef = React.useRef(false);
   // 생성 탭 상태
   const [genModel, setGenModel] = React.useState('gemini-2.5-flash-image');
-  // ✅ 스토리에이전트(ImageTray)와 동일한 스타일 키를 사용(anime/photo/semi)
+  // ✅ 스타일 키는 SSOT 유틸과 맞춘다(anime/photo/semi/artwork)
   const [genStyle, setGenStyle] = React.useState('anime');
-  // 기본값: 상세 페이지 메인 컨테이너(세로 3:4)에 맞춤
+  // 생성 비율 기본값: 3:4(세로) 유지
+  // - 크롭은 별도 "비율 탭(직사각형/정사각형)"으로 선택한다.
   const [genRatio, setGenRatio] = React.useState('3:4');
   const [genCount, setGenCount] = React.useState(1);
   const [genPrompt, setGenPrompt] = React.useState('');
@@ -50,6 +52,13 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
   const cropImgBoxRef = React.useRef({ x: 0, y: 0, w: 0, h: 0 }); // 화면에 표시된 이미지 영역
   const cropInitializedRef = React.useRef(false); // 크롭 영역 초기화 플래그
   const [cropRect, setCropRect] = React.useState({ x: 0, y: 0, w: 100, h: 100 });
+  // ✅ 크롭 비율 선택(요구사항): 직사각형(기존) / 정사각형(1:1)
+  // - 캐릭터(대표/격자)는 정사각형이 기본이라 square를 기본값으로 둔다.
+  // - 그 외(스토리 등)는 기존처럼 직사각형이 기본.
+  const [cropRatioMode, setCropRatioMode] = React.useState(() => {
+    const et = String(entityType || '').trim().toLowerCase();
+    return (et === 'character' || et === 'origchat') ? 'square' : 'rect'; // 'rect' | 'square'
+  });
   const [cropDragging, setCropDragging] = React.useState(false);
   const [cropResizing, setCropResizing] = React.useState(null); // 'nw' | 'ne' | 'sw' | 'se' | null
   const cropStartRef = React.useRef({ x: 0, y: 0, rect: { x: 0, y: 0, w: 0, h: 0 } });
@@ -261,6 +270,10 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
       setStatusMessage('');
       setErrorMessage('');
       clearEta();
+      // ✅ 방어: 외부에서 open=false로 닫힐 때 크롭 모달이 남지 않게 정리
+      setCropOpen(false);
+      setCropIndex(-1);
+      cropInitializedRef.current = false;
       if (abortRef.current) {
         try { abortRef.current.abort(); } catch (_) {}
         abortRef.current = null;
@@ -300,36 +313,14 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
       default: return 1;
     }
   };
-
-  /**
-   * 스토리에이전트(ImageTray)의 스타일 프롬프트 보강 로직을 그대로 적용한다.
-   *
-   * 의도/동작:
-   * - 애니메이션/실사/반실사 선택을 프롬프트에 힌트로 덧붙여 결과 톤을 안정화한다.
-   * - 특히 Gemini 이미지 생성은 서버에서 ratio를 직접 적용하지 않으므로(aspect ratio 파라미터 미사용),
-   *   prompt에도 비율/구도 힌트를 함께 넣어 UX를 맞춘다.
-   */
-  const buildGenerationPrompt = (basePrompt, styleKey, ratioKey) => {
-    const p = String(basePrompt || '').trim();
-    // 스타일별 프롬프트 보강(스토리에이전트와 동일)
-    let styleHint = '';
-    if (styleKey === 'anime') styleHint = ', anime style, cel shaded, vibrant colors';
-    else if (styleKey === 'photo') styleHint = ', photorealistic, high quality photography';
-    else if (styleKey === 'semi') styleHint = ', semi-realistic, digital art, detailed';
-
-    // 비율/구도 힌트(스토리에이전트에서 3:4 고정으로 넣던 부분을, 선택 비율로 확장)
-    const r = String(ratioKey || '').trim();
-    let ratioHint = '';
-    if (r) {
-      let composition = '';
-      if (r === '3:4' || r === '9:16') composition = 'vertical composition';
-      else if (r === '4:3' || r === '16:9') composition = 'horizontal composition';
-      else if (r === '1:1') composition = 'square composition';
-      ratioHint = composition ? `, ${r} aspect ratio, ${composition}` : `, ${r} aspect ratio`;
-    }
-
-    return p + styleHint + ratioHint;
+  const getEffectiveCropRatioKey = () => {
+    const mode = String(cropRatioMode || 'rect').trim();
+    if (mode === 'square') return '1:1';
+    const r = String(genRatio || '3:4').trim();
+    return r || '3:4';
   };
+
+  // ✅ 스타일/비율 프롬프트 보강 로직은 lib SSOT를 사용한다(DRY).
 
   const openCropFor = (index) => {
     if (index == null || index < 0 || index >= gallery.length) return;
@@ -337,6 +328,60 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
     setCropOpen(true);
     cropInitializedRef.current = false; // 크롭 모달 열 때 초기화 플래그 리셋
     // 초기 크롭 사각형 계산은 이미지 onLoad에서 수행
+  };
+
+  // ✅ 외부에서 "특정 인덱스 크롭 모달을 바로 열기" 지원(QuickMeet 등)
+  const autoCropOnceRef = React.useRef(false);
+  React.useEffect(() => {
+    try {
+      if (!open) {
+        autoCropOnceRef.current = false;
+        return;
+      }
+      if (autoCropOnceRef.current) return;
+      const idx = Number(initialCropIndex);
+      if (!Number.isFinite(idx) || idx < 0) return;
+      // ✅ 모바일도 크롭 모달을 열 수 있어야 한다(원작챗/웹소설과 동일 UX).
+      if (!Array.isArray(gallery) || gallery.length === 0) return;
+      if (idx >= gallery.length) return;
+      autoCropOnceRef.current = true;
+      // 레이아웃 안정화 후 열기
+      setTimeout(() => { try { openCropFor(idx); } catch (_) {} }, 0);
+    } catch (_) {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, initialCropIndex, gallery?.length, isCoarsePointer, cropOnly, onClose]);
+
+  const resetCropRectForRatioKey = (ratioKey) => {
+    try {
+      const img = cropImgRef.current;
+      const wrap = cropWrapRef.current;
+      if (!img || !wrap) return;
+
+      const wrapW = wrap.clientWidth;
+      const wrapH = wrap.clientHeight;
+      const naturalW = img.naturalWidth || 1;
+      const naturalH = img.naturalHeight || 1;
+      // object-contain으로 표시된 실제 이미지 영역 계산
+      const scale = Math.min(wrapW / naturalW, wrapH / naturalH);
+      const dispW = Math.round(naturalW * scale);
+      const dispH = Math.round(naturalH * scale);
+      const dispX = Math.round((wrapW - dispW) / 2);
+      const dispY = Math.round((wrapH - dispH) / 2);
+      cropImgBoxRef.current = { x: dispX, y: dispY, w: dispW, h: dispH };
+
+      // 주어진 비율로 표시 이미지 영역을 가득 채우는 최대 사각형 계산
+      const r = ratioToNumber(ratioKey);
+      let w = dispW;
+      let h = Math.round(w / r);
+      if (h > dispH) {
+        h = dispH;
+        w = Math.round(h * r);
+      }
+      const x = Math.round(dispX + (dispW - w) / 2);
+      const y = Math.round(dispY + (dispH - h) / 2);
+      setCropRect({ x, y, w, h });
+      cropInitializedRef.current = true;
+    } catch (_) {}
   };
 
   const onCropImgLoad = () => {
@@ -359,18 +404,7 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
 
       // 최초 1회만 크롭 영역 초기화
       if (!cropInitializedRef.current) {
-        // 주어진 비율로 표시 이미지 영역을 가득 채우는 최대 사각형 계산
-        const r = ratioToNumber(genRatio);
-        let w = dispW;
-        let h = Math.round(w / r);
-        if (h > dispH) {
-          h = dispH;
-          w = Math.round(h * r);
-        }
-        const x = Math.round(dispX + (dispW - w) / 2);
-        const y = Math.round(dispY + (dispH - h) / 2);
-        setCropRect({ x, y, w, h });
-        cropInitializedRef.current = true; // 초기화 완료 표시
+        resetCropRectForRatioKey(getEffectiveCropRatioKey());
       }
     } catch (_) {}
   };
@@ -407,7 +441,7 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
       const dx = e.clientX - cropStartRef.current.x;
       const dy = e.clientY - cropStartRef.current.y;
       const startRect = cropStartRef.current.rect;
-      const r = ratioToNumber(genRatio);
+      const r = ratioToNumber(getEffectiveCropRatioKey());
       
       let newRect = { ...startRect };
 
@@ -482,6 +516,58 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
     setCropResizing(null);
   };
 
+  /**
+   * ✅ 모바일/터치 지원(포인터 이벤트)
+   *
+   * 의도/원리:
+   * - 기존 크롭 UI는 mouse 이벤트만 사용해서 모바일에서 조작이 불가능했다.
+   * - PointerEvent로 mouse/touch/pen을 통합 지원한다.
+   * - 기존 로직을 그대로 재사용해 중복을 피한다(DRY).
+   */
+  const toMouseLike = (ev) => {
+    try {
+      return {
+        clientX: ev.clientX,
+        clientY: ev.clientY,
+        preventDefault: () => { try { ev.preventDefault(); } catch (_) {} },
+        stopPropagation: () => { try { ev.stopPropagation(); } catch (_) {} },
+      };
+    } catch (_) {
+      return null;
+    }
+  };
+  const onCropPointerDown = (ev) => {
+    try {
+      try { ev.preventDefault(); } catch (_) {}
+      try { ev.currentTarget?.setPointerCapture?.(ev.pointerId); } catch (_) {}
+      const m = toMouseLike(ev);
+      if (!m) return;
+      onCropMouseDown(m);
+    } catch (_) {}
+  };
+  const onResizeHandlePointerDown = (ev, corner) => {
+    try {
+      try { ev.preventDefault(); } catch (_) {}
+      try { ev.currentTarget?.setPointerCapture?.(ev.pointerId); } catch (_) {}
+      const m = toMouseLike(ev);
+      if (!m) return;
+      onResizeHandleMouseDown(m, corner);
+    } catch (_) {}
+  };
+  const onCropPointerMove = (ev) => {
+    try {
+      const m = toMouseLike(ev);
+      if (!m) return;
+      onCropMouseMove(m);
+    } catch (_) {}
+  };
+  const onCropPointerUp = (ev) => {
+    try {
+      try { ev.currentTarget?.releasePointerCapture?.(ev.pointerId); } catch (_) {}
+      onCropMouseUp();
+    } catch (_) {}
+  };
+
 
   const applyCrop = async () => {
     if (cropIndex < 0) { setCropOpen(false); return; }
@@ -527,12 +613,18 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
           });
           const item = res?.data || null;
           if (item && item.id && item.url) {
-            setGallery(prev => {
-              const next = prev.slice();
-              next[cropIndex] = item;
-              return next;
-            });
+            const base = Array.isArray(galleryRef.current) ? galleryRef.current : (Array.isArray(gallery) ? gallery : []);
+            const next = base.slice();
+            next[cropIndex] = item;
+            setGallery(next);
             setCropOpen(false);
+            if (cropOnly) {
+              try {
+                onClose?.({ focusUrl: next?.[0]?.url || '', gallery: next.map((g) => ({ id: g.id, url: g.url })) });
+              } catch (e) {
+                try { console.error('[ImageGenerateInsertModal] cropOnly onClose(after server crop) failed', e); } catch (_) {}
+              }
+            }
             return;
           }
           try { window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', message: '크롭 실패: 서버 응답이 올바르지 않습니다.' } })); } catch {}
@@ -564,14 +656,22 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
       const res = await mediaAPI.upload([file]);
       const items = Array.isArray(res.data?.items) ? res.data.items : (res.data?.items ? [res.data.items] : []);
       if (items.length > 0) {
-        setGallery(prev => {
-          const next = prev.slice();
-          next[cropIndex] = items[0];
-          return next;
-        });
+        const base = Array.isArray(galleryRef.current) ? galleryRef.current : (Array.isArray(gallery) ? gallery : []);
+        const next = base.slice();
+        next[cropIndex] = items[0];
+        setGallery(next);
+        if (cropOnly) {
+          try {
+            // ✅ QuickMeet 등: 크롭만 하고 바로 닫기
+            onClose?.({ focusUrl: next?.[0]?.url || '', gallery: next.map((g) => ({ id: g.id, url: g.url })) });
+          } catch (e) {
+            try { console.error('[ImageGenerateInsertModal] cropOnly onClose(after canvas crop) failed', e); } catch (_) {}
+          }
+        }
       }
       setCropOpen(false);
-    } catch (_) {
+    } catch (e) {
+      try { console.error('[ImageGenerateInsertModal] applyCrop failed', e); } catch (_) {}
       try { window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', message: '크롭 실패' } })); } catch {}
     } finally {
       setCropLoading(false);
@@ -670,27 +770,30 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
 
   return (
     <>
-    <Dialog open={open} onOpenChange={(v)=>{ if(!v) handleDismiss(); }}>
+    {!cropOnly && (
+      <Dialog open={open} onOpenChange={(v)=>{ if(!v) handleDismiss(); }}>
       {/* ✅ 모바일 최적화(컴포넌트 누락 방지)
           - 문제: 모바일에서 상단 폼이 커지면(flex-shrink-0) max-h 안에서 갤러리/하단바가 0px로 눌려 보이지 않을 수 있다.
           - 해결: 모바일은 DialogContent 자체를 스크롤 컨테이너로 만들고, 갤러리는 자연 높이로 렌더링한다.
             데스크탑은 기존대로 "갤러리 영역만 스크롤"을 유지한다. */}
       <DialogContent
-        className="bg-gray-900 text-white border border-gray-800 max-w-4xl flex flex-col max-h-[92svh] md:max-h-[85vh] overflow-y-auto md:overflow-hidden"
+        className="bg-gray-900 text-white border border-gray-800 max-w-4xl flex flex-col max-h-[92svh] md:max-h-[85vh] overflow-y-auto md:overflow-hidden md:min-h-0"
         aria-describedby="img-gen-insert-desc"
       >
         <DialogHeader>
           <DialogTitle>이미지 생성/삽입</DialogTitle>
           <div id="img-gen-insert-desc" className="sr-only">이미지를 업로드하거나 생성하여 갤러리에 추가하고 순서를 변경합니다.</div>
         </DialogHeader>
-        {(statusMessage || errorMessage) && (
-          <div className="px-4">
-            {statusMessage && <p className="text-xs text-gray-400">{statusMessage}</p>}
-            {errorMessage && <p className="text-xs text-red-400 mt-1">{errorMessage}</p>}
-          </div>
-        )}
+        {/* ✅ UX/버그fix: 상태 문구 on/off로 레이아웃이 흔들리면(높이 변화) 갤러리 스크롤이 튄다.
+            - 메시지 영역을 "항상 같은 높이"로 렌더해 스크롤 앵커/레이아웃 쉬프트를 방지한다. */}
+        <div className="px-4 min-h-[34px]" aria-live="polite">
+          <p className="text-xs text-gray-400 min-h-[16px]">{statusMessage || ''}</p>
+          <p className="text-xs text-red-400 min-h-[16px]">{errorMessage || ''}</p>
+        </div>
         {/* 상단 생성/업로드 영역 */}
-        <div className="flex-shrink-0 p-4 bg-gray-800 border-b border-gray-700">
+        {/* ✅ UX: 데스크탑에서 상단 폼이 커지면 갤러리가 가려질 수 있음
+            - 상단 영역은 "최대 높이 + 내부 스크롤"로 제한해 갤러리를 항상 노출한다. */}
+        <div className="flex-shrink-0 p-4 bg-gray-800 border-b border-gray-700 md:max-h-[320px] md:overflow-y-auto md:min-h-0 custom-scrollbar">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {/* ✅ UX: 모델명은 길고(예: Nano banana Pro), 비율은 짧다 → 모델 영역을 더 넓히고 비율은 슬림하게 */}
             <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
@@ -734,9 +837,16 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
                 <option value="anime">애니메이션</option>
                 <option value="semi">반실사</option>
                 <option value="photo">실사</option>
+                <option value="artwork">아트웤</option>
               </select>
               <label className="text-xs text-gray-400">프롬프트</label>
-              <textarea rows={4} value={genPrompt} onChange={(e)=> setGenPrompt(e.target.value)} className="w-full bg-gray-800 border border-gray-700 rounded p-2 text-sm text-white focus-visible:ring-2 focus-visible:ring-purple-500 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900" placeholder="예) 보랏빛 네온의 사이버펑크 도시에서 미소짓는 요정" />
+              <textarea
+                rows={3}
+                value={genPrompt}
+                onChange={(e)=> setGenPrompt(e.target.value)}
+                className="w-full bg-gray-800 border border-gray-700 rounded p-2 text-sm text-white min-h-[92px] focus-visible:ring-2 focus-visible:ring-purple-500 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900"
+                placeholder="예) 보랏빛 네온의 사이버펑크 도시에서 미소짓는 요정"
+              />
               <div className="text-xs text-gray-500">- 팁: 스타일/조명/앵글/색감 키워드가 품질을 높입니다.</div>
             </div>
             <div className="flex items-center justify-end gap-2 mt-3">
@@ -749,7 +859,7 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
                 setErrorMessage('');
                 const provider = String(genModel || '').startsWith('fal-ai/') ? 'fal' : 'gemini';
                 startEta(provider, genCount);
-                const finalPrompt = buildGenerationPrompt(genPrompt, genStyle, genRatio);
+                const finalPrompt = buildImageGenerationPrompt(genPrompt, genStyle, genRatio);
                 const params = { provider, model: genModel, ratio: genRatio, count: genCount, prompt: finalPrompt };
                 lastParamsRef.current = params;
                 try {
@@ -783,24 +893,40 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
               {/* 재시도 버튼 제거 */}
               <Button onClick={async()=>{ try { if (abortRef.current) { abortRef.current.abort(); } await mediaAPI.cancelJob('ad-hoc'); await mediaAPI.trackEvent({ event: 'generate_cancel', entityType, entityId }); dispatchToast('success', '생성이 취소되었습니다.'); setStatusMessage('생성이 취소되었습니다.'); setErrorMessage(''); } catch(_) {} clearEta(); setBusy(false); abortRef.current = null; }} disabled={!busy} variant="outline" className="bg-gray-800 border-gray-700 text-gray-200">취소</Button>
             </div>
-            {busy && (
-              <div className="mt-2 text-xs text-gray-400">
-                <div className="flex items-center justify-between">
-                  <span>남은 시간(예상)</span>
-                  <span>{Math.ceil(etaMs/1000)}초</span>
+            {/* ✅ 버그fix: busy 상태에서만 ETA 블록이 생기면(높이 변화) 갤러리가 위아래로 밀리며 스크롤이 튄다.
+                - 항상 동일 높이를 차지하게 해서 레이아웃 쉬프트를 제거한다. */}
+            <div className="mt-2 text-xs text-gray-400 min-h-[44px]">
+              {busy ? (
+                <div>
+                  <div className="flex items-center justify-between">
+                    <span>남은 시간(예상)</span>
+                    <span>{Math.ceil(etaMs / 1000)}초</span>
+                  </div>
+                  <div className="h-1.5 bg-gray-800 rounded overflow-hidden mt-1">
+                    <div className="h-full bg-purple-500" style={{ width: `${Math.max(0, 100 - (etaMs / (60000 * Math.max(1, Number(genCount) || 1))) * 100)}%` }} />
+                  </div>
                 </div>
-                <div className="h-1.5 bg-gray-800 rounded overflow-hidden mt-1">
-                  <div className="h-full bg-purple-500" style={{ width: `${Math.max(0, 100 - (etaMs / ( 60000 * Math.max(1, Number(genCount)||1) ))*100)}%` }} />
+              ) : (
+                // 높이 고정을 위한 더미(시각적으로는 숨김)
+                <div className="opacity-0 select-none pointer-events-none">
+                  <div className="flex items-center justify-between">
+                    <span>남은 시간(예상)</span>
+                    <span>0초</span>
+                  </div>
+                  <div className="h-1.5 bg-gray-800 rounded overflow-hidden mt-1">
+                    <div className="h-full bg-purple-500" style={{ width: '0%' }} />
+                  </div>
                 </div>
-              </div>
-            )}
+              )}
+            </div>
           </div>
         </div>
 
         {/* 단일 갤러리 영역
             - 모바일: 전체 모달이 스크롤(갤러리는 자연 높이)
             - 데스크탑: 갤러리만 스크롤 */}
-        <div className="p-4 space-y-4 custom-scrollbar md:flex-grow md:overflow-y-auto">
+        {/* ✅ flex/overflow 안정화: min-h-0 없으면 내용이 1px라도 오버플로우하며 스크롤바가 생기거나 튈 수 있다. */}
+        <div className="p-4 space-y-4 custom-scrollbar md:flex-1 md:min-h-0 md:overflow-y-auto">
           <div className="flex items-center justify-between mb-2">
             <h3 className="text-sm font-medium text-gray-200">갤러리</h3>
             <div className="text-xs text-gray-400">
@@ -825,11 +951,7 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
                 onDragEnd={()=> { dragIndexRef.current = null; }}
                 className={`group relative border rounded-md overflow-hidden ${idx===0?'border-blue-500 ring-2 ring-blue-500':'border-gray-700'} bg-gray-800 cursor-grab active:cursor-grabbing select-none`}
                 title={idx===0?'대표 이미지':''}
-                onClick={() => {
-                  // 모바일에서는 크롭 조작(마우스 기반)이 불편/불가할 수 있어 열지 않는다.
-                  if (isCoarsePointer) return;
-                  openCropFor(idx);
-                }}
+                onClick={() => { openCropFor(idx); }}
               >
                 {idx===0 && (
                   <div className="absolute top-1 left-1 z-10 bg-blue-600 text-white text-[10px] px-1.5 py-0.5 rounded">대표</div>
@@ -893,20 +1015,79 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
         </div>
         {/* ↑ 상단 생성/업로드 영역의 바깥 그리드 닫기 보완 */}
       </DialogContent>
-    </Dialog>
+      </Dialog>
+    )}
 
     {/* 크롭 모달 */}
-    <Dialog open={cropOpen} onOpenChange={(v)=>{ if(!v) setCropOpen(false); }}>
+    <Dialog
+      open={cropOpen}
+      onOpenChange={(v)=>{ 
+        if (v) return;
+        if (cropOnly) {
+          try { onClose?.(); } catch (e) { try { console.error('[ImageGenerateInsertModal] cropOnly dismiss failed', e); } catch (_) {} }
+        }
+        setCropOpen(false);
+      }}
+    >
       <DialogContent className="bg-gray-900 text-white border border-gray-800 max-w-3xl">
         <DialogHeader>
           <DialogTitle>이미지 크롭</DialogTitle>
         </DialogHeader>
+        <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
+          <div className="text-xs text-gray-400">
+            비율 선택: <span className="text-gray-200 font-semibold">{cropRatioMode === 'square' ? '정사각형(1:1)' : `직사각형(${String(genRatio || '3:4')})`}</span>
+          </div>
+          <div className="inline-flex overflow-hidden rounded-lg border border-gray-700/80 bg-gray-900/30">
+            <button
+              type="button"
+              aria-pressed={cropRatioMode !== 'square'}
+              className={[
+                'h-9 px-3 text-xs sm:text-sm font-semibold transition-colors',
+                cropRatioMode !== 'square' ? 'bg-purple-600 text-white' : 'bg-transparent text-gray-200 hover:bg-gray-800/60',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-500/30',
+              ].join(' ')}
+              onClick={() => {
+                try {
+                  setCropRatioMode('rect');
+                  // 비율 변경 즉시 크롭 사각형을 새 비율로 재정렬(UX)
+                  cropInitializedRef.current = false;
+                  setTimeout(() => { try { resetCropRectForRatioKey(String(genRatio || '3:4')); } catch (_) {} }, 0);
+                } catch (_) {}
+              }}
+              title="기존처럼 직사각형 비율로 크롭"
+            >
+              직사각형
+            </button>
+            <button
+              type="button"
+              aria-pressed={cropRatioMode === 'square'}
+              className={[
+                'h-9 px-3 text-xs sm:text-sm font-semibold transition-colors border-l border-gray-700/80',
+                cropRatioMode === 'square' ? 'bg-purple-600 text-white' : 'bg-transparent text-gray-200 hover:bg-gray-800/60',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-500/30',
+              ].join(' ')}
+              onClick={() => {
+                try {
+                  setCropRatioMode('square');
+                  cropInitializedRef.current = false;
+                  setTimeout(() => { try { resetCropRectForRatioKey('1:1'); } catch (_) {} }, 0);
+                } catch (_) {}
+              }}
+              title="정사각형(1:1)으로 크롭"
+            >
+              정사각형
+            </button>
+          </div>
+        </div>
         <div
           ref={cropWrapRef}
           className="relative w-full h-[60vh] bg-black/50 rounded-md overflow-hidden select-none"
           onMouseMove={onCropMouseMove}
           onMouseUp={onCropMouseUp}
           onMouseLeave={onCropMouseUp}
+          onPointerMove={onCropPointerMove}
+          onPointerUp={onCropPointerUp}
+          onPointerCancel={onCropPointerUp}
         >
           {cropIndex >= 0 && gallery[cropIndex] && (
             (() => {
@@ -957,32 +1138,49 @@ const ImageGenerateInsertModal = ({ open, onClose, entityType, entityId, initial
             className="absolute border-2 border-purple-500 bg-purple-500/10 cursor-move select-none"
             style={{ left: `${cropRect.x}px`, top: `${cropRect.y}px`, width: `${cropRect.w}px`, height: `${cropRect.h}px` }}
             onMouseDown={onCropMouseDown}
+            onPointerDown={onCropPointerDown}
           >
             {/* 리사이즈 핸들 - 네 모서리 */}
             <div
               className="absolute w-4 h-4 bg-white border-2 border-purple-500 rounded-full cursor-nw-resize"
               style={{ left: '-8px', top: '-8px' }}
               onMouseDown={(e) => onResizeHandleMouseDown(e, 'nw')}
+              onPointerDown={(e) => onResizeHandlePointerDown(e, 'nw')}
             />
             <div
               className="absolute w-4 h-4 bg-white border-2 border-purple-500 rounded-full cursor-ne-resize"
               style={{ right: '-8px', top: '-8px' }}
               onMouseDown={(e) => onResizeHandleMouseDown(e, 'ne')}
+              onPointerDown={(e) => onResizeHandlePointerDown(e, 'ne')}
             />
             <div
               className="absolute w-4 h-4 bg-white border-2 border-purple-500 rounded-full cursor-sw-resize"
               style={{ left: '-8px', bottom: '-8px' }}
               onMouseDown={(e) => onResizeHandleMouseDown(e, 'sw')}
+              onPointerDown={(e) => onResizeHandlePointerDown(e, 'sw')}
             />
             <div
               className="absolute w-4 h-4 bg-white border-2 border-purple-500 rounded-full cursor-se-resize"
               style={{ right: '-8px', bottom: '-8px' }}
               onMouseDown={(e) => onResizeHandleMouseDown(e, 'se')}
+              onPointerDown={(e) => onResizeHandlePointerDown(e, 'se')}
             />
           </div>
         </div>
         <div className="mt-3 flex items-center justify-end gap-2">
-          <Button variant="outline" className="bg-gray-800 border-gray-700 text-gray-200" onClick={()=> setCropOpen(false)} disabled={cropLoading}>취소</Button>
+          <Button
+            variant="outline"
+            className="bg-gray-800 border-gray-700 text-gray-200"
+            onClick={() => {
+              if (cropOnly) {
+                try { onClose?.(); } catch (e) { try { console.error('[ImageGenerateInsertModal] cropOnly cancel failed', e); } catch (_) {} }
+              }
+              setCropOpen(false);
+            }}
+            disabled={cropLoading}
+          >
+            취소
+          </Button>
           <Button className="bg-purple-600 hover:bg-purple-700" onClick={applyCrop} disabled={cropLoading}>{cropLoading ? '적용 중…' : '적용'}</Button>
         </div>
       </DialogContent>

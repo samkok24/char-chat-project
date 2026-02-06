@@ -25,7 +25,9 @@ const StorySkeleton = () => (
 
 const TopStories = ({ title } = {}) => {
   const isMobile = useIsMobile();
-  const pageSize = isMobile ? 4 : 14;
+  // ✅ 경쟁사 체감 크기(카드가 너무 작아 보이지 않게):
+  // - 데스크탑 7열은 카드가 작아져 보이므로 5열 기준(5x2=10개)로 조정한다.
+  const pageSize = isMobile ? 4 : 10;
   const [page, setPage] = React.useState(0);
   const { data = [], isLoading, isError, refetch } = useQuery({
     queryKey: ['top-stories-daily', isMobile ? 'm' : 'd'],
@@ -80,7 +82,7 @@ const TopStories = ({ title } = {}) => {
   }, [isMobile]);
 
   const items = Array.isArray(data) ? data : [];
-  const cappedItems = items.slice(0, 14); // 기존 정책 유지: 최대 14개(7x2) 안에서 페이징
+  const cappedItems = items.slice(0, isMobile ? 12 : 10); // 최대 2줄(모바일: 3페이지, 데스크탑: 2줄)
   const pageCount = Math.max(1, Math.ceil(cappedItems.length / pageSize));
   const hasCarousel = cappedItems.length > pageSize;
   const displayData = cappedItems.slice(page * pageSize, page * pageSize + pageSize);
@@ -111,7 +113,7 @@ const TopStories = ({ title } = {}) => {
       </div>
       <ErrorBoundary>
         <div className="relative">
-          <ul className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3 sm:gap-4">
+          <ul className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-5 gap-3 sm:gap-4">
             {isLoading && Array.from({ length: skeletonCount }).map((_, idx) => (
               <StorySkeleton key={idx} />
             ))}

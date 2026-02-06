@@ -109,7 +109,8 @@ export const StoryImporterModal = ({ isOpen, onClose, onApply }) => {
     const personality = clip(char?.personality, 2000);
     const speech_style = clip(char?.speech_style, 2000);
     const world_setting = clip(analysisResult?.worldview, 5000);
-    const user_display_description = clip(char?.user_display_description, 3000);
+    // ✅ 요구사항: 크리에이터 코멘트는 1000자 제한(선택)
+    const user_display_description = clip(char?.user_display_description, 1000);
     const use_custom_description = Boolean(user_display_description);
 
     // greetings → greeting 단일 문자열(서버 스키마는 greeting만 받음)

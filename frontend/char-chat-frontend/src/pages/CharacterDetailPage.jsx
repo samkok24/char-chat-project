@@ -24,7 +24,7 @@ import {
   AlertCircle,
   MoreVertical,
   Star,
-  Plus,
+  Image as ImageIcon,
   ChevronLeft,
   ChevronRight
 } from 'lucide-react';
@@ -390,11 +390,6 @@ const CharacterDetailPage = () => {
             <ArrowLeft className="w-5 h-5 mr-2" />
             뒤로 가기
           </Button>
-          {isOwner && (
-            <div className="mb-2">
-              <Button className="bg-purple-600 hover:bg-purple-700" onClick={()=> setImgModalOpen(true)}>대표이미지 생성/삽입</Button>
-            </div>
-          )}
         </header>
 
         {/* 메인 컨텐츠 그리드 */}
@@ -473,6 +468,21 @@ const CharacterDetailPage = () => {
                   <Badge className="bg-purple-600 text-white hover:bg-purple-600">캐릭터</Badge>
                 )}
               </div>
+              {isOwner && (
+                <button
+                  type="button"
+                  onClick={() => setImgModalOpen(true)}
+                  aria-label="대표이미지 생성/삽입"
+                  title="대표이미지 생성/삽입"
+                  // ✅ 모바일 안전:
+                  // - 터치 타겟(최소 40px) 보장
+                  // - focus-visible 링/active 피드백 추가(접근성/터치 안정)
+                  // - backdrop-blur로 이미지 위에서도 가독성 유지
+                  className="absolute top-2 right-2 z-20 h-10 w-10 rounded-full bg-black/50 backdrop-blur-sm text-white hover:bg-black/65 border border-white/10 hover:border-white/20 flex items-center justify-center shadow-sm transition-colors touch-manipulation active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-black/40"
+                >
+                  <ImageIcon className="w-5 h-5" />
+                </button>
+              )}
             </div>
           </div>
 
@@ -574,6 +584,8 @@ const CharacterDetailPage = () => {
               submittingComment={submittingComment}
               user={user}
               tags={tags}
+              // ✅ 상세페이지: 태그는 모달과 동일하게 '공개일 | 수정일' 아래(헤더)에서 렌더링
+              hideTags
               // ✅ 원작 카드 위치를 상단으로 옮겼으므로 중복 방지
               originStoryCard={null}
               openingId={selectedOpeningId}

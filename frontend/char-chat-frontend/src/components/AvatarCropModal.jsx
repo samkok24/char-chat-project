@@ -67,7 +67,8 @@ const AvatarCropModal = ({ isOpen, src, onCancel, onConfirm, outputSize = 512 })
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+    // ✅ QuickMeetCharacterModal(포탈 Dialog) 위에서도 보이도록 z-index를 더 높게 잡는다.
+    <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/60">
       <div className="bg-gray-900 border border-gray-700 rounded-xl p-4 w-[560px] max-w-[95vw] text-gray-200">
         <h2 className="text-lg font-semibold mb-3">프로필 이미지 크롭</h2>
         <div className="flex flex-col items-center gap-3">

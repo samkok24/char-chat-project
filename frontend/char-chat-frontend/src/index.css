@@ -102,6 +102,21 @@
   .scrollbar-dark {
     scrollbar-gutter: stable; /* 스크롤바 공간 항상 예약하여 레이아웃 흔들림 방지 */
   }
+
+  /**
+   * ✅ 경쟁사 격자 타이포 토큰(요구사항)
+   *
+   * 의도/원리:
+   * - `CharacterCard` 격자 디자인을 경쟁사와 동일한 클래스명으로 맞추기 위해,
+   *   프로젝트 전역에서 재사용 가능한 최소 토큰만 유틸로 제공한다(SSOT).
+   */
+  .text-content-primary { color: #ffffff; }
+  .text-content-tertiary { color: rgba(255, 255, 255, 0.72); }
+  .text-M\/14 { font-size: 14px; line-height: 14px; }
+  .text-M\/12 { font-size: 12px; line-height: 12px; }
+  .bg-chip-normal { background: rgba(0, 0, 0, 0.35); }
+  /* ✅ 격자(정사각형)에서 얼굴이 잘 나오도록 상단 기준 크롭 */
+  .cc-grid-face-crop { object-position: 50% 12%; }
   .scrollbar-dark::-webkit-scrollbar {
     width: 10px;
     height: 10px;
@@ -185,6 +200,53 @@
                   inset 0 0 15px rgba(168, 85, 247, 0.5);
     }
   }
+
+  /* ✅ 프로필 소재칩: 이미지 기반 추천 하이라이트(은은한 펄스) */
+  @keyframes cc-chip-suggested {
+    0%, 100% {
+      box-shadow: 0 0 0 rgba(168, 85, 247, 0);
+      border-color: rgba(168, 85, 247, 0.35);
+    }
+    50% {
+      box-shadow: 0 0 18px rgba(168, 85, 247, 0.35);
+      border-color: rgba(168, 85, 247, 0.85);
+    }
+  }
+  .cc-chip-suggested {
+    animation: cc-chip-suggested 1.8s ease-in-out infinite;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .cc-chip-suggested { animation: none !important; }
+  }
+
+  /**
+   * ✅ 이미지 기반 추천 칩 하이라이트(온보딩 모달)
+   *
+   * 의도/원리:
+   * - 백엔드가 이미지에서 뽑은 앵커 키워드를 내려주면, 해당 키워드와 매칭되는 소재 칩을 은은하게 강조한다.
+   * - 선택(active) 상태 UI는 기존대로 유지하고, "비선택" 칩에만 적용한다(과한 강조 방지).
+   */
+  @keyframes cc-vision-pulse {
+    0%, 100% {
+      box-shadow: 0 0 0 rgba(168, 85, 247, 0);
+      border-color: rgba(168, 85, 247, 0.45);
+    }
+    50% {
+      box-shadow: 0 0 18px rgba(168, 85, 247, 0.30);
+      border-color: rgba(168, 85, 247, 0.75);
+    }
+  }
+  .cc-vision-chip {
+    border-color: rgba(168, 85, 247, 0.55) !important;
+    background: rgba(168, 85, 247, 0.10) !important;
+    color: rgba(255, 255, 255, 0.92) !important;
+    animation: cc-vision-pulse 1.6s ease-in-out infinite;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .cc-vision-chip {
+      animation: none !important;
+    }
+  }
   
   /* 글로우 활성화 클래스 (발행 버튼 클릭 시 적용) */
   .instagram-glow-active {
@@ -240,5 +302,119 @@
     --input-bg: #ffffff;
     --input-border: #111827; /* black */
     --input-fg: #111827;
+  }
+
+  /**
+   * ✅ 채팅 말풍선: HTML 리스트(ul/ol/li) 가독성 스타일
+   *
+   * 의도/원리:
+   * - AI가 `<ul><li>...</li></ul>` 형태로 응답할 때 말풍선 안에서 자연스럽게 보이도록 spacing/불릿을 부여한다.
+   * - 텍스트 색은 말풍선 상위 요소의 color를 그대로 상속한다(테마/캐릭터 색 유지).
+   */
+  .message-rich { white-space: pre-wrap; }
+  .message-rich ul,
+  .message-rich ol {
+    padding-left: 1.25rem;
+    margin: 0.25rem 0;
+    list-style-position: outside;
+  }
+  .message-rich ul { list-style-type: disc; }
+  .message-rich ol { list-style-type: decimal; }
+  .message-rich li { margin: 0.125rem 0; }
+  .message-rich p { margin: 0.25rem 0; }
+  .message-rich a { text-decoration: underline; text-underline-offset: 2px; }
+  .message-rich a:hover { opacity: 0.92; }
+  .message-rich code {
+    padding: 0 0.25rem;
+    border-radius: 0.25rem;
+    background: rgba(0,0,0,0.08);
+  }
+  [data-theme="dark"] .message-rich code {
+    background: rgba(255,255,255,0.10);
+  }
+  .message-rich img {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    margin: 0.35rem 0;
+    border-radius: 0.75rem;
+    border: 1px solid rgba(255,255,255,0.12);
+    cursor: zoom-in;
+  }
+
+  /**
+   * ✅ 채팅 말풍선: 표(table) 가독성 스타일(요구사항)
+   *
+   * 의도/원리:
+   * - 모델이 `<table><tr><td>..</td></tr></table>` 형태로 응답해도 말풍선에서 깨지지 않게 한다.
+   * - height 제한 없이 "웹툰형" 이미지처럼 세로로 길어져도 자연스럽게 스크롤되게 한다.
+   * - 테마는 상위 말풍선의 색을 상속하되, 테이블은 가독성 위해 반투명 배경/테두리만 준다.
+   */
+  .message-rich table {
+    width: 100%;
+    max-width: 100%;
+    border-collapse: collapse;
+    margin: 0.35rem 0;
+    overflow: hidden;
+    border-radius: 0.75rem;
+    border: 1px solid rgba(255,255,255,0.12);
+    background: rgba(255,255,255,0.04);
+  }
+  [data-theme="light"] .message-rich table {
+    border: 1px solid rgba(0,0,0,0.10);
+    background: rgba(0,0,0,0.02);
+  }
+  .message-rich th,
+  .message-rich td {
+    border: 1px solid rgba(255,255,255,0.10);
+    padding: 0.5rem 0.6rem;
+    vertical-align: top;
+  }
+  [data-theme="light"] .message-rich th,
+  [data-theme="light"] .message-rich td {
+    border: 1px solid rgba(0,0,0,0.08);
+  }
+  .message-rich th {
+    font-weight: 700;
+    background: rgba(255,255,255,0.06);
+  }
+  [data-theme="light"] .message-rich th {
+    background: rgba(0,0,0,0.04);
+  }
+
+  /**
+   * ✅ 채팅 폰트 SSOT (ChatPage 전용)
+   *
+   * 배경:
+   * - ChatPage에서 `font-sans`/`font-serif` 유틸을 쓰면 Tailwind 기본 폰트 스택이 적용되어
+   *   Pretendard가 아닌 폰트로 보일 수 있다.
+   * - 따라서 채팅 영역은 명시적으로 Pretendard를 사용한다.
+   */
+  .cc-chat-pretendard {
+    font-family: "Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont, system-ui, Roboto,
+      "Helvetica Neue", "Segoe UI", "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic",
+      "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", sans-serif !important;
+  }
+  .cc-chat-serif {
+    font-family: ui-serif, Georgia, Cambria, "Times New Roman", Times, "Noto Serif KR", Batang, serif !important;
+  }
+
+  /**
+   * ✅ 모바일(특히 스테이지 배경 이미지)에서 "대사 말풍선" 가독성 보정
+   *
+   * 배경:
+   * - 모바일은 캐릭터 이미지가 배경(스테이지)로 올라가며, 어두운/밝은 구간이 섞인다.
+   * - 투명 말풍선 + 흰 글씨는 밝은 배경 구간에서 가독성이 급격히 떨어질 수 있다.
+   *
+   * 정책(요구사항):
+   * - 지문(나레이션) 박스는 회색 배경 + 흰색 글씨를 유지한다.
+   * - 대사 말풍선은 모바일에서 "밝은 반투명 배경 + 검은 글씨"로 강제해 안정적으로 읽히게 한다.
+   */
+  @media (max-width: 639px) {
+    [data-theme="dark"] .cc-assistant-speech-bubble {
+      background: rgba(255, 255, 255, 0.78) !important;
+      border-color: rgba(0, 0, 0, 0.10) !important;
+      color: #0b0b0b !important;
+    }
   }
 }

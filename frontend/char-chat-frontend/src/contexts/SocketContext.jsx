@@ -412,6 +412,10 @@ export const SocketProvider = ({ children }) => {
       if (options.settingsPatch) {
         payload.settings_patch = options.settingsPatch;
       }
+      // ✅ UI kind(예: next_action) 전달: 서버는 허용된 값만 반영한다.
+      if (options.clientMessageKind) {
+        payload.client_message_kind = options.clientMessageKind;
+      }
 
     const doSend = () => {
       const ACK_TIMEOUT_MS = 65000;

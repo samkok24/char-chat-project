@@ -176,7 +176,7 @@ const ChatInteraction = ({ onStartChat, characterId, isAuthenticated, isWebNovel
               <span className="inline-flex items-center gap-2">
                 <Loader2 className="w-4 h-4 animate-spin" /> 준비 중...
               </span>
-            ) : '새로 대화'}
+            ) : (isOrigChatCharacter ? '새로 대화' : '선택한 오프닝으로 새로 대화')}
           </Button>
         </div>
       ) : (

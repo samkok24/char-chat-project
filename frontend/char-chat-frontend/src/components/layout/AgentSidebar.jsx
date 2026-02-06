@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { NotebookText, Image as ImageIcon, Brain, MessageSquare, MessageSquarePlus, User, LogOut, LogIn, Trash2, HelpCircle, Bell, Settings } from 'lucide-react';
+import { NotebookText, Image as ImageIcon, Brain, MessageSquare, MessageSquarePlus, User, LogOut, LogIn, Trash2, HelpCircle, Bell, Settings, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useLoginModal } from '../../contexts/LoginModalContext';
 import { Avatar, AvatarFallback, AvatarImage } from '../ui/avatar';
@@ -16,7 +16,7 @@ import {
 } from '../ui/dropdown-menu';
 import { resolveImageUrl } from '../../lib/images';
 
-const AgentSidebar = ({ onCreateSession, activeSessionId, onSessionSelect, onDeleteSession, isGuest, isNewChatButtonDisabled }) => {
+const AgentSidebar = ({ onCreateSession, activeSessionId, onSessionSelect, onDeleteSession, isGuest, isNewChatButtonDisabled, collapsed = false, onToggleCollapsed }) => {
   const { user, isAuthenticated, logout } = useAuth();
   const navigate = useNavigate();
   const { openLoginModal } = useLoginModal();
@@ -136,35 +136,42 @@ const AgentSidebar = ({ onCreateSession, activeSessionId, onSessionSelect, onDel
   };
 
   return (
-    <aside className="w-64 bg-gray-800 border-r border-gray-700 flex flex-col">
+    <aside className={`${collapsed ? 'w-16' : 'w-64'} bg-gray-800 border-r border-gray-700 flex flex-col h-full min-h-0 transition-[width] duration-200 ease-linear`}>
+      {/* ✅ (요구사항) 반응형 전용: 토글 버튼은 노출하지 않는다 */}
       {/* 로고 영역 (메인 탭 Sidebar 로고와 동일한 느낌/사이즈) */}
-      <div className="p-4 flex items-center justify-center">
+      <div className={`${collapsed ? 'pt-3 pb-3' : 'p-4'} flex items-center justify-center`}>
         <Link to="/" className="flex items-center justify-center w-full">
-          <img
-            src="/brand-logo.png"
-            alt="브랜드 로고"
-            className="h-34 w-auto max-w-[180px] object-contain object-center"
-            onError={(e) => {
-              // 방어적 처리: 로고 로드 실패 시 UI가 깨지지 않도록 fallback 아이콘만 노출
-              e.currentTarget.style.display = 'none';
-              const fallback = e.currentTarget.nextElementSibling;
-              if (fallback) fallback.style.display = 'block';
-            }}
-          />
-          <MessageSquare className="w-10 h-10 text-purple-500 hidden" aria-hidden="true" />
+          {!collapsed ? (
+            <>
+              <img
+                src="/brand-logo.png"
+                alt="브랜드 로고"
+                className="h-34 w-auto max-w-[180px] object-contain object-center"
+                onError={(e) => {
+                  // 방어적 처리: 로고 로드 실패 시 UI가 깨지지 않도록 fallback 아이콘만 노출
+                  e.currentTarget.style.display = 'none';
+                  const fallback = e.currentTarget.nextElementSibling;
+                  if (fallback) fallback.style.display = 'block';
+                }}
+              />
+              <MessageSquare className="w-10 h-10 text-purple-500 hidden" aria-hidden="true" />
+            </>
+          ) : (
+            <MessageSquare className="w-9 h-9 text-purple-400" aria-hidden="true" />
+          )}
         </Link>
       </div>
 
-      <nav className="flex-1 p-3 space-y-1">
+      <nav className={`flex-1 min-h-0 overflow-y-auto overscroll-contain scrollbar-dark ${collapsed ? 'p-2' : 'p-3'} space-y-1`}>
         {/* 새 대화 버튼을 히스토리 영역 위로 이동 */}
         <div className="mb-2">
           <Button 
-            className="w-full border border-blue-600/60 bg-transparent text-blue-400 hover:bg-blue-700/20 disabled:opacity-50 disabled:cursor-not-allowed" 
+            className={`${collapsed ? 'w-10 px-0 mx-auto' : 'w-full'} border border-blue-600/60 bg-transparent text-blue-400 hover:bg-blue-700/20 disabled:opacity-50 disabled:cursor-not-allowed`} 
             onClick={onCreateSession}
             disabled={isNewChatButtonDisabled}
             title={isNewChatButtonDisabled ? (isGuest ? "로그인 후 새 대화를 시작할 수 있습니다." : "현재 세션에서 첫 메시지를 보낸 후 새 대화를 시작할 수 있습니다.") : ""}
           >
-            + 새 대화
+            {collapsed ? '+' : '+ 새 대화'}
           </Button>
         </div>
         
@@ -173,20 +180,24 @@ const AgentSidebar = ({ onCreateSession, activeSessionId, onSessionSelect, onDel
             {/* 내 서랍 버튼 */}
             <Button
               onClick={() => navigate('/agent/drawer')}
-              className="w-full mb-3 bg-purple-600 hover:bg-purple-700 text-white transition-colors"
+              className={`${collapsed ? 'w-10 px-0 mx-auto' : 'w-full'} mb-3 bg-purple-600 hover:bg-purple-700 text-white transition-colors`}
+              aria-label="내 서랍"
+              title="내 서랍"
             >
-              내 서랍
+              {collapsed ? <Brain className="w-4 h-4" /> : '내 서랍'}
             </Button>
 
             {/* 내 피드 버튼 */}
             <Button
               onClick={() => navigate('/agent/feed')}
-              className="w-full mb-3 bg-pink-600 hover:bg-pink-700 text-white transition-colors"
+              className={`${collapsed ? 'w-10 px-0 mx-auto' : 'w-full'} mb-3 bg-pink-600 hover:bg-pink-700 text-white transition-colors`}
+              aria-label="내 피드"
+              title="내 피드"
             >
-              내 피드
+              {collapsed ? <MessageSquarePlus className="w-4 h-4" /> : '내 피드'}
             </Button>
 
-            {sessionList.length > 0 && (
+            {sessionList.length > 0 && !collapsed && (
               <div className="mt-2 space-y-1">
                 {sessionList.map(s => (
                   <div key={s.id} className="flex items-center gap-2">
@@ -218,7 +229,7 @@ const AgentSidebar = ({ onCreateSession, activeSessionId, onSessionSelect, onDel
             )}
 
             {/* 아이콘 랙: 이미지/스토리/캐릭터 - hover 시 팝업 */}
-            <div className="mt-4 grid grid-cols-3 gap-2">
+            <div className={`${collapsed ? 'mt-3 grid grid-cols-1 gap-2' : 'mt-4 grid grid-cols-3 gap-2'}`}>
               <div className="group relative flex items-center justify-center h-10 rounded-lg bg-gray-900 border border-gray-700 text-gray-300">
                 <ImageIcon className="w-4 h-4" />
                 <div className="hidden group-hover:block absolute left-full top-0 ml-2 z-20 w-64 p-3 rounded-lg bg-gray-900 border border-gray-700 shadow-xl">
@@ -278,11 +289,11 @@ const AgentSidebar = ({ onCreateSession, activeSessionId, onSessionSelect, onDel
                 </div>
               </div>
             </DropdownMenuTrigger>
-            <DropdownMenuContent className="w-56" align="start" side="top">
+            <DropdownMenuContent className="w-56 bg-gray-900 text-gray-100 border border-gray-700" align="start" side="top">
               <DropdownMenuLabel className="font-normal">
                 <div className="flex flex-col space-y-1">
-                  <p className="text-sm font-medium leading-none">{user?.username}</p>
-                  <p className="text-xs leading-none text-muted-foreground">
+                  <p className="text-sm font-medium leading-none text-gray-100">{user?.username}</p>
+                  <p className="text-xs leading-none text-gray-400">
                     {user?.email}
                   </p>
                 </div>
@@ -316,7 +327,7 @@ const AgentSidebar = ({ onCreateSession, activeSessionId, onSessionSelect, onDel
                 <span>1:1 문의</span>
               </DropdownMenuItem>
               <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={handleLogout} className="text-red-600">
+              <DropdownMenuItem onClick={handleLogout} className="text-red-400">
                 <LogOut className="mr-2 h-4 w-4" />
                 <span>로그아웃</span>
               </DropdownMenuItem>

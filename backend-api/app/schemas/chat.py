@@ -47,6 +47,14 @@ class SendMessageRequest(BaseModel):
     response_length_override: Optional[str] = None  # 'short' | 'medium' | 'long'
     # ✅ 프론트에서 전달하는 공통 설정 패치(예: temperature/응답길이 등)
     settings_patch: Dict[str, Any] | None = None
+    # ✅ 클라이언트 UI 목적의 "메시지 종류" 힌트
+    # - 보안/무결성: 서버는 허용된 값만 message_metadata에 반영한다.
+    # - 현재 허용: "next_action" (다음행동 지문)
+    client_message_kind: Optional[str] = Field(
+        None,
+        max_length=32,
+        description="클라이언트 UI 목적의 메시지 종류 힌트(서버는 허용된 값만 반영). 예: next_action",
+    )
 
 
 class ChatMessageResponse(ChatMessageBase):
@@ -131,6 +139,24 @@ class MagicChoicesResponse(BaseModel):
     """요술봉 선택지 생성 응답"""
     choices: List[MagicChoice] = Field(default_factory=list)
 
+ 
+# =========================
+# ✅ 일반 캐릭터챗: 다음행동(앞당기기) 생성
+# =========================
+class NextActionRequest(BaseModel):
+    """
+    ✅ 다음행동(앞당기기) 생성 요청
+    - seed_message_id: 품질 안정(최근 AI 메시지 기준)
+    - seed_hint: 디버깅/실험용
+    """
+    seed_message_id: str | None = Field(None, max_length=80)
+    seed_hint: str | None = Field(None, max_length=200)
+
+
+class NextActionResponse(BaseModel):
+    """다음행동(앞당기기) 생성 응답"""
+    narration: str = Field(..., max_length=400)
+
 
 class ChatMessageUpdate(BaseModel):
     content: str
@@ -160,12 +186,37 @@ class ChatPreviewRequest(BaseModel):
     user_message: str = Field(..., max_length=4000)
     history: List[ChatPreviewTurn] = Field(default_factory=list)
     response_length_pref: Optional[Literal["short", "medium", "long"]] = "short"
+    # ✅ 크리에이터 테스트용: 프리뷰 턴 강제 지정(턴수별 사건/설정메모/스탯 주입 검증 목적)
+    # - 프리뷰는 room/db가 없어서 "7턴까지 직접 채워서" 테스트하기가 번거롭다.
+    # - 이 필드는 서버가 '이번 user_message가 몇 번째 턴인지'를 강제로 해석하게 한다.
+    # - 방어: 범위를 제한하고, 값이 비정상이면 기존 자동 계산을 사용한다.
+    turn_no_override: Optional[int] = Field(
+        None,
+        ge=1,
+        le=5000,
+        description="프리뷰 테스트 턴 번호(선택). 지정 시 이번 user_message를 해당 턴으로 취급해 턴수별 사건/주입을 검증한다.",
+    )
+    # ✅ 크리에이터 테스트 모드(요구사항):
+    # - "중간 턴 강제 삽입"은 흐름을 깨므로 금지한다.
+    # - 따라서 테스트 모드는 '1턴'에서만 동작하며, 선택한 사건을 "1턴에서 테스트 출력"한다.
+    turn_event_preview_mode: Optional[bool] = Field(
+        False,
+        description="턴수별 사건 테스트 모드(1턴 전용). true면 지정한 turn_event를 1턴에서 테스트 출력한다.",
+    )
+    turn_event_id_override: Optional[str] = Field(
+        None,
+        max_length=80,
+        description="턴수별 사건 테스트용 turn_event id(선택). 지정 시 해당 사건을 1턴에서 테스트 출력한다.",
+    )
 
 
 class ChatPreviewResponse(BaseModel):
     """채팅 미리보기 응답"""
     assistant_message: str
     meta: Dict[str, Any] | None = None
+    # ✅ 프리뷰에서도 실채팅과 동일하게 "키워드 기반 이미지 트리거" 힌트를 제공한다.
+    # - 프론트는 이 값을 사용해 캐릭터의 image_descriptions[index] 이미지를 말풍선에 표시할 수 있다.
+    suggested_image_index: int = -1
 
 
 class ChatPreviewMagicChoicesRequest(BaseModel):
@@ -182,3 +233,10 @@ class ChatPreviewMagicChoicesRequest(BaseModel):
     n: int = Field(3, ge=1, le=5, description="생성할 선택지 개수(1~5)")
     seed_hint: str | None = Field(None, max_length=200)
     seed_message_id: str | None = Field(None, max_length=80)
+    # ✅ 크리에이터 테스트용: 프리뷰 턴 강제 지정(선택지에도 동일 턴 컨텍스트 적용)
+    turn_no_override: Optional[int] = Field(
+        None,
+        ge=1,
+        le=5000,
+        description="프리뷰 테스트 턴 번호(선택). 지정 시 '다음 유저 입력(선택지)'을 해당 턴으로 취급한다.",
+    )

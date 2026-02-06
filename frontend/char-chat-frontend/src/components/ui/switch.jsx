@@ -40,6 +40,16 @@ const Switch = React.forwardRef(
       }
     }
 
+    /**
+     * ✅ thumb(동그라미) 이동 애니메이션 보장
+     *
+     * 배경(peer-checked)은 동작했는데 thumb만 안 움직이는 케이스가 있어,
+     * thumb는 peer variant 대신 상태(isOn) 기반 transform으로 직접 이동시킨다.
+     * (운영 데모 안정성 우선)
+     */
+    const trackBgClass = isOn ? "bg-purple-600" : "bg-input dark:bg-input/80"
+    const thumbTranslateX = isOn ? 14 : 0 // w-8(32px) + border(1px*2) 기준으로 안전한 이동값
+
     return (
       <label
         data-slot="switch"
@@ -60,7 +70,7 @@ const Switch = React.forwardRef(
           className={cn(
             "inline-flex h-[1.15rem] w-8 items-center rounded-full border border-transparent shadow-xs transition-colors",
             // ✅ 요구사항: ON 상태는 보라색으로(화이트 톤에서 안 보이는 문제 방지)
-            "bg-input peer-checked:bg-purple-600 dark:bg-input/80",
+            trackBgClass,
             "peer-focus-visible:ring-[3px] peer-focus-visible:ring-ring/50",
           )}
         >
@@ -68,10 +78,9 @@ const Switch = React.forwardRef(
             aria-hidden="true"
             className={cn(
               // ✅ thumb는 흰색 고정(다크 배경에서 대비 확보)
-              "pointer-events-none block size-4 rounded-full bg-white ring-0 transition-transform",
-              "translate-x-0 peer-checked:translate-x-[calc(100%-2px)]",
-              "dark:bg-white peer-checked:dark:bg-white",
+              "pointer-events-none block size-4 rounded-full bg-white ring-0 transition-transform duration-200 ease-out",
             )}
+            style={{ transform: `translateX(${thumbTranslateX}px)` }}
           />
         </span>
       </label>

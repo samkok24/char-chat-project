@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { X, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
-import { api, charactersAPI, mediaAPI } from '../lib/api';
+import { api, charactersAPI, mediaAPI, chatAPI } from '../lib/api';
 import { resolveImageUrl, getThumbnailUrl } from '../lib/images';
 import { DEFAULT_SQUARE_URI } from '../lib/placeholder';
 import { useAuth } from '../contexts/AuthContext';
@@ -45,8 +45,83 @@ export default function CharacterMobileDetailModal({
 
   const isOrigChatCharacter = !!character?.origin_story_id;
   const originStoryId = String(character?.origin_story_id || '').trim();
+  const isWebNovelCharacter = character?.source_type === 'IMPORTED';
+  /**
+   * 모달 이미지 상단 "턴수 배지" 텍스트 계산
+   *
+   * 의도/원리:
+   * - SSOT: start_sets.sim_options.max_turns(또는 legacy/camelCase 변형)를 사용한다.
+   * - 값이 없으면 일반 캐릭터챗만 '∞'로 표시(레거시 데이터 방어).
+   * - 원작챗/웹소설은 턴수 개념이 보장되지 않으므로, 값이 있을 때만 표시한다.
+   */
+  const turnBadgeText = (() => {
+    try {
+      const ss = character?.start_sets;
+      const sim = (ss && typeof ss === 'object')
+        ? (ss?.sim_options || ss?.simOptions || null)
+        : null;
+      const raw =
+        character?.max_turns
+        ?? sim?.max_turns
+        ?? sim?.maxTurns
+        ?? ss?.sim_options?.max_turns
+        ?? ss?.sim_options?.maxTurns
+        ?? ss?.simOptions?.max_turns
+        ?? ss?.simOptions?.maxTurns;
+      const n = Number(raw);
+      const turns = Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
+      if (turns != null) return `${turns}턴`;
+      if (!isOrigChatCharacter && !isWebNovelCharacter) return '∞';
+      return null;
+    } catch (_) {
+      return (!isOrigChatCharacter && !isWebNovelCharacter) ? '∞' : null;
+    }
+  })();
   // ✅ 오프닝 선택(모바일 상세 모달)
   const [selectedOpeningId, setSelectedOpeningId] = React.useState('');
+
+  const { data: recentRooms = [] } = useQuery({
+    queryKey: ['pc-mobile-detail', 'recent-rooms', cid, user?.id || 'anon'],
+    queryFn: async () => {
+      /**
+       * ✅ 모달 CTA 분기(계속 대화/새로 대화)
+       *
+       * 요구사항:
+       * - 해당 캐릭터의 "대화 이력(룸)"이 있으면 CTA를 2개로 분기한다.
+       *
+       * 정책/방어:
+       * - 백엔드에 character_id 필터가 없으므로, 최근 룸 목록을 받아서 프론트에서 필터링한다.
+       * - 너무 큰 limit은 피하되(성능), 모달 진입 UX를 위해 충분히 넉넉한 범위로 가져온다.
+       */
+      try {
+        const res = await chatAPI.getChatRooms({ limit: 200 });
+        return Array.isArray(res?.data) ? res.data : [];
+      } catch (e) {
+        console.error('[pc-mobile-detail] recent rooms load failed:', e);
+        return [];
+      }
+    },
+    enabled: open && !!cid && !!isAuthenticated,
+    staleTime: 0,
+    refetchOnMount: 'always',
+  });
+
+  const lastRoomIdForThisCharacter = React.useMemo(() => {
+    try {
+      const rooms = Array.isArray(recentRooms) ? recentRooms : [];
+      const matched = rooms.filter((r) => String(r?.character?.id || r?.character_id || '').trim() === cid);
+      if (!matched.length) return '';
+      // 최신 룸 1개 선택(last_message_time > updated_at > created_at)
+      matched.sort((a, b) => {
+        const ta = Date.parse(a?.last_message_time || a?.updated_at || a?.created_at || '') || 0;
+        const tb = Date.parse(b?.last_message_time || b?.updated_at || b?.created_at || '') || 0;
+        return tb - ta;
+      });
+      return String(matched[0]?.id || '').trim();
+    } catch (_) {
+      return '';
+    }
+  }, [recentRooms, cid]);
 
   const { data: tags = [] } = useQuery({
     queryKey: ['pc-mobile-detail', 'character-tags', cid],
@@ -195,12 +270,13 @@ export default function CharacterMobileDetailModal({
   }, [open, likeStatus]);
 
   const startChat = () => {
+    if (!cid) return;
+    const opening = String(selectedOpeningId || '').trim();
     // ✅ 원작챗은 origchat plain 모드로 진입(기존 ChatInteraction 정책과 동일)
     if (originStoryId) {
       navigate(`/ws/chat/${cid}?source=origchat&storyId=${encodeURIComponent(originStoryId)}&mode=plain`);
     } else {
       try {
-        const opening = String(selectedOpeningId || '').trim();
         const usp = new URLSearchParams();
         usp.set('new', '1');
         if (opening) usp.set('opening', opening);
@@ -212,6 +288,42 @@ export default function CharacterMobileDetailModal({
     try {
       onOpenChange(false);
     } catch (_) {}
+  };
+
+  const continueChat = () => {
+    /**
+     * ✅ 계속 대화(대화 이력 있을 때)
+     *
+     * - room 파라미터로 특정 룸을 그대로 이어한다.
+     * - 원작챗은 source/storyId/mode를 같이 붙인다(ChatPage가 room 검증/정규화).
+     */
+    const rid = String(lastRoomIdForThisCharacter || '').trim();
+    if (!rid) {
+      startChat();
+      return;
+    }
+    if (originStoryId) {
+      const usp = new URLSearchParams();
+      usp.set('room', rid);
+      usp.set('source', 'origchat');
+      usp.set('storyId', originStoryId);
+      usp.set('mode', 'plain');
+      navigate(`/ws/chat/${cid}?${usp.toString()}`);
+    } else {
+      const usp = new URLSearchParams();
+      usp.set('room', rid);
+      navigate(`/ws/chat/${cid}?${usp.toString()}`);
+    }
+    try { onOpenChange(false); } catch (_) {}
+  };
+
+  const startNewChat = () => {
+    /**
+     * ✅ 새로 대화(대화 이력 있을 때)
+     *
+     * - 기존 startChat과 동일하지만, 버튼 라벨/분기를 위해 별도 함수로 둔다.
+     */
+    startChat();
   };
 
   React.useEffect(() => {
@@ -494,15 +606,27 @@ export default function CharacterMobileDetailModal({
                           <ChevronRight className="w-5 h-5" />
                         </button>
 
-                        <div className="absolute top-2 left-2 z-10">
-                          {character?.origin_story_id ? (
-                            <Badge className="bg-orange-400 text-black hover:bg-orange-400">원작챗</Badge>
-                          ) : (character?.source_type === 'IMPORTED') ? (
-                            <Badge className="bg-blue-600 text-white hover:bg-blue-600">웹소설</Badge>
-                          ) : (
-                            <Badge className="bg-purple-600 text-white hover:bg-purple-600">캐릭터</Badge>
-                          )}
-                        </div>
+                        {/* 좌상단 배지: 턴수 + (원작챗/웹소설) */}
+                        {(turnBadgeText || isOrigChatCharacter || isWebNovelCharacter) ? (
+                          <div className="absolute top-2 left-2 z-10 flex flex-col items-start gap-1">
+                            {turnBadgeText ? (
+                              <Badge className="bg-purple-600/90 text-white hover:bg-purple-600 px-1.5 py-0.5 text-[11px]">
+                                {turnBadgeText}
+                              </Badge>
+                            ) : null}
+                            {(isOrigChatCharacter || isWebNovelCharacter) ? (
+                              isOrigChatCharacter ? (
+                                <Badge className="bg-orange-400 text-black hover:bg-orange-400 px-1.5 py-0.5 text-[11px]">
+                                  원작챗
+                                </Badge>
+                              ) : (
+                                <Badge className="bg-blue-600 text-white hover:bg-blue-600 px-1.5 py-0.5 text-[11px]">
+                                  웹소설
+                                </Badge>
+                              )
+                            ) : null}
+                          </div>
+                        ) : null}
                       </div>
                     </div>
 
@@ -567,6 +691,8 @@ export default function CharacterMobileDetailModal({
                       tags={tags}
                       // ✅ 원작챗 모달 UX: 크리에이터 코멘트 비노출
                       hideCreatorComment={isOrigChatCharacter}
+                      // ✅ 모달: 태그는 '공개일 | 수정일' 아래로 이동(헤더에서 렌더링)
+                      hideTags
                       // ✅ 원작 카드 노출 위치를 상단으로 옮겼으므로 중복 방지
                       originStoryCard={null}
                       openingId={selectedOpeningId}
@@ -582,13 +708,38 @@ export default function CharacterMobileDetailModal({
 
           {/* ✅ 푸터 고정바: 경쟁사 UX(모달 하단 고정 CTA) */}
           <div className="absolute left-0 right-0 bottom-0 px-5 pb-5 pt-3 bg-gradient-to-t from-gray-950 via-gray-950/95 to-transparent border-t border-gray-800/60">
-            <Button
-              type="button"
-              onClick={startChat}
-              className="w-full bg-red-600 hover:bg-red-700 text-white font-bold text-lg py-6"
-            >
-              대화하기
-            </Button>
+            {lastRoomIdForThisCharacter ? (
+              <div className="grid grid-cols-2 gap-3">
+                <Button
+                  type="button"
+                  onClick={continueChat}
+                  className="w-full bg-gray-700 hover:bg-gray-600 text-white font-bold text-lg py-6"
+                >
+                  계속 대화
+                </Button>
+                <Button
+                  type="button"
+                  onClick={startNewChat}
+                  className="w-full bg-red-600 hover:bg-red-700 text-white font-bold text-lg py-6"
+                >
+                  <div className="flex flex-col items-center leading-tight">
+                    <div className="text-xs font-semibold text-white/90">선택한 오프닝으로</div>
+                    <div className="text-lg font-extrabold">새로 대화</div>
+                  </div>
+                </Button>
+              </div>
+            ) : (
+              <Button
+                type="button"
+                onClick={startChat}
+                className="w-full bg-red-600 hover:bg-red-700 text-white font-bold text-lg py-6"
+              >
+                <div className="flex flex-col items-center leading-tight">
+                  <div className="text-xs font-semibold text-white/90">선택한 오프닝으로</div>
+                  <div className="text-lg font-extrabold">대화시작</div>
+                </div>
+              </Button>
+            )}
           </div>
         </ErrorBoundary>
       </div>

@@ -67,6 +67,17 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
   const [uiTheme, setUiTheme] = useState('dark'); // dark (system/light 비활성화)
   const [typingSpeed, setTypingSpeed] = useState(40); // 10~80 cps
   const [temperatureSel, setTemperatureSel] = useState(DEFAULT_TEMPERATURE); // 0.0~1.0 (0.1 step)
+  // ✅ 시뮬 상태창 자동 출력(추가 설정)
+  // - ChatPage 입력바에는 버튼을 노출하지 않는다(요구사항)
+  // - 저장 SSOT: localStorage 'cc:chat:settings:v1'.sim_status_auto
+  // ✅ 정책 변경(요구사항): 기본은 OFF. (!스탯 호출 시에만 1회 표시)
+  // - 사용자가 명시적으로 켜면(sim_status_auto=true) 그때만 자동 출력
+  const [simStatusAutoSel, setSimStatusAutoSel] = useState(false);
+  // ✅ 채팅 이미지 패널(대표이미지+갤러리) 노출 옵션(기본 OFF)
+  // - PC: 켜면 채팅 옆에 이미지 패널이 등장, 끄면 채팅만 단색 배경으로 표시
+  // - 모바일: 켜면 배경 이미지 + 미니 갤러리(현재 UX), 끄면 단색 배경
+  // - 저장 SSOT: localStorage 'cc:chat:settings:v1'.media_panel
+  const [mediaPanelSel, setMediaPanelSel] = useState(false);
   
   // 기억노트 관련 상태
   const [memories, setMemories] = useState([]);
@@ -274,6 +285,8 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
           if (parsed.next_event_len === 1 || parsed.next_event_len === 2) setNextLenSel(parsed.next_event_len);
           if (typeof parsed.prewarm_on_start === 'boolean') setPrewarmSel(!!parsed.prewarm_on_start);
           if (parsed.response_length_pref) setResponseLength(String(parsed.response_length_pref));
+          if (typeof parsed.sim_status_auto === 'boolean') setSimStatusAutoSel(Boolean(parsed.sim_status_auto));
+          if (typeof parsed.media_panel === 'boolean') setMediaPanelSel(Boolean(parsed.media_panel));
           // ✅ 공통 temperature: 숫자만 허용 + 0~1 클램핑 + 0.1 단위 반올림
           if (parsed.temperature !== undefined && parsed.temperature !== null) {
             const t = Number(parsed.temperature);
@@ -1069,6 +1082,56 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
                   <input type="radio" name="respLen" className="accent-purple-600" checked={responseLength==='long'} onChange={()=>{ setResponseLength('long'); try { onUpdateChatSettings && onUpdateChatSettings({ response_length_pref: 'long' }); } catch(_) {} }} />
                   <span className="text-sm">많이 (+50%)</span>
                 </label>
+              </div>
+            </div>
+
+            {/* ✅ 시뮬: 상태창 자동 출력(즉시 저장 / 입력바 버튼 비노출) */}
+            {!isOrigChat && (
+              <div className="mt-2 p-3 rounded-lg border">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm text-gray-700 font-medium">시뮬 상태창 자동 출력</div>
+                    <div className="text-xs text-gray-500 mt-1">시뮬 채팅에서 AI 응답 뒤 상태창(목표/스탯)을 말풍선으로 자동 표시합니다.</div>
+                  </div>
+                  <Switch
+                    checked={simStatusAutoSel}
+                    onCheckedChange={(v) => {
+                      const next = Boolean(v);
+                      setSimStatusAutoSel(next);
+                      try {
+                        const raw = localStorage.getItem('cc:chat:settings:v1');
+                        const prev = raw ? (JSON.parse(raw) || {}) : {};
+                        const merged = { ...prev, sim_status_auto: next, schema_version: (prev?.schema_version || 2) };
+                        localStorage.setItem('cc:chat:settings:v1', JSON.stringify(merged));
+                      } catch (_) {}
+                      try { window.dispatchEvent(new CustomEvent('chat:settingsUpdated', { detail: { sim_status_auto: next } })); } catch (_) {}
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* ✅ 채팅 이미지 패널(대표이미지+갤러리) 노출 토글 (기본 OFF) */}
+            <div className="mt-2 p-3 rounded-lg border">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-sm text-gray-700 font-medium">채팅 이미지 패널 표시</div>
+                  <div className="text-xs text-gray-500 mt-1">PC: 채팅 옆 대표이미지/갤러리 패널을 표시합니다. 모바일: 배경 이미지/미니 갤러리를 표시합니다.</div>
+                </div>
+                <Switch
+                  checked={mediaPanelSel}
+                  onCheckedChange={(v) => {
+                    const next = Boolean(v);
+                    setMediaPanelSel(next);
+                    try {
+                      const raw = localStorage.getItem('cc:chat:settings:v1');
+                      const prev = raw ? (JSON.parse(raw) || {}) : {};
+                      const merged = { ...prev, media_panel: next, schema_version: (prev?.schema_version || 2) };
+                      localStorage.setItem('cc:chat:settings:v1', JSON.stringify(merged));
+                    } catch (_) {}
+                    try { window.dispatchEvent(new CustomEvent('chat:settingsUpdated', { detail: { media_panel: next } })); } catch (_) {}
+                  }}
+                />
               </div>
             </div>
 
