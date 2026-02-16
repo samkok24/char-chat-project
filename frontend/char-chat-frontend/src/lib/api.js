@@ -994,11 +994,15 @@ export const metricsAPI = {
   getContentCounts: (params = {}) => api.get('/metrics/content-counts', { params }),
   // 관리자용: 트래픽(채팅 기반) DAU/WAU/MAU
   getTraffic: (params = {}) => api.get('/metrics/traffic', { params }),
+  trackPageEvent: (data) => api.post('/metrics/traffic/page-event', data),
+  getPageExitSummary: (params = {}) => api.get('/metrics/traffic/page-exits', { params }),
   // ✅ 실시간 온라인(접속) - Redis 하트비트 기반(관리자/운영 판단용)
   // - heartbeat: 유저가 접속 중임을 짧은 TTL로 갱신(실패해도 무시해도 됨)
   onlineHeartbeat: () => api.post('/metrics/online/heartbeat'),
   // - online: 최근 N초 내 하트비트 유저 수(관리자 전용)
   getOnlineNow: (params = {}) => api.get('/metrics/online', { params }),
+  searchUserActivity: (params = {}) => api.get('/metrics/user-activity/search', { params }),
+  getAbSummary: (params = {}) => api.get('/metrics/ab-summary', { params }),
 };
 
 // 📖 회차(Chapters) API

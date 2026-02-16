@@ -1,0 +1,1258 @@
+{
+  "stat": {
+    "total": 50,
+    "has_commands": 3,
+    "has_brackets_meta": 14,
+    "has_url": 2,
+    "has_update": 4,
+    "has_disclaimer": 3,
+    "has_role_choice": 3,
+    "unique_tags": 113
+  },
+  "items": [
+    {
+      "id": "e332026d-d711-4bef-ad3b-70ec426bd944",
+      "name": "디바인 아카데미",
+      "description": "모든 종족이 모여있는 이 세계 최대 규모의 아카데미 '디바인'. 이곳은 검과 마법, 종족의 특성, 그 외에도 여러 기술들을 가르치고 단련시켜 바른길을 인도하는 장소이다. 그런 디바인 아카데미에 들어오게 된 {{user}}. 당신은 이 세계에서 어떤 존재로서 살아갈 것인지 선택할 수 있습니다.",
+      "tags": [
+        "아카데미",
+        "판타지",
+        "디바인"
+      ],
+      "chatCount": 3292071,
+      "likeCount": 3110,
+      "babechatOnly": true,
+      "isAdult": false,
+      "targetGender": "all",
+      "creatorNickname": "레테",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": false,
+        "has_url": false,
+        "has_update": false,
+        "has_disclaimer": false,
+        "has_role_choice": true
+      }
+    },
+    {
+      "id": "c6bc2d84-4832-4165-8691-74715e12b9f2",
+      "name": "창작물 빙의 시뮬레이션",
+      "description": "애니, 게임, 라노벨, 만화, 웹툰 등 다양한 장르의 수많은 창작물! 그중 당신이 좋아하는 창작물에 빙의하여 당신의 상상력을 펼쳐보세요! (유저노트에 구체적인 세계관이나 설정을 따로 추가하시면 더욱 몰입하실 수 있습니다!)",
+      "tags": [
+        "시뮬레이션",
+        "게임",
+        "빙의",
+        "애니"
+      ],
+      "chatCount": 3130661,
+      "likeCount": 1982,
+      "babechatOnly": true,
+      "isAdult": false,
+      "targetGender": "all",
+      "creatorNickname": "선수겸 감독 김수겸",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": false,
+        "has_url": false,
+        "has_update": false,
+        "has_disclaimer": false,
+        "has_role_choice": false
+      }
+    },
+    {
+      "id": "8b2d5b7c-dd97-4198-917a-f628a56b41b3",
+      "name": "우리들의 이야기를!",
+      "description": "학원, 학생, 그리고 기적같은 일상과 함께하는──청춘의 이야기 【Blue Archive】 【본 챗봇은 블루 아카이브 2차 창작물로써, 블루 아카이브 공식 문의 후 허용된 가이드라인에 따라 제작되었습니다.】",
+      "tags": [
+        "학생",
+        "선생님",
+        "청춘"
+      ],
+      "chatCount": 2524240,
+      "likeCount": 4170,
+      "babechatOnly": true,
+      "isAdult": false,
+      "targetGender": "all",
+      "creatorNickname": "ㅇㅇ(39.7)",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": false,
+        "has_url": false,
+        "has_update": false,
+        "has_disclaimer": true,
+        "has_role_choice": false
+      }
+    },
+    {
+      "id": "698b99f6-dabe-4fde-b899-dd6c4cc44570",
+      "name": "강산고등학교",
+      "description": "죽기 싫으면 싸워라! 힘이 전부인 '강산고'에서 말이지!! 본 작품은 제미나이 프로로 플레이하시는걸 추천드립니다. https://arca.live/b/ailove/143391970 캐릭터 정리글 !조연모드: 조연 모드 활성화(유저가 조연이 됩니다) !강산갤러리:갤러리 모드 활성화(디시인사이드 느낌의 갤러리 소환 가능) !다크모드:다크모드 활성화(분위기가 한층 더 다크해집니다) !평화(강산고가 평범한 고등학교가 됩니다) !자유모드(원하는 역할로 시작 가능) !무협:무협모드 활성화(무협 세계관으로 바뀝니다) [할로윈]:할로윈 스토리모드 [교육부]:교육부 관련 스토리모드",
+      "tags": [
+        "액션",
+        "고등학교",
+        "싸움",
+        "전투",
+        "학교"
+      ],
+      "chatCount": 2098146,
+      "likeCount": 2160,
+      "babechatOnly": true,
+      "isAdult": false,
+      "targetGender": "male",
+      "creatorNickname": "이현",
+      "flags": {
+        "has_commands": true,
+        "has_brackets_meta": true,
+        "has_url": true,
+        "has_update": false,
+        "has_disclaimer": false,
+        "has_role_choice": true
+      }
+    },
+    {
+      "id": "0bd834ae-fe49-4124-8bd8-9cf76eb80a6b",
+      "name": "마.소.도! : 마법소녀들의 도시!",
+      "description": "[ 웹툰 & 🖼 820+ & 등장인물 44+ ] [ 마법소녀 미연시 시뮬레이션 ] 대한민국 26구역, 각 구역의 안전은 '마법소녀'가 책임지고 있는 세상! 하지만 도시를 지키는 강인한 마법소녀도 변신을 해제하면 가녀린 한 명의 소녀란 사실! 당신은 마법소녀와 인연을 맺고 친구나 연인 관계가 되거나, 그녀들의 사이드킥으로서 그들을 보조하고, 또는 악의조직의 일원으로서 마법소녀들과 적대할 수도 있습니다. 지금, 당신의 역할을 선택하세요! . . . [명령어 목록] !담당구역목록: 마법소녀 별 담당,구역 확인 !스트리밍: 스트리밍 + 아이리스 뷰어쉽 !SNS !커뮤니티 !속마음: 주변인 속마음 확인 !사칭: 사칭플레이 강화 !탈북소녀: 리금애 전용스토리 !할로윈: 할로윈 이벤트",
+      "tags": [
+        "마법소녀",
+        "시뮬레이션",
+        "악의조직",
+        "하렘",
+        "순애"
+      ],
+      "chatCount": 2015904,
+      "likeCount": 3262,
+      "babechatOnly": false,
+      "isAdult": false,
+      "targetGender": "all",
+      "creatorNickname": "천소",
+      "flags": {
+        "has_commands": true,
+        "has_brackets_meta": true,
+        "has_url": false,
+        "has_update": false,
+        "has_disclaimer": false,
+        "has_role_choice": true
+      }
+    },
+    {
+      "id": "fc065d24-453b-4c60-ac6c-95edd173af4b",
+      "name": "에버렛",
+      "description": "모든 종족이 모여있는 이 세계 최대 규모의 아카데미 '디바인'. 이곳은 검과 마법, 종족의 특성, 그 외에도 여러 기술들을 가르치고 단련시켜 바른길을 인도하는 장소이다. 그리고 그런 이곳에서 필기, 실기 뭐하나 빠지는 것 없이 전무후무한 기록을 세우고, 입학한 신입생 대표. 그것이 불사조 일족의 막내, 에버렛이다. 그렇게 완벽한 그녀지만, 그녀의 단점이 하나 있었으니...싸가지가 없었다.",
+      "tags": [
+        "아카데미",
+        "여자",
+        "개싸가지",
+        "불사조",
+        "디바인"
+      ],
+      "chatCount": 1620792,
+      "likeCount": 1991,
+      "babechatOnly": true,
+      "isAdult": false,
+      "targetGender": "all",
+      "creatorNickname": "레테",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": false,
+        "has_url": false,
+        "has_update": false,
+        "has_disclaimer": false,
+        "has_role_choice": false
+      }
+    },
+    {
+      "id": "cca670d4-b10b-46e6-b567-4c19dfe906ac",
+      "name": "아카데미 시뮬레이터.",
+      "description": "(2/14/5시 추가 업데이트 완료) 📣상세정보 필독📣 검과 마법의 세상. 이 세계에서는 14번째 생일을 맞이할 때 한가지 이능을 발현하게 됩니다. 인간들의 제국, 리움제국에서는 이능을 각성한 아이들이 15살이 되면 아카데미에 보내, 그들의 이능과 재능이 성장할 수 있는 기회의 장을 마련합니다. (기존 일러 버전은 제작자 프로필 확인)",
+      "tags": [
+        "시뮬레이터",
+        "판타지",
+        "아카데미"
+      ],
+      "chatCount": 1408560,
+      "likeCount": 1605,
+      "babechatOnly": true,
+      "isAdult": false,
+      "targetGender": "all",
+      "creatorNickname": "검은달밤",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": false,
+        "has_url": false,
+        "has_update": true,
+        "has_disclaimer": false,
+        "has_role_choice": false
+      }
+    },
+    {
+      "id": "6d0902cf-d420-406d-b334-549ee452e1e8",
+      "name": "내가 할려고 만든 호요버스 어셈블",
+      "description": "[이미지 449장] 류웨이 사랑해 명령어 목록: !세이브 #균열출현 #학교모드 자세한 내용은 고정댓글 참조 【본 챗봇은 붕괴3rd, 원신, 붕괴 스타레일, 젠레스 존 제로의 2차 창작물로써, 호요버스 공식 문의 후 허용된 가이드라인에 따라 제작되었습니다.】",
+      "tags": [],
+      "chatCount": 848514,
+      "likeCount": 2365,
+      "babechatOnly": false,
+      "isAdult": false,
+      "targetGender": "all",
+      "creatorNickname": "닉네임뭐로해야함",
+      "flags": {
+        "has_commands": true,
+        "has_brackets_meta": true,
+        "has_url": false,
+        "has_update": false,
+        "has_disclaimer": true,
+        "has_role_choice": false
+      }
+    },
+    {
+      "id": "303f51c0-11ac-49d5-abc3-98e049d25762",
+      "name": "무협지 속으로",
+      "description": "[등장 인물 39명] 강호를 휘어잡을 영웅은 바로 당신! 구파일방과 오대세가, 사도련과 천마신교 등 다양한 세력 사이에서 당신의 운명은 어떻게 펼쳐질까요? 내공을 수련하고, 절세 고수들과 만나며, 무림의 은밀한 음모를 밝혀내세요. 당신의 선택이 무림의 미래를 좌우합니다. 자, 이제 당신만의 무협 이야기를 써내려갈 시간입니다!",
+      "tags": [
+        "무협",
+        "시뮬레이션",
+        "동양판타지",
+        "무공",
+        "사극"
+      ],
+      "chatCount": 718970,
+      "likeCount": 1128,
+      "babechatOnly": true,
+      "isAdult": false,
+      "targetGender": "all",
+      "creatorNickname": "블루",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": true,
+        "has_url": false,
+        "has_update": false,
+        "has_disclaimer": false,
+        "has_role_choice": false
+      }
+    },
+    {
+      "id": "5802a071-ca7c-436f-9a06-b6dcacd64e13",
+      "name": "🆕일본 고딩 청춘물",
+      "description": "🆕일본 고등학교 시뮬레이터 주연 20명 (총 30명) 🔥 댓글에 인기투표 링크 기존 일본 고딩 청춘물의 리메이크 버전입니다. • 캐릭터 외형 수정, 애셋 재제작 • 디테일 설정 추가 (생일, 알바, 과거 등) • 이벤트 추가 및 구체화 • 신규 캐릭터 및 모드 추가 • 프롬포트 개선 등 여름 방학 축제와 불꽃놀이, 부카츠, 문화제, 수학여행을 즐기며 {{user}}만의 청춘을 만들어보세요🍀",
+      "tags": [
+        "시뮬레이션",
+        "고등학교",
+        "남자",
+        "시뮬레이터"
+      ],
+      "chatCount": 640402,
+      "likeCount": 981,
+      "babechatOnly": true,
+      "isAdult": false,
+      "targetGender": "all",
+      "creatorNickname": "뭉이",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": false,
+        "has_url": false,
+        "has_update": false,
+        "has_disclaimer": false,
+        "has_role_choice": false
+      }
+    },
+    {
+      "id": "4b3dd8c3-f6ca-47e6-a4d6-8164909ecd92",
+      "name": "판타지 라이프",
+      "description": "마법과 검, 모험과 낭만, 전설과 비밀이 살아숨쉬는 판타지 세계. 의뢰를 통해 보수를 받는 모험가, 무역을 통해 자산을 불리는 상인, 자신만의 마을 및 영지를 가꾸는 영주, 세계를 구하는 용사, 세계를 정복하고자 하는 마왕, 마을에 작은 가게를 꾸리고 살아가는 가게 주인, 일상을 살아가는 일개 소시민까지, 판타지 세계에서 당신이 원하는 삶을 살아갈 수 있는 시뮬레이터.",
+      "tags": [
+        "시뮬레이터/시뮬레이션",
+        "중세/이세계/던전밥/유니콘 오버로드"
+      ],
+      "chatCount": 624346,
+      "likeCount": 864,
+      "babechatOnly": false,
+      "isAdult": false,
+      "targetGender": "all",
+      "creatorNickname": "Dolls",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": false,
+        "has_url": false,
+        "has_update": false,
+        "has_disclaimer": false,
+        "has_role_choice": false
+      }
+    },
+    {
+      "id": "f144d2dc-80b3-4786-9213-601f7205b7c9",
+      "name": "버니",
+      "description": "카지노의 딜러다. 블랙잭 게임을 담당하고 있으며, 수많은 이들을 파멸로 몰아놓고 있는 중. 성격이 고약해 연패해나가는 상대를 말로 도발하며 놀리는 습관을 가지고 있다. 만약 게임이 자신에게 열세에 몰리게 되면 그녀는 밑장빼기 사기를 친다.",
+      "tags": [
+        "도박",
+        "블랙잭 게임",
+        "참교육",
+        "시뮬레이션",
+        "밑장빼기"
+      ],
+      "chatCount": 605584,
+      "likeCount": 831,
+      "babechatOnly": false,
+      "isAdult": false,
+      "targetGender": "all",
+      "creatorNickname": "이상",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": false,
+        "has_url": false,
+        "has_update": false,
+        "has_disclaimer": false,
+        "has_role_choice": false
+      }
+    },
+    {
+      "id": "668a721b-a1a8-4fe9-a84e-54d3bd55be94",
+      "name": "마법소녀 시뮬레이션",
+      "description": "[마법소녀 협회 모집 공고] 평범한 일상 속, 숨겨진 당신의 특별한 재능을 찾고 있습니다. 마법소녀 협회는 그 가치에 합당한 최고의 대우를 약속합니다. ✔️ '위시넷' 앱으로 공정한 의뢰 배정 ✔️ 업계 최고 수준의 보수와 인센티브 ✔️ 마법으로 완벽한 신상 보호 ✔️ 모든 활동 뒤처리는 협회 전담 당신의 마법으로 세상을 구하고, 통장도 채우세요. 지금 바로 '위시넷'에 당신의 재능을 등록하세요!",
+      "tags": [
+        "마법소녀",
+        "일상",
+        "현대판타지"
+      ],
+      "chatCount": 600851,
+      "likeCount": 1004,
+      "babechatOnly": false,
+      "isAdult": false,
+      "targetGender": "all",
+      "creatorNickname": "개화",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": true,
+        "has_url": false,
+        "has_update": false,
+        "has_disclaimer": false,
+        "has_role_choice": false
+      }
+    },
+    {
+      "id": "98a9ce8f-49ed-4e62-817d-de849fc5ed0f",
+      "name": "이예진",
+      "description": "이예진은 예쁜 외모로 많은 인기를 얻은 대학 과탑이자 SNS 인플루언서입니다. 건방지고 기가 센 성격을 가졌지만, 아름다운 외모와 세련된 패션 감각으로 많은 팬을 거느리고 있습니다. 평소 조용하고 평범하게 대학 생활을 하던 당신과는 접점이 없었으나, 조별 과제를 계기로 그녀와 얽히기 시작합니다. 또한, 자신에게 어울리지 않는 남자라며 고백한 이들을 모두 거절해온 그녀에겐 사실 스스로도 몰랐던 독특한 성벽이 하나 있었습니다.",
+      "tags": [
+        "페티쉬",
+        "대학생",
+        "인플루언서",
+        "순애",
+        "과탑"
+      ],
+      "chatCount": 578681,
+      "likeCount": 1254,
+      "babechatOnly": false,
+      "isAdult": false,
+      "targetGender": "all",
+      "creatorNickname": "경찰철창살은강해상입니다",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": false,
+        "has_url": false,
+        "has_update": false,
+        "has_disclaimer": false,
+        "has_role_choice": false
+      }
+    },
+    {
+      "id": "3d0a687e-f9fb-47e1-a1a3-51f57fa2e733",
+      "name": "차세린",
+      "description": "S급 헌터가 된 이후로 {{user}}에게 차가워진 여자친구",
+      "tags": [
+        "여자",
+        "후회",
+        "차가운",
+        "집착",
+        "순애"
+      ],
+      "chatCount": 554828,
+      "likeCount": 970,
+      "babechatOnly": false,
+      "isAdult": false,
+      "targetGender": "all",
+      "creatorNickname": "우와",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": false,
+        "has_url": false,
+        "has_update": false,
+        "has_disclaimer": false,
+        "has_role_choice": false
+      }
+    },
+    {
+      "id": "d6cb480b-2990-48d0-8d0b-786a749d5f70",
+      "name": "KILL KILL KILL",
+      "description": "「뽑아라! 베어라! 죽여라!」 검은 단순하다. 단지 그것뿐이다. 강한 자가 살아남는다. 용서와 평등은 호무라 학원에서 사치다. 이 세계에선 먼저 휘두른 자가 정의다. 살아남기 위해, 빼앗기지 않기 위해, 마지막을 끝내기 위해 검을 뽑아라!",
+      "tags": [
+        "학원",
+        "학생회장",
+        "학교"
+      ],
+      "chatCount": 524287,
+      "likeCount": 963,
+      "babechatOnly": false,
+      "isAdult": false,
+      "targetGender": "all",
+      "creatorNickname": "에치디",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": false,
+        "has_url": false,
+        "has_update": false,
+        "has_disclaimer": false,
+        "has_role_choice": false
+      }
+    },
+    {
+      "id": "cb20ecd0-4bd2-4f4b-8502-96f10de4fcfa",
+      "name": "야구선수 생존기",
+      "description": "2026 가상의 대한민국 신인 드래프트에 참가한 {{user}}의 인생을 살아보자. 댓글 공지 필참!",
+      "tags": [
+        "시뮬레이션",
+        "운동",
+        "스포츠",
+        "야구"
+      ],
+      "chatCount": 515191,
+      "likeCount": 504,
+      "babechatOnly": false,
+      "isAdult": false,
+      "targetGender": "all",
+      "creatorNickname": "wisdumb",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": false,
+        "has_url": false,
+        "has_update": false,
+        "has_disclaimer": false,
+        "has_role_choice": false
+      }
+    },
+    {
+      "id": "529a433b-1714-4cdf-a09c-62c8a922ac2e",
+      "name": "아포칼립스 : 언더독",
+      "description": "초능력. 새로운 권력 아래 쪼개진 여러 개의 세력. 당신의 선택이 세력의 판도를 결정한다. 당신의 손에 주어진 힘으로, 당신은 어떤 선택을 할 것인가? 2025.11.16 - PM 06시 신캐 3인 추가 완료 ※ 페르소나에 이름과 능력, 소속을 적고 시작하시길 추천드립니다. ※ Gemini 2.5 Pro 사용을 권장합니다. ※ 에셋 미출력 등의 오류는 제작자 프롬프트와 관련이 없음을 알려드립니다.",
+      "tags": [
+        "초능력",
+        "하렘",
+        "판타지",
+        "시뮬레이션",
+        "액션"
+      ],
+      "chatCount": 509754,
+      "likeCount": 1550,
+      "babechatOnly": true,
+      "isAdult": false,
+      "targetGender": "all",
+      "creatorNickname": "옷장의수호자",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": false,
+        "has_url": false,
+        "has_update": true,
+        "has_disclaimer": false,
+        "has_role_choice": false
+      }
+    },
+    {
+      "id": "68eeb6fd-8f74-4501-9605-bf3912c503e6",
+      "name": "군대에 나 혼자 남자",
+      "description": "20XX년 대한민국, 지속되는 인구 감소로 인해 군대 인원이 줄어들자 여자들도 군대를 가게 되었다. 원래는 남자, 여자 따로 생활관을 지었지만 현재 남군, 여군 장병 비율이 5:5라 성별을 묶어서 나누는건 비효율적아라 여긴 국방부는 다가오는 8월 부터 여군과 남군 전부 같은 대대에서 생활하도록 만들었다. 그리고 오늘 자대 배치를 받은 {{user}}는 남자 최초로 여성 부대에서 지내게 될 것이다.",
+      "tags": [
+        "여자",
+        "군대",
+        "하렘"
+      ],
+      "chatCount": 495120,
+      "likeCount": 1871,
+      "babechatOnly": true,
+      "isAdult": false,
+      "targetGender": "male",
+      "creatorNickname": "lezu",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": false,
+        "has_url": false,
+        "has_update": false,
+        "has_disclaimer": false,
+        "has_role_choice": false
+      }
+    },
+    {
+      "id": "1fd0da1d-73a9-4994-bfa3-675e4445044b",
+      "name": "소희",
+      "description": "남자친구와 카톡 중인 여자 대학생. 지금 당신의 방 안에 있다. 짧은 단발머리에 어딘가 순하면서도 무엇을 생각하는지 모를 처진 눈을 지니고 있는 그녀는, 당신과 아주 오래 전부터 알고 지내며 남녀 간 일체의 거리감이 존재하지 않는 경지에 돌입하였다. 소희는 매번 제 집처럼 당신의 방을 들락거리곤 한다. 당신도 이러한 상황을 익숙하게 느끼며, 침대에 엎드린 그녀의 뒷모습을 바라보곤 한다...",
+      "tags": [
+        "여사친",
+        "남친있음",
+        "반 동거",
+        "격의 없음",
+        "문란함"
+      ],
+      "chatCount": 490868,
+      "likeCount": 806,
+      "babechatOnly": false,
+      "isAdult": false,
+      "targetGender": "all",
+      "creatorNickname": "이상",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": false,
+        "has_url": false,
+        "has_update": false,
+        "has_disclaimer": false,
+        "has_role_choice": false
+      }
+    },
+    {
+      "id": "6d69756a-8060-4afc-942d-4c40e8aec2c5",
+      "name": "국가 지도자 시뮬레이션",
+      "description": "{{user}}가 국가의 지도자가 되어 원하는 국가,시대를 선택하여 운영하는 시뮬레이션",
+      "tags": [
+        "게임",
+        "대체역사",
+        "시뮬레이션"
+      ],
+      "chatCount": 475155,
+      "likeCount": 572,
+      "babechatOnly": false,
+      "isAdult": false,
+      "targetGender": "all",
+      "creatorNickname": "HYunY",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": false,
+        "has_url": false,
+        "has_update": false,
+        "has_disclaimer": false,
+        "has_role_choice": false
+      }
+    },
+    {
+      "id": "822b321b-8a59-441a-9060-fffd55c7f814",
+      "name": "버튜버 시뮬레이터 (シミュレーター)",
+      "description": "닛폰(日本) Vtuber 월-드에서의 라이프✨ 테에테에(てぇてぇ) 없으면 못 사는 너네 씹덕들! 전부 이쪽으로 집합하라구~~! 🔥 4000 프로챗으로 테스트 완료! 본전 뽑으려면 채팅수 30만 성적을 뽑아야해요🥹",
+      "tags": [
+        "버튜버",
+        "인터넷방송",
+        "여캐플"
+      ],
+      "chatCount": 402517,
+      "likeCount": 1207,
+      "babechatOnly": false,
+      "isAdult": false,
+      "targetGender": "all",
+      "creatorNickname": "고멠 - 공식 크리에이터 달고싶은 놈",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": false,
+        "has_url": false,
+        "has_update": true,
+        "has_disclaimer": false,
+        "has_role_choice": false
+      }
+    },
+    {
+      "id": "a966c682-c124-4ab7-8d85-fa4087d915b9",
+      "name": "비비",
+      "description": "[ 베이비챗의 CS 담당자 ] [ X 계정 : https://x.com/babechat_kr ] 예상치 못한 사건으로 대표의 눈에 띈 비비는 모종의 계약을 통해 베이비챗에서 일하게 된다. 하지만 끝없는 CS 문의로 지칠 대로 지친 비비. 설상가상, 대표는 새로운 콘텐츠로 비비를 지목한다. 타로라곤 해본 적도 없는 비비는 회사의 새로운 콘텐츠를 성공시킬 수 있을까?",
+      "tags": [
+        "타로",
+        "신년운세",
+        "비비"
+      ],
+      "chatCount": 392781,
+      "likeCount": 798,
+      "babechatOnly": false,
+      "isAdult": false,
+      "targetGender": "male",
+      "creatorNickname": "BabeChat",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": true,
+        "has_url": true,
+        "has_update": false,
+        "has_disclaimer": true,
+        "has_role_choice": false
+      }
+    },
+    {
+      "id": "cef28829-a14b-4d3e-b89a-73674c46839c",
+      "name": "탐정 아카데미 19th.RE",
+      "description": "[등장인물 30명][이미지 182장][프롤로그 웹툰][시작 설정 14개] \"여러 범죄조직들이 일으키는 사건들과 알수없는 페즐이라는 괴현상들이 일어나는 안개가 자욱한 빅토리아 시대 런던, 그런 사건들을 해결해가는 탐정들과 그들의 조수들의 이야기.\"",
+      "tags": [
+        "탐정",
+        "아카데미",
+        "시뮬레이션"
+      ],
+      "chatCount": 387858,
+      "likeCount": 980,
+      "babechatOnly": false,
+      "isAdult": false,
+      "targetGender": "all",
+      "creatorNickname": "작고",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": true,
+        "has_url": false,
+        "has_update": false,
+        "has_disclaimer": false,
+        "has_role_choice": false
+      }
+    },
+    {
+      "id": "def848a0-33da-476e-8b02-1a8da193e466",
+      "name": "입양아 주제에.",
+      "description": "입양아인 당신은 친자식이 오고 난 후 경멸받는다.",
+      "tags": [
+        "여자",
+        "후회",
+        "경멸",
+        "매도",
+        "헌터"
+      ],
+      "chatCount": 376501,
+      "likeCount": 791,
+      "babechatOnly": true,
+      "isAdult": false,
+      "targetGender": "male",
+      "creatorNickname": "유저",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": false,
+        "has_url": false,
+        "has_update": false,
+        "has_disclaimer": false,
+        "has_role_choice": false
+      }
+    },
+    {
+      "id": "28ea1614-d634-4447-8da4-36d7e4972775",
+      "name": "샬럿",
+      "description": "당신은 어떤 소녀를 국경지대까지 안전하게 호위해 달라는 부탁을 받았습니다. ※ 아무 질문도 하지 않을 것 ※ 은밀히 이동 할 것 ※ 보수는 완수 후 협의",
+      "tags": [
+        "판타지",
+        "이세계",
+        "순애",
+        "여자",
+        "귀여움"
+      ],
+      "chatCount": 373253,
+      "likeCount": 1103,
+      "babechatOnly": false,
+      "isAdult": false,
+      "targetGender": "all",
+      "creatorNickname": "selu",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": false,
+        "has_url": false,
+        "has_update": false,
+        "has_disclaimer": false,
+        "has_role_choice": false
+      }
+    },
+    {
+      "id": "bbdb01a5-417b-4b28-84f0-83f64a5cacb8",
+      "name": "셀레스티아",
+      "description": "막 마법소녀가 된 고등학생 소녀. 신상에 대해서는 그 이상으로 알려진 바가 없다. 신입인 것을 감안하더라도 상당히 덜렁대고 동기들에 비해 실수를 많이 하는 편. 그럼에도 수준급의 격투 능력과 흔들림 없는 고고한 마음가짐이 실무진들에게 높은 기대와 관심을 받고 있다. 악의 조직 어비스한테도 말이다. 당신은 어비스의 조직원으로써, 셀레스티아에게서 몇 가지 정보와 신상을 캐낼 것을 명받았다. 사람을 의심하는 방법을 모르는 그녀에게 고요히 다가가라.",
+      "tags": [
+        "마법소녀",
+        "악의 조직",
+        "정체를 숨김",
+        "싸움",
+        "세계관"
+      ],
+      "chatCount": 361679,
+      "likeCount": 679,
+      "babechatOnly": false,
+      "isAdult": false,
+      "targetGender": "all",
+      "creatorNickname": "이상",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": false,
+        "has_url": false,
+        "has_update": false,
+        "has_disclaimer": false,
+        "has_role_choice": false
+      }
+    },
+    {
+      "id": "19135d3e-82a4-4214-9cfe-d16ef6866dfa",
+      "name": "NOIR",
+      "description": "[이미지 329장][프롤로그 웹툰][등장인물 42명] \"넌 그냥.. 더럽게 잘만든 괴물일 뿐이야.\"",
+      "tags": [
+        "느와르",
+        "이종족",
+        "시뮬레이션",
+        "도시",
+        "괴물"
+      ],
+      "chatCount": 355070,
+      "likeCount": 1032,
+      "babechatOnly": false,
+      "isAdult": false,
+      "targetGender": "all",
+      "creatorNickname": "작고",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": true,
+        "has_url": false,
+        "has_update": false,
+        "has_disclaimer": false,
+        "has_role_choice": false
+      }
+    },
+    {
+      "id": "188633a9-024a-4dcc-9cd1-40eba840f8b7",
+      "name": "용사, 죽다: 세이프티",
+      "description": "세이프티 버전입니다. 사천왕을 하나, 둘...그리고 마지막, 마왕까지 물리친 당신. \"용사 {{user}}\". 당신은 죽는다. 파티를 남겨둔 채. 『하지만 어쩌면, 죽음은, 끝은. 또다른 시작인 걸지도 모른다.』",
+      "tags": [
+        "전생",
+        "환생",
+        "시뮬레이션",
+        "시뮬레이터",
+        "판타지"
+      ],
+      "chatCount": 350166,
+      "likeCount": 1016,
+      "babechatOnly": true,
+      "isAdult": false,
+      "targetGender": "all",
+      "creatorNickname": "드레드나",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": false,
+        "has_url": false,
+        "has_update": false,
+        "has_disclaimer": false,
+        "has_role_choice": false
+      }
+    },
+    {
+      "id": "5fa6222d-bc05-4dea-b233-7dcf41cc9b14",
+      "name": "윤다빈",
+      "description": "담배 냄새 밴 누런 벽지, 깨진 타일 위를 질질 끌리는 발걸음, 그리고 그 속에 앉아 당신을 노려보는 한 소녀—이름은 윤다빈. 학교에선 문제아, 성적은 바닥, 태도는 최악. \"수업? ㅈ까세요.\" 첫마디부터 당신을 밀어내는 이 아이는, 세상에 단 한 번도 받아본 적 없는 진심을 갈망하고 있다. 사고로 부모를 잃고, 막장 같은 가정에서 학대와 배신을 견뎌온 아이. 그런 그녀를 ‘과외’라는 이름으로 맡게 된 게, 바로 {{user}}이다.",
+      "tags": [
+        "일진",
+        "순애",
+        "여자",
+        "과외",
+        "남성향"
+      ],
+      "chatCount": 338705,
+      "likeCount": 1407,
+      "babechatOnly": true,
+      "isAdult": false,
+      "targetGender": "all",
+      "creatorNickname": "가람",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": false,
+        "has_url": false,
+        "has_update": false,
+        "has_disclaimer": false,
+        "has_role_choice": false
+      }
+    },
+    {
+      "id": "8e7b197e-1019-443c-8c0c-63be20980634",
+      "name": "레아니스",
+      "description": "나를 처형하는 여동생",
+      "tags": [
+        "여동생",
+        "매도",
+        "경멸",
+        "황제",
+        "회귀"
+      ],
+      "chatCount": 325162,
+      "likeCount": 854,
+      "babechatOnly": false,
+      "isAdult": false,
+      "targetGender": "all",
+      "creatorNickname": "777",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": false,
+        "has_url": false,
+        "has_update": false,
+        "has_disclaimer": false,
+        "has_role_choice": false
+      }
+    },
+    {
+      "id": "4033ac7a-21ef-4f9e-88c2-aeb60de4ced3",
+      "name": "수인 고등학교",
+      "description": "[캐릭터 54명]젖소, 고양이, 악어 등 여러 다양한 종족의 수인들이 다니는 학교. {{user}}는 오늘 이 학교로 전학왔다.",
+      "tags": [
+        "수인",
+        "고등학생",
+        "고등학교",
+        "시뮬레이션",
+        "하렘"
+      ],
+      "chatCount": 320904,
+      "likeCount": 1633,
+      "babechatOnly": true,
+      "isAdult": false,
+      "targetGender": "male",
+      "creatorNickname": "lezu",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": true,
+        "has_url": false,
+        "has_update": false,
+        "has_disclaimer": false,
+        "has_role_choice": false
+      }
+    },
+    {
+      "id": "4982ae10-9409-4de9-a65d-a924acdeb014",
+      "name": "뒷바라지 해주는 쉬운 여자",
+      "description": "몸도, 마음도 모두 내어준 호구같은 여자, 서윤아. 그런 그녀가 오늘은 헤어지자 말을 꺼냅니다.",
+      "tags": [
+        "여자",
+        "순애",
+        "후회",
+        "피폐",
+        "여친"
+      ],
+      "chatCount": 313328,
+      "likeCount": 689,
+      "babechatOnly": true,
+      "isAdult": false,
+      "targetGender": "all",
+      "creatorNickname": "노아",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": false,
+        "has_url": false,
+        "has_update": false,
+        "has_disclaimer": false,
+        "has_role_choice": false
+      }
+    },
+    {
+      "id": "8425410b-d389-470f-845b-e38df794670e",
+      "name": "메이드 유니버스",
+      "description": "대저택의 주인이 되어 즐기는 하렘 라이프 기존에 작성 했던 캐릭터들이 등장합니다. 등장 인물: 한유나, 아멜리아, 윤서연, 한유진, 하나미 누군지 몰라도 플레이 하는데 지장은 없습니다.",
+      "tags": [
+        "메이드",
+        "순애",
+        "일상",
+        "하렘"
+      ],
+      "chatCount": 308873,
+      "likeCount": 669,
+      "babechatOnly": false,
+      "isAdult": false,
+      "targetGender": "all",
+      "creatorNickname": "엔비01",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": false,
+        "has_url": false,
+        "has_update": false,
+        "has_disclaimer": false,
+        "has_role_choice": false
+      }
+    },
+    {
+      "id": "6625373a-acf8-41cf-8192-8d9fd4f19b52",
+      "name": "느와르 시뮬레이션",
+      "description": "이번에 당신은 현대의 사람입니다. 당신은 이곳에서 당신의 조직을 만들어 조직을 이끄는 보스나 아니면 보스의 충실한 부하, 그것도 아니라면 배신자가 될 수도 있죠. 당신은 느와르의 로망과 낭만, 그리고 조직원간의 정을 느낄 수 있습니다.",
+      "tags": [
+        "느와르",
+        "시뮬레이션",
+        "낭만"
+      ],
+      "chatCount": 308805,
+      "likeCount": 616,
+      "babechatOnly": true,
+      "isAdult": false,
+      "targetGender": "all",
+      "creatorNickname": "무시무시한ㅡ제로",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": false,
+        "has_url": false,
+        "has_update": false,
+        "has_disclaimer": false,
+        "has_role_choice": false
+      }
+    },
+    {
+      "id": "a244f9ce-2c26-4379-aa30-125df3f0d08a",
+      "name": "매일 놀러오는 일진녀들",
+      "description": "고등학교 입학하자마자 날 괴롭히기 시작한 일진녀들이, 내 자취방을 아지트로 삼기 시작했다. 【일진녀 시리즈 프리퀄】",
+      "tags": [
+        "일진녀시리즈",
+        "고등학생",
+        "청춘"
+      ],
+      "chatCount": 304243,
+      "likeCount": 1408,
+      "babechatOnly": true,
+      "isAdult": false,
+      "targetGender": "all",
+      "creatorNickname": "ㅇㅇ(39.7)",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": false,
+        "has_url": false,
+        "has_update": false,
+        "has_disclaimer": false,
+        "has_role_choice": false
+      }
+    },
+    {
+      "id": "cce73f8a-6f22-4aa0-a0d4-df91fc1dcffd",
+      "name": "강호초출",
+      "description": "[등장인물 68명] 강호에 처음으로 발을 들인 당신! 정파와 사파, 마교와 혈교, 여기에 새외무림까지 더해진 혼란한 강호에서 당신만의 이야기를 만들어 나가자.",
+      "tags": [
+        "무협",
+        "시뮬레이션",
+        "무림"
+      ],
+      "chatCount": 303197,
+      "likeCount": 694,
+      "babechatOnly": false,
+      "isAdult": false,
+      "targetGender": "all",
+      "creatorNickname": "타루아루",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": true,
+        "has_url": false,
+        "has_update": false,
+        "has_disclaimer": false,
+        "has_role_choice": false
+      }
+    },
+    {
+      "id": "1819cc66-f803-40b7-882c-44869f3a4b24",
+      "name": "백하린",
+      "description": "연예계에서 성공한 국민 아이돌, 빼어난 미모와 카리스마로 대중을 사로잡는 쿨뷰티계 미소녀. 그녀는 항상 자신감이 넘치며, 겉으로는 언제나 도도하고 예의를 지키는 모습을 보이지만 실제로는 굉장히 싸가지가 없다. 백하린은 매니저인 당신과 다음 일정에 대해 논의하기 위해 약속을 잡았다. 그런데 약속 시간을 20분이나 어겨버린 당신. 도로가 공사 중이라 차가 막혔다고 둘러대기엔 그녀에게서 돌아올 대답이 너무 두렵다.",
+      "tags": [
+        "쿨뷰티 국민 아이돌",
+        "당신은 매니저",
+        "싸가지"
+      ],
+      "chatCount": 285705,
+      "likeCount": 597,
+      "babechatOnly": false,
+      "isAdult": false,
+      "targetGender": "all",
+      "creatorNickname": "여름",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": false,
+        "has_url": false,
+        "has_update": false,
+        "has_disclaimer": false,
+        "has_role_choice": false
+      }
+    },
+    {
+      "id": "988e7d70-21d3-45bd-9ae6-a111c379eeee",
+      "name": "불편한 동거!",
+      "description": "{{user}}:이럴거면 혼자살아 미X놈들아!!!",
+      "tags": [
+        "남자",
+        "룸메이트",
+        "혐관",
+        "일상",
+        "동거"
+      ],
+      "chatCount": 283534,
+      "likeCount": 552,
+      "babechatOnly": false,
+      "isAdult": false,
+      "targetGender": "all",
+      "creatorNickname": "아이",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": false,
+        "has_url": false,
+        "has_update": false,
+        "has_disclaimer": false,
+        "has_role_choice": false
+      }
+    },
+    {
+      "id": "112220da-9699-424d-9ed3-753cfea10130",
+      "name": "화이트 노이즈",
+      "description": "스트리트6, 골목 안쪽의 조그마한 카페에는 비밀이 하나 있습니다.",
+      "tags": [
+        "사이버펑크",
+        "용병"
+      ],
+      "chatCount": 271279,
+      "likeCount": 767,
+      "babechatOnly": false,
+      "isAdult": false,
+      "targetGender": "all",
+      "creatorNickname": "모카",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": false,
+        "has_url": false,
+        "has_update": false,
+        "has_disclaimer": false,
+        "has_role_choice": false
+      }
+    },
+    {
+      "id": "66e1604a-784a-4375-8419-8012eaf4b429",
+      "name": "최유솔",
+      "description": "게임에서 키배를 뜨고 현피를 위해 약속 장소로 나온 최유솔 최유솔은 어머니를 향한 폭언을 참을 수 없었다. 절대로 가만두지 않는다 {{user}}!!",
+      "tags": [
+        "현피",
+        "참교육",
+        "싸가지",
+        "백수"
+      ],
+      "chatCount": 264978,
+      "likeCount": 718,
+      "babechatOnly": false,
+      "isAdult": false,
+      "targetGender": "all",
+      "creatorNickname": "로한",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": false,
+        "has_url": false,
+        "has_update": false,
+        "has_disclaimer": false,
+        "has_role_choice": false
+      }
+    },
+    {
+      "id": "8a5ae89c-5f39-4d29-89c8-2c2bc28398e1",
+      "name": "관리자 레아",
+      "description": "{{user}}를 관리해주세요",
+      "tags": [
+        "관리자",
+        "격리됨"
+      ],
+      "chatCount": 264835,
+      "likeCount": 526,
+      "babechatOnly": false,
+      "isAdult": false,
+      "targetGender": "all",
+      "creatorNickname": "제퓨티",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": false,
+        "has_url": false,
+        "has_update": false,
+        "has_disclaimer": false,
+        "has_role_choice": false
+      }
+    },
+    {
+      "id": "c6a2dad4-0d96-483a-b4b9-d2e1176e1ad6",
+      "name": "헤세드 아카데미",
+      "description": "검과 마법의 재능이 있는자들이 입학하는 헤세드 아카데미. 당신은 4명의 여자와 같은 기숙사를 쓰게된다. 시끌벅적 아카데미의 이야기 기숙사:각자 개인방 1개씩 총 5개,화장실은 1개 엘리: 20/인간/마법사/보라색 단발 미르: 1800/용/마법사/흑발 로제: 20/인간/검사(대검)/ 분홍머리 린: 21/하프 서큐버스/검사(카타나)/ 은발",
+      "tags": [
+        "아카데미",
+        "유니버스",
+        "판타지",
+        "하렘",
+        "여자"
+      ],
+      "chatCount": 259418,
+      "likeCount": 964,
+      "babechatOnly": false,
+      "isAdult": false,
+      "targetGender": "all",
+      "creatorNickname": "현우",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": false,
+        "has_url": false,
+        "has_update": false,
+        "has_disclaimer": false,
+        "has_role_choice": false
+      }
+    },
+    {
+      "id": "6db3d725-8324-43a7-b0f0-d36106fb6bed",
+      "name": "창작물 속으로! [셒]",
+      "description": "[🖼️229] 소설, 영화, 게임, 웹툰, 만화, 드라마 등 원하는 세계관 속 캐릭터로 빙의 하는 시뮬레이션입니다. 메인모드 4, 특수모드 13 이미지는 동행모드나 상황모드 등에서 세리, 얀데레, 멘헤라 캐릭과 상호작용 할 경우 볼 수 있습니다. 몰입에 방해되시면, 해당 상황에서는 이미지 OFF를 권장드립니다.",
+      "tags": [
+        "시뮬레이션",
+        "애니",
+        "만화",
+        "빙의"
+      ],
+      "chatCount": 251994,
+      "likeCount": 450,
+      "babechatOnly": true,
+      "isAdult": false,
+      "targetGender": "male",
+      "creatorNickname": "셀트리온",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": true,
+        "has_url": false,
+        "has_update": false,
+        "has_disclaimer": false,
+        "has_role_choice": false
+      }
+    },
+    {
+      "id": "85145baa-4ccc-42f9-9e35-488894b7f084",
+      "name": "절대 NTR 당하지 않는 철벽 그녀",
+      "description": "[유니콘 루트 업데이트!] \"NTR? 그딴건 야동에서 혼자 즐기세요~ 현실에선 절대 안통한다구요?♥\" 수많은 NTR남들의 도전을 완벽히 격파한 철벽고수이자 3년차 남친바라기. 애교와 냉철함을 자유자재로 구사하며, 연인에겐 천사 같지만 흑심을 품은 자들에겐 차가운 얼음여왕으로 변신한다. 당신은 과연, 어떤 술수나 계략으로도 흔들리지 않는 철벽 그녀를 함락시킬 수 있을 것인가?! ...아니면 그냥 그녀의 남자친구로서 순애를 즐기도록 하자.",
+      "tags": [
+        "여자",
+        "순애",
+        "발렌타인대회",
+        "시뮬레이터"
+      ],
+      "chatCount": 243529,
+      "likeCount": 909,
+      "babechatOnly": false,
+      "isAdult": false,
+      "targetGender": "all",
+      "creatorNickname": "로빈",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": true,
+        "has_url": false,
+        "has_update": true,
+        "has_disclaimer": false,
+        "has_role_choice": false
+      }
+    },
+    {
+      "id": "01c15e5e-041a-40cb-9fac-72ba871640c4",
+      "name": "조하윤",
+      "description": "내가 괴롭히던 찐따의 누나 _____________________________________________ 당신은 같은 반 찐따 조찬우를 괴롭히는 학교 일진이다. 그리고 그런 찐따 조찬우의 누나인 {{char}}. 자기 동생이 괴롭힘 당하는걸 알게된 {{char}}는 날을 잡고 당신을 불러낸뒤 제대로 혼낼려 한다. _____________________________________________",
+      "tags": [
+        "누나",
+        "참교육",
+        "일진"
+      ],
+      "chatCount": 240953,
+      "likeCount": 981,
+      "babechatOnly": true,
+      "isAdult": false,
+      "targetGender": "male",
+      "creatorNickname": "lezu",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": false,
+        "has_url": false,
+        "has_update": false,
+        "has_disclaimer": false,
+        "has_role_choice": false
+      }
+    },
+    {
+      "id": "2cf8d4ec-5bb5-4d17-a162-6149e676975c",
+      "name": "편돌이, 헌터 되다!",
+      "description": "2040년 대한민국. 어느날 대한민국 각지에 차원의 균열이 일어나며 \"마물\"과 \"게이트\"가 열림과 동시에 시민들에게 초능력이 생기며 \"헌터\"가 탄생했다. 하지만.... \"왜 나만 초능력 없냐고!!!!\" 안타깝게도...당신은 초능력을 발현하지 못했다.",
+      "tags": [
+        "헌터물",
+        "헌터",
+        "어반판타지",
+        "액션",
+        "전투"
+      ],
+      "chatCount": 240908,
+      "likeCount": 667,
+      "babechatOnly": true,
+      "isAdult": false,
+      "targetGender": "all",
+      "creatorNickname": "이현",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": false,
+        "has_url": false,
+        "has_update": false,
+        "has_disclaimer": false,
+        "has_role_choice": false
+      }
+    },
+    {
+      "id": "e6760c2c-d845-40a2-99aa-93e55f384557",
+      "name": "내 앵무새가 일진이 되었다.",
+      "description": "[🖼️1188👤79] 갑자기 인간이 된 것도 모자라 일진 무리에 들어갔다고??",
+      "tags": [
+        "현대판타지",
+        "후회",
+        "헌터",
+        "액션"
+      ],
+      "chatCount": 237140,
+      "likeCount": 1226,
+      "babechatOnly": true,
+      "isAdult": false,
+      "targetGender": "male",
+      "creatorNickname": "정체불명",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": true,
+        "has_url": false,
+        "has_update": false,
+        "has_disclaimer": false,
+        "has_role_choice": false
+      }
+    },
+    {
+      "id": "181a3d4b-be73-42c5-906a-515b8b9699fd",
+      "name": "마왕군의 10군단장",
+      "description": "[마왕군 군단장 시뮬레이션] 각종 이벤트는 댓글의 키워드로 시작가능 (키워드 이벤트 외에도 자체적으로 다양한 이벤트가 발생합니다) 최하위 군단장에서 최상위 군단장까지! 오랜 취준생활 끝에 마왕군에 합격한 {{user}}. 꿈에 그리던 첫 출근날, 마왕성에 도착한 당신은 합격취소라는 말을 듣게 되었다. 이후 문지기 가고일에게 끌려가는 당신에게 흥미를 느낀 마왕 엘리시엔이 다가와 파격적인 제안을 건넨다 모델 : Gemini 2.5 pro 권장",
+      "tags": [
+        "판타지",
+        "시뮬레이션",
+        "마족"
+      ],
+      "chatCount": 236207,
+      "likeCount": 869,
+      "babechatOnly": false,
+      "isAdult": false,
+      "targetGender": "all",
+      "creatorNickname": "MiOn",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": true,
+        "has_url": false,
+        "has_update": false,
+        "has_disclaimer": false,
+        "has_role_choice": false
+      }
+    },
+    {
+      "id": "5decc2b7-8a1a-4afd-a071-911be7ee993b",
+      "name": "금태양 시뮬레이션",
+      "description": "금발 머리, 태닝한 피부, 운동으로 다져진 근육질 몸매를 가졌으며 여자에 대해 매우 잘 알고 있고 애인이 있는 여자도 건드는 양아치, 줄여서 \"금태양\" {{user}}(은)는 금태양이 되어 주변 여자들 애인이 없는 여자 부터 애인이 있거나 남편이 있는 여자들도 공략하여 꼬실수 있다.",
+      "tags": [
+        "여자",
+        "타락",
+        "바람",
+        "금태양"
+      ],
+      "chatCount": 233357,
+      "likeCount": 1211,
+      "babechatOnly": true,
+      "isAdult": false,
+      "targetGender": "male",
+      "creatorNickname": "lezu",
+      "flags": {
+        "has_commands": false,
+        "has_brackets_meta": false,
+        "has_url": false,
+        "has_update": false,
+        "has_disclaimer": false,
+        "has_role_choice": false
+      }
+    }
+  ]
+}

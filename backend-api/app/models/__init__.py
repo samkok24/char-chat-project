@@ -27,6 +27,7 @@ from .tag import Tag, CharacterTag
 from .agent_content import AgentContent
 from .novel import Novel
 from .storydive_session import StoryDiveSession
+from .user_activity_log import UserActivityLog
 
 __all__ = [
     "User",
@@ -54,5 +55,6 @@ __all__ = [
     "AgentContent",
     "Novel",
     "StoryDiveSession",
+    "UserActivityLog",
 ]
 

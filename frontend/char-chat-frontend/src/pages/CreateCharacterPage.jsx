@@ -247,6 +247,7 @@ const CreateCharacterPage = () => {
   // - 브라우저 back(popstate)은 취소 불가라, pushState로 "가드 엔트리"를 1개 쌓아 confirm을 띄운다.
   const leaveBypassRef = useRef(false);
   const leaveGuardArmedRef = useRef(false);
+  const LEAVE_GUARD_KEY = '__cc_leave_guard';
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   // ✅ 위저드 전용: 채팅 미리보기(모바일 화면) - 최대 10회(유저 메시지 기준)
   const [isChatPreviewOpen, setIsChatPreviewOpen] = useState(false);
@@ -938,10 +939,10 @@ const CreateCharacterPage = () => {
   // ✅ 원작챗(OrigChat) 캐릭터는 이 페이지에서 "필수 선택 옵션"을 노출하지 않기 위한 플래그
   const [isOrigChatCharacter, setIsOrigChatCharacter] = useState(false);
 
-  // ✅ 일반 캐릭터 생성 전용 위저드(UI 개편 범위 한정)
-  // - 생성(Create) + 비-원작챗 캐릭터에서만 적용
-  // - 원작챗/수정페이지/기존 흐름은 그대로 유지(회귀 방지)
-  const useNormalCreateWizard = !isEditMode && !isOrigChatCharacter;
+  // ✅ 일반 캐릭터 위저드 적용 범위
+  // - 비-원작챗 캐릭터: 생성/수정 모두 위저드 사용
+  // - 원작챗 캐릭터: 기존 편집 흐름 유지
+  const useNormalCreateWizard = !isOrigChatCharacter;
   const NORMAL_CREATE_WIZARD_STEPS = [
     // ✅ 사용자 요구사항(경쟁사 구조): 아이콘 없이 텍스트만
     { id: 'profile', label: '프로필' },
@@ -2071,22 +2072,34 @@ const CreateCharacterPage = () => {
      */
     try {
       const base = String(rawPersonality || '');
+      const interests = Array.isArray(prefs?.interests) ? prefs.interests : [];
+      const likes = Array.isArray(prefs?.likes) ? prefs.likes : [];
+      const dislikes = Array.isArray(prefs?.dislikes) ? prefs.dislikes : [];
+
+      const norm = (arr) => (Array.isArray(arr) ? arr : [])
+        .map((x) => String(x || '').trim())
+        .filter(Boolean)
+        .slice(0, 20);
+
+      const interestsNorm = norm(interests);
+      const likesNorm = norm(likes);
+      const dislikesNorm = norm(dislikes);
+      const hasAnyPrefs = interestsNorm.length > 0 || likesNorm.length > 0 || dislikesNorm.length > 0;
+
+      // ✅ 누락 방지: 디테일 칩이 비어 있으면 기존 personality 원문을 그대로 보존한다.
+      if (!hasAnyPrefs) return base.trim();
+
       const cleaned = base
         .replace(/\n?\[관심사\][\s\S]*?(?=\n\[좋아하는 것\]|\n\[싫어하는 것\]|\n*$)/g, '')
         .replace(/\n?\[좋아하는 것\][\s\S]*?(?=\n\[관심사\]|\n\[싫어하는 것\]|\n*$)/g, '')
         .replace(/\n?\[싫어하는 것\][\s\S]*?(?=\n\[관심사\]|\n\[좋아하는 것\]|\n*$)/g, '')
         .trim();
 
-      const interests = Array.isArray(prefs?.interests) ? prefs.interests : [];
-      const likes = Array.isArray(prefs?.likes) ? prefs.likes : [];
-      const dislikes = Array.isArray(prefs?.dislikes) ? prefs.dislikes : [];
-
       const blocks = [];
-      if (interests.length) blocks.push(`[관심사]\n${interests.join('\n')}`);
-      if (likes.length) blocks.push(`[좋아하는 것]\n${likes.join('\n')}`);
-      if (dislikes.length) blocks.push(`[싫어하는 것]\n${dislikes.join('\n')}`);
+      if (interestsNorm.length) blocks.push(`[관심사]\n${interestsNorm.join('\n')}`);
+      if (likesNorm.length) blocks.push(`[좋아하는 것]\n${likesNorm.join('\n')}`);
+      if (dislikesNorm.length) blocks.push(`[싫어하는 것]\n${dislikesNorm.join('\n')}`);
 
-      if (!blocks.length) return cleaned;
       return [cleaned, blocks.join('\n\n')].filter(Boolean).join('\n\n').trim();
     } catch (_) {
       return String(rawPersonality || '').trim();
@@ -3252,12 +3265,16 @@ const CreateCharacterPage = () => {
       // ✅ 취소됐으면 결과 반영 안 함
       if (quickDetailGenAbortRef.current) return;
 
+      const normalizeKeywords = (rawArr) => (Array.isArray(rawArr) ? rawArr : [])
+        .map((x) => String(x || '').trim())
+        .filter(Boolean)
+        .slice(0, 3);
       const d = res?.data || {};
       const nextPersonality = String(d?.personality || '').trim();
       const nextSpeech = String(d?.speech_style || '').trim();
-      const interests = Array.isArray(d?.interests) ? d.interests : [];
-      const likes = Array.isArray(d?.likes) ? d.likes : [];
-      const dislikes = Array.isArray(d?.dislikes) ? d.dislikes : [];
+      const interests = normalizeKeywords(d?.interests);
+      const likes = normalizeKeywords(d?.likes);
+      const dislikes = normalizeKeywords(d?.dislikes);
       // ✅ 예시대화(옵션): 백엔드가 내려주는 경우에만 적용(없으면 기존 입력 유지)
       const nextExampleDialogues = (() => {
         try {
@@ -3292,11 +3309,7 @@ const CreateCharacterPage = () => {
           ? { example_dialogues: { ...(prev.example_dialogues || {}), dialogues: nextExampleDialogues } }
           : {}),
       }));
-      setDetailPrefs({
-        interests: interests.slice(0, 3).map((x) => String(x || '').trim()).filter(Boolean),
-        likes: likes.slice(0, 3).map((x) => String(x || '').trim()).filter(Boolean),
-        dislikes: dislikes.slice(0, 3).map((x) => String(x || '').trim()).filter(Boolean),
-      });
+      setDetailPrefs({ interests, likes, dislikes });
       setDetailChipInputs({ interests: '', likes: '', dislikes: '' });
 
       dispatchToast('success', '디테일이 자동 생성되었습니다. 내용을 확인해주세요.');
@@ -3896,7 +3909,7 @@ const CreateCharacterPage = () => {
     if (typeof window === 'undefined' || !window.history || !window.location) return undefined;
 
     const shouldGuard = Boolean(hasUnsavedChanges && hasAnyUserInput);
-    const KEY = '__cc_leave_guard';
+    const KEY = LEAVE_GUARD_KEY;
     const msg = '작성 중인 내용이 저장되지 않았습니다.\n이 페이지를 나가면 입력한 내용이 사라질 수 있어요.\n그래도 나가시겠어요?';
 
     const pushGuard = () => {
@@ -4242,6 +4255,111 @@ const CreateCharacterPage = () => {
           return [{ title: '도입부 1', content: '', secret: '' }];
         }
       };
+      // ✅ 편집 복원: 위저드 SSOT(start_sets) 정규화
+      // - 구버전/레거시 데이터(키 이름/구조 차이)를 방어해 오프닝/스탯/엔딩 공란을 막는다.
+      const normalizeStartSetsForEdit = (rawStartSets, rawIntroScenes, rawGreeting) => {
+        const makeFallbackSet = () => {
+          const introArr = Array.isArray(rawIntroScenes) ? rawIntroScenes : [];
+          const intro0 = introArr[0] || {};
+          const intro = String(intro0?.content || '').trim();
+          const title = String(intro0?.title || '오프닝 1').trim() || '오프닝 1';
+          const firstLine = String(rawGreeting || '').trim();
+          return {
+            selectedId: 'set_1',
+            items: [
+              {
+                id: 'set_1',
+                title,
+                intro,
+                firstLine,
+                turn_events: [],
+                ending_settings: { min_turns: 30, endings: [] },
+                stat_settings: { stats: [] },
+              },
+            ],
+            sim_options: { mode: 'preset', max_turns: 200 },
+            setting_book: { selectedId: 'memo_1', items: [{ id: 'memo_1', detail: '', triggers: [''], targets: ['all'] }] },
+          };
+        };
+
+        try {
+          let ss = rawStartSets;
+          if (typeof ss === 'string') {
+            try { ss = JSON.parse(ss); } catch (_) { ss = null; }
+          }
+          if (!ss || typeof ss !== 'object') return makeFallbackSet();
+
+          const rawItems = Array.isArray(ss?.items)
+            ? ss.items
+            : (Array.isArray(ss?.start_sets) ? ss.start_sets : []);
+
+          const items = (rawItems || []).map((it, idx) => {
+            const base = (it && typeof it === 'object') ? it : {};
+            const id = String(base?.id || `set_${idx + 1}`).trim() || `set_${idx + 1}`;
+            const title = String(base?.title || `오프닝 ${idx + 1}`).trim() || `오프닝 ${idx + 1}`;
+            const intro = String(base?.intro ?? base?.content ?? '').trim();
+            const firstLine = String(base?.firstLine ?? base?.first_line ?? base?.greeting ?? '').trim();
+            const turnEvents = Array.isArray(base?.turn_events) ? base.turn_events : [];
+            const endingSettingsRaw = (base?.ending_settings && typeof base.ending_settings === 'object') ? base.ending_settings : {};
+            const minTurnsRaw = Number(endingSettingsRaw?.min_turns ?? endingSettingsRaw?.minTurns ?? 30);
+            const minTurns = Number.isFinite(minTurnsRaw) ? Math.max(1, Math.floor(minTurnsRaw)) : 30;
+            const endings = Array.isArray(endingSettingsRaw?.endings) ? endingSettingsRaw.endings : [];
+            const statSettingsRaw = (base?.stat_settings && typeof base.stat_settings === 'object') ? base.stat_settings : {};
+            const stats = Array.isArray(statSettingsRaw?.stats) ? statSettingsRaw.stats : [];
+            return {
+              ...base,
+              id,
+              title,
+              intro,
+              firstLine,
+              turn_events: turnEvents,
+              ending_settings: { ...endingSettingsRaw, min_turns: minTurns, endings },
+              stat_settings: { ...statSettingsRaw, stats },
+            };
+          });
+
+          const safeItems = items.length ? items : makeFallbackSet().items;
+          const selectedRaw = String(ss?.selectedId ?? ss?.selected_id ?? '').trim();
+          const selectedId = (selectedRaw && safeItems.some((x) => String(x?.id || '').trim() === selectedRaw))
+            ? selectedRaw
+            : String(safeItems[0]?.id || 'set_1');
+
+          const simRaw = (ss?.sim_options && typeof ss.sim_options === 'object') ? ss.sim_options : {};
+          const maxTurnsRaw = Number(simRaw?.max_turns ?? simRaw?.maxTurns ?? 200);
+          const maxTurns = Number.isFinite(maxTurnsRaw) ? Math.max(1, Math.floor(maxTurnsRaw)) : 200;
+
+          const settingBookRaw = (ss?.setting_book && typeof ss.setting_book === 'object') ? ss.setting_book : {};
+          const memosRaw = Array.isArray(settingBookRaw?.items) ? settingBookRaw.items : [];
+          const memos = memosRaw.length ? memosRaw : [{ id: 'memo_1', detail: '', triggers: [''], targets: ['all'] }];
+          const memoSelectedRaw = String(settingBookRaw?.selectedId || '').trim();
+          const memoSelectedId = (memoSelectedRaw && memos.some((m) => String(m?.id || '').trim() === memoSelectedRaw))
+            ? memoSelectedRaw
+            : String(memos[0]?.id || 'memo_1');
+
+          return {
+            ...ss,
+            selectedId,
+            items: safeItems,
+            sim_options: { ...simRaw, max_turns: maxTurns },
+            setting_book: { ...settingBookRaw, selectedId: memoSelectedId, items: memos },
+          };
+        } catch (_) {
+          return makeFallbackSet();
+        }
+      };
+      const normalizedIntroScenes = normalizeIntroScenes(char.introduction_scenes);
+      const normalizedStartSets = normalizeStartSetsForEdit(char?.start_sets, normalizedIntroScenes, char?.greeting);
+      // ✅ 편집 진입 시 디테일 칩 복원(성격 필드의 [관심사]/[좋아하는 것]/[싫어하는 것] 블록 파싱)
+      try {
+        const parsedDetail = extractDetailPrefsFromPersonality(char?.personality || '');
+        setDetailPrefs({
+          interests: Array.isArray(parsedDetail?.interests) ? parsedDetail.interests : [],
+          likes: Array.isArray(parsedDetail?.likes) ? parsedDetail.likes : [],
+          dislikes: Array.isArray(parsedDetail?.dislikes) ? parsedDetail.dislikes : [],
+        });
+        setDetailChipInputs({ interests: '', likes: '', dislikes: '' });
+        detailPrefsInitRef.current = true;
+      } catch (_) {}
       setFormData(prev => ({
         ...prev,
         basic_info: {
@@ -4255,7 +4373,8 @@ const CreateCharacterPage = () => {
           world_setting: char.world_setting || '',
           user_display_description: char.user_display_description || '',
           use_custom_description: char.use_custom_description || false,
-          introduction_scenes: normalizeIntroScenes(char.introduction_scenes),
+          introduction_scenes: normalizedIntroScenes,
+          start_sets: normalizedStartSets,
           character_type: char.character_type || 'roleplay',
           base_language: char.base_language || 'ko'
         },
@@ -4533,6 +4652,38 @@ const CreateCharacterPage = () => {
           ) {
             // setError로 상단 에러(Alert)를 띄우지 않는다(요구사항).
             setLoading(false);
+            // ✅ 글자수 초과/누락 필드 → 토스트 + 해당 위저드 스텝 이동
+            if (nameTrimLen === 0) {
+              dispatchToast('error', '캐릭터 이름을 입력해주세요.');
+              setNormalWizardStep('profile');
+            } else if (nameLen > PROFILE_NAME_MAX_LEN) {
+              dispatchToast('error', `이름이 최대 글자수(${PROFILE_NAME_MAX_LEN}자)를 초과했어요.`);
+              setNormalWizardStep('profile');
+            } else if (descTrimLen === 0) {
+              dispatchToast('error', '한줄소개를 입력해주세요.');
+              setNormalWizardStep('profile');
+            } else if (descLen > PROFILE_ONE_LINE_MAX_LEN) {
+              dispatchToast('error', `한줄소개가 최대 글자수를 초과했어요.`);
+              setNormalWizardStep('profile');
+            } else if (worldLen > 6000) {
+              dispatchToast('error', '프롬프트(세계관)가 최대 글자수(6000자)를 초과했어요.');
+              setNormalWizardStep('prompt');
+            } else if (personalityLen > 300 || speechLen > 300) {
+              dispatchToast('error', '성격 또는 말투가 최대 글자수(300자)를 초과했어요.');
+              setNormalWizardStep('detail');
+            } else if (openingAnyOver) {
+              dispatchToast('error', '오프닝 항목 중 글자수를 초과한 필드가 있어요.');
+              setNormalWizardStep('first_start');
+            } else if (dialoguesAnyOver) {
+              dispatchToast('error', '예시대화 항목 중 글자수를 초과한 필드가 있어요.');
+              setNormalWizardStep('detail');
+            } else if (isSecretInfoEnabled && secretLen > 1000) {
+              dispatchToast('error', '비밀정보가 최대 글자수(1000자)를 초과했어요.');
+              setNormalWizardStep('first_start');
+            } else if (!!formData?.basic_info?.use_custom_description && commentLen > 1000) {
+              dispatchToast('error', '크리에이터 코멘트가 최대 글자수(1000자)를 초과했어요.');
+              setNormalWizardStep('options');
+            }
             return;
           }
         } catch (_) {
@@ -5269,6 +5420,8 @@ const CreateCharacterPage = () => {
         : null;
       const items = Array.isArray(ss?.items) ? ss.items : [];
       const active = items.find((x) => String(x?.id || '').trim() === sid) || null;
+      const activeIntro = String(active?.intro || '').trim();
+      const activeFirstLine = String(active?.firstLine || '').trim();
       const hasExisting = !!(String(active?.intro || '').trim() || String(active?.firstLine || '').trim());
       if (hasExisting && !forceOverwrite) {
         openAutoGenOverwriteConfirm(
@@ -5290,12 +5443,80 @@ const CreateCharacterPage = () => {
         : (String(user?.preferred_model || 'claude').trim().toLowerCase() || 'claude');
       const sim = (ss && typeof ss?.sim_options === 'object' && ss.sim_options) ? ss.sim_options : {};
       const simDatingElements = !!sim?.sim_dating_elements;
+      /**
+       * ✅ 오프닝 변주 힌트(중복 방지)
+       *
+       * 우선순위:
+       * 1) 현재 오프닝 덮어쓰기(forceOverwrite): "기존 내 텍스트"를 회피 대상으로 사용
+       * 2) 현재 선택된 다른 오프닝(내용 있음)
+       * 3) 현재 탭 기준 가장 가까운 다른 오프닝(내용 있음)
+       * 4) 그 외 첫 번째 다른 오프닝(내용 있음)
+       */
+      const avoidSource = (() => {
+        try {
+          if (forceOverwrite && (activeIntro || activeFirstLine)) {
+            return { intro: activeIntro, firstLine: activeFirstLine };
+          }
+          const hasOpeningContent = (x) => {
+            const i = String(x?.intro || '').trim();
+            const f = String(x?.firstLine || '').trim();
+            return !!(i || f);
+          };
+          const selectedOtherId = String(ss?.selectedId || '').trim();
+          const selectedOther = items.find((x) => {
+            const xid = String(x?.id || '').trim();
+            if (!xid || xid === sid) return false;
+            if (xid !== selectedOtherId) return false;
+            return hasOpeningContent(x);
+          });
+          if (selectedOther) {
+            return {
+              intro: String(selectedOther?.intro || '').trim(),
+              firstLine: String(selectedOther?.firstLine || '').trim(),
+            };
+          }
+          const targetIdx = items.findIndex((x) => String(x?.id || '').trim() === sid);
+          if (targetIdx >= 0) {
+            for (let dist = 1; dist < items.length; dist += 1) {
+              const left = items[targetIdx - dist];
+              if (left && String(left?.id || '').trim() !== sid && hasOpeningContent(left)) {
+                return {
+                  intro: String(left?.intro || '').trim(),
+                  firstLine: String(left?.firstLine || '').trim(),
+                };
+              }
+              const right = items[targetIdx + dist];
+              if (right && String(right?.id || '').trim() !== sid && hasOpeningContent(right)) {
+                return {
+                  intro: String(right?.intro || '').trim(),
+                  firstLine: String(right?.firstLine || '').trim(),
+                };
+              }
+            }
+          }
+          const firstOther = items.find((x) => {
+            const xid = String(x?.id || '').trim();
+            return !!xid && xid !== sid && hasOpeningContent(x);
+          });
+          if (firstOther) {
+            return {
+              intro: String(firstOther?.intro || '').trim(),
+              firstLine: String(firstOther?.firstLine || '').trim(),
+            };
+          }
+          return null;
+        } catch (_) {
+          return null;
+        }
+      })();
       const res = await charactersAPI.quickGenerateFirstStartDraft({
         name,
         description: desc,
         world_setting: world,
         mode,
         sim_dating_elements: (mode === 'simulator' ? simDatingElements : undefined),
+        avoid_intro: String(avoidSource?.intro || '').trim() || undefined,
+        avoid_first_line: String(avoidSource?.firstLine || '').trim() || undefined,
         tags: Array.isArray(selectedTagSlugs) ? selectedTagSlugs : [],
         ai_model: (aiModel === 'gpt' ? 'gpt' : (aiModel === 'gemini' ? 'gemini' : 'claude')),
       });
@@ -6413,6 +6634,8 @@ const CreateCharacterPage = () => {
       
       // ✅ 경쟁사 UX: 프롬프트 자동 생성 시 디테일도 함께 자동 생성
       // - 디테일 탭의 "자동 생성" 버튼은 유지하되, 프롬프트 버튼은 올인원으로 동작하게 한다.
+      let detailStepSucceeded = false;
+      let detailStepFailed = false;
       try {
         if (!quickDetailGenLoading) {
           setQuickPromptGenSteps((prev) => {
@@ -6437,34 +6660,37 @@ const CreateCharacterPage = () => {
             tags: Array.isArray(selectedTagSlugs) ? selectedTagSlugs : [],
             ai_model: (aiModel === 'gpt' ? 'gpt' : (aiModel === 'gemini' ? 'gemini' : 'claude')),
           });
+          const normalizeKeywords = (rawArr) => (Array.isArray(rawArr) ? rawArr : [])
+            .map((x) => String(x || '').trim())
+            .filter(Boolean)
+            .slice(0, 3);
           const d = detailRes?.data || {};
           const nextPersonality = String(d?.personality || '').trim();
           const nextSpeech = String(d?.speech_style || '').trim();
-          const interests = Array.isArray(d?.interests) ? d.interests : [];
-          const likes = Array.isArray(d?.likes) ? d.likes : [];
-          const dislikes = Array.isArray(d?.dislikes) ? d.dislikes : [];
+          const interests = normalizeKeywords(d?.interests);
+          const likes = normalizeKeywords(d?.likes);
+          const dislikes = normalizeKeywords(d?.dislikes);
 
-          // 방어적 검증: 비정상 결과면 적용하지 않는다.
-          if (nextPersonality && nextSpeech) {
-            setFormData((prev) => ({
-              ...prev,
-              basic_info: {
-                ...prev.basic_info,
-                personality: nextPersonality.slice(0, 300),
-                speech_style: nextSpeech.slice(0, 300),
-              },
-            }));
+          // ✅ 디테일 탭 자동생성과 동일 검증: 성격/말투 + 키워드 3종 각 3개가 모두 있어야 반영한다.
+          if (!nextPersonality || !nextSpeech || interests.length < 3 || likes.length < 3 || dislikes.length < 3) {
+            throw new Error('quick_detail_incomplete');
           }
-          setDetailPrefs({
-            interests: interests.slice(0, 3).map((x) => String(x || '').trim()).filter(Boolean),
-            likes: likes.slice(0, 3).map((x) => String(x || '').trim()).filter(Boolean),
-            dislikes: dislikes.slice(0, 3).map((x) => String(x || '').trim()).filter(Boolean),
-          });
+
+          setFormData((prev) => ({
+            ...prev,
+            basic_info: {
+              ...prev.basic_info,
+              personality: nextPersonality.slice(0, 300),
+              speech_style: nextSpeech.slice(0, 300),
+            },
+          }));
+          setDetailPrefs({ interests, likes, dislikes });
           setDetailChipInputs({ interests: '', likes: '', dislikes: '' });
+          detailStepSucceeded = true;
         }
       } catch (e2) {
+        detailStepFailed = true;
         console.error('[CreateCharacterPage] quick-generate-detail (via prompt) failed:', e2);
-        dispatchToast('error', '디테일 자동 생성에 실패했습니다. 잠시 후 다시 시도해주세요.');
         setQuickPromptGenSteps((prev) => {
           const base = Array.isArray(prev) ? prev : [];
           return [...base.filter((s) => !s.includes('3/3')), '⚠ 3/3 디테일 생성 실패'];
@@ -6484,7 +6710,13 @@ const CreateCharacterPage = () => {
         } catch (_) {}
       }
 
-      dispatchToast('success', '프롬프트/디테일이 자동 생성되었습니다. 내용을 확인해주세요.');
+      if (detailStepSucceeded) {
+        dispatchToast('success', '프롬프트/디테일이 자동 생성되었습니다. 내용을 확인해주세요.');
+      } else if (detailStepFailed) {
+        dispatchToast('warning', '프롬프트는 생성되었지만 디테일 자동 생성은 실패했습니다. 디테일 탭에서 다시 시도해주세요.');
+      } else {
+        dispatchToast('success', '프롬프트가 자동 생성되었습니다. 내용을 확인해주세요.');
+      }
       } catch (e) {
         console.error('[CreateCharacterPage] quick-generate-prompt failed:', e);
         // ✅ 실패 시 원문 복구(유실 방지)
@@ -13385,7 +13617,7 @@ const CreateCharacterPage = () => {
                     try { leaveBypassRef.current = true; } catch (_) {}
                     if (typeof window !== 'undefined' && window.history && window.history.length > 1) {
                       const st = window.history.state || {};
-                      if (st && st.cc_leave_guard === true && window.history.length > 2) {
+                      if (st && st[LEAVE_GUARD_KEY] === true && window.history.length > 2) {
                         try { window.history.go(-2); } catch (_) { navigate(-1); }
                       } else {
                         navigate(-1);
@@ -14192,7 +14424,7 @@ const CreateCharacterPage = () => {
                       try {
                         if (typeof window !== 'undefined' && window.history && window.history.length > 1) {
                           const st = window.history.state || {};
-                          if (st && st.cc_leave_guard === true && window.history.length > 2) {
+                          if (st && st[LEAVE_GUARD_KEY] === true && window.history.length > 2) {
                             try { window.history.go(-2); } catch (_) { navigate(-1); }
                           } else {
                             navigate(-1);

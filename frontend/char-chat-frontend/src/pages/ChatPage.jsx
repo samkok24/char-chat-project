@@ -9,7 +9,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { useSocket } from '../contexts/SocketContext';
 import { charactersAPI, chatAPI, usersAPI, origChatAPI, mediaAPI, storiesAPI, userPersonasAPI } from '../lib/api'; // usersAPI 추가
 import { showToastOnce } from '../lib/toastOnce';
-import { resolveImageUrl, getCharacterPrimaryImage, buildPortraitSrcSet } from '../lib/images';
+import { resolveImageUrl, getCharacterPrimaryImage, getThumbnailUrl } from '../lib/images';
 import { getReadingProgress } from '../lib/reading';
 import { replacePromptTokens } from '../lib/prompt';
 import { parseAssistantBlocks } from '../lib/assistantBlocks';
@@ -102,6 +102,13 @@ const ChatPage = () => {
   const [chatRoomId, setChatRoomId] = useState(null);
   const [aiThinking, setAiThinking] = useState(false);
   const [mediaPanelEnabled, setMediaPanelEnabled] = useState(false);
+  const [isDesktopViewport, setIsDesktopViewport] = useState(() => {
+    try {
+      return typeof window !== 'undefined' && window.matchMedia('(min-width: 1024px)').matches;
+    } catch (_) {
+      return false;
+    }
+  });
 
   // ✅ URL 기준 원작챗 여부(훅/상태 선언 순서와 무관하게 안전)
   // - isOrigChat(state)는 아래에서 선언되므로, 여기서는 URL 파라미터로만 판별한다.
@@ -114,6 +121,28 @@ const ChatPage = () => {
       return false;
     }
   })();
+
+  useEffect(() => {
+    try {
+      if (typeof window === 'undefined' || !window.matchMedia) return;
+      const mql = window.matchMedia('(min-width: 1024px)');
+      const onChange = () => setIsDesktopViewport(Boolean(mql.matches));
+      onChange();
+      try {
+        mql.addEventListener('change', onChange);
+        return () => mql.removeEventListener('change', onChange);
+      } catch (_) {
+        try {
+          mql.addListener(onChange);
+          return () => mql.removeListener(onChange);
+        } catch (_) {
+          return undefined;
+        }
+      }
+    } catch (_) {
+      return undefined;
+    }
+  }, []);
 
   /**
    * ✅ 원작챗 페르소나 적용 여부 안내(1회)
@@ -294,6 +323,7 @@ const ChatPage = () => {
   const uiIntroTimerRef = useRef(null);
   const uiIntroCancelSeqRef = useRef(0);
   const uiIntroDoneByIdRef = useRef({}); // { [messageId]: true }
+  const uiOpeningRunKeyRef = useRef(''); // room/search 단위로 오프닝 연출 1회 초기화
   const [uiOpeningStage, setUiOpeningStage] = useState('idle'); // idle|intro|greeting|done
   // ✅ 로컬 UI 말풍선(상태창)도 타이핑처럼 스트리밍 (요구사항)
   // - 서버 SSOT(content)는 건드리지 않고, "표시만" 점진 출력한다.
@@ -614,7 +644,7 @@ const ChatPage = () => {
     }
   }, []);
 
-  const fetchSimStatusSnapshot = useCallback(async (roomId) => {
+  const fetchSimStatusSnapshot = useCallback(async (roomId, options = null) => {
     /**
      * ✅ 시뮬 상태창 스냅샷 로드(서버 SSOT: /chat/rooms/{id}/meta)
      *
@@ -625,9 +655,10 @@ const ChatPage = () => {
     try {
       if (!roomId) return null;
       if (!isAuthenticated) return null;
+      const force = Boolean(options && typeof options === 'object' && options.force);
       const now = Date.now();
       // 방어: 스팸 호출 방지(짧은 TTL)
-      if (now - (lastStatusFetchAtRef.current || 0) < 800) {
+      if (!force && now - (lastStatusFetchAtRef.current || 0) < 800) {
         return simStatusSnapshot;
       }
       lastStatusFetchAtRef.current = now;
@@ -716,6 +747,61 @@ const ChatPage = () => {
     try { lastAutoStatusByMsgIdRef.current = ''; } catch (_) {}
     try { lastAutoStatusTurnRef.current = null; } catch (_) {}
   }, [chatRoomId]);
+
+  /**
+   * ✅ 로컬 스탯 말풍선 앵커 복구(순서 보존)
+   *
+   * 배경:
+   * - !스탯 버블은 특정 메시지(anchorId) 뒤에 붙는다.
+   * - 히스토리 재동기화로 해당 메시지 id가 바뀌면(anchor orphan) 버블이 누락될 수 있다.
+   *
+   * 원칙:
+   * - orphan을 무조건 tail로 보내지 않는다(기존 요구사항 유지).
+   * - 버블 생성시각(created_at)을 기준으로 "가장 가까운 이전 메시지"에 재앵커한다.
+   * - 이전 메시지를 못 찾을 때만 마지막 메시지로 붙인다.
+   */
+  useEffect(() => {
+    try {
+      if (!chatRoomId) return;
+      const roomId = String(chatRoomId);
+      const arr = Array.isArray(messages) ? messages : [];
+      if (!arr.length) return;
+      const msgList = arr.map((m) => ({
+        id: String(m?.id || m?._id || '').trim(),
+        ts: Date.parse(String(m?.created_at || m?.createdAt || m?.timestamp || '')),
+      })).filter((x) => x.id);
+      if (!msgList.length) return;
+      const msgIdSet = new Set(msgList.map((x) => x.id));
+      let changed = false;
+      setLocalUiBubbles((prev) => {
+        const list = Array.isArray(prev) ? prev : [];
+        const next = list.map((b) => {
+          if (String(b?.roomId || '') !== roomId) return b;
+          const aid = String(b?.anchorId || '').trim();
+          if (!aid || aid === String(UI_TAIL_ANCHOR)) return b;
+          if (msgIdSet.has(aid)) return b;
+
+          const bTsRaw = Date.parse(String(b?.created_at || ''));
+          const bTs = Number.isFinite(bTsRaw) ? bTsRaw : Number.POSITIVE_INFINITY;
+          let candidate = null;
+          for (const m of msgList) {
+            const mts = Number.isFinite(m.ts) ? m.ts : Number.NEGATIVE_INFINITY;
+            if (mts <= bTs) candidate = m.id;
+            else break;
+          }
+          if (!candidate) {
+            candidate = msgList[msgList.length - 1]?.id || '';
+          }
+          if (!candidate || candidate === aid) return b;
+          changed = true;
+          return { ...b, anchorId: candidate };
+        });
+        return changed ? next : list;
+      });
+    } catch (e) {
+      try { console.warn('[ChatPage] local ui bubble re-anchor failed:', e); } catch (_) {}
+    }
+  }, [chatRoomId, messages, UI_TAIL_ANCHOR]);
 
   const formatSimStatusPlainText = (simStatusObj) => {
     /**
@@ -1340,6 +1426,30 @@ const ChatPage = () => {
   }, []);
 
   /**
+   * 오프닝 지문 스트리밍 표시용 HTML -> 텍스트 정규화
+   *
+   * 의도:
+   * - intro가 HTML(<img>/<a>/태그)일 때도 지문박스 스트리밍 체감을 유지한다.
+   * - 스트리밍 중에는 텍스트로 안전하게 보여주고, 완료 후 full HTML 렌더로 전환한다.
+   */
+  const normalizeIntroStreamText = useCallback((value) => {
+    try {
+      const raw = String(value || '');
+      if (!raw) return '';
+      if (!hasChatHtmlLike(raw)) return raw;
+      const safeHtml = sanitizeChatMessageHtml(raw);
+      if (typeof document !== 'undefined' && typeof document.createElement === 'function') {
+        const el = document.createElement('div');
+        el.innerHTML = safeHtml;
+        return String(el.textContent || el.innerText || '').replace(/\s+\n/g, '\n').trim();
+      }
+      return safeHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    } catch (_) {
+      return String(value || '');
+    }
+  }, []);
+
+  /**
    * 세이프티/정책 거절 응답 감지 + 한국어 안내 문구 렌더링용 변환
    *
    * 의도/동작:
@@ -1351,9 +1461,47 @@ const ChatPage = () => {
    * - 모델별 템플릿이 조금씩 달라서, 과도하게 넓지 않은 "대표 패턴"만 탐지한다.
    * - 오탐을 줄이기 위해 2개 이상 키워드 매칭을 기본으로 한다.
    */
-  const formatSafetyRefusalForDisplay = useCallback((text) => {
+  // ✅ 테스트/디버깅: 안전거절 "표시용 변환"을 끄고 원문을 그대로 본다.
+  // - 실제 모델/백엔드 거절인지, 프론트 오탐인지 판단이 가능해진다.
+  // - 운영 테스트를 위해 build-time env로도 끌 수 있다.
+  // - 방법:
+  //   1) URL에 ?nosafety=1
+  //   2) localStorage: cc:debug:nosafety=1
+  //   3) Vite env: VITE_DISABLE_SAFETY_UI=1
+  const bypassSafetyUiRef = useRef(false);
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(location.search || '');
+      const byParam = String(params.get('nosafety') || '').trim() === '1';
+      const byStorage = (() => {
+        try { return String(localStorage.getItem('cc:debug:nosafety') || '').trim() === '1'; } catch (_) { return false; }
+      })();
+      const byEnv = String(import.meta.env.VITE_DISABLE_SAFETY_UI || '').trim() === '1';
+      bypassSafetyUiRef.current = Boolean(byEnv || byParam || byStorage);
+    } catch (_) {
+      bypassSafetyUiRef.current = false;
+    }
+  }, [location.search]);
+
+  const formatSafetyRefusalForDisplay = useCallback((text, messageMetadata = null) => {
     const s = String(text || '').trim();
     if (!s) return s;
+
+    // ✅ 디버그 모드: 원문 그대로 표시
+    try {
+      if (bypassSafetyUiRef.current) return s;
+    } catch (_) {}
+
+    // ✅ 서버가 safety_blocked로 확정한 경우(가장 정확): 텍스트 휴리스틱 대신 바로 안내문으로 표시
+    try {
+      if (messageMetadata && typeof messageMetadata === 'object' && messageMetadata.safety_blocked) {
+        return [
+          '요청하신 내용은 안전 정책상 진행할 수 없어요.',
+          '대신 안전한 범위에서 상황을 이어갈 수 있어요.',
+          '원하시면 분위기(달달/긴장/서늘함)랑 상황(장소/시간/갈등)을 한 줄로만 말해줘요.'
+        ].join('\n');
+      }
+    } catch (_) {}
 
     const lower = s.toLowerCase();
     const hit = (re) => {
@@ -1366,13 +1514,13 @@ const ChatPage = () => {
       hit(/can't continue/) ||
       hit(/cannot continue/) ||
       hit(/i can(?:not|'t) help with/) ||
-      hit(/i can help you with/) ||
       hit(/explicit sexual/) ||
       hit(/sexual direction/) ||
       hit(/content policy/) ||
-      hit(/policy/) ||
       hit(/죄송하지만/) ||
-      hit(/성적(인|으로|인\s+)?/) ||
+      // "성적"은 (성적표/점수) 오탐이 많아서 "성적인/성적 콘텐츠"만 탐지
+      hit(/성적인/) ||
+      hit(/성적\s*(?:콘텐츠|묘사|행위|표현)/) ||
       hit(/노골적/) ||
       hit(/정책(상|에 의해|위반)/) ||
       hit(/안전(상|정책)/)
@@ -1383,21 +1531,22 @@ const ChatPage = () => {
       hit(/unable to/) ||
       hit(/won't/) ||
       hit(/cannot assist/) ||
+      hit(/can't assist/) ||
       hit(/refuse/) ||
       hit(/진행할 수 없/) ||
       hit(/도와드릴 수 없/) ||
       hit(/제공할 수 없/)
     );
 
-    // 오탐 방지: 길이가 짧은 일반 문장 하나는 통과, 키워드가 충분히 있을 때만 변환
-    const isRefusal = (k1 && k2) || (k1 && s.length > 120);
+    // 오탐 방지: 텍스트만으로는 false positive가 치명적이라, 기본은 "2중 키워드" 매칭만 허용
+    const isRefusal = (k1 && k2);
     if (!isRefusal) return s;
 
     // 표시용 한국어 안내(대체)
     return [
-      '요청하신 내용은 수위가 높아 안전 정책상 진행할 수 없어요.',
-      '대신 감정선/로맨스/관계의 긴장감 같은 “비노골적” 방향으로는 이어갈 수 있어요.',
-      '원하시면 분위기(달달/집착/청춘/서늘함)랑 상황(장소/시간/갈등)을 한 줄로만 말해줘요.'
+      '요청하신 내용은 안전 정책상 진행할 수 없어요.',
+      '대신 안전한 범위에서 상황을 이어갈 수 있어요.',
+      '원하시면 분위기(달달/긴장/서늘함)랑 상황(장소/시간/갈등)을 한 줄로만 말해줘요.'
     ].join('\n');
   }, []);
 
@@ -1441,6 +1590,7 @@ const ChatPage = () => {
     // - 기존 구현은 new=1일 때 `return () => { mounted=false }`로 조기 return 되어,
     //   아래의 UI 설정 로드/리스너 등록이 스킵되어 탭 간 UI가 달라졌다.
     let warmMounted = true;
+    let initMounted = true;
     let warmTimer = null;
     const stopWarmPoll = () => {
       warmMounted = false;
@@ -1531,29 +1681,35 @@ const ChatPage = () => {
         }
 
         // mediaAPI 자산과 병합
-        try {
-          const mediaRes = await mediaAPI.listAssets({ entityType: 'character', entityId: characterId, presign: false, expiresIn: 300 });
-          const assets = Array.isArray(mediaRes.data?.items) ? mediaRes.data.items : (Array.isArray(mediaRes.data) ? mediaRes.data : []);
-          setMediaAssets(assets);
-          const mediaUrls = assets.map(a => a.url).filter(Boolean);
-          // mediaAPI와 기본 이미지 병합 (중복 제거)
-          const allImages = Array.from(new Set([...baseImages, ...mediaUrls]));
-          if (allImages.length) {
-            setCharacterImages(allImages);
-            if (isPinnedRef.current && pinnedUrlRef.current) {
-              const idx = allImages.findIndex(u => u === pinnedUrlRef.current);
-              setCurrentImageIndex(idx >= 0 ? idx : 0);
-            } else {
-              setCurrentImageIndex(0);
-            }
-          }
-        } catch (_) {
-          // mediaAPI 실패 시 baseImages만 사용
-          if (baseImages.length) {
-            setCharacterImages(baseImages);
+        // ✅ 성능/안정성: 미디어 조회는 채팅방 진입을 블로킹하지 않는다.
+        const applyImageSet = (images) => {
+          if (!Array.isArray(images) || images.length === 0) return;
+          setCharacterImages(images);
+          if (isPinnedRef.current && pinnedUrlRef.current) {
+            const idx = images.findIndex(u => u === pinnedUrlRef.current);
+            setCurrentImageIndex(idx >= 0 ? idx : 0);
+          } else {
             setCurrentImageIndex(0);
           }
-        }
+        };
+        if (baseImages.length) applyImageSet(baseImages);
+        void (async () => {
+          try {
+            const mediaRes = await Promise.race([
+              mediaAPI.listAssets({ entityType: 'character', entityId: characterId, presign: false, expiresIn: 300 }),
+              new Promise((_, reject) => setTimeout(() => reject(new Error('media_assets_timeout')), 3500)),
+            ]);
+            if (!initMounted) return;
+            const assets = Array.isArray(mediaRes.data?.items) ? mediaRes.data.items : (Array.isArray(mediaRes.data) ? mediaRes.data : []);
+            setMediaAssets(assets);
+            const mediaUrls = assets.map(a => a.url).filter(Boolean);
+            const allImages = Array.from(new Set([...(baseImages || []), ...mediaUrls]));
+            if (allImages.length) applyImageSet(allImages);
+          } catch (_) {
+            if (!initMounted) return;
+            if (baseImages.length) applyImageSet(baseImages);
+          }
+        })();
 
         /**
          * ✅ 게스트 모드(요구사항)
@@ -1679,6 +1835,21 @@ const ChatPage = () => {
          * - 이 구간에서 이전 messages 잔상을 제거해 혼란을 막는다.
          */
         if (forceNew) {
+          /**
+           * ✅ 전환 레이스 방어(치명: 새로 대화인데 이전 방으로 전송)
+           *
+           * 문제:
+           * - `new=1` 진입 직후에도 `chatRoomId`가 잠깐 이전 방을 가리킬 수 있다.
+           * - 이 구간에서 사용자가 빠르게 전송하면 새 방이 아닌 이전 방에 메시지가 저장된다.
+           *
+           * 해결:
+           * - new=1 초기화 시점에 현재 room 포인터를 즉시 null로 비운다.
+           * - 이후 initialize 흐름에서 새 room이 확정되면 setChatRoomId(roomId)로 교체된다.
+           */
+          // 일반 캐릭터챗(new=1)에서만 기존 room 포인터를 즉시 비워 오발송을 막는다.
+          if (!(source === 'origchat' && storyIdParam)) {
+            try { setChatRoomId(null); } catch (_) {}
+          }
           try { setMessages([]); } catch (_) {}
           try { setPendingChoices([]); } catch (_) {}
           try { setRangeWarning(''); } catch (_) {}
@@ -1693,6 +1864,83 @@ const ChatPage = () => {
                 intro_ready: false,
               }));
             } catch (_) {}
+          } else {
+            /**
+             * ✅ 일반 캐릭터챗(new=1) 즉시 체감 개선
+             *
+             * 목표:
+             * - "새로 대화" 클릭 직후 로딩 모달 대신 오프닝(지문/첫대사)을 바로 보여준다.
+             * - 서버 SSOT(실제 저장 메시지)가 도착하면 기존 히스토리 동기화가 자연스럽게 대체한다.
+             *
+             * 원리:
+             * - 캐릭터 공개 데이터(start_sets 또는 레거시 intro/greeting)로
+             *   임시 프리뷰 메시지를 즉시 구성한다.
+             * - 오프닝 스트리밍 UI는 기존 로직(uiOpeningStage)을 그대로 재사용한다.
+             */
+            try {
+              const extractFirstStartForNewChat = (characterData) => {
+                try {
+                  const ss = characterData?.start_sets;
+                  const items = Array.isArray(ss?.items) ? ss.items : [];
+                  const selectedId = String(ss?.selectedId || ss?.selected_id || '').trim();
+                  const pickedByOpening = openingParam
+                    ? (items.find((x) => String(x?.id || '').trim() === openingParam) || null)
+                    : null;
+                  const picked = pickedByOpening
+                    || items.find((x) => String(x?.id || '').trim() === selectedId)
+                    || items[0]
+                    || null;
+                  const intro = String(picked?.intro || '').trim();
+                  const firstLine = String(picked?.firstLine || picked?.first_line || '').trim();
+                  if (intro || firstLine) return { intro, firstLine };
+                } catch (_) {}
+                try {
+                  const scenes = Array.isArray(characterData?.introduction_scenes) ? characterData.introduction_scenes : [];
+                  const intro = String(scenes?.[0]?.content || '').trim();
+                  const greeting = String(characterData?.greeting || (Array.isArray(characterData?.greetings) ? characterData.greetings[0] : '') || '').trim();
+                  return { intro, firstLine: greeting };
+                } catch (_) {
+                  return { intro: '', firstLine: '' };
+                }
+              };
+
+              const { intro, firstLine } = extractFirstStartForNewChat(data);
+              const nm = data?.name || '캐릭터';
+              const nowIso = new Date().toISOString();
+              const preview = [];
+
+              const introText = intro ? replacePromptTokens(intro, { assistantName: nm, userName: '당신' }).trim() : '';
+              if (introText) {
+                preview.push({
+                  id: `optimistic-intro-${characterId}-${Date.now()}`,
+                  roomId: null,
+                  senderType: 'assistant',
+                  sender_type: 'assistant',
+                  content: introText,
+                  created_at: nowIso,
+                  message_metadata: { kind: 'intro' },
+                });
+              }
+
+              const firstLineText = firstLine ? replacePromptTokens(firstLine, { assistantName: nm, userName: '당신' }).trim() : '';
+              if (firstLineText) {
+                preview.push({
+                  id: `optimistic-firstline-${characterId}-${Date.now()}`,
+                  roomId: null,
+                  senderType: 'assistant',
+                  sender_type: 'assistant',
+                  content: firstLineText,
+                  created_at: nowIso,
+                });
+              }
+
+              if (preview.length > 0) {
+                setMessages(preview);
+                setUiOpeningStage('idle');
+              }
+            } catch (e) {
+              try { console.warn('[ChatPage] new chat optimistic opening failed:', e); } catch (_) {}
+            }
           }
         }
         
@@ -1760,13 +2008,22 @@ const ChatPage = () => {
           throw lastErr || new Error('start_failed');
         };
 
+        // ✅ room 파라미터가 있으면 우선 사용한다.
+        // - 특히 "새로 대화"에서 선행 start API가 새 room을 생성해 전달한 경우, 이를 신뢰해 즉시 진입한다.
+        // - room이 없거나 유효하지 않으면 아래에서 생성 경로로 폴백한다.
         let roomId = explicitRoom || null;
         // room 파라미터 유효성 검사 -> 실패 시 무효화하고 새 방 생성으로 폴백
         if (roomId) {
           try {
             const r = await chatAPI.getChatRoom(roomId);
-            if (!(r && r.data && r.data.id)) {
+            const fetchedId = String(r?.data?.id || '').trim();
+            const fetchedCharId = String(r?.data?.character_id || r?.data?.character?.id || '').trim();
+            const wantedCharId = String(characterId || '').trim();
+            if (!fetchedId) {
               console.warn('room param looks invalid, will fallback to new room:', roomId);
+              roomId = null;
+            } else if (wantedCharId && fetchedCharId && fetchedCharId !== wantedCharId) {
+              console.warn('room param character mismatch, will fallback to new room:', { roomId, fetchedCharId, wantedCharId });
               roomId = null;
             }
           } catch (e) {
@@ -1941,48 +2198,101 @@ const ChatPage = () => {
             }
           } else {
             if (forceNew) {
-              // 중복 방 방지: 같은 세션(new=1)에서 이미 만든 방이 있으면 재사용
+              // ✅ new=1 일반챗 중복 생성 방지(StrictMode/중복 init 방어)
+              // - 핵심: "과거 room 재사용"은 하지 않고, "동시 생성(pending) 중"일 때만 합류한다.
+              // - 즉, 새로 대화 버튼을 다시 누르면 항상 새 room이 생성되어야 한다.
               const guardKey = buildNewGuardKey(characterId, openingParam || null);
-              let reused = false;
-              try {
-                const saved = sessionStorage.getItem(guardKey);
-                if (saved) {
-                  const parsed = JSON.parse(saved);
-                  if (parsed?.roomId) {
+              const NEW_START_GUARD_TTL_MS = 12000;
+              const readNewGuard = () => {
+                try {
+                  const raw = sessionStorage.getItem(guardKey);
+                  if (!raw) return null;
+                  const parsed = JSON.parse(raw);
+                  const ts = Number(parsed?.ts || 0) || 0;
+                  if (!ts) return null;
+                  if (Date.now() - ts > NEW_START_GUARD_TTL_MS) return null;
+                  return parsed;
+                } catch (_) {
+                  return null;
+                }
+              };
+              const waitForNewGuardRoom = async () => {
+                for (let i = 0; i < 24; i += 1) {
+                  await new Promise((resolve) => setTimeout(resolve, 250));
+                  const g = readNewGuard();
+                  const rid = String(g?.roomId || '').trim();
+                  if (!rid || g?.pending !== false) continue;
+                  return rid;
+                }
+                return null;
+              };
+              let createdByThisInit = false;
+
+              // 1) 누군가 생성 중이면 완료까지 대기 후 합류(동시 생성 중복 방지)
+              const g0 = readNewGuard();
+              if (g0 && g0.pending) {
+                const waited = await waitForNewGuardRoom();
+                if (waited) {
+                  try {
+                    const r = await chatAPI.getChatRoom(waited);
+                    if (r?.data?.id) roomId = waited;
+                  } catch (_) {}
+                }
+              }
+
+              // 2) 여전히 room이 없으면 내가 생성 owner가 되어 start-new 호출
+              if (!roomId) {
+                const lock = `${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+                try {
+                  const existing = readNewGuard();
+                  if (!existing || !existing.pending) {
+                    sessionStorage.setItem(guardKey, JSON.stringify({ pending: true, ts: Date.now(), roomId: null, lock }));
+                  }
+                } catch (_) {}
+
+                const confirm = readNewGuard();
+                const iOwn = Boolean(confirm && confirm.pending && String(confirm.lock || '') === String(lock));
+
+                if (!iOwn && confirm && confirm.pending) {
+                  const waited = await waitForNewGuardRoom();
+                  if (waited) {
                     try {
-                      const r = await chatAPI.getChatRoom(parsed.roomId);
-                      if (r?.data?.id) {
-                        roomId = parsed.roomId;
-                        reused = true;
-                      }
-                    } catch (_) { /* ignore */ }
+                      const r = await chatAPI.getChatRoom(waited);
+                      if (r?.data?.id) roomId = waited;
+                    } catch (_) {}
                   }
                 }
-              } catch (_) {}
 
-              if (!reused) {
-                // ✅ 새 대화는 반드시 새 방 생성 (/chat/start-new)
-                const roomResponse = await startChatWithRetry(
-                  () => chatAPI.startNewChat(characterId, (openingParam ? { opening_id: openingParam } : null)),
-                  'chat-new'
-                );
-                roomId = roomResponse.data.id;
-                try { sessionStorage.setItem(guardKey, JSON.stringify({ roomId, ts: Date.now() })); } catch (_) {}
+                if (!roomId) {
+                  try {
+                    const roomResponse = await startChatWithRetry(
+                      () => chatAPI.startNewChat(characterId, (openingParam ? { opening_id: openingParam } : null)),
+                      'chat-new'
+                    );
+                    roomId = roomResponse.data.id;
+                    createdByThisInit = true;
+                    try { sessionStorage.setItem(guardKey, JSON.stringify({ pending: false, ts: Date.now(), roomId })); } catch (_) {}
+                  } catch (e) {
+                    // owner가 실패하면 pending 잠금 제거(다음 시도 복구)
+                    try {
+                      const g = readNewGuard();
+                      if (g && String(g.lock || '') === String(lock)) {
+                        sessionStorage.removeItem(guardKey);
+                      }
+                    } catch (_) {}
+                    throw e;
+                  }
+                }
+              }
+
+              if (createdByThisInit) {
+                try { window.dispatchEvent(new Event('chat:roomsChanged')); } catch (_) {}
               }
             } else {
               // URL에 room 파라미터가 있으면 그대로 사용, 없으면 최신 방 찾기
               if (!explicitRoom) {
-                try {
-                  const sessionsRes = await chatAPI.getChatSessions();
-                  const sessions = Array.isArray(sessionsRes.data) ? sessionsRes.data : [];
-                  const characterSessions = sessions.filter(s => String(s.character_id) === String(characterId));
-                  const latest = characterSessions.sort((a, b) => {
-                    const aTime = new Date(a.last_message_time || a.last_chat_time || a.updated_at || a.created_at || 0).getTime();
-                    const bTime = new Date(b.last_message_time || b.last_chat_time || b.updated_at || b.created_at || 0).getTime();
-                    return bTime - aTime;
-                  })[0];
-                  if (latest) roomId = latest.id;
-                } catch (_) {}
+                // ✅ 성능 최적화: 전체 세션 목록 조회(무거움) 대신 서버의 get-or-create(start) 경로를 사용한다.
+                // - 목록 50개를 받아 프론트에서 필터/정렬하던 비용을 제거해 진입 지연/실패를 줄인다.
               }
               if (!roomId) {
                 const roomResponse = await startChatWithRetry(() => chatAPI.startChat(characterId), 'chat');
@@ -2259,6 +2569,7 @@ const ChatPage = () => {
     return () => {
       // 워밍 폴링 중지(조기 return 방지 구조)
       stopWarmPoll();
+      initMounted = false;
       // ✅ 주의: 이 effect는 chatRoomId를 deps에서 제외해(의도적으로) stale closure가 발생할 수 있다.
       // - 모바일 탭 전환/라우트 이동 시 leave_room이 누락되면,
       //   소켓 재연결/히스토리 복구가 "이전 방"을 기준으로 동작하며 messages가 덮어써져
@@ -2565,9 +2876,9 @@ const ChatPage = () => {
     if (isOrigFromQuery) return;
 
     // 소켓 연결 및 채팅방 정보 로드 완료 후 채팅방 입장
+    // - 히스토리 요청은 SocketContext.joinRoom에서 단일 처리한다(레이스/중복 요청 방지).
     if (connected && chatRoomId && currentRoom?.id !== chatRoomId) {
       joinRoom(chatRoomId);
-      getMessageHistory(chatRoomId, 1);
     }
   }, [connected, chatRoomId, currentRoom, location.search]); // location.search 추가: source=origchat 가드 반영
 
@@ -2607,7 +2918,9 @@ const ChatPage = () => {
     };
   }, [isOrigChat, chatRoomId, connected, messages, location.search]);
 
-  // ✅ 모바일 탭 전환/백그라운드 복귀 시 "사라진 것처럼 보이는" 상태를 즉시 복구(SSOT 재동기화)
+  // ✅ 탭 전환/복귀 이벤트는 원작챗 동기화에만 사용한다.
+  // - 일반챗에서 visibilitychange로 히스토리를 재요청하면 오프닝 연출이 재트리거될 수 있다.
+  // - 일반챗은 소켓 실시간 흐름을 SSOT로 유지하고, 탭 복귀 자체로는 아무 것도 재요청하지 않는다.
   useEffect(() => {
     if (!chatRoomId) return;
     /**
@@ -2655,10 +2968,8 @@ const ChatPage = () => {
         return;
       }
 
-      // 일반 챗: 소켓 히스토리(최근 기준) 재요청
-      if (connected) {
-        try { getMessageHistory(chatRoomId, 1); } catch (_) {}
-      }
+      // 일반챗: no-op (탭 복귀로 스트리밍/오프닝 재시작 금지)
+      return;
     };
 
     try { document.addEventListener('visibilitychange', onVis); } catch (_) {}
@@ -2713,7 +3024,7 @@ const ChatPage = () => {
       
       // ✅ 3. 메시지 히스토리 로드 (원작챗만)
       // ✅ 재진입/이어하기에서 "최근 대화"가 보여야 한다 → tail(최근 기준)로 로드
-      let response = await chatAPI.getMessages(rid, { tail: 1, skip: 0, limit: 200 });
+      let response = await chatAPI.getMessages(rid, { tail: 1, skip: 0, limit: 120 });
       let messages = Array.isArray(response?.data) ? response.data : [];
       try {
         if (chatRoomIdRef.current && String(chatRoomIdRef.current) !== String(rid)) return;
@@ -2724,7 +3035,7 @@ const ChatPage = () => {
         // 인사말이 생성될 때까지 최대 10초 대기
         for (let i = 0; i < 20; i++) {
           await new Promise(resolve => setTimeout(resolve, 500));
-          response = await chatAPI.getMessages(rid, { tail: 1, skip: 0, limit: 200 });
+          response = await chatAPI.getMessages(rid, { tail: 1, skip: 0, limit: 120 });
           messages = Array.isArray(response?.data) ? response.data : [];
           try {
             if (chatRoomIdRef.current && String(chatRoomIdRef.current) !== String(rid)) return;
@@ -3183,34 +3494,109 @@ const ChatPage = () => {
       return;
     }
 
+    // 일반 캐릭터챗은 URL room을 우선 신뢰해 전송 대상 room을 결정한다(stale state 방지).
+    const resolvedGeneralRoomId = (() => {
+      if (isOrigChat) return '';
+      try {
+        const qRoom = String(new URLSearchParams(window.location.search || '').get('room') || '').trim();
+        if (qRoom) return qRoom;
+      } catch (_) {}
+      try {
+        return String(chatRoomIdRef.current || chatRoomId || '').trim();
+      } catch (_) {
+        return String(chatRoomId || '').trim();
+      }
+    })();
+    const roomIdForSend = String(isOrigChat ? (chatRoomId || '') : (resolvedGeneralRoomId || '')).trim();
+
+    // ✅ 초기화/룸 전환 레이스 방어: room 정렬이 끝나기 전에는 전송하지 않는다.
+    if (!isOrigChat && loading) {
+      try {
+        showToastOnce({
+          key: `chat-preparing:${characterId}`,
+          type: 'info',
+          message: '채팅방을 준비 중입니다. 잠시만 기다려 주세요.',
+        });
+      } catch (_) {}
+      return;
+    }
+    if (!isOrigChat) {
+      try {
+        const qRoom = String(new URLSearchParams(window.location.search || '').get('room') || '').trim();
+        const rid = String(chatRoomId || '').trim();
+        if (qRoom && rid && qRoom !== rid) {
+          try {
+            showToastOnce({
+              key: `chat-room-syncing:${characterId}`,
+              type: 'info',
+              message: '새 대화를 불러오는 중입니다. 잠시 후 전송해 주세요.',
+            });
+          } catch (_) {}
+          return;
+        }
+      } catch (_) {}
+    }
+
     // 원작챗은 소켓 연결 여부와 무관하게 HTTP로 턴을 보냄
-    if (!chatRoomId || (!isOrigChat && !connected)) return;
+    const messageContentRaw = draft.trim();
+    const firstToken = String(messageContentRaw.split(/\s+/)[0] || '').trim();
+    const tokenNoSpace = firstToken.replace(/\s+/g, '').trim();
+    const tokenLower = tokenNoSpace.toLowerCase();
+    const isStatCmd = (
+      tokenNoSpace.startsWith('!스탯') ||
+      tokenNoSpace.startsWith('!스텟') ||
+      tokenLower.startsWith('!stat') ||
+      tokenLower.startsWith('!status')
+    );
+    if (!roomIdForSend || (!isOrigChat && !connected && !isStatCmd)) return;
     // 방어적: 원작챗은 한 턴씩 순차 처리(중복 전송/경합 방지)
     if (isOrigChat && origTurnLoading) {
-      showToastOnce({ key: `orig-busy:${chatRoomId}`, type: 'info', message: '응답 생성 중입니다. 잠시만 기다려 주세요.' });
+      showToastOnce({ key: `orig-busy:${roomIdForSend}`, type: 'info', message: '응답 생성 중입니다. 잠시만 기다려 주세요.' });
       return;
     }
     // 선택지 노출 중에는 next_event(자동진행)만 제한하고, 일반 입력은 허용(요구사항 반영 시 UI로 전환)
 
-    const messageContentRaw = draft.trim();
     // ✅ "!스탯" 명령: 시뮬에서 언제든 상태창을 캐릭터(assistant) 말풍선으로 출력
     // - 서버 호출 없이 room meta(서버 SSOT)에서 stat_state를 읽어온다.
-    if (!isOrigChat && isSimulatorChat) {
-      // ✅ 오타 허용: "!스탯ㄱ", "!스탯!", "!스탯??" 등도 명령으로 처리(요구사항)
-      const firstToken = String(messageContentRaw.split(/\s+/)[0] || '').trim();
-      const tokenNoSpace = firstToken.replace(/\s+/g, '').trim();
-      const tokenLower = tokenNoSpace.toLowerCase();
-      const isStatCmd =
-        tokenNoSpace.startsWith('!스탯') ||
-        tokenLower.startsWith('!stat') ||
-        tokenLower.startsWith('!status');
+    if (!isOrigChat && isSimulatorChat && isStatCmd) {
       if (isStatCmd) {
         try { setNewMessage(''); } catch (_) {}
         try { if (inputRef.current) inputRef.current.style.height = 'auto'; } catch (_) {}
         try { autoScrollRef.current = true; } catch (_) {}
-        const snap = await fetchSimStatusSnapshot(chatRoomId);
+        const statusRoomId = String(roomIdForSend || '').trim();
+        if (!statusRoomId) return;
+        let snap = await fetchSimStatusSnapshot(statusRoomId, { force: true });
         if (!snap) {
-          pushLocalAssistantBubble(chatRoomId, 'status', { goalHint: null, rows: [], error: '상태창을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.' }, { anchorId: UI_TAIL_ANCHOR, stream: true });
+          // ✅ 상태창 초기화 지연(첫 턴 직후/메타 반영 지연) 방어:
+          // - 즉시 실패 문구를 노출하지 않고, 짧게 재시도 후 판단한다.
+          for (let i = 0; i < 2; i += 1) {
+            await new Promise((resolve) => setTimeout(resolve, 500));
+            snap = await fetchSimStatusSnapshot(statusRoomId, { force: true });
+            if (snap) break;
+          }
+        }
+        const anchorForManualStat = (() => {
+          try {
+            const arr = Array.isArray(messages) ? messages : [];
+            for (let i = arr.length - 1; i >= 0; i -= 1) {
+              const mm = arr[i];
+              const id = String(mm?.id || mm?._id || '').trim();
+              if (!id) continue;
+              return id;
+            }
+            return UI_TAIL_ANCHOR;
+          } catch (_) {
+            return UI_TAIL_ANCHOR;
+          }
+        })();
+        if (!snap) {
+          // ✅ "기다리면 되는" 일시 지연을 오류처럼 보이지 않게 처리
+          // - 사용자에게는 실패 말풍선 대신 안내 토스트만 노출한다.
+          showToastOnce({
+            key: `sim-status-warmup:${statusRoomId}`,
+            type: 'info',
+            message: '상태창을 준비 중입니다. 잠시 후 다시 시도해 주세요.',
+          });
           return;
         }
         const introMsg = (() => {
@@ -3220,7 +3606,9 @@ const ChatPage = () => {
           } catch (_) { return ''; }
         })();
         const payload = buildSimStatusPayload(snap, introMsg);
-        pushLocalAssistantBubble(chatRoomId, 'status', payload, { anchorId: UI_TAIL_ANCHOR, stream: true });
+        // ✅ 수동 !스탯은 "호출 시점" 위치에 고정한다.
+        // - tail 고정이면 이후 메시지가 추가될 때 계속 아래로 밀려 UX가 어긋난다.
+        pushLocalAssistantBubble(statusRoomId, 'status', payload, { anchorId: anchorForManualStat, stream: true });
         return;
       }
     }
@@ -3264,16 +3652,16 @@ const ChatPage = () => {
     }
       try {
         // ✅ 새로고침/탭 재로드에도 "... 로딩"을 유지하기 위한 세션 플래그(원작챗)
-        try { markTypingPersist(chatRoomId, 'orig'); } catch (_) {}
+        try { markTypingPersist(roomIdForSend, 'orig'); } catch (_) {}
         setOrigTurnLoading(true);
-        const payload = { room_id: chatRoomId, user_text: messageContentRaw, idempotency_key: genIdemKey(), settings_patch: (settingsSyncedRef.current ? null : chatSettings) };
+        const payload = { room_id: roomIdForSend, user_text: messageContentRaw, idempotency_key: genIdemKey(), settings_patch: (settingsSyncedRef.current ? null : chatSettings) };
         setLastOrigTurnPayload(payload);
         const resp = await origChatAPI.turn(payload);
         const assistantText = resp.data?.ai_message?.content || resp.data?.assistant || '';
         const meta = resp.data?.meta || {};
         const aiMessage = {
           id: `temp-ai-${Date.now()}`,
-          roomId: chatRoomId,
+          roomId: roomIdForSend,
           senderType: 'assistant',
           content: assistantText,
           created_at: new Date().toISOString()
@@ -3281,8 +3669,8 @@ const ChatPage = () => {
         setMessages(prev => [...prev, aiMessage]);
         // 진행도 갱신 + 설정 싱크 플래그 고정
         try {
-          if (chatRoomId) {
-            const metaRes = await chatAPI.getRoomMeta(chatRoomId);
+          if (roomIdForSend) {
+            const metaRes = await chatAPI.getRoomMeta(roomIdForSend);
             const m = metaRes?.data || {};
         setOrigMeta({
               turnCount: Number(m.turn_count || m.turnCount || 0) || 0,
@@ -3308,7 +3696,7 @@ const ChatPage = () => {
         try { window.dispatchEvent(new Event('chat:roomsChanged')); } catch (_) {}
       } catch (err) {
         console.error('원작챗 턴 실패', err);
-        try { clearTypingPersist(chatRoomId); } catch (_) {}
+        try { clearTypingPersist(roomIdForSend); } catch (_) {}
         if (handleOrigchatDeleted(err)) {
           try { setNewMessage(''); } catch (_) {}
           return;
@@ -3317,17 +3705,17 @@ const ChatPage = () => {
           try { setNewMessage(''); } catch (_) {}
           return;
         }
-        showToastOnce({ key: `turn-fail:${chatRoomId}`, type: 'error', message: '응답 생성에 실패했습니다.' });
+        showToastOnce({ key: `turn-fail:${roomIdForSend}`, type: 'error', message: '응답 생성에 실패했습니다.' });
         try {
           const retry = window.confirm('응답 생성에 실패했습니다. 다시 시도할까요?');
           if (retry && lastOrigTurnPayload) {
-            try { markTypingPersist(chatRoomId, 'orig'); } catch (_) {}
+            try { markTypingPersist(roomIdForSend, 'orig'); } catch (_) {}
             const resp = await origChatAPI.turn(lastOrigTurnPayload);
             const assistantText = resp.data?.assistant || '';
             const meta = resp.data?.meta || {};
             const aiMessage = {
               id: `temp-ai-${Date.now()}`,
-              roomId: chatRoomId,
+              roomId: roomIdForSend,
               senderType: 'assistant',
               content: assistantText,
               created_at: new Date().toISOString()
@@ -3356,7 +3744,7 @@ const ChatPage = () => {
       const tempId = `temp-user-${Date.now()}`;
       const tempUserMessage = {
         id: tempId,
-        roomId: chatRoomId,
+        roomId: roomIdForSend,
         senderType: 'user',
         senderId: user.id,
         content: messageContent,
@@ -3382,9 +3770,9 @@ const ChatPage = () => {
         // ✅ 일반 챗도 settings_patch를 "변경 직후 1회"만 전송 → 이후 메시지는 룸 메타를 사용
         // (응답 길이/temperature를 한번 바꾸면 계속 적용되도록)
         // ✅ 새로고침/탭 재로드에도 "... 로딩"을 유지하기 위한 세션 플래그(일반챗)
-        try { markTypingPersist(chatRoomId, 'chat'); } catch (_) {}
+        try { markTypingPersist(roomIdForSend, 'chat'); } catch (_) {}
         await sendSocketMessage(
-          chatRoomId,
+          roomIdForSend,
           messageContent,
           messageType,
           { settingsPatch: (settingsSyncedRef.current ? null : chatSettings) }
@@ -3393,15 +3781,15 @@ const ChatPage = () => {
         setMessages(prev => prev.map(m => m.id === tempId ? { ...m, pending: false } : m));
 
         // ✅ 일반챗 진행률 갱신(서버 SSOT): 유저 메시지 1회 성공 후 turn_count가 증가했을 수 있다.
-        try { await refreshGeneralChatProgress(chatRoomId); } catch (_) {}
+        try { await refreshGeneralChatProgress(roomIdForSend); } catch (_) {}
 
         // ✅ 최근대화/대화내역 갱신(룸의 last_chat_time/snippet이 바뀜)
         try { window.dispatchEvent(new Event('chat:roomsChanged')); } catch (_) {}
       } catch (err) {
         console.error('소켓 전송 실패', err);
-        try { clearTypingPersist(chatRoomId); } catch (_) {}
+        try { clearTypingPersist(roomIdForSend); } catch (_) {}
         setMessages(prev => prev.filter(m => m.id !== tempId));
-        showToastOnce({ key: `socket-send-fail:${chatRoomId}`, type: 'error', message: '전송에 실패했습니다. 다시 시도해주세요.' });
+        showToastOnce({ key: `socket-send-fail:${roomIdForSend}`, type: 'error', message: '전송에 실패했습니다. 다시 시도해주세요.' });
       }
     }
   };
@@ -3911,7 +4299,28 @@ const ChatPage = () => {
 
   // 원작챗은 소켓 연결 없이도 전송 가능
   // ✅ 게스트 UX: 전송 버튼을 누르는 순간 로그인 모달을 띄우기 위해, 게스트도 "전송 가능" 상태로 둔다.
-  const canSend = Boolean(newMessage.trim()) && (!isAuthenticated ? true : (isOrigChat ? true : connected));
+  /**
+   * ✅ 전송 가능 조건(강화)
+   *
+   * - 초기화 중(loading)에는 전송 금지: new=1 전환 중 이전 room 오발송 방지
+   * - URL에 room 파라미터가 있으면, 상태의 chatRoomId와 일치할 때만 전송 허용
+   * - 게스트는 기존 UX(전송 클릭 시 로그인 모달)를 유지한다.
+   */
+  const canSend = Boolean(newMessage.trim()) && (() => {
+    if (!isAuthenticated) return true;
+    // 일반 캐릭터챗만 loading 전송 차단(원작챗은 기존 동작 유지)
+    if (!isOrigChat && loading) return false;
+    const rid = String(chatRoomId || '').trim();
+    if (!rid) return false;
+    // 일반 캐릭터챗만 URL room 불일치 차단(원작챗은 기존 동작 유지)
+    if (!isOrigChat) {
+      try {
+        const qRoom = String(new URLSearchParams(location.search || '').get('room') || '').trim();
+        if (qRoom && qRoom !== rid) return false;
+      } catch (_) {}
+    }
+    return isOrigChat ? true : connected;
+  })();
   // ✅ 원작챗 생성 중에는 입력/전송을 UI에서도 잠가, "눌렀는데 왜 안 보내져?" 혼란을 방지한다.
   const isOrigBusy = Boolean(isOrigChat && origTurnLoading);
   // ✅ 새로고침 방어:
@@ -3944,14 +4353,65 @@ const ChatPage = () => {
     Number.isFinite(persistedTypingTs) &&
     (Date.now() - persistedTypingTs) <= TYPING_PERSIST_TTL_MS
   );
+  // ✅ stale aiTyping 방어:
+  // - 일부 환경에서 ai_typing_stop 누락/지연 시 aiTyping=true가 남아 "영구 로딩 스피너"처럼 보일 수 있다.
+  // - 마지막 비시스템 메시지가 user가 아니면(= 이미 assistant/intro가 보이면) aiTyping은 표시에서 제외한다.
+  const shouldIgnoreSocketAiTyping = (() => {
+    try {
+      if (!aiTyping) return false;
+      if (isOrigChat) return false;
+      const arr = Array.isArray(messages) ? messages : [];
+      if (!arr.length) return false;
+      let last = null;
+      for (let i = arr.length - 1; i >= 0; i -= 1) {
+        const t = String(arr[i]?.senderType || arr[i]?.sender_type || '').toLowerCase();
+        if (t === 'system') continue;
+        last = arr[i];
+        break;
+      }
+      if (!last) return false;
+      const lastType = String(last?.senderType || last?.sender_type || '').toLowerCase();
+      return lastType !== 'user';
+    } catch (_) {
+      return false;
+    }
+  })();
   // ✅ "서버 응답 대기" 상태(점 3개 말풍선용)
   // - 원작챗은 HTTP 호출이므로, 소켓 aiTyping 대신 origTurnLoading을 포함한다.
-  const aiWaitingServer = Boolean(aiTyping || (isOrigChat && origTurnLoading) || isAwaitingAiByPersist || isAwaitingAiByHistory);
+  const aiWaitingServer = Boolean(
+    ((aiTyping && !shouldIgnoreSocketAiTyping) || (isOrigChat && origTurnLoading) || isAwaitingAiByPersist || isAwaitingAiByHistory)
+  );
   // ✅ UI 가짜 스트리밍 중(입력 잠금/요술봉 생성 지연)
   const uiStreamingActive = Boolean(uiStream?.id && uiStream?.full && uiStream?.shown !== uiStream?.full);
   const uiIntroStreamingActive = Boolean(uiIntroStream?.id && uiIntroStream?.full && uiIntroStream?.shown !== uiIntroStream?.full);
   // ✅ 입력 잠금 최종값: "응답 대기" + "가짜 스트리밍"(AI) + "오프닝 스트리밍"(intro)
   const aiTypingEffective = Boolean(aiWaitingServer || uiStreamingActive || uiIntroStreamingActive);
+  /**
+   * 진입 직후 유령 로딩 말풍선 방어
+   *
+   * 원칙:
+   * - "응답 대기 점(…)"은 마지막 비시스템 메시지가 user일 때만 표시한다.
+   * - intro/assistant가 이미 보이는 상태에서는 로딩 말풍선을 표시하지 않는다.
+   */
+  const shouldShowWaitingBubble = (() => {
+    try {
+      if (!aiWaitingServer) return false;
+      const arr = Array.isArray(messages) ? messages : [];
+      if (!arr.length) return true; // 메시지 자체가 없으면 대기 표시 허용
+      let last = null;
+      for (let i = arr.length - 1; i >= 0; i -= 1) {
+        const t = String(arr[i]?.senderType || arr[i]?.sender_type || '').toLowerCase();
+        if (t === 'system') continue;
+        last = arr[i];
+        break;
+      }
+      if (!last) return true;
+      const lastType = String(last?.senderType || last?.sender_type || '').toLowerCase();
+      return lastType === 'user';
+    } catch (_) {
+      return aiWaitingServer;
+    }
+  })();
   // ✅ 입력바 UI 잠금(1단계: 다음행동 버튼까지 포함)
   const inputUiLocked = Boolean(aiTypingEffective || nextActionBusy);
   const textSizeClass = uiFontSize==='sm' ? 'text-sm' : uiFontSize==='lg' ? 'text-lg' : uiFontSize==='xl' ? 'text-xl' : 'text-base';
@@ -4036,6 +4496,19 @@ const ChatPage = () => {
   useEffect(() => {
     if (isOrigChat) return;
     if (!chatRoomId) return;
+    // ✅ 오프닝(new=1) 연출 중에는 일반 AI 스트리밍 이펙트를 잠시 중단한다.
+    // - 오프닝 지문/첫대사 전용 스트리밍이 우선이며, 두 스트리밍이 동시에 돌면
+    //   지문 스트리밍이 스킵되거나 첫대사가 완성본으로 선노출될 수 있다.
+    const isOpeningFlowActive = (() => {
+      try {
+        const params = new URLSearchParams(location.search || '');
+        const isNewChat = String(params.get('new') || '').trim() === '1';
+        return isNewChat && uiOpeningStage !== 'done';
+      } catch (_) {
+        return false;
+      }
+    })();
+    if (isOpeningFlowActive) return;
 
     const arr = Array.isArray(messages) ? messages : [];
     // 마지막 non-system 메시지 찾기
@@ -4075,7 +4548,10 @@ const ChatPage = () => {
     if (uiStreamDoneByIdRef.current && uiStreamDoneByIdRef.current[lastId]) return;
 
     const raw = (typeof last?.content === 'string') ? last.content : '';
-    const fullForDisplay = formatSafetyRefusalForDisplay(sanitizeAiText(raw));
+    const lastMd = (() => {
+      try { return last?.message_metadata || last?.messageMetadata || null; } catch (_) { return null; }
+    })();
+    const fullForDisplay = formatSafetyRefusalForDisplay(sanitizeAiText(raw), lastMd);
     if (!String(fullForDisplay || '').trim()) {
       uiStreamDoneByIdRef.current[lastId] = true;
       return;
@@ -4145,7 +4621,7 @@ const ChatPage = () => {
       try { uiStreamDoneByIdRef.current[lastId] = true; } catch (_) {}
       try { setUiStream({ id: '', full: '', shown: '' }); } catch (_) {}
     }
-  }, [isOrigChat, chatRoomId, messages, regenBusyId, isAssistantMessage, sanitizeAiText, formatSafetyRefusalForDisplay]);
+  }, [isOrigChat, chatRoomId, messages, regenBusyId, isAssistantMessage, sanitizeAiText, formatSafetyRefusalForDisplay, location.search, uiOpeningStage]);
 
   // ✅ 언마운트 시 스트리밍 타이머 정리(메모리/중복 타이머 방지)
   useEffect(() => {
@@ -4167,9 +4643,8 @@ const ChatPage = () => {
    */
   useEffect(() => {
     if (isOrigChat) return;
-    if (!chatRoomId) return;
 
-    // ✅ new=1 일 때만(보수적으로) 오프닝 스트리밍을 켠다: 재진입 UX 흔들림 방지
+    // ✅ new=1 일 때만 오프닝 스트리밍을 켠다.
     const isNewChat = (() => {
       try {
         const params = new URLSearchParams(location.search || '');
@@ -4179,14 +4654,65 @@ const ChatPage = () => {
       }
     })();
     if (!isNewChat) return;
+    // ✅ new=1에서는 room 생성 전(optimistic preview)에도 스트리밍을 시작할 수 있어야 한다.
+    // - chatRoomId가 아직 없더라도 메시지가 있으면 진행한다.
+    if (!chatRoomId) {
+      const hasAny = Array.isArray(messages) && messages.length > 0;
+      if (!hasAny) return;
+    }
 
-    const k = `cc:chat:openingStreamed:v1:${chatRoomId}`;
+    let shouldSkipByReload = false;
     try {
-      if (localStorage.getItem(k) === '1') return;
+      const nav = (typeof performance !== 'undefined' && performance.getEntriesByType)
+        ? performance.getEntriesByType('navigation')
+        : [];
+      const nav0 = nav?.[0] || null;
+      const navType = String(nav0?.type || '').trim().toLowerCase();
+      // ✅ 진짜 문서 reload + 현재 라우트 일치일 때만 생략
+      const navName = String(nav0?.name || '').trim();
+      const docPath = navName ? String(new URL(navName).pathname || '').trim() : '';
+      const curPath = String(location.pathname || '').trim();
+      shouldSkipByReload = Boolean(navType === 'reload' && docPath && curPath && docPath === curPath);
+    } catch (_) {
+      shouldSkipByReload = false;
+    }
+
+    // ✅ new=1 + non-reload 진입에서는 오프닝 스트리밍 상태를 매 진입마다 초기화한다.
+    // - 같은 room 파라미터를 재사용해도(운영 링크/딥링크) intro 스트리밍이 다시 실행되게 한다.
+    try {
+      const rid = String(chatRoomId || `new:${characterId || 'none'}`).trim();
+      const runKey = `${rid}|${String(location.search || '')}`;
+      if (uiOpeningRunKeyRef.current !== runKey) {
+        uiOpeningRunKeyRef.current = runKey;
+        if (!shouldSkipByReload) {
+          uiIntroDoneByIdRef.current = {};
+          uiStreamDoneByIdRef.current = {};
+          setUiOpeningStage('idle');
+        }
+      }
     } catch (_) {}
 
-    // 서버 응답 대기/다른 스트리밍 중에는 시작하지 않는다.
-    if (aiWaitingServer || uiStreamingActive || uiIntroStreamingActive) return;
+    /**
+     * ✅ 새로고침/복구 진입에서는 오프닝 재연출을 생략한다.
+     *
+     * 문제:
+     * - reload 직후에는 서버 히스토리(완성본)가 먼저 보인 다음,
+     *   오프닝 스트리밍이 다시 시작되며 "보였다가 비는" 깜빡임이 발생한다.
+     *
+     * 방어:
+     * - 네비게이션 타입이 reload인 경우, 해당 룸의 오프닝 스트리밍을 완료 처리한다.
+     * - 최초 신규 진입(일반 navigation)에서만 기존 스트리밍 UX를 유지한다.
+     */
+    if (shouldSkipByReload) {
+      try { setUiOpeningStage('done'); } catch (_) {}
+      return;
+    }
+
+    // ✅ 오프닝 스트리밍 시작 가드(단계별)
+    // - intro 단계는 "신규 진입 연출"이므로, persisted typing 등 서버 대기 플래그에 막히지 않게 한다.
+    // - greeting 단계는 기존과 동일하게 서버 대기/타 스트리밍과 충돌하지 않도록 막는다.
+    if (uiIntroStreamingActive) return;
+    if (uiStreamingActive && uiOpeningStage !== 'greeting') return;
 
     const arr = Array.isArray(messages) ? messages : [];
     if (!arr.length) return;
@@ -4209,7 +4735,8 @@ const ChatPage = () => {
         if (kind === 'intro') continue;
         const raw = (typeof arr[i]?.content === 'string') ? arr[i].content : '';
         const id = String(arr[i]?.id || arr[i]?._id || '').trim();
-        if (id && String(raw).trim()) return { id, text: raw };
+        const md = (() => { try { return arr[i]?.message_metadata || arr[i]?.messageMetadata || null; } catch (_) { return null; } })();
+        if (id && String(raw).trim()) return { id, text: raw, md };
       }
       return null;
     };
@@ -4225,7 +4752,8 @@ const ChatPage = () => {
         setUiIntroStream({ id, full, shown: '' });
 
         const intervalMs = 33;
-        const totalMs = Math.max(650, Math.min(2200, Math.round(full.length * 16)));
+        // 오프닝 지문은 "스트리밍이 보이도록" 최소 시간을 높여 체감을 확보한다.
+        const totalMs = Math.max(1200, Math.min(4500, Math.round(full.length * 20)));
         const steps = Math.max(1, Math.ceil(totalMs / intervalMs));
         const chunk = Math.max(1, Math.ceil(full.length / steps));
         let idx = 0;
@@ -4303,9 +4831,6 @@ const ChatPage = () => {
             uiStreamTimerRef.current = null;
             try { uiStreamDoneByIdRef.current[id] = true; } catch (_) {}
             try { setUiStream({ id: '', full: '', shown: '' }); } catch (_) {}
-            try {
-              localStorage.setItem(k, '1');
-            } catch (_) {}
             try { setUiOpeningStage('done'); } catch (_) {}
           }
         }, intervalMs);
@@ -4333,14 +4858,8 @@ const ChatPage = () => {
     if (uiOpeningStage === 'greeting') {
       const g = pickGreeting();
       if (!g) return;
-      if (uiStreamDoneByIdRef.current && uiStreamDoneByIdRef.current[g.id]) {
-        try { localStorage.setItem(k, '1'); } catch (_) {}
-        setUiOpeningStage('done');
-        return;
-      }
-      const display = formatSafetyRefusalForDisplay(sanitizeAiText(String(g.text || '')));
+      const display = formatSafetyRefusalForDisplay(sanitizeAiText(String(g.text || '')), g?.md || null);
       if (!String(display || '').trim()) {
-        try { localStorage.setItem(k, '1'); } catch (_) {}
         setUiOpeningStage('done');
         return;
       }
@@ -4677,6 +5196,22 @@ const ChatPage = () => {
     try {
       if (isOrigChat) return '';
       const arr = Array.isArray(messages) ? messages : [];
+      // 1) 이상 케이스 방어: firstLine까지 kind='intro'로 내려와도
+      //    "첫 intro 다음 assistant 1개"를 첫대사로 강제 식별한다.
+      const firstIntroIdx = arr.findIndex((m) => {
+        try { return String(m?.message_metadata?.kind || '').toLowerCase() === 'intro'; } catch (_) { return false; }
+      });
+      if (firstIntroIdx >= 0) {
+        for (let i = firstIntroIdx + 1; i < arr.length; i += 1) {
+          const m = arr[i];
+          const t = String(m?.senderType || m?.sender_type || '').toLowerCase();
+          if (t !== 'assistant' && t !== 'ai' && t !== 'character') continue;
+          const mid = String(m?.id || m?._id || '').trim();
+          if (!mid) continue;
+          return mid;
+        }
+      }
+      // 2) 정상 케이스: 첫 non-intro assistant
       for (let i = 0; i < arr.length; i += 1) {
         const m = arr[i];
         const kind = (() => { try { return String(m?.message_metadata?.kind || '').toLowerCase(); } catch (_) { return ''; } })();
@@ -4690,6 +5225,27 @@ const ChatPage = () => {
       return '';
     } catch (e) {
       try { console.warn('[ChatPage] resolve opening greeting id failed:', e); } catch (_) {}
+      return '';
+    }
+  }, [isOrigChat, messages]);
+  const openingIntroMessageId = useMemo(() => {
+    /**
+     * 오프닝 intro는 첫 intro 메시지 ID로 고정 식별한다.
+     * index 기반 판정보다 안정적이며, 오프닝 스트리밍 타깃 매칭이 흔들리지 않는다.
+     */
+    try {
+      if (isOrigChat) return '';
+      const arr = Array.isArray(messages) ? messages : [];
+      for (let i = 0; i < arr.length; i += 1) {
+        const m = arr[i];
+        const kind = String(m?.message_metadata?.kind || '').toLowerCase();
+        if (kind !== 'intro') continue;
+        const mid = String(m?.id || m?._id || '').trim();
+        if (!mid) continue;
+        return mid;
+      }
+      return '';
+    } catch (_) {
       return '';
     }
   }, [isOrigChat, messages]);
@@ -4898,7 +5454,7 @@ const ChatPage = () => {
     }
   };
 
-  const MessageBubble = ({ message, isLast, triggerImageUrl }) => {
+  const MessageBubble = ({ message, isLast, triggerImageUrl, disableAssistantBlocks = false }) => {
     const rawType = String(message?.sender_type || message?.senderType || '').toLowerCase();
     const metaKind = (() => {
       try { return String(message?.message_metadata?.kind || '').toLowerCase(); } catch (_) { return ''; }
@@ -5032,7 +5588,7 @@ const ChatPage = () => {
     // ✅ A안(가짜 스트리밍): 마지막 AI 말풍선은 UI에서만 점진 출력
     // - 서버 저장값(message.content)은 변경하지 않는다(SSOT/디버깅/재생성 정합).
     const assistantDisplayFull = (!isUser && !isRegenPending)
-      ? formatSafetyRefusalForDisplay(sanitizeAiText(rawContent))
+      ? formatSafetyRefusalForDisplay(sanitizeAiText(rawContent), message?.message_metadata || message?.messageMetadata || null)
       : '';
     const assistantDisplayStreamed = (!isUser && !isRegenPending && uiStream?.id && String(uiStream.id) === String(message?.id || ''))
       ? stripHiddenStatDeltaBlocks(String(uiStream.shown || ''))
@@ -5288,7 +5844,7 @@ const ChatPage = () => {
       : [];
 
     // assistantBlocks 사용 시: message 단위 렌더 대신 "블록" 단위로 렌더한다.
-    const shouldRenderAssistantAsBlocks = (!isUser && !isRegenPending && editingMessageId !== message.id)
+    const shouldRenderAssistantAsBlocks = (!isUser && !isRegenPending && editingMessageId !== message.id && !isOpeningGreeting && !disableAssistantBlocks && !(isNewChatFromUrl && uiOpeningStage !== 'done'))
       ? (Array.isArray(assistantBlocks) && assistantBlocks.length > 0 && assistantBlocks.some((b) => b && b.kind === 'narration'))
       : false;
 
@@ -5632,7 +6188,7 @@ const ChatPage = () => {
     } catch (_) { return false; }
   })();
   const isInitOverlayActive = Boolean(
-    loading ||
+    (loading && !hasAnyMessages) ||
     (
       isOrigChat &&
       !hasAnyMessages &&
@@ -5640,13 +6196,6 @@ const ChatPage = () => {
         (origMeta?.init_stage && origMeta.init_stage !== 'ready') ||
         (origMeta?.intro_ready === false)
       )
-    ) ||
-    // ✅ 일반 캐릭터챗: new=1 + 메시지 없음 → 오프닝(intro+firstLine) 로딩 대기
-    (
-      !isOrigChat &&
-      isNewChatFromUrl &&
-      !hasAnyMessages &&
-      chatRoomId  // 방 ID는 있어야 함 (초기화 완료)
     )
   );
   const isOrigTurnPopupActive = Boolean(isOrigChat && (turnStage === 'generating' || turnStage === 'polishing'));
@@ -5857,6 +6406,8 @@ const ChatPage = () => {
         const items = Array.isArray(res?.data) ? res.data : [];
         if (items.length > 0) {
           setMessages(items);
+          // ✅ 오프닝 연출 생략은 실제 reload에서만 처리한다.
+          // - 수동 재시도(handleInitRetry) 경로에서는 uiOpeningStage를 강제 완료 처리하지 않는다.
           // assistant 메시지가 하나라도 있으면 "준비 완료"로 간주(무한 오버레이 방지)
           const hasAssistant = items.some((m) => String(m?.senderType || m?.sender_type || '').toLowerCase() === 'assistant');
           if (hasAssistant) {
@@ -6241,12 +6792,12 @@ const ChatPage = () => {
       {/* 본문: 데스크톱 좌측 이미지 패널, 모바일은 배경 이미지 */}
       <div className="flex-1 overflow-hidden bg-[var(--app-bg)] text-[var(--app-fg)] relative min-h-0">
         {/* ✅ 모바일 몰입형 스테이지: 이미지(오너 등록)를 배경으로 깔고, 회색 딤으로 가독성을 확보한다. */}
-        {mediaPanelEnabled && (
+        {mediaPanelEnabled && !isDesktopViewport && (
           <div className={`lg:hidden absolute inset-0 overflow-hidden ${resolvedTheme === 'light' ? 'bg-white' : 'bg-black'}`}>
             {currentPortraitUrl ? (
               (() => {
                 // ✅ 크롭 금지: 원본 비율 그대로 표시(object-contain)
-                const raw = resolveImageUrl(currentPortraitUrl);
+                const raw = resolveImageUrl(getThumbnailUrl(currentPortraitUrl, 1200) || currentPortraitUrl);
                 return (
                   <>
                     {/* ✅ 레터박스: 크롭 없이 최대한 크게(가능하면 가로를 꽉 채움). */}
@@ -6271,7 +6822,7 @@ const ChatPage = () => {
 
         {/* ✅ 높이 고정(calc) 제거: footer(입력바) 높이만큼 좌측 미니갤러리가 잘리는 문제 방지 */}
         <div className={`relative z-10 grid grid-cols-1 ${mediaPanelEnabled ? 'lg:grid-cols-[480px_560px]' : 'lg:grid-cols-[minmax(0,840px)]'} lg:justify-center h-full min-h-0`}>
-          {mediaPanelEnabled && (
+          {mediaPanelEnabled && isDesktopViewport && (
           <aside className="hidden lg:flex flex-col border-r w-[480px] flex-shrink-0">
             {/* 대표 이미지 영역 */}
             <div className="flex-1 relative min-h-0">
@@ -6281,7 +6832,7 @@ const ChatPage = () => {
                 const currentImage = (characterImages && characterImages.length > 0)
                   ? characterImages[currentImageIndex]
                   : primary;
-                const fullSrc = resolveImageUrl(currentImage);
+                const fullSrc = resolveImageUrl(getThumbnailUrl(currentImage, 1400) || currentImage);
                 if (!fullSrc) {
                   return <div className="absolute inset-0 bg-black/10" />;
                 }
@@ -6299,13 +6850,13 @@ const ChatPage = () => {
                       tabIndex={0}
                       aria-label={`${Math.min(characterImages.length, Math.max(1, currentImageIndex + 1))} / ${characterImages.length}`}
                       onClick={() => {
-                        setImageModalSrc(fullSrc);
+                        setImageModalSrc(resolveImageUrl(currentImage) || fullSrc);
                         setImageModalOpen(true);
                       }}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter' || e.key === ' ') {
                           e.preventDefault();
-                          setImageModalSrc(fullSrc);
+                          setImageModalSrc(resolveImageUrl(currentImage) || fullSrc);
                           setImageModalOpen(true);
                         }
                       }}
@@ -6377,7 +6928,7 @@ const ChatPage = () => {
                           aria-label={`이미지 ${idx + 1}`}
                         >
                           <img
-                            src={resolveImageUrl(img)}
+                            src={resolveImageUrl(getThumbnailUrl(img, 144) || img)}
                             alt={`썸네일 ${idx + 1}`}
                             className={`w-12 h-12 object-cover object-top rounded ${
                               idx === currentImageIndex ? 'brightness-100' : 'brightness-80'
@@ -6498,7 +7049,6 @@ const ChatPage = () => {
                    */
                   try {
                     if (isOrigChat) return false;
-                    if (!chatRoomId) return false;
                     if (!openingGreetingMessageId) return false;
                     if (!mid || String(mid) !== String(openingGreetingMessageId)) return false;
 
@@ -6507,13 +7057,15 @@ const ChatPage = () => {
                     if (!isNewChat) return false;
 
                     // greeting 단계에서는 스트리밍을 보여줘야 하므로 숨기지 않는다.
-                    if (uiOpeningStage === 'greeting' || uiOpeningStage === 'done') return false;
-
-                    // 이미 오프닝 스트리밍이 완료된 룸이면 숨기지 않는다.
-                    const k = `cc:chat:openingStreamed:v1:${chatRoomId}`;
-                    try {
-                      if (localStorage.getItem(k) === '1') return false;
-                    } catch (_) {}
+                    if (uiOpeningStage === 'greeting') {
+                      // ✅ 첫대사 완성본 선노출 방지:
+                      // - greeting 단계에서 실제 스트리밍 바인딩(uiStream.id)이 붙기 전까지는 숨긴다.
+                      // - 스트리밍이 끝난(done) 상태면 정상 노출한다.
+                      const hasGreetingStream = Boolean(uiStream?.id && String(uiStream.id) === String(mid));
+                      const done = Boolean(uiStreamDoneByIdRef.current && uiStreamDoneByIdRef.current[String(mid)]);
+                      return !hasGreetingStream && !done;
+                    }
+                    if (uiOpeningStage === 'done') return false;
 
                     // idle/intro 단계에서만 숨김(첫 대사 선노출 방지)
                     return (uiOpeningStage === 'idle' || uiOpeningStage === 'intro');
@@ -6522,10 +7074,29 @@ const ChatPage = () => {
                   }
                 })();
                 if (shouldHideOpeningGreetingDuringIntro) return null;
-                const isIntro = (m.message_metadata && (m.message_metadata.kind === 'intro')) || false;
+                const isIntro = (() => {
+                  try {
+                    const kind = String(m?.message_metadata?.kind || '').toLowerCase();
+                    const params = new URLSearchParams(location.search || '');
+                    const isNewChat = String(params.get('new') || '').trim() === '1';
+                    const sender = String(m?.senderType || m?.sender_type || '').toLowerCase();
+                    const isAssistantLike = (sender === 'assistant' || sender === 'ai' || sender === 'character');
+                    // 1) 정상: metadata.kind=intro
+                    if (kind === 'intro') {
+                      const introMid = String(mid || '').trim();
+                      if (!introMid) return false;
+                      return Boolean(openingIntroMessageId && introMid === String(openingIntroMessageId));
+                    }
+                    // 2) 방어: new=1 오프닝인데 메타 누락/변형 시 첫 assistant 메시지를 intro로 간주
+                    if (isNewChat && index === 0 && isAssistantLike) return true;
+                    return false;
+                  } catch (_) {
+                    return false;
+                  }
+                })();
                 if (isIntro) {
                   const introId = String(m?.id || m?._id || '').trim();
-                  const introText = (() => {
+                  const introRender = (() => {
                     /**
                      * ✅ 경쟁사처럼 "오프닝부터 웹툰 컷 이미지(<img>)가 박스 안에 렌더"되게 하기.
                      *
@@ -6539,10 +7110,26 @@ const ChatPage = () => {
                      */
                     const full = String(m?.content || '');
                     const hasHtml = hasChatHtmlLike(full);
-                    const canStream =
-                      !hasHtml &&
-                      Boolean(introId && uiIntroStream?.id && String(uiIntroStream.id) === introId);
-                    return canStream ? String(uiIntroStream.shown || '') : full;
+                    const canStream = Boolean(introId && uiIntroStream?.id && String(uiIntroStream.id) === introId);
+                    const isNewChatNow = (() => {
+                      try {
+                        const params = new URLSearchParams(location.search || '');
+                        return String(params.get('new') || '').trim() === '1';
+                      } catch (_) {
+                        return false;
+                      }
+                    })();
+                    if (!canStream) {
+                      // ✅ 오프닝 구간(new=1, idle/intro)에서는 완성본 선노출을 막는다.
+                      // - 지문박스가 "스트리밍 안 되는 것처럼" 보이는 현상을 방지한다.
+                      if (isNewChatNow && (uiOpeningStage === 'idle' || uiOpeningStage === 'intro')) {
+                        return { text: String(uiIntroStream?.shown || ''), asHtml: false };
+                      }
+                      return { text: full, asHtml: hasHtml };
+                    }
+                    const shown = String(uiIntroStream.shown || '');
+                    if (!hasHtml) return { text: shown, asHtml: false };
+                    return { text: normalizeIntroStreamText(shown), asHtml: false };
                   })();
                   return (
                     <div key={`intro-${stableKey}`} className="mt-3 w-full flex justify-center lg:justify-start">
@@ -6558,10 +7145,10 @@ const ChatPage = () => {
                           {(() => {
                             // ✅ intro도 HTML(<img>/<a>/리스트 태그 등)이면 RichMessageHtml로 렌더
                             // - HTML이 아니면 기존대로 이미지 토큰([[img:...]]/{{img:...}}) 렌더를 유지
-                            if (hasChatHtmlLike(introText)) {
-                              return <RichMessageHtml html={introText} className="message-rich" />;
+                            if (introRender?.asHtml && hasChatHtmlLike(introRender?.text)) {
+                              return <RichMessageHtml html={introRender.text} className="message-rich" />;
                             }
-                            return renderTextWithInlineImages(introText);
+                            return renderTextWithInlineImages(String(introRender?.text || ''));
                           })()}
                         </div>
                       </div>
@@ -6586,17 +7173,43 @@ const ChatPage = () => {
                     {MessageBubble({
                       message: m,
                       isLast: index === messages.length - 1 && !aiTypingEffective,
+                      // ✅ 오프닝 고정:
+                      // - "intro 바로 다음 assistant 메시지"는 항상 첫대사 말풍선으로 렌더한다.
+                      // - 휴리스틱 블록 파서(parseAssistantBlocks)를 태우지 않아 지문 박스로 오분류되지 않게 한다.
+                      disableAssistantBlocks: (() => {
+                        try {
+                          const metaKind = String(m?.message_metadata?.kind || '').toLowerCase();
+                          if (metaKind === 'opening_first_line') return true;
+                          const arr = Array.isArray(messages) ? messages : [];
+                          if (index <= 0) return false;
+                          const prevKind = String(arr?.[index - 1]?.message_metadata?.kind || '').toLowerCase();
+                          const t = String(m?.senderType || m?.sender_type || '').toLowerCase();
+                          const isAssistantLike = (t === 'assistant' || t === 'ai' || t === 'character');
+                          return prevKind === 'intro' && isAssistantLike;
+                        } catch (_) {
+                          return false;
+                        }
+                      })(),
                       // ✅ 요구사항: RP/시뮬 모두 "트리거 이미지"는 그대로 노출한다.
                       triggerImageUrl: aiMessageImages[mid || stableKey],
                     })}
                     {(() => {
                       // ✅ 로컬 UI 말풍선(상태창/정보)을 "해당 메시지 바로 아래"에 렌더(사라짐 방지)
                       try {
-                        if (!chatRoomId) return null;
+                        const activeRoomId = (() => {
+                          try {
+                            const rid = String(chatRoomId || '').trim();
+                            if (rid) return rid;
+                            return String(new URLSearchParams(location.search || '').get('room') || '').trim();
+                          } catch (_) {
+                            return '';
+                          }
+                        })();
+                        if (!activeRoomId) return null;
                         const anchor = String(mid || '').trim();
                         if (!anchor) return null;
                         const list = Array.isArray(localUiBubbles) ? localUiBubbles : [];
-                        const anchored = list.filter((b) => String(b?.roomId || '') === String(chatRoomId) && String(b?.anchorId || '') === anchor);
+                        const anchored = list.filter((b) => String(b?.roomId || '') === activeRoomId && String(b?.anchorId || '') === anchor);
                         if (!anchored.length) return null;
                         return (
                           <>
@@ -6605,7 +7218,7 @@ const ChatPage = () => {
                                 {MessageBubble({
                                   message: {
                                     id: b.id,
-                                    roomId: chatRoomId,
+                                    roomId: activeRoomId,
                                     senderType: 'assistant',
                                     sender_type: 'assistant',
                                     content: '',
@@ -6710,11 +7323,20 @@ const ChatPage = () => {
                 );
               })}
               {(() => {
-                // ✅ tail(맨 아래) 로컬 UI 말풍선: !스탯 같은 수동 호출 결과를 항상 바닥에 유지
+                // ✅ tail(맨 아래) 로컬 UI 말풍선: 명시적으로 tail에 붙인 버블만 렌더
                 try {
-                  if (!chatRoomId) return null;
+                  const activeRoomId = (() => {
+                    try {
+                      const rid = String(chatRoomId || '').trim();
+                      if (rid) return rid;
+                      return String(new URLSearchParams(location.search || '').get('room') || '').trim();
+                    } catch (_) {
+                      return '';
+                    }
+                  })();
+                  if (!activeRoomId) return null;
                   const list = Array.isArray(localUiBubbles) ? localUiBubbles : [];
-                  const anchored = list.filter((b) => String(b?.roomId || '') === String(chatRoomId) && String(b?.anchorId || '') === String(UI_TAIL_ANCHOR));
+                  const anchored = list.filter((b) => String(b?.roomId || '') === activeRoomId && String(b?.anchorId || '') === String(UI_TAIL_ANCHOR));
                   if (!anchored.length) return null;
                   return (
                     <>
@@ -6723,7 +7345,7 @@ const ChatPage = () => {
                           {MessageBubble({
                             message: {
                               id: b.id,
-                              roomId: chatRoomId,
+                              roomId: activeRoomId,
                               senderType: 'assistant',
                               sender_type: 'assistant',
                               content: '',
@@ -6872,7 +7494,7 @@ const ChatPage = () => {
                 return null;
               })()}
               {/* ✅ 점 3개 말풍선은 "서버 응답 대기"에만 노출(가짜 스트리밍 중엔 중복 노출 방지) */}
-              {aiWaitingServer && (
+              {shouldShowWaitingBubble && (
                 <div className="mt-4 mb-1 flex items-start space-x-3">
                   <Avatar className="w-8 h-8 flex-shrink-0">
                     <AvatarImage className="object-cover object-top" src={getCharacterPrimaryImage(character)} alt={character?.name} />
@@ -7051,7 +7673,7 @@ const ChatPage = () => {
         {/* 모바일용 입력 컨테이너 */}
         <div className="lg:hidden w-full">
           {/* ✅ 이미지 스트립(상시 노출): 입력바 위에 얇게 표시(눈에 밟히지 않게) */}
-          {mediaPanelEnabled && Array.isArray(portraitImages) && portraitImages.length > 0 && (
+          {mediaPanelEnabled && !isDesktopViewport && Array.isArray(portraitImages) && portraitImages.length > 0 && (
             <div className="w-full border-b border-gray-800 bg-black/75">
               {/* ✅ 중앙 정렬: 화면(이미지) 중심 기준으로 스트립을 가운데에 고정 */}
               <div className="px-3 py-2 flex items-center justify-center">
@@ -7092,7 +7714,7 @@ const ChatPage = () => {
                           }`}
                         >
                           <img
-                            src={resolveImageUrl(img)}
+                            src={resolveImageUrl(getThumbnailUrl(img, 128) || img)}
                             alt={`썸네일 ${idx + 1}`}
                             className="w-9 h-9 object-cover object-top"
                             draggable="false"
@@ -7203,7 +7825,7 @@ const ChatPage = () => {
                   // ✅ 모바일 입력 UX(운영 안정):
                   // - 너무 낮은 height(26px)는 타이핑/가독성이 급격히 떨어지고, 하단에 "바짝 붙어" 보이게 만든다.
                   // - iOS 확대(줌) 방지 관점에서도 16px 이상이 안전하다.
-                  className="w-full min-h-0 bg-transparent border-0 focus:border-0 focus:ring-0 outline-none text-[16px] leading-[20px] px-4 py-2 text-white caret-white placeholder:text-[13px] placeholder:text-[#ddd]/70 resize-none"
+                  className="w-full min-h-0 bg-transparent border-0 focus:border-0 focus:ring-0 outline-none text-[16px] leading-[20px] px-4 py-2 text-white caret-white placeholder:text-[11px] placeholder:leading-[16px] placeholder:text-[#ddd]/70 resize-none"
                   style={{ height: 40, maxHeight: 120, scrollbarWidth: 'none', lineHeight: '20px', paddingRight: 128 }}
                   rows={1}
                 />

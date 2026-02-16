@@ -92,9 +92,8 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
   const [activePersona, setActivePersona] = useState(null);
 
   const SPEED_SUB_MODELS = [
-    // ✅ 요구사항 우선순위: Haiku 4.5 -> GPT-4o -> Gemini 2.5 Flash -> Gemini 3 Flash (Preview)
+    // ✅ 요구사항 우선순위: Haiku 4.5 -> Gemini 2.5 Flash -> Gemini 3 Flash (Preview)
     { id: 'speed:claude-haiku-4-5-20251001', targetModel: 'claude', targetSubModel: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', description: '초고속 응답에 강한 Haiku 라인', cost: 4 },
-    { id: 'speed:gpt-4o', targetModel: 'gpt', targetSubModel: 'gpt-4o', name: 'GPT-4o', description: '응답 속도/안정성 밸런스 (멀티모달)', cost: 10 },
     { id: 'speed:gemini-2.5-flash', targetModel: 'gemini', targetSubModel: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', description: '빠른 응답에 최적화된 Flash 라인', cost: 2 },
     { id: 'speed:gemini-3-flash-preview', targetModel: 'gemini', targetSubModel: 'gemini-3-flash-preview', name: 'Gemini 3 Flash (Preview)', description: '최신 Flash 프리뷰(변동 가능)', cost: 2 },
   ];
@@ -166,8 +165,6 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
       name: 'GPT 모델',
       cost: 10,
       subModels: [
-        // ✅ 기존 사용자 설정 모델도 유지(호환)
-        { id: 'gpt-4o', name: 'GPT-4o', description: 'OpenAI의 멀티모달 모델', cost: 10 },
         // ✅ 기존 설정/테스트용으로는 유지(속도최적화 섹션에서는 "내림" 요구로 비노출)
         { id: 'gpt-5-mini', name: 'GPT 5 mini', description: '속도/비용 최적화', cost: 3 },
         { id: 'gpt-5.1', name: 'GPT-5.1', description: '깊은 이해와 유연한 대화를 겸비한 GPT의 최상위 모델', cost: 10, badge: '신규', badgeClass: 'bg-pink-600 text-white hover:bg-pink-600' },

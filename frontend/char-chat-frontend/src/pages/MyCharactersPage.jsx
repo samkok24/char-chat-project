@@ -125,8 +125,9 @@ const FavoritesTab = () => {
       return response.data || [];
     },
     keepPreviousData: true,
-    staleTime: 0,
-    refetchOnMount: 'always',
+    staleTime: 60 * 1000,
+    refetchOnWindowFocus: false,
+    refetchOnMount: false,
   });
 
   const items = Array.isArray(liked) ? liked : [];
@@ -170,7 +171,7 @@ const FavoritesTab = () => {
     <>
       <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 mt-4">
         {items.map((c) => (
-          <SharedCharacterCard key={c.id} character={c} />
+          <SharedCharacterCard key={c.id} character={c} showNewBadge={false} />
         ))}
       </div>
       <PaginationControls
@@ -190,7 +191,7 @@ const FavoritesTab = () => {
 
 const MyCharactersPage = () => {
   const [characters, setCharacters] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [minePage, setMinePage] = useState(1);
   const [mineHasNext, setMineHasNext] = useState(false);
   const [mineMaxPageHint, setMineMaxPageHint] = useState(1);
@@ -244,14 +245,17 @@ const MyCharactersPage = () => {
   }, []);
 
   useEffect(() => {
+    // ✅ 성능 최적화: "내가 만든 캐릭터" 탭 진입시에만 내 캐릭터 목록을 로드한다.
+    if (activeTab !== 'mine') return;
     loadMyCharacters(minePage);
-  }, [loadMyCharacters, minePage]);
+  }, [activeTab, loadMyCharacters, minePage]);
 
   useEffect(() => {
+    if (activeTab !== 'mine') return;
     if (!loading && minePage > 1 && characters.length === 0) {
       setMinePage((prev) => Math.max(1, prev - 1));
     }
-  }, [characters, loading, minePage]);
+  }, [activeTab, characters, loading, minePage]);
 
   useEffect(() => {
     setSelectedCharIds(new Set());
@@ -565,7 +569,7 @@ const MyCharactersPage = () => {
                         <input className="w-4 h-4" disabled={isBulkDeletingChars} type="checkbox" checked={selectedCharIds.has(character.id)} onChange={()=>toggleSelectChar(character.id)} /> 선택
                       </label>
                     )}
-                    <SharedCharacterCard character={character} />
+                    <SharedCharacterCard character={character} showNewBadge={false} />
                     <div className="absolute top-1 right-1 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                       <button
                         title="수정"
@@ -785,8 +789,9 @@ const MyOrigChatTab = () => {
       return list;
     },
     keepPreviousData: true,
-    staleTime: 0,
-    refetchOnMount: 'always',
+    staleTime: 60 * 1000,
+    refetchOnWindowFocus: false,
+    refetchOnMount: false,
   });
   const items = Array.isArray(data) ? data : [];
   const hasNext = items.length === PAGE_SIZE;
@@ -867,7 +872,7 @@ const MyOrigChatTab = () => {
                 <input className="w-4 h-4" disabled={isBulkDeleting} type="checkbox" checked={selectedIds.has(c.id)} onChange={()=> setSelectedIds(prev=>{ const next=new Set(prev); if(next.has(c.id)) next.delete(c.id); else next.add(c.id); return next; })} /> 선택
               </label>
             )}
-            <SharedCharacterCard character={{ ...c, source_type: 'IMPORTED' }} />
+            <SharedCharacterCard character={{ ...c, source_type: 'IMPORTED' }} showNewBadge={false} />
           </div>
         ))}
       </div>

@@ -3216,6 +3216,22 @@ export default function QuickMeetCharacterModal({
     }
   };
 
+  // ✅ 백필 완료 폴링: 프리뷰 상태에서 _backfill_status가 pending이면 3초 간격으로 재조회
+  const isBackfillPending = createdCharacter?.start_sets?._backfill_status === 'pending';
+  useEffect(() => {
+    if (step !== 'preview' || !createdCharacterId || !isBackfillPending) return;
+    const interval = setInterval(async () => {
+      try {
+        const res = await charactersAPI.getCharacter(createdCharacterId);
+        const ch = res?.data;
+        if (ch && ch?.start_sets?._backfill_status !== 'pending') {
+          setCreatedCharacter(ch);
+        }
+      } catch (_) {}
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [step, createdCharacterId, isBackfillPending]);
+
   const previewName = String(createdCharacter?.name || name || '').trim();
   const previewDesc = String(createdCharacter?.description || '').trim();
   const previewGreeting = String(createdCharacter?.greeting || '').trim();
@@ -4530,14 +4546,23 @@ export default function QuickMeetCharacterModal({
                   <Button
                     type="button"
                     variant="outline"
-                    className="h-9 sm:h-10 rounded-lg sm:rounded-xl border-gray-700 bg-gray-800/40 text-gray-200 hover:bg-gray-800/60 text-xs sm:text-sm"
-                    onClick={() => {
+                    disabled={isBackfillPending}
+                    className="h-9 sm:h-10 rounded-lg sm:rounded-xl border-gray-700 bg-gray-800/40 text-gray-200 hover:bg-gray-800/60 text-xs sm:text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                    onClick={isBackfillPending ? undefined : async () => {
                       // ✅ 요구사항: "수정"은 입력 단계로 돌아가되, 유저가 입력했던 정보(이미지/텍스트/태그)는 유지한다.
                       setError('');
+                      // ✅ 이전 생성 캐릭터 정리(고아 방지)
+                      const prevId = String(createdCharacterId || '').trim();
+                      if (prevId) {
+                        try { await charactersAPI.deleteCharacter(prevId); } catch (_) {}
+                      }
+                      setCreatedCharacterId('');
+                      setCreatedCharacter(null);
+                      requestIdRef.current = '';
                       setStep('input');
                     }}
                   >
-                    수정
+                    {isBackfillPending ? '마무리 중...' : '수정'}
                   </Button>
                   <Button
                     type="button"

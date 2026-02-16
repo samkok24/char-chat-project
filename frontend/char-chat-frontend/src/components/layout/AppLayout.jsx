@@ -130,7 +130,7 @@ const AppLayout = ({ children, SidebarComponent = Sidebar, sidebarProps, mobileH
                 </div>
 
                 <div className="flex-1 min-w-0 text-center">
-                  <span className="text-sm font-semibold text-gray-100 truncate">챕터8 - 캐릭터 ∞ 웹소설</span>
+                  <span className="text-sm font-semibold text-gray-100 truncate">챕터8</span>
                 </div>
 
                 {/* 우측 영역: 페이지별 액션 슬롯(없으면 레이아웃 균형용 스페이서) */}

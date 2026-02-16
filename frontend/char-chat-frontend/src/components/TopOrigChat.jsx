@@ -64,9 +64,9 @@ const TopOrigChat = ({ title } = {}) => {
         return baseItems;
       }
     },
-    staleTime: 0,
-    refetchOnWindowFocus: true,
-    refetchOnMount: 'always',
+    staleTime: 5 * 60 * 1000,
+    refetchOnWindowFocus: false,
+    refetchOnMount: false,
   });
 
   React.useEffect(() => {

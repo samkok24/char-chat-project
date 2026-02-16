@@ -194,7 +194,21 @@ class AIService {
         ]
       });
 
-      const text = response.content[0].text;
+      // Claude can return multiple content blocks; join all text blocks to avoid truncation.
+      const blocks = Array.isArray(response?.content) ? response.content : [];
+      const text = blocks
+        .filter((b) => {
+          if (!b) return false;
+          if (typeof b === 'string') return b.trim().length > 0;
+          if (typeof b === 'object') {
+            // SDK block shape: { type: 'text', text: '...' }
+            if (b.type && b.type !== 'text') return false;
+            return typeof b.text === 'string' && b.text.trim().length > 0;
+          }
+          return false;
+        })
+        .map((b) => (typeof b === 'string' ? b : b.text))
+        .join('');
 
       if (!text || text.trim().length === 0) {
         throw new Error('빈 응답을 받았습니다.');
@@ -397,4 +411,3 @@ class AIService {
 }
 
 module.exports = new AIService();
-

@@ -37,6 +37,8 @@ COLUMNS_TO_ADD = {
         ("user_display_description", "TEXT"),
         ("use_custom_description", "BOOLEAN DEFAULT FALSE"),
         ("introduction_scenes", "JSONB"),
+        # ✅ start_sets: 오프닝(시작 세트) JSON 저장소 — v0.9에서 추가
+        ("start_sets", "JSONB"),
         ("character_type", "VARCHAR(50) DEFAULT 'roleplay'"),
         ("base_language", "VARCHAR(10) DEFAULT 'ko'"),
         ("image_descriptions", "JSONB"),

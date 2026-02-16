@@ -1,7 +1,8 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-import { Plus, Save, Trash2, ArrowUp, ArrowDown, ExternalLink, Image as ImageIcon, Settings, X, UserPlus, Copy, GripVertical, ListOrdered } from 'lucide-react';
+import { Plus, Save, Trash2, ArrowUp, ArrowDown, ExternalLink, Image as ImageIcon, Settings, X, UserPlus, Copy, GripVertical, ListOrdered, RefreshCw, Search } from 'lucide-react';
+import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 
 import AppLayout from '../components/layout/AppLayout';
 import { Button } from '../components/ui/button';
@@ -206,7 +207,7 @@ const CMSPage = () => {
   const { user } = useAuth();
   const isAdmin = !!user?.is_admin;
 
-  const [activeTab, setActiveTab] = React.useState('banners'); // users | banners | popups | slots | tags | aiModels
+  const [activeTab, setActiveTab] = React.useState('banners'); // users | userLogs | banners | popups | slots | tags | aiModels
   const [banners, setBannersState] = React.useState(() => getHomeBanners());
   const [popupsConfig, setPopupsConfigState] = React.useState(() => getHomePopupsConfig());
   const [slots, setSlotsState] = React.useState(() => getHomeSlots());
@@ -240,6 +241,31 @@ const CMSPage = () => {
   const [onlineLoading, setOnlineLoading] = React.useState(false);
   const [onlineSummary, setOnlineSummary] = React.useState(null);
   const [onlineReloadKey, setOnlineReloadKey] = React.useState(0);
+
+  // ===== 유저 로그(이탈 페이지) =====
+  const [pageExitDay, setPageExitDay] = React.useState(''); // YYYYMMDD(KST), empty=server default(today)
+  const [pageExitLoading, setPageExitLoading] = React.useState(false);
+  const [pageExitSummary, setPageExitSummary] = React.useState(null);
+  const [pageExitReloadKey, setPageExitReloadKey] = React.useState(0);
+  const [pageExitQuery, setPageExitQuery] = React.useState('');
+
+  // ===== 유저 로그 서브탭 + 유저 활동 =====
+  const [userLogSubTab, setUserLogSubTab] = React.useState('traffic'); // 'traffic' | 'activity' | 'ab'
+  const [activityQuery, setActivityQuery] = React.useState('');
+  const [activityStartDate, setActivityStartDate] = React.useState('');
+  const [activityEndDate, setActivityEndDate] = React.useState('');
+  const [activityPageGroup, setActivityPageGroup] = React.useState('');
+  const [activityPage, setActivityPage] = React.useState(1);
+  const [activityLoading, setActivityLoading] = React.useState(false);
+  const [activityData, setActivityData] = React.useState(null);
+  const [activityReloadKey, setActivityReloadKey] = React.useState(0);
+
+  // ===== AB 테스트 서브탭 =====
+  const [abTestName, setAbTestName] = React.useState('ab_home');
+  const [abDay, setAbDay] = React.useState('');
+  const [abLoading, setAbLoading] = React.useState(false);
+  const [abData, setAbData] = React.useState(null);
+  const [abReloadKey, setAbReloadKey] = React.useState(0);
 
   // ===== 테스트 계정 생성(관리자) =====
   const [testUserOpen, setTestUserOpen] = React.useState(false);
@@ -627,6 +653,90 @@ const CMSPage = () => {
       try { if (timer) clearInterval(timer); } catch (_) {}
     };
   }, [isAdmin, activeTab, usersReloadKey, onlineReloadKey]);
+
+  // 유저 로그(이탈 페이지): /metrics/traffic/page-exits
+  React.useEffect(() => {
+    if (!isAdmin) return;
+    if (activeTab !== 'userLogs') return;
+
+    let active = true;
+    const load = async () => {
+      setPageExitLoading(true);
+      try {
+        const params = {};
+        const d = String(pageExitDay || '').trim();
+        if (d) params.day = d;
+        params.top_n = 200;
+        const res = await metricsAPI.getPageExitSummary(params);
+        if (!active) return;
+        setPageExitSummary(res?.data || null);
+      } catch (e) {
+        try { console.error('[CMSPage] metricsAPI.getPageExitSummary failed:', e); } catch (_) {}
+        if (active) setPageExitSummary(null);
+      } finally {
+        if (active) setPageExitLoading(false);
+      }
+    };
+
+    load();
+    return () => { active = false; };
+  }, [isAdmin, activeTab, pageExitDay, pageExitReloadKey]);
+
+  // 유저 활동 로그: /metrics/user-activity/search
+  React.useEffect(() => {
+    if (!isAdmin) return;
+    if (activeTab !== 'userLogs' || userLogSubTab !== 'activity') return;
+
+    let active = true;
+    const load = async () => {
+      setActivityLoading(true);
+      try {
+        const params = { page: activityPage, page_size: 50 };
+        const q = String(activityQuery || '').trim();
+        if (q) params.query = q;
+        const sd = String(activityStartDate || '').trim();
+        if (sd) params.start_date = sd;
+        const ed = String(activityEndDate || '').trim();
+        if (ed) params.end_date = ed;
+        const pg = String(activityPageGroup || '').trim();
+        if (pg) params.page_group = pg;
+        const res = await metricsAPI.searchUserActivity(params);
+        if (!active) return;
+        setActivityData(res?.data || null);
+      } catch (e) {
+        try { console.error('[CMSPage] searchUserActivity failed:', e); } catch (_) {}
+        if (active) setActivityData(null);
+      } finally {
+        if (active) setActivityLoading(false);
+      }
+    };
+
+    load();
+    return () => { active = false; };
+  }, [isAdmin, activeTab, userLogSubTab, activityQuery, activityStartDate, activityEndDate, activityPageGroup, activityPage, activityReloadKey]);
+
+  // AB 테스트 데이터 로드
+  React.useEffect(() => {
+    if (!isAdmin || activeTab !== 'userLogs' || userLogSubTab !== 'ab') return;
+    let active = true;
+    const load = async () => {
+      setAbLoading(true);
+      try {
+        const params = { test: abTestName };
+        const d = String(abDay || '').trim();
+        if (d) params.day = d;
+        const res = await metricsAPI.getAbSummary(params);
+        if (active) setAbData(res?.data || null);
+      } catch (e) {
+        try { console.error('[CMSPage] AB summary failed:', e); } catch (_) {}
+        if (active) setAbData(null);
+      } finally {
+        if (active) setAbLoading(false);
+      }
+    };
+    load();
+    return () => { active = false; };
+  }, [isAdmin, activeTab, userLogSubTab, abTestName, abDay, abReloadKey]);
 
   if (!isAdmin) {
     return (
@@ -1851,6 +1961,7 @@ const CMSPage = () => {
   const isTagsTab = activeTab === 'tags';
   const isAiModelsTab = activeTab === 'aiModels';
   const isUsersTab = activeTab === 'users';
+  const isUserLogsTab = activeTab === 'userLogs';
 
   const enabledSlotsCount = React.useMemo(() => {
     try {
@@ -1888,6 +1999,40 @@ const CMSPage = () => {
     });
   }, [allTags, tagListQuery]);
 
+  const filteredExitRows = React.useMemo(() => {
+    const rows = Array.isArray(pageExitSummary?.rows) ? pageExitSummary.rows : [];
+    const q = String(pageExitQuery || '').trim().toLowerCase();
+    if (!q) return rows;
+    return rows.filter((r) => {
+      const p = String(r?.path || '').toLowerCase();
+      const g = String(r?.group_label || r?.group || '').toLowerCase();
+      return p.includes(q) || g.includes(q);
+    });
+  }, [pageExitSummary, pageExitQuery]);
+
+  // 차트 데이터: 파이차트(그룹별 이동+이탈 비중)
+  const pieData = React.useMemo(() => {
+    const groups = Array.isArray(pageExitSummary?.groups) ? pageExitSummary.groups : [];
+    return groups
+      .filter((g) => Number(g?.departures || 0) > 0)
+      .map((g) => ({
+        name: String(g?.group_label || g?.group || '기타'),
+        value: Number(g?.departures || 0),
+        uv: Number(g?.unique_visitors || 0),
+      }));
+  }, [pageExitSummary]);
+
+  // 차트 데이터: 바차트(상위 10 경로 — 이탈수 + 조회수)
+  const barData = React.useMemo(() => {
+    const rows = Array.isArray(pageExitSummary?.rows) ? pageExitSummary.rows : [];
+    return rows.slice(0, 10).map((r) => ({
+      path: String(r?.path || '').length > 30 ? String(r?.path || '').slice(0, 27) + '...' : String(r?.path || ''),
+      fullPath: String(r?.path || ''),
+      departures: Number(r?.departures || 0),
+      views: Number(r?.views || 0),
+    }));
+  }, [pageExitSummary]);
+
   const effectivePrioritySlugsForDisplay = React.useMemo(() => {
     try {
       const cur = sanitizeCharacterTagDisplay(tagDisplay);
@@ -1921,17 +2066,17 @@ const CMSPage = () => {
             <div className="flex items-center gap-2">
               <Settings className="w-6 h-6 text-purple-300" />
               <div>
-                <div className="text-xl font-bold text-white">관리자 페이지</div>
-                <div className="text-sm text-gray-400">
-                  {isUsersTab ? '회원 관리' : isBannersTab ? '배너 조작' : isPopupsTab ? '팝업 설정' : isSlotsTab ? '구좌 조작' : isTagsTab ? '태그 관리' : 'AI모델 조작(준비중)'}
+                  <div className="text-xl font-bold text-white">관리자 페이지</div>
+                  <div className="text-sm text-gray-400">
+                    {isUsersTab ? '회원 관리' : isUserLogsTab ? '유저 로그(이탈)' : isBannersTab ? '배너 조작' : isPopupsTab ? '팝업 설정' : isSlotsTab ? '구좌 조작' : isTagsTab ? '태그 관리' : 'AI모델 조작(준비중)'}
+                  </div>
                 </div>
               </div>
-            </div>
-            <div className="flex items-center gap-2">
-              {(isAiModelsTab || isUsersTab) ? (
-                <>
-                  {isUsersTab && (
-                    <Button
+              <div className="flex items-center gap-2">
+                {(isAiModelsTab || isUsersTab || isUserLogsTab) ? (
+                  <>
+                    {isUsersTab && (
+                      <Button
                       variant="outline"
                       className="bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
                       onClick={() => setTestUserOpen(true)}
@@ -1943,13 +2088,14 @@ const CMSPage = () => {
                   )}
                   <Button
                     variant="outline"
-                    className="bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
-                    onClick={() => {
-                      if (isUsersTab) refreshUsers();
-                    }}
-                    disabled={isAiModelsTab}
-                    title={isAiModelsTab ? '준비중' : '새로고침'}
-                  >
+                      className="bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
+                      onClick={() => {
+                        if (isUsersTab) refreshUsers();
+                        if (isUserLogsTab) setPageExitReloadKey((k) => (Number(k || 0) + 1));
+                      }}
+                      disabled={isAiModelsTab}
+                      title={isAiModelsTab ? '준비중' : '새로고침'}
+                    >
                     {isAiModelsTab ? '준비중' : '새로고침'}
                   </Button>
                 </>
@@ -1977,20 +2123,28 @@ const CMSPage = () => {
 
           {/* 상단 탭 */}
           <div className="flex items-center gap-2 flex-wrap">
-            <Button
-              variant="outline"
-              className={`h-9 px-3 ${isUsersTab ? 'bg-purple-600 border-purple-500 text-white hover:bg-purple-700' : 'bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700'}`}
-              onClick={() => { setActiveTab('users'); setUsersPage(1); }}
-              title="회원 관리"
-            >
-              회원 관리
-            </Button>
-            <Button
-              variant="outline"
-              className={`h-9 px-3 ${isBannersTab ? 'bg-purple-600 border-purple-500 text-white hover:bg-purple-700' : 'bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700'}`}
-              onClick={() => setActiveTab('banners')}
-              title="배너 조작"
-            >
+              <Button
+                variant="outline"
+                className={`h-9 px-3 ${isUsersTab ? 'bg-purple-600 border-purple-500 text-white hover:bg-purple-700' : 'bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700'}`}
+                onClick={() => { setActiveTab('users'); setUsersPage(1); }}
+                title="회원 관리"
+              >
+                회원 관리
+              </Button>
+              <Button
+                variant="outline"
+                className={`h-9 px-3 ${isUserLogsTab ? 'bg-purple-600 border-purple-500 text-white hover:bg-purple-700' : 'bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700'}`}
+                onClick={() => setActiveTab('userLogs')}
+                title="유저 로그(이탈)"
+              >
+                유저 로그
+              </Button>
+              <Button
+                variant="outline"
+                className={`h-9 px-3 ${isBannersTab ? 'bg-purple-600 border-purple-500 text-white hover:bg-purple-700' : 'bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700'}`}
+                onClick={() => setActiveTab('banners')}
+                title="배너 조작"
+              >
               배너 조작
             </Button>
             <Button
@@ -2231,6 +2385,518 @@ const CMSPage = () => {
                 </Table>
               </CardContent>
             </Card>
+            )}
+
+          {isUserLogsTab && (
+            <div className="space-y-4">
+              {/* ===== 서브탭 버튼 ===== */}
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  variant={userLogSubTab === 'traffic' ? 'default' : 'outline'}
+                  className={userLogSubTab === 'traffic'
+                    ? 'bg-indigo-600 text-white hover:bg-indigo-700'
+                    : 'bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-700'}
+                  onClick={() => setUserLogSubTab('traffic')}
+                >
+                  페이지 트래픽
+                </Button>
+                <Button
+                  type="button"
+                  variant={userLogSubTab === 'activity' ? 'default' : 'outline'}
+                  className={userLogSubTab === 'activity'
+                    ? 'bg-indigo-600 text-white hover:bg-indigo-700'
+                    : 'bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-700'}
+                  onClick={() => { setUserLogSubTab('activity'); setActivityPage(1); }}
+                >
+                  유저 활동
+                </Button>
+                <Button
+                  type="button"
+                  variant={userLogSubTab === 'ab' ? 'default' : 'outline'}
+                  className={userLogSubTab === 'ab'
+                    ? 'bg-indigo-600 text-white hover:bg-indigo-700'
+                    : 'bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-700'}
+                  onClick={() => setUserLogSubTab('ab')}
+                >
+                  A/B 테스트
+                </Button>
+              </div>
+
+              {/* ========== 페이지 트래픽 서브탭 ========== */}
+              {userLogSubTab === 'traffic' && (
+                <Card className="bg-gray-800 border-gray-700">
+                  <CardHeader>
+                    <CardTitle className="text-white">페이지 트래픽</CardTitle>
+                    <CardDescription className="text-gray-400">
+                      일별 페이지 조회(PV), 내부 이동(page_leave), 사이트 이탈(page_exit), 유니크 방문자(UV) 집계
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    {/* 필터 컨트롤 */}
+                    <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-3">
+                      <div className="flex flex-col sm:flex-row sm:items-end gap-3 w-full">
+                        <div className="w-full sm:w-[160px]">
+                          <Label className="text-gray-300">날짜(KST)</Label>
+                          <Input
+                            value={pageExitDay}
+                            onChange={(e) => {
+                              const v = String(e?.target?.value || '').replace(/[^0-9]/g, '').slice(0, 8);
+                              setPageExitDay(v);
+                            }}
+                            placeholder="YYYYMMDD"
+                            className="mt-1 bg-gray-900 border-gray-700 text-gray-100"
+                            inputMode="numeric"
+                          />
+                          <div className="mt-1 text-[11px] text-gray-500">비우면 오늘</div>
+                        </div>
+                        <div className="w-full sm:flex-1">
+                          <Label className="text-gray-300">검색</Label>
+                          <Input
+                            value={pageExitQuery}
+                            onChange={(e) => setPageExitQuery(String(e?.target?.value || ''))}
+                            placeholder="/characters/create, /ws/chat, 웹소설..."
+                            className="mt-1 bg-gray-900 border-gray-700 text-gray-100"
+                          />
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <Button type="button" variant="outline" className="h-9 px-3 bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700" onClick={() => setPageExitDay('')} disabled={pageExitLoading}>오늘</Button>
+                        <Button type="button" variant="outline" className="h-9 px-3 bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700" onClick={() => setPageExitReloadKey((k) => k + 1)} disabled={pageExitLoading}>
+                          {pageExitLoading ? '...' : '새로고침'}
+                        </Button>
+                      </div>
+                    </div>
+
+                    {pageExitSummary ? (
+                      <>
+                        {/* 요약 카드 7개 */}
+                        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
+                          {[
+                            { label: '페이지 조회 (PV)', value: Number(pageExitSummary?.total_views || 0).toLocaleString() },
+                            { label: '유니크 방문자 (UV)', value: Number(pageExitSummary?.total_unique_visitors || 0).toLocaleString() },
+                            { label: '사이트 이탈 (탭 닫기)', value: Number(pageExitSummary?.total_exits || 0).toLocaleString() },
+                            { label: '페이지 이동 (내부 전환)', value: Number(pageExitSummary?.total_leaves || 0).toLocaleString() },
+                            { label: '총 이동+이탈', value: Number(pageExitSummary?.total_departures || 0).toLocaleString() },
+                            { label: '날짜', value: String(pageExitSummary?.day || '-') },
+                            { label: '타임존', value: String(pageExitSummary?.timezone || 'Asia/Seoul') },
+                          ].map((c, i) => (
+                            <div key={i} className="rounded-md border border-gray-800 bg-gray-900/30 p-3">
+                              <div className="text-xs text-gray-500">{c.label}</div>
+                              <div className="text-lg font-bold text-white">{c.value}</div>
+                            </div>
+                          ))}
+                        </div>
+
+                        {/* 차트 영역 */}
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                          {/* 파이차트: 그룹별 이동+이탈 비중 */}
+                          {pieData.length > 0 && (
+                            <div className="rounded-lg border border-gray-800 bg-gray-950/30 p-4">
+                              <div className="text-sm font-semibold text-white mb-3">그룹별 이동+이탈 비중</div>
+                              <ResponsiveContainer width="100%" height={260}>
+                                <PieChart>
+                                  <Pie
+                                    data={pieData}
+                                    dataKey="value"
+                                    nameKey="name"
+                                    cx="50%"
+                                    cy="50%"
+                                    outerRadius={90}
+                                    label={({ name, percent, cx, x, y }) => (
+                                      <text x={x} y={y} fill="#e5e7eb" fontSize={11} textAnchor={x > cx ? 'start' : 'end'} dominantBaseline="central">
+                                        {`${name} ${(percent * 100).toFixed(0)}%`}
+                                      </text>
+                                    )}
+                                    labelLine={{ stroke: '#6b7280' }}
+                                  >
+                                    {pieData.map((_, i) => (
+                                      <Cell key={i} fill={['#6366f1','#f59e0b','#10b981','#ef4444','#8b5cf6','#ec4899','#14b8a6','#f97316','#3b82f6','#a3e635','#e879f9','#22d3ee'][i % 12]} />
+                                    ))}
+                                  </Pie>
+                                  <Tooltip
+                                    contentStyle={{ backgroundColor: '#111827', border: '1px solid #4b5563', borderRadius: 8 }}
+                                    itemStyle={{ color: '#e5e7eb' }}
+                                    labelStyle={{ color: '#9ca3af', marginBottom: 4 }}
+                                    formatter={(value, name, props) => [`${Number(value).toLocaleString()} (UV: ${Number(props?.payload?.uv || 0).toLocaleString()})`, name]}
+                                  />
+                                  <Legend wrapperStyle={{ color: '#d1d5db', fontSize: 12 }} formatter={(value) => <span style={{ color: '#d1d5db' }}>{value}</span>} />
+                                </PieChart>
+                              </ResponsiveContainer>
+                            </div>
+                          )}
+
+                          {/* 바차트: 상위 10 경로 */}
+                          {barData.length > 0 && (
+                            <div className="rounded-lg border border-gray-800 bg-gray-950/30 p-4">
+                              <div className="text-sm font-semibold text-white mb-3">상위 10 경로 (이동+이탈 / 조회)</div>
+                              <ResponsiveContainer width="100%" height={260}>
+                                <BarChart data={barData} layout="vertical" margin={{ left: 10, right: 20, top: 5, bottom: 5 }}>
+                                  <XAxis type="number" tick={{ fill: '#9ca3af', fontSize: 11 }} />
+                                  <YAxis type="category" dataKey="path" width={140} tick={{ fill: '#d1d5db', fontSize: 10 }} />
+                                  <Tooltip
+                                    contentStyle={{ backgroundColor: '#111827', border: '1px solid #4b5563', borderRadius: 8 }}
+                                    itemStyle={{ color: '#e5e7eb' }}
+                                    labelStyle={{ color: '#9ca3af', marginBottom: 4 }}
+                                    cursor={{ fill: 'rgba(255,255,255,0.05)' }}
+                                    formatter={(value) => Number(value).toLocaleString()}
+                                    labelFormatter={(label, payload) => payload?.[0]?.payload?.fullPath || label}
+                                  />
+                                  <Bar dataKey="departures" name="이동+이탈" fill="#6366f1" radius={[0, 4, 4, 0]} />
+                                  <Bar dataKey="views" name="조회" fill="#4b5563" radius={[0, 4, 4, 0]} />
+                                  <Legend wrapperStyle={{ color: '#d1d5db', fontSize: 12 }} formatter={(value) => <span style={{ color: '#d1d5db' }}>{value}</span>} />
+                                </BarChart>
+                              </ResponsiveContainer>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* 상세 테이블 */}
+                        <div className="rounded-lg border border-gray-800 bg-gray-950/30 overflow-hidden">
+                          <Table>
+                            <TableHeader>
+                              <TableRow className="border-gray-800">
+                                <TableHead className="text-gray-300">그룹</TableHead>
+                                <TableHead className="text-gray-300">경로</TableHead>
+                                <TableHead className="text-gray-300 text-right">조회</TableHead>
+                                <TableHead className="text-gray-300 text-right">UV</TableHead>
+                                <TableHead className="text-gray-300 text-right">이동+이탈</TableHead>
+                                <TableHead className="text-gray-300 text-right">체류시간</TableHead>
+                                <TableHead className="text-gray-300 text-right">이탈률</TableHead>
+                                <TableHead className="text-gray-300 text-right">비중</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {(filteredExitRows || []).length === 0 ? (
+                                <TableRow className="border-gray-800">
+                                  <TableCell colSpan={8} className="text-sm text-gray-400 py-8 text-center">
+                                    데이터 없음
+                                  </TableCell>
+                                </TableRow>
+                              ) : (
+                                (filteredExitRows || []).slice(0, 200).map((r, idx) => {
+                                  const views = Number(r?.views || 0);
+                                  const departures = Number(r?.departures ?? r?.exits ?? 0);
+                                  const uv = Number(r?.unique_visitors || 0);
+                                  const dr = r?.departure_rate ?? r?.exit_rate ?? null;
+                                  const ds = r?.departure_share ?? r?.exit_share ?? null;
+                                  const group = String(r?.group_label || r?.group || '-');
+                                  const path = String(r?.path || '-');
+                                  const rateText = dr == null ? '-' : `${(Number(dr) * 100).toFixed(1)}%`;
+                                  const shareText = ds == null ? '-' : `${(Number(ds) * 100).toFixed(1)}%`;
+
+                                  // 체류시간
+                                  const avgMs = Number(r?.avg_exit_duration_ms || r?.avg_leave_duration_ms || 0);
+                                  let durText = '-';
+                                  if (avgMs > 0) {
+                                    const sec = avgMs / 1000;
+                                    durText = sec >= 60 ? `${(sec / 60).toFixed(1)}분` : `${sec.toFixed(1)}초`;
+                                  }
+
+                                  return (
+                                    <TableRow key={`${path}:${idx}`} className={`border-gray-800 ${idx % 2 === 0 ? 'bg-gray-900/20' : ''}`}>
+                                      <TableCell className="text-gray-200 text-xs">{group}</TableCell>
+                                      <TableCell className="text-gray-200 font-mono text-xs break-all max-w-[300px]">{path}</TableCell>
+                                      <TableCell className="text-right text-gray-200">{views.toLocaleString()}</TableCell>
+                                      <TableCell className="text-right text-blue-400">{uv.toLocaleString()}</TableCell>
+                                      <TableCell className="text-right text-gray-200">{departures.toLocaleString()}</TableCell>
+                                      <TableCell className="text-right text-gray-400 text-xs">{durText}</TableCell>
+                                      <TableCell className="text-right text-gray-200">{rateText}</TableCell>
+                                      <TableCell className="text-right text-gray-200">{shareText}</TableCell>
+                                    </TableRow>
+                                  );
+                                })
+                              )}
+                            </TableBody>
+                          </Table>
+                        </div>
+
+                        <div className="text-xs text-gray-500">
+                          사이트 이탈 = pagehide/beforeunload (탭 닫기/새로고침), 페이지 이동 = SPA 내부 라우트 전환. 모바일/웹뷰 일부 누락 가능.
+                        </div>
+                      </>
+                    ) : (
+                      <div className="text-sm text-gray-400">
+                        {pageExitLoading ? '불러오는 중...' : '데이터를 불러오지 못했습니다.'}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* ========== 유저 활동 서브탭 ========== */}
+              {userLogSubTab === 'activity' && (
+                <Card className="bg-gray-800 border-gray-700">
+                  <CardHeader>
+                    <CardTitle className="text-white">유저 활동</CardTitle>
+                    <CardDescription className="text-gray-400">
+                      로그인 유저의 페이지 방문/이동/이탈 이력 (DB 저장, 이메일/닉네임 검색)
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    {/* 필터 */}
+                    <div className="flex flex-col lg:flex-row lg:items-end gap-3">
+                      <div className="flex-1">
+                        <Label className="text-gray-300">이메일/닉네임</Label>
+                        <Input
+                          value={activityQuery}
+                          onChange={(e) => { setActivityQuery(String(e?.target?.value || '')); setActivityPage(1); }}
+                          placeholder="검색어 입력..."
+                          className="mt-1 bg-gray-900 border-gray-700 text-gray-100"
+                        />
+                      </div>
+                      <div className="w-full sm:w-[130px]">
+                        <Label className="text-gray-300">시작일</Label>
+                        <Input
+                          value={activityStartDate}
+                          onChange={(e) => { setActivityStartDate(String(e?.target?.value || '').replace(/[^0-9]/g, '').slice(0, 8)); setActivityPage(1); }}
+                          placeholder="YYYYMMDD"
+                          className="mt-1 bg-gray-900 border-gray-700 text-gray-100"
+                          inputMode="numeric"
+                        />
+                      </div>
+                      <div className="w-full sm:w-[130px]">
+                        <Label className="text-gray-300">종료일</Label>
+                        <Input
+                          value={activityEndDate}
+                          onChange={(e) => { setActivityEndDate(String(e?.target?.value || '').replace(/[^0-9]/g, '').slice(0, 8)); setActivityPage(1); }}
+                          placeholder="YYYYMMDD"
+                          className="mt-1 bg-gray-900 border-gray-700 text-gray-100"
+                          inputMode="numeric"
+                        />
+                      </div>
+                      <div className="w-full sm:w-[140px]">
+                        <Label className="text-gray-300">그룹</Label>
+                        <select
+                          value={activityPageGroup}
+                          onChange={(e) => { setActivityPageGroup(e.target.value); setActivityPage(1); }}
+                          className="mt-1 w-full h-9 rounded-md border border-gray-700 bg-gray-900 text-gray-100 px-2 text-sm"
+                        >
+                          <option value="">전체</option>
+                          <option value="home">홈</option>
+                          <option value="chat">채팅</option>
+                          <option value="character_detail">캐릭터 상세</option>
+                          <option value="character_wizard">캐릭터 생성/수정</option>
+                          <option value="story_agent">스토리 에이전트</option>
+                          <option value="storydive">스토리다이브</option>
+                          <option value="webnovel_detail">웹소설 상세</option>
+                          <option value="webnovel_reader">웹소설 뷰어</option>
+                          <option value="history">대화내역</option>
+                          <option value="auth">인증</option>
+                          <option value="other">기타</option>
+                        </select>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="h-9 px-3 bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700 shrink-0"
+                        onClick={() => setActivityReloadKey((k) => k + 1)}
+                        disabled={activityLoading}
+                      >
+                        {activityLoading ? '...' : '새로고침'}
+                      </Button>
+                    </div>
+
+                    {/* 테이블 */}
+                    <div className="rounded-lg border border-gray-800 bg-gray-950/30 overflow-x-auto">
+                      <Table className="min-w-[700px]">
+                        <TableHeader>
+                          <TableRow className="border-gray-800">
+                            <TableHead className="text-gray-300 w-[110px]">시각</TableHead>
+                            <TableHead className="text-gray-300 w-[130px]">유저</TableHead>
+                            <TableHead className="text-gray-300 w-[52px]">이벤트</TableHead>
+                            <TableHead className="text-gray-300">경로</TableHead>
+                            <TableHead className="text-gray-300 w-[80px]">그룹</TableHead>
+                            <TableHead className="text-gray-300 text-right w-[64px]">체류</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {!activityData || !Array.isArray(activityData?.items) || activityData.items.length === 0 ? (
+                            <TableRow className="border-gray-800">
+                              <TableCell colSpan={6} className="text-sm text-gray-400 py-8 text-center">
+                                {activityLoading ? '불러오는 중...' : '데이터 없음'}
+                              </TableCell>
+                            </TableRow>
+                          ) : (
+                            activityData.items.map((item, idx) => {
+                              const evLabel = item.event === 'page_view' ? '방문' : item.event === 'page_leave' ? '이동' : '이탈';
+                              const evColor = item.event === 'page_view' ? 'text-green-400' : item.event === 'page_leave' ? 'text-yellow-400' : 'text-red-400';
+                              const durMs = Number(item.duration_ms || 0);
+                              let durText = '-';
+                              if (durMs > 0) {
+                                const sec = durMs / 1000;
+                                durText = sec >= 60 ? `${(sec / 60).toFixed(1)}분` : `${sec.toFixed(0)}초`;
+                              }
+                              // 컴팩트 시각: MM.DD HH:mm
+                              let ts = '-';
+                              try {
+                                if (item.created_at) {
+                                  const d = new Date(item.created_at);
+                                  const mm = String(d.toLocaleString('ko-KR', { timeZone: 'Asia/Seoul', month: '2-digit' })).replace(/[^0-9]/g, '').padStart(2, '0');
+                                  const dd = String(d.toLocaleString('ko-KR', { timeZone: 'Asia/Seoul', day: '2-digit' })).replace(/[^0-9]/g, '').padStart(2, '0');
+                                  const hh = String(d.toLocaleString('ko-KR', { timeZone: 'Asia/Seoul', hour: '2-digit', hour12: false })).replace(/[^0-9]/g, '').padStart(2, '0');
+                                  const mi = String(d.toLocaleString('ko-KR', { timeZone: 'Asia/Seoul', minute: '2-digit' })).replace(/[^0-9]/g, '').padStart(2, '0');
+                                  ts = `${mm}.${dd} ${hh}:${mi}`;
+                                }
+                              } catch (_) {}
+
+                              return (
+                                <TableRow key={item.id || idx} className={`border-gray-800 ${idx % 2 === 0 ? 'bg-gray-900/20' : ''}`}>
+                                  <TableCell className="text-gray-400 text-xs whitespace-nowrap">{ts}</TableCell>
+                                  <TableCell className="text-gray-200 text-xs max-w-[130px]">
+                                    <div className="truncate">{item.username || '-'}</div>
+                                    <div className="text-gray-500 text-[10px] truncate">{item.email || ''}</div>
+                                  </TableCell>
+                                  <TableCell className={`text-xs font-medium ${evColor}`}>{evLabel}</TableCell>
+                                  <TableCell className="text-gray-200 font-mono text-[11px] truncate max-w-[280px]" title={item.path || ''}>{item.path || '-'}</TableCell>
+                                  <TableCell className="text-gray-400 text-xs">{item.page_group || '-'}</TableCell>
+                                  <TableCell className="text-right text-gray-400 text-xs">{durText}</TableCell>
+                                </TableRow>
+                              );
+                            })
+                          )}
+                        </TableBody>
+                      </Table>
+                    </div>
+
+                    {/* 페이지네이션 */}
+                    {activityData && Number(activityData?.total || 0) > 0 && (
+                      <div className="flex items-center justify-between">
+                        <div className="text-xs text-gray-500">
+                          총 {Number(activityData.total).toLocaleString()}건 (페이지 {activityData.page}/{Math.max(1, Math.ceil(Number(activityData.total) / Number(activityData.page_size || 50)))})
+                        </div>
+                        <div className="flex gap-2">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
+                            disabled={activityPage <= 1 || activityLoading}
+                            onClick={() => setActivityPage((p) => Math.max(1, p - 1))}
+                          >
+                            이전
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
+                            disabled={activityLoading || (activityData.items || []).length < Number(activityData.page_size || 50)}
+                            onClick={() => setActivityPage((p) => p + 1)}
+                          >
+                            다음
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* ========== A/B 테스트 서브탭 ========== */}
+              {userLogSubTab === 'ab' && (
+                <Card className="bg-gray-800 border-gray-700">
+                  <CardHeader>
+                    <CardTitle className="text-white">A/B 테스트 비교</CardTitle>
+                    <CardDescription className="text-gray-400">
+                      메인 페이지 변형(A/B)별 조회·이탈 수를 비교합니다. 변형은 유저 브라우저에 고정 할당됩니다.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="flex flex-col sm:flex-row sm:items-end gap-3">
+                      <div className="w-full sm:w-[160px]">
+                        <Label className="text-gray-300">테스트</Label>
+                        <select
+                          value={abTestName}
+                          onChange={(e) => setAbTestName(e.target.value)}
+                          className="mt-1 w-full h-9 bg-gray-900 border border-gray-700 text-gray-100 rounded-md px-2 text-sm"
+                        >
+                          <option value="ab_home">메인 페이지</option>
+                        </select>
+                      </div>
+                      <div className="w-full sm:w-[140px]">
+                        <Label className="text-gray-300">날짜</Label>
+                        <Input
+                          value={abDay}
+                          onChange={(e) => setAbDay(String(e?.target?.value || '').replace(/[^0-9]/g, '').slice(0, 8))}
+                          placeholder="YYYYMMDD"
+                          className="mt-1 bg-gray-900 border-gray-700 text-gray-100"
+                          inputMode="numeric"
+                        />
+                      </div>
+                      <Button
+                        variant="outline"
+                        className="h-9 px-3 bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700 shrink-0"
+                        onClick={() => setAbReloadKey((k) => k + 1)}
+                        disabled={abLoading}
+                      >
+                        {abLoading ? '불러오는 중...' : '새로고침'}
+                      </Button>
+                    </div>
+
+                    {abData?.variants && abData.variants.length > 0 ? (
+                      <>
+                        <div className="rounded-lg border border-gray-800 bg-gray-950/30 overflow-hidden">
+                          <Table>
+                            <TableHeader>
+                              <TableRow className="border-gray-800">
+                                <TableHead className="text-gray-300">변형</TableHead>
+                                <TableHead className="text-gray-300 text-right">조회(PV)</TableHead>
+                                <TableHead className="text-gray-300 text-right">이탈(exit)</TableHead>
+                                <TableHead className="text-gray-300 text-right">이동(leave)</TableHead>
+                                <TableHead className="text-gray-300 text-right">이탈률</TableHead>
+                                <TableHead className="text-gray-300 text-right">총 이탈률</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {abData.variants.map((v, idx) => (
+                                <TableRow key={v.variant || idx} className={`border-gray-800 ${idx % 2 === 0 ? 'bg-gray-900/20' : ''}`}>
+                                  <TableCell className="text-white font-semibold text-lg">{v.variant}</TableCell>
+                                  <TableCell className="text-right text-gray-200">{Number(v.views || 0).toLocaleString()}</TableCell>
+                                  <TableCell className="text-right text-gray-200">{Number(v.exits || 0).toLocaleString()}</TableCell>
+                                  <TableCell className="text-right text-gray-200">{Number(v.leaves || 0).toLocaleString()}</TableCell>
+                                  <TableCell className="text-right text-gray-200">
+                                    {v.exit_rate != null ? `${(v.exit_rate * 100).toFixed(2)}%` : '-'}
+                                  </TableCell>
+                                  <TableCell className="text-right text-gray-200">
+                                    {v.departure_rate != null ? `${(v.departure_rate * 100).toFixed(2)}%` : '-'}
+                                  </TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        </div>
+
+                        {/* 바차트: 변형별 조회 vs 이탈 */}
+                        <div className="rounded-lg border border-gray-800 bg-gray-950/30 p-4">
+                          <div className="text-sm font-semibold text-white mb-3">변형별 조회 / 이탈 비교</div>
+                          <div className="h-[200px]">
+                            <ResponsiveContainer width="100%" height="100%">
+                              <BarChart data={abData.variants}>
+                                <XAxis dataKey="variant" stroke="#6b7280" tick={{ fill: '#d1d5db', fontSize: 14 }} />
+                                <YAxis stroke="#6b7280" tick={{ fill: '#9ca3af', fontSize: 12 }} />
+                                <Tooltip contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', color: '#e5e7eb' }} />
+                                <Legend wrapperStyle={{ color: '#d1d5db' }} />
+                                <Bar dataKey="views" fill="#6366f1" name="조회(PV)" />
+                                <Bar dataKey="departures" fill="#ef4444" name="이탈+이동" />
+                              </BarChart>
+                            </ResponsiveContainer>
+                          </div>
+                        </div>
+
+                        <div className="text-xs text-gray-500">
+                          날짜: {abData.day || '-'} · 테스트: {abData.test || '-'}
+                        </div>
+                      </>
+                    ) : (
+                      <div className="text-sm text-gray-400">
+                        {abLoading ? '불러오는 중...' : '데이터가 없습니다. AB 변형 트래픽이 쌓이면 여기에 표시됩니다.'}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              )}
+            </div>
           )}
 
           {/* ===== 테스트 계정 생성 모달(회원관리 탭) ===== */}
@@ -3063,7 +3729,7 @@ const CMSPage = () => {
                     </Button>
                   </div>
                   <div className="text-xs text-gray-500">
-                    팁: 스위치를 끄면 비활성화 탭으로 이동합니다.
+                    스위치 토글 시 해당 탭으로 자동 전환됩니다. 저장을 눌러야 메인에 반영됩니다.
                   </div>
                 </div>
 
@@ -3279,7 +3945,11 @@ const CMSPage = () => {
                             </div>
                             <Switch
                               checked={s.enabled !== false}
-                              onCheckedChange={(v) => updateSlot(s.id, { enabled: !!v })}
+                              onCheckedChange={(v) => {
+                                updateSlot(s.id, { enabled: !!v });
+                                // 토글 후 반대 탭으로 자동전환 (슬롯이 "사라진" 것처럼 보이는 혼동 방지)
+                                setSlotListTab(v ? 'enabled' : 'disabled');
+                              }}
                             />
                           </div>
                         </div>

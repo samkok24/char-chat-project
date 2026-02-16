@@ -17,6 +17,7 @@ import MediaEventsBridge from './components/MediaEventsBridge';
 import ToastEventsBridge from './components/ToastEventsBridge';
 import PresenceHeartbeatBridge from './components/PresenceHeartbeatBridge';
 import PostLoginRedirectBridge from './components/PostLoginRedirectBridge';
+import TrafficEventsBridge from './components/TrafficEventsBridge';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -128,12 +129,13 @@ const PublicRoute = ({ children }) => {
 };
 
 // 메인 앱 라우터
-const AppRouter = () => {
-  return (
-    <Router>
-      <PostLoginRedirectBridge />
-      <Suspense fallback={<PageLoader />}>
-        <Routes>
+  const AppRouter = () => {
+    return (
+      <Router>
+        <PostLoginRedirectBridge />
+        <TrafficEventsBridge />
+        <Suspense fallback={<PageLoader />}>
+          <Routes>
           {/* 🔥 CAVEDUCK 핵심 페이지 (우선 로딩) */}
           {/* 초기 진입은 메인 탭(홈)으로 */}
           <Route path="/" element={<Navigate to="/dashboard" replace />} />

@@ -7,6 +7,7 @@ import { Switch } from "./ui/switch";
 import { Label } from "./ui/label";
 import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
 import { resolveImageUrl } from '../lib/images';
+import { buildCharacterTagChipLabels } from '../lib/characterTagChips';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -34,59 +35,7 @@ const CharacterInfoHeader = ({
   const navigate = useNavigate();
   const { profileVersion } = useAuth();
   const isCompact = !!compact;
-  const tagLabelsBelowDates = (() => {
-    /**
-     * ✅ 태그 라벨 구성 (모달/상세 공통)
-     *
-     * 요구사항:
-     * - 태그를 "공개일 | 수정일" 아래로 이동한다(모달/상세 동일).
-     * - 남성향/여성향 옆에 롤플/시뮬/커스텀(=character_type 기반) 라벨이 함께 떠야 한다.
-     *
-     * 정책/방어:
-     * - 최대 12개까지만 노출(레이아웃 폭발 방지).
-     */
-    try {
-      const rawTags = Array.isArray(tags) ? tags : [];
-      const labels = rawTags
-        .map((t) => String(t?.name || t?.slug || '').trim())
-        .filter(Boolean);
-
-      const audience = labels.find((x) => x === '남성향' || x === '여성향' || x === '전체') || '';
-      const audienceLabel = (audience === '전체') ? '' : audience;
-
-      const modeRaw = String(
-        character?.character_type
-        ?? character?.basic_info?.character_type
-        ?? ''
-      ).trim();
-      const modeLower = modeRaw.toLowerCase();
-      const modeLabel = (() => {
-        if (!modeLower && !modeRaw) return '';
-        if (modeLower === 'roleplay' || modeRaw.includes('롤플')) return '롤플';
-        if (modeLower === 'simulator' || modeRaw.includes('시뮬')) return '시뮬';
-        if (modeLower === 'custom' || modeRaw.includes('커스텀')) return '커스텀';
-        return '';
-      })();
-
-      const out = [];
-      for (const x of [audienceLabel, modeLabel]) {
-        const v = String(x || '').trim();
-        if (!v) continue;
-        if (!out.includes(v)) out.push(v);
-      }
-
-      for (const x of labels) {
-        const v = String(x || '').trim();
-        if (!v) continue;
-        if (v === '전체') continue;
-        if (!out.includes(v)) out.push(v);
-        if (out.length >= 12) break;
-      }
-      return out.slice(0, 12);
-    } catch (_) {
-      return [];
-    }
-  })();
+  const tagLabelsBelowDates = buildCharacterTagChipLabels({ character, tags });
 
   return (
     <div className="space-y-4">

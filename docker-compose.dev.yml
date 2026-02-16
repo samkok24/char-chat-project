@@ -1,7 +1,4 @@
-version: '3.8'
-
 services:
-  # FastAPI 백엔드 (SQLite 사용)
   backend:
     build:
       context: ./backend-api
@@ -20,14 +17,12 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      # 데이터베이스 파일 유지를 위해 폴더를 마운트
       - ./backend-api:/app
     depends_on:
       - redis
     networks:
       - char_chat_network
 
-  # Socket.IO 채팅 서버
   chat-server:
     build:
       context: ./chat-server
@@ -41,7 +36,6 @@ services:
       PORT: 3001
       REDIS_URL: redis://redis:6379
       BACKEND_API_URL: http://backend:8000
-      # JWT_SECRET와 JWT_SECRET_KEY는 .env 파일에서 로드됨
     ports:
       - "3001:3001"
     depends_on:
@@ -49,7 +43,6 @@ services:
     networks:
       - char_chat_network
 
-  # Redis (채팅 서버용)
   redis:
     image: redis:7-alpine
     container_name: char_chat_redis
@@ -58,21 +51,20 @@ services:
     networks:
       - char_chat_network
 
-  # React 프론트엔드
   frontend:
-    env_file:
-      - ./.env
     build:
       context: ./frontend/char-chat-frontend
       dockerfile: Dockerfile
       target: dev
     image: char-chat-frontend-dev
     container_name: char_chat_frontend
+    env_file:
+      - ./.env
     environment:
       VITE_API_URL: http://localhost:8000
       VITE_SOCKET_URL: http://localhost:3001
     ports:
-      - "5173:5173"  # Vite 기본 포트
+      - "5173:5173"
     depends_on:
       - backend
       - chat-server
@@ -82,4 +74,5 @@ services:
 
 networks:
   char_chat_network:
-    driver: bridge 
+    driver: bridge
+

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import joinedload, selectinload
 from typing import Optional, List, Dict, Any
 
 from app.core.database import get_db
@@ -11,6 +11,23 @@ from app.models.character import Character
 from app.services.start_sets_utils import extract_max_turns_from_start_sets
 
 router = APIRouter()
+
+
+def _extract_tag_labels_for_list(character: Any) -> List[str]:
+    """Return deduplicated tag labels (name or slug) for list/card responses."""
+    try:
+        rel = getattr(character, "tags", None) or []
+        out: List[str] = []
+        for t in rel:
+            v = str(getattr(t, "name", None) or getattr(t, "slug", None) or "").strip()
+            if not v:
+                continue
+            if v in out:
+                continue
+            out.append(v)
+        return out
+    except Exception:
+        return []
 
 
 @router.get("/daily")
@@ -64,6 +81,7 @@ async def get_daily_rankings(
             .options(
                 joinedload(Character.creator),
                 joinedload(Character.origin_story),
+                selectinload(Character.tags),
             )
             .where(Character.id.in_(ids))
         )).scalars().all()
@@ -128,6 +146,7 @@ async def get_daily_rankings(
                 "max_turns": extract_max_turns_from_start_sets(getattr(c, "start_sets", None)),
                 # ✅ 격자 카드 UX: 배지(롤플/시뮬/커스텀) 표기용
                 "character_type": getattr(c, "character_type", None),
+                "tags": _extract_tag_labels_for_list(c),
                 "chat_count": c.chat_count,
                 "like_count": c.like_count,
                 # ✅ NEW 배지(48h) / 캐시 버스터(avatar v=) 용 메타

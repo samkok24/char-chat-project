@@ -7,6 +7,156 @@ import { io } from 'socket.io-client';
 import { SOCKET_URL } from '../lib/api';
 import { useAuth } from './AuthContext';
 
+// Session-scoped message cache (helps restore UI after tab discard / reconnect).
+const CHAT_CACHE_PREFIX = 'cc:chat:msgcache:v1:';
+const CHAT_CACHE_MAX = 200;
+
+function getRoomIdFromMessage(m) {
+  try {
+    return String(m?.roomId || m?.room_id || m?.chat_room_id || '').trim();
+  } catch (_) {
+    return '';
+  }
+}
+
+function getMessageKey(m) {
+  try {
+    const id = String(m?.id || m?._id || m?.message_id || '').trim();
+    if (id) return `id:${id}`;
+    const rid = getRoomIdFromMessage(m);
+    const sender = String(m?.senderType || m?.sender_type || '').trim();
+    const ts = String(m?.timestamp || m?.created_at || '').trim();
+    const content = String(m?.content || '').trim().slice(0, 48);
+    return `f:${rid}:${sender}:${ts}:${content}`;
+  } catch (_) {
+    return '';
+  }
+}
+
+function guessRoomIdFromMessages(arr) {
+  try {
+    if (!Array.isArray(arr)) return '';
+    for (const m of arr) {
+      const rid = getRoomIdFromMessage(m);
+      if (rid) return rid;
+    }
+  } catch (_) {}
+  return '';
+}
+
+// Avoid persisting optimistic/local placeholders into the room cache.
+function isLocalEphemeralMessage(m) {
+  try {
+    const id = String(m?.id || '').trim().toLowerCase();
+    if (id.startsWith('temp-') || id.startsWith('optimistic-') || id.startsWith('local-')) return true;
+    if (m?.pending === true) return true;
+    if (m?.isStreaming === true) return true;
+    return false;
+  } catch (_) {
+    return true;
+  }
+}
+
+function filterCacheMessages(roomId, messages) {
+  const rid = String(roomId || '').trim();
+  const arr = Array.isArray(messages) ? messages : [];
+  if (!rid || arr.length === 0) return [];
+  const out = [];
+  for (const m of arr) {
+    const mrid = getRoomIdFromMessage(m);
+    if (!mrid || mrid !== rid) continue;
+    if (isLocalEphemeralMessage(m)) continue;
+    out.push(m);
+  }
+  return out;
+}
+
+function mergeMessagesKeepOrder(baseArr, incomingArr) {
+  const base = Array.isArray(baseArr) ? baseArr : [];
+  const incoming = Array.isArray(incomingArr) ? incomingArr : [];
+  if (base.length === 0) return incoming;
+  if (incoming.length === 0) return base;
+
+  const out = base.slice();
+  const indexByKey = new Map();
+  for (let i = 0; i < out.length; i += 1) {
+    const k = getMessageKey(out[i]);
+    if (k) indexByKey.set(k, i);
+  }
+
+  for (const msg of incoming) {
+    const k = getMessageKey(msg);
+    if (!k) {
+      out.push(msg);
+      continue;
+    }
+    const idx = indexByKey.get(k);
+    if (typeof idx === 'number') {
+      const prev = out[idx];
+      const prevContent = String(prev?.content || '');
+      const nextContent = String(msg?.content || '');
+      const prevStreaming = Boolean(prev?.isStreaming);
+      const nextStreaming = Boolean(msg?.isStreaming);
+      if ((prevStreaming && !nextStreaming) || nextContent.length > prevContent.length) {
+        out[idx] = { ...prev, ...msg, content: nextContent || prevContent };
+      }
+    } else {
+      indexByKey.set(k, out.length);
+      out.push(msg);
+    }
+  }
+
+  return out;
+}
+
+function prependUnique(olderArr, existingArr) {
+  const older = Array.isArray(olderArr) ? olderArr : [];
+  const existing = Array.isArray(existingArr) ? existingArr : [];
+  if (older.length === 0) return existing;
+  if (existing.length === 0) return older;
+
+  const existingKeys = new Set();
+  for (const m of existing) {
+    const k = getMessageKey(m);
+    if (k) existingKeys.add(k);
+  }
+
+  const filtered = [];
+  for (const m of older) {
+    const k = getMessageKey(m);
+    if (!k || !existingKeys.has(k)) filtered.push(m);
+  }
+
+  return [...filtered, ...existing];
+}
+
+function readRoomMessageCache(roomId) {
+  try {
+    const rid = String(roomId || '').trim();
+    if (!rid) return [];
+    const raw = sessionStorage.getItem(`${CHAT_CACHE_PREFIX}${rid}`);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    const arr = Array.isArray(parsed?.messages) ? parsed.messages : (Array.isArray(parsed) ? parsed : []);
+    return Array.isArray(arr) ? arr : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function writeRoomMessageCache(roomId, messages) {
+  try {
+    const rid = String(roomId || '').trim();
+    if (!rid) return;
+    const arr = filterCacheMessages(rid, messages);
+    if (arr.length === 0) return;
+    sessionStorage.setItem(
+      `${CHAT_CACHE_PREFIX}${rid}`,
+      JSON.stringify({ ts: Date.now(), messages: arr.slice(-CHAT_CACHE_MAX) })
+    );
+  } catch (_) {}
+}
+
 const SocketContext = createContext();
 
 export const useSocket = () => {
@@ -30,6 +180,7 @@ export const SocketProvider = ({ children }) => {
   const [socketError, setSocketError] = useState('');
   const { user, isAuthenticated } = useAuth();
   const currentRoomRef = useRef(null);
+  const messagesRef = useRef([]);
   /**
    * ✅ 표시 대상(의도한) 룸 ID ref — 방 전환 레이스 방지
    *
@@ -50,6 +201,7 @@ export const SocketProvider = ({ children }) => {
   const historyTimeoutRef = useRef(null);
 
   useEffect(() => { currentRoomRef.current = currentRoom; }, [currentRoom]);
+  useEffect(() => { messagesRef.current = Array.isArray(messages) ? messages : []; }, [messages]);
   useEffect(() => { userRef.current = user; }, [user]);
 
   const setDesiredRoomId = useCallback((roomId) => {
@@ -90,12 +242,38 @@ export const SocketProvider = ({ children }) => {
     } catch (_) {}
     historyTimeoutRef.current = null;
   }, []);
+  /**
+   * 히스토리 타임아웃을 건다.
+   *
+   * 방어 의도:
+   * - 입장이 이미 성공했거나(현재 룸 일치), 화면에 메시지가 이미 보이는 상태에서는
+   *   "입장 지연" 오류를 띄우지 않는다.
+   * - 즉, 실제 실패 케이스에서만 사용자 에러를 노출한다.
+   */
   const armHistoryTimeout = useCallback((message = '메시지 기록을 불러오지 못했습니다. 잠시 후 다시 시도해주세요.') => {
     clearHistoryTimeout();
     try {
       historyTimeoutRef.current = setTimeout(() => {
+        let shouldSuppressError = false;
+        try {
+          const wantedRoomId = String(desiredRoomIdRef.current || '').trim();
+          const currentRoomId = String(currentRoomRef.current?.id || '').trim();
+          const arr = Array.isArray(messagesRef.current) ? messagesRef.current : [];
+
+          const hasMessagesForWantedRoom = arr.some((m) => {
+            const rid = String(m?.roomId || m?.room_id || m?.chat_room_id || '').trim();
+            if (!wantedRoomId) return true;
+            // optimistic/local 메시지는 roomId가 비어있을 수 있으므로 현재 표시 메시지로 인정
+            if (!rid) return true;
+            return rid === wantedRoomId;
+          });
+          const isAlreadyInWantedRoom = Boolean(wantedRoomId && currentRoomId && wantedRoomId === currentRoomId);
+          shouldSuppressError = Boolean(hasMessagesForWantedRoom || isAlreadyInWantedRoom);
+        } catch (_) {}
         setHistoryLoading(false);
-        setSocketError(message);
+        if (!shouldSuppressError) {
+          setSocketError(message);
+        }
       }, 8000);
     } catch (_) {}
   }, [clearHistoryTimeout]);
@@ -130,25 +308,40 @@ export const SocketProvider = ({ children }) => {
           reconnectionDelayMax: 5000,
         });
 
-        newSocket.on('connect', () => {
-          console.log('Socket 연결됨:', newSocket.id);
-          setConnected(true);
-          setSocketError('');
-          // 재연결 시 현재 방 자동 재-join 및 히스토리 복구
-          const room = currentRoomRef.current;
-          if (room && room.id) {
-            try {
-              // ✅ 표시 대상 룸을 먼저 지정(레이스 방지)
-              setDesiredRoomId(room.id);
-              setHasMoreMessages(true);
-              setCurrentPage(1);
-              setHistoryLoading(true);
-              newSocket.emit('join_room', { roomId: room.id });
-              newSocket.emit('get_message_history', { roomId: room.id, page: 1, limit: 50 });
-              armHistoryTimeout('메시지 기록 복구가 지연되고 있습니다. 잠시 후 다시 시도해주세요.');
-            } catch (_) {}
-          }
-        });
+          newSocket.on('connect', () => {
+            console.log('Socket 연결됨:', newSocket.id);
+            setConnected(true);
+            setSocketError('');
+            // 재연결 시 현재 방 자동 재-join 및 히스토리 복구
+            const room = currentRoomRef.current;
+            if (room && room.id) {
+              try {
+                // ✅ 표시 대상 룸을 먼저 지정(레이스 방지)
+                setDesiredRoomId(room.id);
+                setHasMoreMessages(true);
+                setCurrentPage(1);
+
+                // Best-effort: restore last known UI state immediately (e.g., after tab discard).
+                try {
+                  const cached = readRoomMessageCache(room.id);
+                  if (Array.isArray(cached) && cached.length > 0) {
+                    setMessages((prev) => {
+                      const prevArr = Array.isArray(prev) ? prev : [];
+                      const prevRid = guessRoomIdFromMessages(prevArr);
+                      if (prevArr.length === 0) return cached;
+                      if (prevRid && String(prevRid) !== String(room.id)) return cached;
+                      return prevArr;
+                    });
+                  }
+                } catch (_) {}
+
+                setHistoryLoading(true);
+                newSocket.emit('join_room', { roomId: room.id });
+                newSocket.emit('get_message_history', { roomId: room.id, page: 1, limit: 50 });
+                armHistoryTimeout('메시지 기록 복구가 지연되고 있습니다. 잠시 후 다시 시도해주세요.');
+              } catch (_) {}
+            }
+          });
 
         newSocket.on('disconnect', (reason) => {
           if (reason !== 'io client disconnect') {
@@ -200,6 +393,10 @@ export const SocketProvider = ({ children }) => {
             if (!isDesiredRoom(rid)) return;
             if (rid) setDesiredRoomId(rid);
           } catch (_) {}
+          // room_joined가 오면 "입장 지연" 타임아웃은 종료한다.
+          clearHistoryTimeout();
+          setHistoryLoading(false);
+          setSocketError('');
           setCurrentRoom(data.room);
         });
 
@@ -224,7 +421,17 @@ export const SocketProvider = ({ children }) => {
             const rid = String(message?.roomId || message?.room_id || message?.chat_room_id || '').trim();
             if (!isDesiredRoom(rid)) return;
           } catch (_) {}
-          setMessages(prev => [...prev, message]);
+          // 메시지 실수신 시 stale 입장 오류 문구를 제거한다.
+          setSocketError('');
+          setMessages((prev) => {
+            const prevArr = Array.isArray(prev) ? prev : [];
+            const next = [...prevArr, message];
+            try {
+              const rid = getRoomIdFromMessage(message);
+              if (rid) writeRoomMessageCache(rid, next);
+            } catch (_) {}
+            return next;
+          });
         });
 
         newSocket.on('message_history', (data) => {
@@ -234,12 +441,48 @@ export const SocketProvider = ({ children }) => {
             const rid = String(data?.roomId || '').trim();
             if (!isDesiredRoom(rid)) return;
           } catch (_) {}
+          const roomId = String(data?.roomId || '').trim();
           const filtered = Array.isArray(data.messages) ? data.messages.filter(m => !isSkipDirective(m)) : [];
           if (data.page === 1) {
-            setMessages(filtered);
+            setMessages((prev) => {
+              const prevArr = Array.isArray(prev) ? prev : [];
+              const inc = Array.isArray(filtered) ? filtered : [];
+
+              // SSOT: page=1 history is the canonical DB order. Replace local UI state when present.
+              // Keep current UI only when the server returns an empty history (e.g. new=1 optimistic preview).
+              if (inc.length === 0) {
+                // If this is a different room (and we can tell), don't keep stale messages.
+                try {
+                  const prevRid = guessRoomIdFromMessages(prevArr);
+                  if (prevRid && roomId && prevRid !== roomId) return [];
+                } catch (_) {}
+                return prevArr;
+              }
+              if (roomId && inc.length) writeRoomMessageCache(roomId, inc);
+              return inc;
+            });
           } else {
-            setMessages(prev => [...filtered, ...prev]);
+            setMessages((prev) => {
+              const prevArr = Array.isArray(prev) ? prev : [];
+              const inc = Array.isArray(filtered) ? filtered : [];
+
+              // Room switch: never merge messages across rooms.
+              try {
+                const prevRid = guessRoomIdFromMessages(prevArr);
+                if (prevRid && roomId && prevRid !== roomId) {
+                  const next = inc;
+                  if (roomId && next.length) writeRoomMessageCache(roomId, next);
+                  return next;
+                }
+              } catch (_) {}
+
+              const next = prependUnique(inc, prevArr);
+              if (roomId && next.length) writeRoomMessageCache(roomId, next);
+              return next;
+            });
           }
+          // 히스토리 수신 완료: stale 입장 오류 제거
+          setSocketError('');
           setHasMoreMessages(data.hasMore);
           setCurrentPage(data.page);
           setHistoryLoading(false);
@@ -311,11 +554,19 @@ export const SocketProvider = ({ children }) => {
             // roomId가 없다면(레거시) 메시지 id 기반 업데이트는 충돌 가능성이 낮으므로 통과
             if (rid && !isDesiredRoom(rid)) return;
           } catch (_) {}
-          setMessages(prev => prev.map(m => 
-            m.id === data.id 
-              ? { ...m, content: data.content, isStreaming: false, meta: data.meta || m.meta }
-              : m
-          ));
+          setMessages((prev) => {
+            const prevArr = Array.isArray(prev) ? prev : [];
+            const next = prevArr.map((m) =>
+              m.id === data.id
+                ? { ...m, content: data.content, isStreaming: false, meta: data.meta || m.meta }
+                : m
+            );
+            try {
+              const rid = String(data?.roomId || guessRoomIdFromMessages(next) || '').trim();
+              if (rid) writeRoomMessageCache(rid, next);
+            } catch (_) {}
+            return next;
+          });
         });
 
         newSocket.on('ai_error', (data) => {
@@ -381,12 +632,28 @@ export const SocketProvider = ({ children }) => {
       // ✅ 방 전환 레이스 방지: "내가 지금 보려는 룸"을 먼저 지정
       setDesiredRoomId(roomId);
       setSocketError('');
-      // 기존 메시지를 즉시 비우지 않고 히스토리만 새로 요청
+      // 기존 메시지를 즉시 비우지 않고, 입장+히스토리 동기화를 한 번에 처리한다.
       setHasMoreMessages(true);
       setCurrentPage(1);
+
+      // Best-effort: restore cached messages so the UI doesn't appear "wiped" on resume.
+      try {
+        const cached = readRoomMessageCache(roomId);
+        if (Array.isArray(cached) && cached.length > 0) {
+          setMessages((prev) => {
+            const prevArr = Array.isArray(prev) ? prev : [];
+            const prevRid = guessRoomIdFromMessages(prevArr);
+            if (prevArr.length === 0) return cached;
+            if (prevRid && String(prevRid) !== String(roomId)) return cached;
+            return prevArr;
+          });
+        }
+      } catch (_) {}
+
       setHistoryLoading(true);
       socket.emit('join_room', { roomId });
-      armHistoryTimeout('채팅방 입장이 지연되고 있습니다. 잠시 후 다시 시도해주세요.');
+      socket.emit('get_message_history', { roomId, page: 1, limit: 50 });
+      armHistoryTimeout('메시지 기록을 불러오지 못했습니다. 잠시 후 다시 시도해주세요.');
     }
   }, [socket, connected, setDesiredRoomId, armHistoryTimeout]);
 
@@ -525,4 +792,3 @@ export const SocketProvider = ({ children }) => {
     </SocketContext.Provider>
   );
 };
-

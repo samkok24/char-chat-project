@@ -185,7 +185,7 @@ const ChatInteraction = ({ onStartChat, characterId, isAuthenticated, isWebNovel
           disabled={startingOrigChat}
           className="w-full bg-red-600 hover:bg-red-700 text-white font-bold text-lg py-6"
         >
-          {isOrigChatCharacter ? '원작챗 시작' : (isWebNovel ? '등장인물과 원작챗 시작' : '대화 시작')}
+          {isOrigChatCharacter ? '새로 대화' : (isWebNovel ? '등장인물과 원작챗 시작' : '대화 시작')}
         </Button>
       )}
     </div>
