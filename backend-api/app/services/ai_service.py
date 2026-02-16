@@ -172,9 +172,11 @@ def _parse_user_intent(user_hint: str) -> dict:
         intent = intent or "thriller"
 
     # stance
-    if _has("1인칭", "일인칭", "나로"):
+    # - "그녀/그로" 같은 3인칭 대명사는 롤플/시뮬 서술에서 흔히 등장해 의도치 않게 시점을 흔들 수 있다.
+    # - 시점 전환은 명시적인 요청(1인칭/3인칭)일 때만 반영한다.
+    if _has("1인칭", "일인칭"):
         stance = "first"
-    if _has("3인칭", "삼인칭", "그녀", "그로"):
+    if _has("3인칭", "삼인칭"):
         stance = stance or "third"
 
     # tone
@@ -1412,29 +1414,48 @@ async def get_gemini_completion(
             generation_config=generation_config,
         )
 
-        # 안전한 텍스트 추출: 차단되었거나 text가 비어있을 수 있음
+        # 안전한 텍스트 추출:
+        # - 일부 Gemini 응답에서 response.text 는 "일부 파트만" 포함하거나, 중간에서 끊긴 텍스트를 반환하는 케이스가 있어
+        #   candidates[].content.parts[] 를 join한 값과 비교해 더 신뢰할 수 있는 쪽을 사용한다.
+        resp_text = ""
         try:
-            if hasattr(response, 'text') and response.text:
-                return response.text
+            if hasattr(response, "text") and response.text:
+                resp_text = str(response.text or "").strip()
         except Exception:
             # .text 접근시 예외가 발생할 수 있으니 아래로 폴백
-            pass
+            resp_text = ""
 
-        # 후보에서 텍스트 파츠를 수집
+        joined = ""
         try:
-            candidates = getattr(response, 'candidates', []) or []
+            candidates = getattr(response, "candidates", []) or []
             for cand in candidates:
-                content = getattr(cand, 'content', None)
+                content = getattr(cand, "content", None)
                 if not content:
                     continue
-                parts = getattr(content, 'parts', []) or []
-                text_parts = [getattr(p, 'text', '') for p in parts if getattr(p, 'text', '')]
+                parts = getattr(content, "parts", []) or []
+                text_parts = [getattr(p, "text", "") for p in parts if getattr(p, "text", "")]
                 joined = "".join(text_parts).strip()
                 if joined:
-                    return joined
+                    break
         except Exception:
             # 파싱 실패 시 아래 폴백
-            pass
+            joined = ""
+
+        # Prefer joined parts when it exists and seems "more complete" than response.text.
+        if joined:
+            try:
+                if (not resp_text) or (len(joined) > len(resp_text)):
+                    try:
+                        if getattr(settings, "DEBUG", False) or getattr(settings, "ENVIRONMENT", "") != "production":
+                            logger.info(f"[gemini] prefer_joined_parts model={model_norm} text_len={len(resp_text)} joined_len={len(joined)}")
+                    except Exception:
+                        pass
+                    return joined
+            except Exception:
+                return joined
+
+        if resp_text:
+            return resp_text
 
         # 안전 정책/기타 사유로 텍스트가 비어있을 때: 재시도 또는 폴백
         try:
@@ -1733,9 +1754,45 @@ async def get_claude_completion(
 
         message = await claude_client.messages.create(**kwargs)
 
+        def _join_claude_text_blocks(blocks) -> str:
+            parts: list[str] = []
+            try:
+                for b in (blocks or []):
+                    if b is None:
+                        continue
+
+                    # Dict-shaped block: {"type":"text","text":"..."}
+                    if isinstance(b, dict):
+                        if b.get("type") == "text" and b.get("text") is not None:
+                            t = b.get("text")
+                            if isinstance(t, bytes):
+                                parts.append(t.decode("utf-8", errors="replace"))
+                            else:
+                                parts.append(str(t))
+                        continue
+
+                    # SDK object block: TextBlock(type="text", text="...")
+                    b_type = getattr(b, "type", None)
+                    b_text = getattr(b, "text", None)
+                    if b_type == "text" and b_text is not None:
+                        if isinstance(b_text, bytes):
+                            parts.append(b_text.decode("utf-8", errors="replace"))
+                        else:
+                            parts.append(str(b_text))
+            except Exception:
+                return ""
+
+            return "".join(parts)
+
         # 1) SDK가 Message 객체를 돌려주는 일반적인 경우
         if hasattr(message, "content"):
-            text = message.content[0].text
+            # Anthropic can return multiple content blocks; join all text blocks to avoid truncation.
+            text = _join_claude_text_blocks(getattr(message, "content", None))
+            if not text:
+                try:
+                    text = message.content[0].text
+                except Exception:
+                    text = ""
             # UTF-8 인코딩 보장
             if isinstance(text, bytes):
                 text = text.decode('utf-8', errors='replace')
@@ -1753,7 +1810,7 @@ async def get_claude_completion(
             # {'content': [{'text': '...'}], ...} 형태를 기대
             content = message.get("content")
             if isinstance(content, list) and content and isinstance(content[0], dict):
-                text = content[0].get("text", "")
+                text = _join_claude_text_blocks(content) or content[0].get("text", "")
                 # UTF-8 인코딩 보장
                 if isinstance(text, bytes):
                     text = text.decode('utf-8', errors='replace')
@@ -2538,7 +2595,9 @@ async def get_ai_chat_response(
 
     # ✅ 응답 길이 선호도 프롬프트 지침(체감 강화)
     # - 기존에는 max_tokens(상한)만 조정되어 "길게" 체감이 약할 수 있다.
-    # - 그래서 모델에게도 길이 기대치를 명시적으로 가이드한다(출력은 자연스러운 대화만).
+    # - 그래서 모델에게도 길이 기대치를 명시적으로 가이드한다.
+    #   (주의) "대화만"을 강제하면 지문/서술이 대사로 변환되는 부작용이 있어,
+    #   여기서는 '자연스러운 문장'만 요구한다. (불릿/라벨/번호/헤더 금지)
     length_block = ""
     try:
         rlp = (response_length_pref or "").strip().lower()
@@ -2549,27 +2608,27 @@ async def get_ai_chat_response(
             "\n[응답 길이]\n"
             "- 짧게: 1~2문장(또는 1단락)으로 핵심만.\n"
             "- 불필요한 설명/설정 추가/장황한 묘사 금지.\n"
-            "- 출력은 자연스러운 대화만(불릿/라벨/번호/헤더 금지).\n"
+            "- 불릿/라벨/번호/헤더 금지.\n"
         )
     elif rlp == "long":
         length_block = (
             "\n[응답 길이]\n"
             "- 길게: 6~12문장 정도로 충분히 풍부하게.\n"
             "- 감정/행동/상황을 더 묘사하되, 설정/사실을 임의로 추가하거나 단정하지 않는다.\n"
-            "- 출력은 자연스러운 대화만(불릿/라벨/번호/헤더 금지).\n"
+            "- 불릿/라벨/번호/헤더 금지.\n"
         )
     else:
         # medium(기본)
         length_block = (
             "\n[응답 길이]\n"
             "- 보통: 3~6문장 정도로 자연스럽게.\n"
-            "- 출력은 자연스러운 대화만(불릿/라벨/번호/헤더 금지).\n"
+            "- 불릿/라벨/번호/헤더 금지.\n"
         )
 
     # ✅ 프롬프트 구성(중요)
     # - Gemini는 단일 prompt 문자열로 호출하므로 기존처럼 합친 full_prompt를 유지한다.
     # - Claude/GPT는 system(developer)/user 역할 분리로 "캐릭터/규칙" 우선순위를 높인다.
-    user_prompt = f"{history_block}{intent_block}{length_block}\n\n사용자 메시지: {user_message}\n\n위 설정에 맞게 자연스럽게 응답하세요 (대화만 출력, 라벨 없이):"
+    user_prompt = f"{history_block}{intent_block}{length_block}\n\n사용자 메시지: {user_message}\n\n위 설정에 맞게 자연스럽게 응답하세요 (라벨 없이):"
     full_prompt = f"{character_prompt}{user_prompt}"
 
     # 응답 길이 선호도 → 최대 토큰 비율 조정 (중간 기준 1.0)

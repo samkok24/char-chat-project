@@ -453,6 +453,8 @@ class CharacterDetailResponse(BaseModel):
     # 캐릭터 타입
     character_type: str
     base_language: str
+    # 상세 화면 태그(SSOT: 캐릭터 상세 응답)
+    tags: Optional[List[str]] = Field(default_factory=list)
     
     # 미디어
     avatar_url: Optional[str]
@@ -513,6 +515,8 @@ class CharacterListResponse(BaseModel):
     thumbnail_url: Optional[str] = None
     # 계산을 위해 목록 응답에도 이미지 설명 배열을 전달(옵션)
     image_descriptions: Optional[List[Dict[str, Any]]] = None
+    # 홈/격자 배지용 태그 목록(SSOT: 서버 목록 응답에서 함께 전달)
+    tags: Optional[List[str]] = Field(default_factory=list)
     chat_count: int
     like_count: int
     origin_story_id: Optional[uuid.UUID] = None

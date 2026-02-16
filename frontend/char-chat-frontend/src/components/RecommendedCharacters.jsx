@@ -98,8 +98,8 @@ const RecommendedCharacters = ({ title } = {}) => {
       }
     },
     staleTime: 5 * 60 * 1000,
-    refetchOnWindowFocus: true,
-    refetchOnMount: 'always',
+    refetchOnWindowFocus: false,
+    refetchOnMount: false,
   });
 
   // ✅ 경쟁사 체감 크기(카드가 너무 작아 보이지 않게):

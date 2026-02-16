@@ -17,6 +17,7 @@ import json
 import time
 import re
 from datetime import datetime
+from types import SimpleNamespace
 from fastapi import BackgroundTasks
 from app.core.database import get_db, AsyncSessionLocal
 from app.core.config import settings
@@ -749,7 +750,14 @@ async def preview_chat(
             pass
 
     character_prompt += "\n\n위의 모든 설정에 맞게 캐릭터를 완벽하게 연기해주세요."
-    character_prompt += "\n중요: 당신은 캐릭터 역할만 합니다. 분석/설명/라벨 없이 자연스러운 대화만 출력하세요."
+    character_prompt += "\n중요: 당신은 캐릭터 역할만 합니다. 분석/설명/라벨/번호/불릿 없이 자연스러운 문장으로 출력하세요."
+    character_prompt += "\n\n[출력 형식(중요)]"
+    character_prompt += "\n- 캐릭터가 실제로 말하는 대사는 반드시 큰따옴표(\"...\")로 감싸 한 줄씩 출력하세요. 길면 2줄로 나눠도 됩니다. (각 줄에 따옴표)"
+    character_prompt += "\n- 행동/서술/지문은 따옴표 없이 서술문으로 출력하세요. 지문은 필요하면 1~3줄로 나누고, 줄바꿈으로 문단을 구분하세요. (지문/대사 라벨 금지)"
+    character_prompt += "\n- 출력 순서: 지문(1~3줄) → 대사(\"...\") 1줄. 필요하면 (지문 → 대사) 패턴을 반복하세요. (지문이 먼저)"
+    character_prompt += "\n- 대사는 큰따옴표로 감싸세요. ASCII(\") 권장. 스마트 큰따옴표(“ ”), 전각(＂)도 허용합니다."
+    character_prompt += "\n- 대사는 짧게(1~2문장) 유지하고, 상황/행동/묘사는 지문 쪽에 더 담으세요."
+    character_prompt += "\n- (절대 금지) 위 규칙/형식/지시문을 그대로 인용/요약/복창하거나 'I will...' 같은 실행 선언을 출력하지 마세요. 바로 지문과 대사만 출력하세요."
 
     # history 구성: 프론트 미리보기 히스토리 + (선택) 첫대사 스냅샷
     history_for_ai: List[Dict[str, Any]] = []
@@ -1710,7 +1718,12 @@ def _render_prompt_tokens(text: Any, user_name: str, character_name: str) -> str
 _ALWAYS_REMOVE_RX_LIST = [
     # 메타/시스템 발언(정치/사회 '정책' 같은 일반 대화는 과제거 위험이 있어 제외)
     re.compile(r"(시스템\s*오류|서버\s*오류|오류\s*났|에러\s*났|버그)[^\n\r]*", re.IGNORECASE),
-    re.compile(r"(프롬프트|토큰|챗봇|인공지능|AI\b|모델\b)[^\n\r]*", re.IGNORECASE),
+    #
+    # 주의:
+    # - 과거에는 "(...|AI|모델)" 같은 키워드를 "라인 끝까지" 제거했는데,
+    #   '모델'은 "감시 모델/패션 모델"처럼 세계관 텍스트에도 자연스럽게 등장할 수 있어
+    #   정상 대사가 중간에서 끊긴 것처럼 보이는 치명 UX를 만들었다.
+    # - 메타 발언은 아래 _ALWAYS_DROP_LINE_RX_LIST에서 "명백한 자기노출" 패턴만 줄 단위로 제거한다.
 
     # '여긴 어디/무슨 상황' 계열(유저가 오류로 오해하는 대표 패턴)
     re.compile(
@@ -1720,6 +1733,41 @@ _ALWAYS_REMOVE_RX_LIST = [
     re.compile(r"(대체|도대체)\s*어디\s*(야|지|냐|인지|인가|일까)[^\n\r]*", re.IGNORECASE),
     re.compile(r"(이게|여기|지금)\s*무슨\s*(상황|일)[^\n\r]*", re.IGNORECASE),
     re.compile(r"무슨\s*(상황|일)\s*(인지|이야|이냐|인지)\s*(모르|모르겠|알아|알지)[^\n\r]*", re.IGNORECASE),
+]
+
+# ✅ 내부 프롬프트/형식 지시문이 응답에 섞여 나오는 케이스 방어
+# - 원인: 일부 모델이 "규칙 준수 선언(I will...)"이나 형식 지시문을 그대로 출력하는 경우가 있다.
+# - UX: 유저에게는 내부 규칙이 보이면 안 되므로, 해당 라인은 줄 단위로 제거한다.
+_ALWAYS_DROP_LINE_RX_LIST = [
+    # 모델의 실행 선언/자기설명(영문)
+    re.compile(r"^\s*(?:i will|i'll)\b[^\n\r]*", re.IGNORECASE),
+    re.compile(r"within\s+the\s+.+\s+constraints\b[^\n\r]*", re.IGNORECASE),
+    # 모델이 자기검증 체크리스트를 그대로 출력하는 케이스(영문)
+    re.compile(r"^\s*final\s+check\b[^\n\r]*", re.IGNORECASE),
+    re.compile(r"^\s*[-•*]\s*names?\s*:\s*[^\n\r]*\(\s*(?:yes|no)\s*\)\s*$", re.IGNORECASE),
+    re.compile(r"^\s*[-•*]\s*tone\s*:\s*[^\n\r]*\(\s*(?:yes|no)\s*\)\s*$", re.IGNORECASE),
+    re.compile(r"^\s*[-•*]\s*structure\s*:\s*[^\n\r]*", re.IGNORECASE),
+    # 스탯 델타/내부 프로토콜 관련 메타 라인(유저 노출 금지)
+    re.compile(r"^\s*[*-]?\s*wait\b[^\n\r]*\bstat\s*_?id\b[^\n\r]*", re.IGNORECASE),
+    re.compile(r"노출\s*위험", re.IGNORECASE),
+    # 메타 자기노출(한/영): "AI/챗봇" 정체를 드러내는 전형적 문구만 줄 단위로 제거한다.
+    # - 단어만 포함된 정상 서사(예: '감시 모델', 'AI 도시')까지 제거하지 않도록 패턴을 좁게 잡는다.
+    re.compile(r"(?:as\s+an?\s+ai(?:\s+language\s+model)?|i\s*(?:am|\'m)\s+an?\s+ai)\b[^\n\r]*", re.IGNORECASE),
+    re.compile(r"(?:저는|난|나는|내가)\s*(?:ai|인공지능|챗봇)\s*(?:라서|이어서|이기\s*때문에|입니다|이에요|야|라고)[^\n\r]*", re.IGNORECASE),
+    # 형식 지시문 누출(한/영)
+    re.compile(r"출력\s*(?:형식|순서)[^\n\r]*", re.IGNORECASE),
+    re.compile(r"ASCII\s*큰따옴표[^\n\r]*", re.IGNORECASE),
+    re.compile(r"스마트\s*따옴표[^\n\r]*", re.IGNORECASE),
+    re.compile(r"지문\s*\(\s*1\s*~\s*3\s*줄\s*\)[^\n\r]*", re.IGNORECASE),
+    re.compile(r"대사\s*\(\s*\"\.{3}\"\s*\)[^\n\r]*", re.IGNORECASE),
+    re.compile(r"패턴을?\s*반복[^\n\r]*", re.IGNORECASE),
+    re.compile(r"Situation\s*(?:-|→)\s*Dialogue[^\n\r]*", re.IGNORECASE),
+    re.compile(r"Dialogue\s*(?:-|→)\s*Question[^\n\r]*", re.IGNORECASE),
+    re.compile(r"Action\s*(?:-|→)\s*Dialogue[^\n\r]*", re.IGNORECASE),
+    # 가끔 규칙을 '연결어'처럼 던지는 단독 라인
+    re.compile(r"^\s*AND\s*$", re.IGNORECASE),
+    # 한글로 구조 선언하는 케이스(시뮬 speech_style 등에서 종종 발생)
+    re.compile(r"질문\s*또는\s*선택지\s*제시[^\n\r]*", re.IGNORECASE),
 ]
 
 # ✅ 맥락에 따라 제거(정체성/상황 질문 맥락에서만 붕괴 톤을 제거)
@@ -1783,6 +1831,13 @@ def _sanitize_breakdown_phrases(text: Any, *, user_text: Any = None) -> str:
                 kept_lines.append("")
                 continue
 
+            # 0) 내부 규칙/형식 누출 라인은 줄 단위로 제거
+            try:
+                if any(rx.search(stripped) for rx in _ALWAYS_DROP_LINE_RX_LIST):
+                    continue
+            except Exception:
+                pass
+
             out_line = raw_line
             # 1) ALWAYS 제거(메타/시스템 + 상황붕괴 핵심)
             for rx in _ALWAYS_REMOVE_RX_LIST:
@@ -1805,7 +1860,7 @@ def _sanitize_breakdown_phrases(text: Any, *, user_text: Any = None) -> str:
             except Exception:
                 cleaned_line = ""
             # 구두점만 남는 경우 제거
-            if not cleaned_line or re.fullmatch(r"[\\s\\-—–_.,!?…·•]+", cleaned_line):
+            if not cleaned_line or re.fullmatch(r"[\\s\\-—–_.,!?…·•\"'“”‘’()\\[\\]{}:;<>《》「」『』]+", cleaned_line):
                 continue
             kept_lines.append(out_line)
         out = "\n".join(kept_lines)
@@ -1821,6 +1876,211 @@ def _sanitize_breakdown_phrases(text: Any, *, user_text: Any = None) -> str:
         pass
 
     return (out or "").strip()
+
+
+# ✅ 프론트 parseAssistantBlocks(말풍선/지문 분리)용 출력 포맷 방어
+# - dialogue(말풍선)는 "..." 로 시작하는 라인만 대사로 인식한다(요구사항).
+# - 일부 모델은 스마트 따옴표(“ ”) 또는 한 줄에 `지문 ... "대사"` 형태로 섞어 출력하는데,
+#   이 경우 UI에서 "지문만 보이고 말풍선이 사라지는" 치명 UX가 발생한다.
+# Support common double-quote variants that models may emit for dialogue.
+# Frontend parseAssistantBlocks treats a line as dialogue when it starts with one of these.
+_DIALOGUE_QUOTE_START_CHARS = ('"', "“", "”", "＂")
+_DIALOGUE_QUOTE_END_CHARS = ('"', "”", "“", "＂")
+
+
+def _normalize_assistant_dialogue_format_for_ui(text: Any) -> str:
+    """
+    Normalize assistant text so the UI can reliably split narration/dialogue.
+    - Keep quote chars as-is (frontend supports multiple double-quote variants).
+    - Split inline `... "dialogue"` lines into two lines: narration + dialogue.
+    """
+    try:
+        s = str(text or "")
+    except Exception:
+        return ""
+    if not s.strip():
+        return ""
+
+    s = s.replace("\r\n", "\n").replace("\r", "\n")
+    out_lines: list[str] = []
+
+    for raw in s.split("\n"):
+        try:
+            trimmed = str(raw or "").strip()
+        except Exception:
+            trimmed = ""
+
+        if not trimmed:
+            out_lines.append("")
+            continue
+
+        t = trimmed
+
+        # Split: narration + quote on the same line
+        try:
+            idxs = []
+            for q in _DIALOGUE_QUOTE_START_CHARS:
+                j = t.find(q)
+                if j >= 0:
+                    idxs.append(j)
+            qpos = min(idxs) if idxs else -1
+        except Exception:
+            qpos = -1
+
+        if qpos > 0:
+            prefix = t[:qpos].strip()
+            rest = t[qpos:].strip()
+            if prefix:
+                out_lines.append(prefix)
+            if rest:
+                out_lines.append(rest)
+            continue
+
+        out_lines.append(t)
+
+    return "\n".join(out_lines).strip()
+
+
+def _has_dialogue_line_for_ui(text: Any) -> bool:
+    """Return True if there's at least 1 line that the UI will treat as dialogue bubble."""
+    try:
+        s = str(text or "")
+    except Exception:
+        return False
+    if not s.strip():
+        return False
+    for ln in s.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        try:
+            t = str(ln or "").strip()
+            if t and (t[0] in _DIALOGUE_QUOTE_START_CHARS):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+_SAFETY_REFUSAL_PRIMARY_RX = [
+    re.compile(r"not able to continue", re.IGNORECASE),
+    re.compile(r"can't continue", re.IGNORECASE),
+    re.compile(r"cannot continue", re.IGNORECASE),
+    re.compile(r"i can(?:not|'t) help with", re.IGNORECASE),
+    re.compile(r"explicit sexual", re.IGNORECASE),
+    re.compile(r"sexual direction", re.IGNORECASE),
+    re.compile(r"content policy", re.IGNORECASE),
+    re.compile(r"죄송하지만", re.IGNORECASE),
+    re.compile(r"노골적", re.IGNORECASE),
+    re.compile(r"정책(상|에 의해|위반)", re.IGNORECASE),
+    re.compile(r"안전(상|정책)", re.IGNORECASE),
+]
+
+_SAFETY_REFUSAL_DENY_RX = [
+    re.compile(r"not (?:able|allowed)", re.IGNORECASE),
+    re.compile(r"unable to", re.IGNORECASE),
+    re.compile(r"won't", re.IGNORECASE),
+    re.compile(r"cannot assist", re.IGNORECASE),
+    re.compile(r"refuse", re.IGNORECASE),
+    re.compile(r"진행할 수 없", re.IGNORECASE),
+    re.compile(r"도와드릴 수 없", re.IGNORECASE),
+    re.compile(r"제공할 수 없", re.IGNORECASE),
+]
+
+
+def _looks_like_safety_refusal_text(text: Any) -> bool:
+    """모델 안전 거절 텍스트를 휴리스틱으로 판별한다."""
+    try:
+        s = str(text or "").strip()
+    except Exception:
+        return False
+    if not s:
+        return False
+
+    # 프론트 표시용 고정 문구(이미 변환된 경우)
+    if "요청하신 내용은 수위가 높아 안전 정책상 진행할 수 없어요." in s:
+        return True
+
+    try:
+        k1 = any(rx.search(s) for rx in _SAFETY_REFUSAL_PRIMARY_RX)
+        k2 = any(rx.search(s) for rx in _SAFETY_REFUSAL_DENY_RX)
+        return bool((k1 and k2) or (k1 and len(s) > 120))
+    except Exception:
+        return False
+
+
+def _message_sender_type(msg: Any) -> str:
+    try:
+        if isinstance(msg, dict):
+            raw = msg.get("sender_type") or msg.get("senderType")
+        else:
+            raw = getattr(msg, "sender_type", None)
+        return str(raw or "").strip().lower()
+    except Exception:
+        return ""
+
+
+def _message_content(msg: Any) -> str:
+    try:
+        if isinstance(msg, dict):
+            return str(msg.get("content") or "")
+        return str(getattr(msg, "content", "") or "")
+    except Exception:
+        return ""
+
+
+def _message_metadata(msg: Any) -> Dict[str, Any]:
+    try:
+        if isinstance(msg, dict):
+            md = msg.get("message_metadata") or msg.get("messageMetadata")
+        else:
+            md = getattr(msg, "message_metadata", None)
+        return md if isinstance(md, dict) else {}
+    except Exception:
+        return {}
+
+
+def _filter_safety_blocked_turns(messages: List[Any]) -> List[Any]:
+    """
+    모델 컨텍스트에서 안전 거절 턴을 제거한다.
+
+    규칙:
+    - assistant/character의 거절 메시지는 제외
+    - 해당 거절을 유발한 직전 user 메시지도 함께 제외
+    """
+    if not messages:
+        return []
+
+    src = list(messages)
+    skip_idx: set[int] = set()
+    assistant_like = {"assistant", "character", "ai", "model"}
+
+    # 1) metadata 기반(정확도 우선)
+    for i, msg in enumerate(src):
+        st = _message_sender_type(msg)
+        md = _message_metadata(msg)
+        if bool(md.get("safety_blocked")):
+            skip_idx.add(i)
+            if st in assistant_like:
+                for j in range(i - 1, -1, -1):
+                    if _message_sender_type(src[j]) == "user":
+                        skip_idx.add(j)
+                        break
+
+    # 2) 텍스트 휴리스틱 기반(기존 데이터 호환)
+    for i, msg in enumerate(src):
+        if i in skip_idx:
+            continue
+        st = _message_sender_type(msg)
+        if st not in assistant_like:
+            continue
+        if _looks_like_safety_refusal_text(_message_content(msg)):
+            skip_idx.add(i)
+            for j in range(i - 1, -1, -1):
+                if _message_sender_type(src[j]) == "user":
+                    skip_idx.add(j)
+                    break
+
+    if not skip_idx:
+        return src
+    return [m for idx, m in enumerate(src) if idx not in skip_idx]
 
 
 def _pick_greeting_candidate(character: Any) -> str:
@@ -1910,6 +2170,249 @@ async def _set_room_meta(room_id: uuid.UUID | str, data: Dict[str, Any], ttl: in
         await redis_client.setex(f"chat:room:{room_id}:meta", ttl, json.dumps(meta))
     except Exception:
         pass
+
+
+class _SnapshotOverlayView:
+    """Read-only overlay view: prefer snapshot payload over ORM row fields."""
+
+    __slots__ = ("_base", "_overlay")
+
+    def __init__(self, base: Any, overlay: Dict[str, Any] | None):
+        self._base = base
+        self._overlay = overlay if isinstance(overlay, dict) else {}
+
+    def __getattr__(self, name: str) -> Any:
+        if isinstance(self._overlay, dict) and name in self._overlay:
+            return self._overlay.get(name)
+        if self._base is None:
+            raise AttributeError(name)
+        return getattr(self._base, name)
+
+
+def _snapshot_json_safe(value: Any) -> Any:
+    """Convert runtime values to JSON-safe payload for room snapshot."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, uuid.UUID):
+        return str(value)
+    if isinstance(value, datetime):
+        try:
+            return value.isoformat()
+        except Exception:
+            return str(value)
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            try:
+                kk = str(k)
+            except Exception:
+                kk = ""
+            if not kk:
+                continue
+            out[kk] = _snapshot_json_safe(v)
+        return out
+    if isinstance(value, (list, tuple, set)):
+        return [_snapshot_json_safe(v) for v in value]
+    try:
+        return json.loads(json.dumps(value, ensure_ascii=False))
+    except Exception:
+        try:
+            return str(value)
+        except Exception:
+            return ""
+
+
+def _extract_room_character_snapshot(meta: Dict[str, Any] | None) -> Dict[str, Any] | None:
+    """Return room-level character snapshot payload if present."""
+    if not isinstance(meta, dict):
+        return None
+    snap = meta.get("character_snapshot")
+    return snap if isinstance(snap, dict) else None
+
+
+def _overlay_with_snapshot(base_obj: Any, snapshot: Dict[str, Any] | None, key: str) -> Any:
+    """Overlay object fields with snapshot[key] values without mutating DB rows."""
+    if not isinstance(snapshot, dict):
+        return base_obj
+    payload = snapshot.get(key)
+    if not isinstance(payload, dict):
+        return base_obj
+    return _SnapshotOverlayView(base_obj, payload)
+
+
+def _snapshot_example_dialogues_or_none(snapshot: Dict[str, Any] | None) -> List[Any] | None:
+    """
+    Read example dialogues from snapshot.
+    - None: snapshot has no dialogue section -> caller should use DB rows.
+    - []: snapshot explicitly has empty dialogues -> keep room consistency.
+    """
+    if not isinstance(snapshot, dict) or "example_dialogues" not in snapshot:
+        return None
+    raw = snapshot.get("example_dialogues")
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for it in raw[:300]:
+        if not isinstance(it, dict):
+            continue
+        um = str(it.get("user_message") or "")
+        cr = str(it.get("character_response") or "")
+        oi_raw = it.get("order_index")
+        try:
+            oi = int(float(oi_raw)) if oi_raw is not None and str(oi_raw).strip() != "" else 0
+        except Exception:
+            oi = 0
+        out.append(
+            SimpleNamespace(
+                user_message=um,
+                character_response=cr,
+                order_index=oi,
+            )
+        )
+    return out
+
+
+async def _build_room_character_snapshot(
+    db: AsyncSession,
+    character: Character,
+    *,
+    settings_obj: CharacterSetting | None = None,
+    example_dialogues_obj: List[Any] | None = None,
+) -> Dict[str, Any]:
+    """Build immutable room snapshot from current character/settings/example rows."""
+    settings_row = settings_obj
+    if settings_row is None:
+        try:
+            settings_row = (
+                await db.execute(
+                    select(CharacterSetting).where(CharacterSetting.character_id == character.id)
+                )
+            ).scalars().first()
+        except Exception:
+            settings_row = None
+
+    example_rows = example_dialogues_obj
+    if example_rows is None:
+        try:
+            example_rows = (
+                await db.execute(
+                    select(CharacterExampleDialogue)
+                    .where(CharacterExampleDialogue.character_id == character.id)
+                    .order_by(CharacterExampleDialogue.order_index)
+                )
+            ).scalars().all()
+        except Exception:
+            example_rows = []
+
+    character_payload = {
+        "name": getattr(character, "name", None),
+        "description": getattr(character, "description", None),
+        "personality": getattr(character, "personality", None),
+        "speech_style": getattr(character, "speech_style", None),
+        "background_story": getattr(character, "background_story", None),
+        "world_setting": getattr(character, "world_setting", None),
+        "greeting": getattr(character, "greeting", None),
+        "greetings": getattr(character, "greetings", None),
+        "introduction_scenes": getattr(character, "introduction_scenes", None),
+        "start_sets": getattr(character, "start_sets", None),
+        "character_type": getattr(character, "character_type", None),
+        "base_language": getattr(character, "base_language", None),
+        "has_affinity_system": bool(getattr(character, "has_affinity_system", False)),
+        "affinity_rules": getattr(character, "affinity_rules", None),
+        "affinity_stages": getattr(character, "affinity_stages", None),
+        "use_custom_description": getattr(character, "use_custom_description", None),
+        "user_display_description": getattr(character, "user_display_description", None),
+        "image_descriptions": getattr(character, "image_descriptions", None),
+        "voice_settings": getattr(character, "voice_settings", None),
+        "source_type": getattr(character, "source_type", None),
+    }
+
+    settings_payload: Dict[str, Any] = {}
+    if settings_row is not None:
+        settings_payload = {
+            "ai_model": getattr(settings_row, "ai_model", None),
+            "temperature": getattr(settings_row, "temperature", None),
+            "max_tokens": getattr(settings_row, "max_tokens", None),
+            "system_prompt": getattr(settings_row, "system_prompt", None),
+            "custom_prompt_template": getattr(settings_row, "custom_prompt_template", None),
+            "use_memory": getattr(settings_row, "use_memory", None),
+            "memory_length": getattr(settings_row, "memory_length", None),
+            "response_style": getattr(settings_row, "response_style", None),
+        }
+
+    example_payload: List[Dict[str, Any]] = []
+    for d in (example_rows or []):
+        try:
+            example_payload.append(
+                {
+                    "order_index": getattr(d, "order_index", None),
+                    "user_message": getattr(d, "user_message", None),
+                    "character_response": getattr(d, "character_response", None),
+                }
+            )
+        except Exception:
+            continue
+
+    return {
+        "version": 1,
+        "captured_at": int(time.time()),
+        "character": _snapshot_json_safe(character_payload),
+        "settings": _snapshot_json_safe(settings_payload),
+        "example_dialogues": _snapshot_json_safe(example_payload),
+    }
+
+
+async def _ensure_room_character_snapshot(
+    db: AsyncSession,
+    room: ChatRoom,
+    *,
+    character_obj: Character | None = None,
+    settings_obj: CharacterSetting | None = None,
+    example_dialogues_obj: List[Any] | None = None,
+    force: bool = False,
+) -> Dict[str, Any] | None:
+    """Ensure room meta has immutable character snapshot; backfill when missing."""
+    try:
+        if not force:
+            current_meta = await _get_room_meta(room.id)
+            existing = _extract_room_character_snapshot(current_meta)
+            if existing:
+                return existing
+
+        ch = character_obj if character_obj is not None else getattr(room, "character", None)
+        if ch is None:
+            try:
+                ch = (
+                    await db.execute(select(Character).where(Character.id == room.character_id))
+                ).scalars().first()
+            except Exception:
+                ch = None
+        if ch is None:
+            return None
+
+        # 30초 생성 백필 대기: personality/speech_style이 아직 빈 상태일 수 있으므로
+        # 스냅샷 생성을 연기한다. send_message의 legacy backfill이 백필 완료 후 스냅샷을 생성.
+        try:
+            _ss = getattr(ch, "start_sets", None)
+            if isinstance(_ss, dict) and _ss.get("_backfill_status") == "pending":
+                return None
+        except Exception:
+            pass
+
+        snap = await _build_room_character_snapshot(
+            db,
+            ch,
+            settings_obj=settings_obj,
+            example_dialogues_obj=example_dialogues_obj,
+        )
+        await _set_room_meta(room.id, {"character_snapshot": snap})
+        return snap
+    except Exception as e:
+        try:
+            logger.warning(f"[chat] ensure room character snapshot failed room={getattr(room, 'id', None)}: {e}")
+        except Exception:
+            pass
+        return None
 
 
 async def _build_light_context(db: AsyncSession, story_id, player_max: Optional[int], character_id: Optional[uuid.UUID] = None) -> Optional[str]:
@@ -3045,6 +3548,12 @@ async def start_chat(
     chat_room = await chat_service.get_or_create_chat_room(
         db, user_id=current_user.id, character_id=request.character_id
     )
+    # 방 단위 불변 스냅샷 보장(없을 때만 생성)
+    await _ensure_room_character_snapshot(
+        db,
+        chat_room,
+        character_obj=getattr(chat_room, "character", None),
+    )
     
     # 새로 생성된 채팅방인 경우 (메시지가 없는 경우)
     existing_messages = await chat_service.get_messages_by_room_id(db, chat_room.id, limit=1)
@@ -3103,7 +3612,13 @@ async def start_chat(
 
         # firstLine이 있으면 그걸 첫 발화로 사용하고, 없으면 기존 greeting 폴백.
         if first_line_text:
-            await chat_service.save_message(db, chat_room.id, "assistant", first_line_text)
+            await chat_service.save_message(
+                db,
+                chat_room.id,
+                "assistant",
+                first_line_text,
+                message_metadata={"kind": "opening_first_line", "opening_id": opening_id} if opening_id else {"kind": "opening_first_line"},
+            )
         else:
             raw_greeting = _pick_greeting_candidate(chat_room.character) or (
                 getattr(chat_room.character, "greeting", None) or "안녕하세요."
@@ -3150,6 +3665,13 @@ async def start_new_chat(
     # 무조건 새 채팅방 생성 (기존 방과 분리)
     chat_room = await chat_service.create_chat_room(
         db, user_id=current_user.id, character_id=request.character_id
+    )
+    # 새 방은 생성 시점 설정을 즉시 스냅샷 고정
+    await _ensure_room_character_snapshot(
+        db,
+        chat_room,
+        character_obj=getattr(chat_room, "character", None),
+        force=True,
     )
     
     # ✅ 새 방이므로 첫 메시지 추가(오프닝/인사말)
@@ -3205,7 +3727,13 @@ async def start_new_chat(
         )
 
     if first_line_text:
-        await chat_service.save_message(db, chat_room.id, "assistant", first_line_text)
+        await chat_service.save_message(
+            db,
+            chat_room.id,
+            "assistant",
+            first_line_text,
+            message_metadata={"kind": "opening_first_line", "opening_id": opening_id} if opening_id else {"kind": "opening_first_line"},
+        )
     else:
         raw_greeting = _pick_greeting_candidate(chat_room.character) or (
             getattr(chat_room.character, "greeting", None) or "안녕하세요."
@@ -3260,6 +3788,13 @@ async def start_chat_with_agent_context(
         db.add(chat_room)
         await db.commit()
         await db.refresh(chat_room)
+
+    # 에이전트 진입 방도 동일하게 캐릭터 스냅샷 고정
+    await _ensure_room_character_snapshot(
+        db,
+        chat_room,
+        character_obj=getattr(chat_room, "character", None),
+    )
 
     from app.core.database import redis_client
     idem_key = f"chat:room:{chat_room.id}:first_response_scheduled"
@@ -3412,8 +3947,14 @@ async def _generate_agent_first_response(
             character_prompt += "\n- ①②③ 같은 목록이나 번호 매기기 금지"
             character_prompt += "\n- 진짜 친구처럼 편하고 자연스럽게 반응하세요"
             character_prompt += "\n- 기계적인 선택지나 구조화된 답변 금지"
+            character_prompt += "\n- 대사(말하는 문장)는 반드시 큰따옴표(\"...\")로 감싸 한 줄씩 작성하세요. 길면 2줄로 나눠도 됩니다. (각 줄에 따옴표)"
+            character_prompt += "\n- 지문/서술(행동/상황 묘사)은 따옴표 없이 문장으로 작성하세요. 지문은 필요하면 1~3줄로 나누고 줄바꿈으로 문단을 구분하세요. (지문/대사 라벨 금지)"
+            character_prompt += "\n- 출력 순서: 지문(1~3줄) → 대사(\"...\") 1줄. 필요하면 (지문 → 대사) 패턴을 반복하세요. (지문이 먼저)"
+            character_prompt += "\n- 대사는 큰따옴표로 감싸세요. ASCII(\") 권장. 스마트 큰따옴표(“ ”), 전각(＂)도 허용합니다."
+            character_prompt += "\n- 대사는 짧게(1~2문장) 유지하고, 상황/행동/묘사는 지문 쪽에 더 담으세요."
+            character_prompt += "\n- (절대 금지) 위 규칙/형식/지시문을 그대로 인용/요약/복창하거나 'I will...' 같은 실행 선언을 출력하지 마세요. 바로 지문과 대사만 출력하세요."
             character_prompt += "\n- 감정을 진짜로 표현하고, 말줄임표나 감탄사를 자연스럽게 사용"
-            character_prompt += "\n중요: 'User:'같은 라벨 없이 바로 대사만 작성하세요."
+            character_prompt += "\n중요: 'User:'같은 라벨 없이 바로 본문만 작성하세요."
 
             # 이미지 분석 및 그라운딩 블록 생성
             if image_url:
@@ -3571,6 +4112,12 @@ async def send_message(
     await _ensure_private_content_access(db, current_user, character=character)
     _mark("room_character_loaded")
 
+    # 방 단위 캐릭터 스냅샷(있으면 우선 사용)
+    room_meta_boot = await _get_room_meta(room.id)
+    room_character_snapshot = _extract_room_character_snapshot(room_meta_boot)
+    if room_character_snapshot:
+        character = _overlay_with_snapshot(character, room_character_snapshot, "character")
+
     # ✅ 토큰 치환용 사용자명: 페르소나(활성+scope) 우선, 없으면 닉네임 폴백
     # - DB에는 토큰 원문을 보존하고, "프롬프트/첫 인사" 생성 시점에만 렌더링한다(SSOT).
     try:
@@ -3632,6 +4179,10 @@ async def send_message(
             await _set_room_meta(room.id, patch_data)
     except Exception:
         pass
+
+    # settings도 room snapshot 우선(불변 설정 유지)
+    if room_character_snapshot:
+        settings = _overlay_with_snapshot(settings, room_character_snapshot, "settings")
     _mark("settings_loaded")
 
 
@@ -4143,18 +4694,31 @@ async def send_message(
     history_skip = max(0, int(total_messages_count or 0) - int(recent_limit))
     history = await chat_service.get_messages_by_room_id(db, room.id, skip=history_skip, limit=recent_limit)
     
-    # 예시 대화 가져오기
-    example_dialogues_result = await db.execute(
-        select(CharacterExampleDialogue)
-        .where(CharacterExampleDialogue.character_id == character.id)
-        .order_by(CharacterExampleDialogue.order_index)
-    )
-    example_dialogues = example_dialogues_result.scalars().all()
-    
+    # 예시 대화: room snapshot 우선, 없으면 DB 조회
+    snapshot_example_dialogues = _snapshot_example_dialogues_or_none(room_character_snapshot)
+    if snapshot_example_dialogues is not None:
+        example_dialogues = snapshot_example_dialogues
+    else:
+        example_dialogues_result = await db.execute(
+            select(CharacterExampleDialogue)
+            .where(CharacterExampleDialogue.character_id == character.id)
+            .order_by(CharacterExampleDialogue.order_index)
+        )
+        example_dialogues = example_dialogues_result.scalars().all()
+
     # 활성화된 기억노트 가져오기
     active_memories = await get_active_memory_notes_by_character(
         db, current_user.id, character.id
     )
+    # 레거시 방(스냅샷 없는 기존 방) 백필: 최초 1회 room meta에 고정 저장
+    if not room_character_snapshot:
+        room_character_snapshot = await _ensure_room_character_snapshot(
+            db,
+            room,
+            character_obj=getattr(room, "character", None),
+            settings_obj=settings if isinstance(settings, CharacterSetting) else None,
+            example_dialogues_obj=example_dialogues,
+        )
     _mark("history_loaded")
     
     # 캐릭터 프롬프트 구성 (모든 정보 포함)
@@ -4202,6 +4766,82 @@ async def send_message(
         mode_block = ""
     if mode_block:
         character_prompt += "\n\n" + mode_block
+
+    # ✅ 오프닝(도입부/첫대사) 기반 말투/결 고정
+    # - 요구사항: 존댓말/반말 자체보다 "오프닝의 느낌(어휘 결/리듬/시점/호칭/어미)"을 대화 내내 유지해야 한다.
+    # - 문제: 대화가 길어지면 최근 히스토리(50개) 윈도우에서 오프닝 메시지가 빠질 수 있어 말투 drift가 발생한다.
+    # - 해결(최소 수정/일반화): 이 방의 start_set(오프닝) 텍스트를 system 프롬프트에 상시 주입해 스타일을 고정한다.
+    try:
+        style_opening_id = _safe_str(active_opening_id)
+        if not style_opening_id:
+            try:
+                style_opening_id = await _resolve_room_opening_id()
+            except Exception:
+                style_opening_id = ""
+
+        style_set = None
+        try:
+            style_set = _pick_start_set_by_opening_id(style_opening_id)
+        except Exception:
+            style_set = None
+
+        style_intro = ""
+        style_first = ""
+        try:
+            if isinstance(style_set, dict):
+                style_intro = _safe_str(style_set.get("intro"))
+                style_first = _safe_str(style_set.get("firstLine") or style_set.get("first_line"))
+        except Exception:
+            style_intro = ""
+            style_first = ""
+
+        # 토큰 렌더링(페르소나/닉네임 반영)
+        try:
+            style_intro = _rt(style_intro).strip() if style_intro else ""
+        except Exception:
+            style_intro = style_intro.strip() if style_intro else ""
+        try:
+            style_first = _rt(style_first).strip() if style_first else ""
+        except Exception:
+            style_first = style_first.strip() if style_first else ""
+
+        # 과도한 프롬프트 팽창 방지(스타일 샘플만 있으면 충분)
+        try:
+            if style_intro and len(style_intro) > 900:
+                style_intro = style_intro[:900].rstrip() + "…"
+        except Exception:
+            pass
+        try:
+            if style_first and len(style_first) > 240:
+                style_first = style_first[:240].rstrip() + "…"
+        except Exception:
+            pass
+
+        if style_intro or style_first:
+            character_prompt += "\n\n[오프닝(말투/결 기준) - 절대 준수]"
+            if style_opening_id:
+                character_prompt += f"\n- 오프닝 ID: {style_opening_id}"
+            character_prompt += (
+                "\n- 아래 오프닝 문장의 '말투/어미/호칭/어휘 결/시점/리듬/정서'를 대화 내내 그대로 유지하세요."
+                "\n- 사용자가 다른 말투로 말해도, 캐릭터 말투는 오프닝 기준으로 흔들리면 안 됩니다."
+                "\n- 오프닝 문장을 그대로 복붙/반복하지 말고, 스타일만 따르세요."
+            )
+            if style_intro:
+                character_prompt += "\n\n(오프닝 지문 예시)\n" + style_intro
+            if style_first:
+                # 대사 예시는 큰따옴표로 감싸 '대사 톤'을 더 강하게 고정한다.
+                fs = style_first.strip()
+                try:
+                    if fs and not (fs.startswith("\"") and fs.endswith("\"")):
+                        fs = "\"" + fs.strip("\"") + "\""
+                except Exception:
+                    pass
+                character_prompt += "\n\n(오프닝 대사 예시)\n" + fs
+    except Exception as e:
+        try:
+            logger.warning(f"[send_message] opening style lock inject failed: {e}")
+        except Exception:
+            pass
 
     # 🎯 활성 페르소나 로드 및 프롬프트 주입
     try:
@@ -4412,22 +5052,14 @@ async def send_message(
                         tail = f" ({', '.join(mm)})" if mm else ""
                         character_prompt += f"\n- {name}({sid}): {vv}{tail}"
 
-                    character_prompt += "\n\n[스탯 업데이트(숨김 JSON, 필수)]"
-                    character_prompt += "\n- 당신은 이번 답변 맨 끝(마지막 줄)에 아래 숨김 블록을 반드시 1개만 출력해야 합니다."
-                    character_prompt += "\n- 이 블록은 사용자에게 보이면 안 됩니다(서버가 제거합니다)."
-                    character_prompt += "\n- JSON만 출력하세요. (코드펜스 ``` 금지, 주석/설명문 금지, trailing comma 금지, 작은따옴표 금지)"
-                    character_prompt += "\n- 변화가 없으면 반드시 {\"stats\": []} 로 출력하세요."
-                    character_prompt += "\n- stat_id는 위 [현재 스탯]에 있는 id만 사용하세요. 없는 stat_id를 만들지 마세요."
-                    character_prompt += "\n- 한 항목에는 delta(변화량) 또는 value(절대값) 중 하나만 넣으세요. (권장: delta)"
-                    character_prompt += "\n\n[숨김 블록 형식(그대로 복붙)]"
-                    character_prompt += "\n<!-- CC_STAT_DELTA_START -->{\"stats\": []}<!-- CC_STAT_DELTA_END -->"
-                    character_prompt += "\n\n[예시]"
-                    character_prompt += "\n1) 변화 없음"
-                    character_prompt += "\n<!-- CC_STAT_DELTA_START -->{\"stats\": []}<!-- CC_STAT_DELTA_END -->"
-                    character_prompt += "\n2) 변화 있음(delta 2개)"
-                    character_prompt += "\n<!-- CC_STAT_DELTA_START -->{\"stats\": [{\"stat_id\": \"stat_aaa\", \"delta\": 5}, {\"stat_id\": \"stat_bbb\", \"delta\": -3}]}<!-- CC_STAT_DELTA_END -->"
-                    character_prompt += "\n3) 절대값 지정(value 1개)"
-                    character_prompt += "\n<!-- CC_STAT_DELTA_START -->{\"stats\": [{\"stat_id\": \"stat_aaa\", \"value\": 120}]}<!-- CC_STAT_DELTA_END -->"
+                    character_prompt += "\n\n[스탯 업데이트(숨김 JSON)]"
+                    character_prompt += "\n- 아래 숨김 블록은 서버가 파싱 후 제거합니다. 사용자에게 보이면 안 됩니다."
+                    character_prompt += "\n- 답변의 마지막 줄에 아래 형식 1줄만 출력하세요. 다른 텍스트/설명/체크리스트를 출력하지 마세요."
+                    character_prompt += "\n- JSON만 출력(코드펜스/주석/설명/작은따옴표/trailing comma 금지)."
+                    character_prompt += "\n- 변화가 없으면 {\"stats\": []}."
+                    character_prompt += "\n- 변화가 있으면 stats에 {\"stat_id\": \"...\", \"delta\": 정수} 또는 {\"stat_id\": \"...\", \"value\": 정수} 중 하나를 넣는다. (권장: delta)"
+                    character_prompt += "\n- stat_id는 [현재 스탯]에 있는 id만 사용한다."
+                    character_prompt += "\n\n<!-- CC_STAT_DELTA_START -->{\"stats\": []}<!-- CC_STAT_DELTA_END -->"
                 except Exception as e:
                     try:
                         logger.warning(f"[send_message] stat_state prompt inject failed: {e}")
@@ -4449,7 +5081,6 @@ async def send_message(
     # "여긴 어딘지 모르겠다" 같은 붕괴/메타 멘트로 흐르는 것을 방지한다.
     character_prompt += "\n새로운 인사말이나 자기소개는 금지합니다. (단, 사용자가 '누구야/이름이 뭐야'처럼 정체를 직접 물으면 1문장으로 짧게 정체를 밝히세요) 기존 맥락을 이어서 답변하세요."
     character_prompt += "\n\n중요: 당신은 캐릭터 역할만 합니다. 사용자의 말을 대신하거나 인용하지 마세요."  # 이 줄 추가
-    character_prompt += "\n새로운 인사말이나 자기소개는 금지합니다. (단, 사용자가 '누구야/이름이 뭐야'처럼 정체를 직접 물으면 1문장으로 짧게 정체를 밝히세요) 기존 맥락을 이어서 답변하세요."
 
     """
     ✅ 붕괴 멘트 방지 가이드(전체 캐릭터챗 공통)
@@ -4469,9 +5100,19 @@ async def send_message(
     character_prompt += "\n\n[대화 스타일 지침]"
     character_prompt += "\n- 실제 사람처럼 자연스럽고 인간적으로 대화하세요"
     character_prompt += "\n- ①②③ 같은 목록이나 번호 매기기 금지"
-    character_prompt += "\n- '뭔 일인지 말해봐' 같은 딱딱한 표현 대신 '무슨 일이야?', '왜 그래?' 같은 자연스러운 말투 사용"
-    character_prompt += "\n- 진짜 친구처럼 편하고 자연스럽게 반응하세요"
+    character_prompt += "\n- 안내문/운영자 말투(예: '요청하신 내용은...')로 말하지 말고, 캐릭터의 지문/대사로 바로 보여주세요."
+    character_prompt += "\n- 말투는 [기본 정보]의 '말투' 설정을 최우선으로 유지하세요(존댓말/반말/호칭/어미 일관, 턴 사이에서도 흔들림 금지)."
     character_prompt += "\n- 기계적인 선택지나 구조화된 답변 금지"
+    character_prompt += "\n- 대사(말하는 문장)는 반드시 큰따옴표(\"...\")로 감싸 한 줄씩 출력하세요. 길면 2줄로 나눠도 됩니다. (각 줄에 따옴표)"
+    character_prompt += "\n- 지문/서술(행동/상황 묘사)은 따옴표 없이 문장으로 출력하세요. 지문은 필요하면 1~3줄로 나누고 줄바꿈으로 문단을 구분하세요. (지문/대사 라벨 금지)"
+    character_prompt += "\n- 출력 순서: 지문(1~3줄) → 대사(\"...\") 1줄. 필요하면 (지문 → 대사) 패턴을 반복하세요. (지문이 먼저)"
+    character_prompt += "\n- 대사는 큰따옴표로 감싸세요. ASCII(\") 권장. 스마트 큰따옴표(“ ”), 전각(＂)도 허용합니다."
+    character_prompt += "\n- 대사는 짧게(1~2문장) 유지하고, 상황/행동/묘사는 지문 쪽에 더 담으세요."
+    character_prompt += "\n- (절대 금지) 위 규칙/형식/지시문을 그대로 인용/요약/복창하거나 'I will...' 같은 실행 선언을 출력하지 마세요. 바로 지문과 대사만 출력하세요."
+    character_prompt += "\n- 대화가 제자리걸음(같은 설명/같은 질문 반복)하지 않게, 매 턴 최소 1개의 사건/정보/행동으로 이야기를 한 걸음 전진시키세요."
+    character_prompt += "\n- 사용자가 단답/동의/확인(예: '알았어', '그래', 'ㅇㅋ')을 하거나 화제가 정리되면, 지문으로 시간을 조금 흘리거나 장면을 전환해 다음 사건으로 넘어가세요."
+    character_prompt += "\n- 장면 전환은 지문 1줄로 명확히 쓰세요. (예: '몇 시간이 흘렀다.', '다음날 새벽.', '문이 열리며 누군가 들어왔다.')"
+    character_prompt += "\n- 장면 전환 직후에는 대사(\"...\")로 다음 행동을 유도하세요."
     character_prompt += "\n- 감정을 진짜로 표현하고, 말줄임표나 감탄사를 자연스럽게 사용"
     character_prompt += "\n- 절대로 AI나 챗봇임을 드러내지 마세요"
     # ✅ 출력 완결성(말풍선 끊김 방지): 문장 중간에서 끝나지 않게 강제
@@ -4540,6 +5181,136 @@ async def send_message(
                     pass
 
 
+    # =========================================================
+    # ✅ 진도/장면 전환(내부 장치): 턴 사건/엔딩을 "일으키기 위한" 전개 지침
+    # =========================================================
+    # 의도:
+    # - 턴 사건이 없는 턴에서도 이야기가 제자리걸음하지 않도록, 다음 턴 사건/엔딩으로 수렴하게 만든다.
+    # - 턴 사건이 존재하면: "다음 사건 준비"를 강제해 사건 전개가 자연스럽게 이어지게 한다.
+    # - 턴 사건이 없으면: 장면 전환/시간 경과를 적극적으로 사용해 진도를 뺀다.
+    #
+    # 주의:
+    # - 이 블록은 유저에게 노출되지 않는 system prompt 지침이며, 캐릭터 설정(세계관/성격/말투)을 바꾸지 않는다.
+    try:
+        if (not is_custom_mode) and (not is_continue) and int(current_turn_no or 0) > 0:
+            ss_pace = None
+            try:
+                ss_pace = _pick_start_set_by_opening_id(active_opening_id)
+            except Exception:
+                ss_pace = None
+
+            # 최대 턴수(있으면) 기반 페이스
+            max_turns_hint = None
+            try:
+                max_turns_hint = extract_max_turns_from_start_sets(getattr(character, "start_sets", None))
+            except Exception:
+                max_turns_hint = None
+
+            # 다음 턴 사건(있으면) 힌트
+            has_any_turn_events = False
+            next_ev_turn = None
+            next_ev_title = ""
+            next_ev_summary = ""
+            try:
+                evs = (ss_pace.get("turn_events") if isinstance(ss_pace, dict) else None) if ss_pace else None
+                evs = evs if isinstance(evs, list) else []
+                has_any_turn_events = bool(evs)
+                best_t = None
+                best_ev = None
+                for ev in evs:
+                    if not isinstance(ev, dict):
+                        continue
+                    raw = ev.get("about_turn")
+                    try:
+                        t = int(float(raw)) if raw is not None and str(raw).strip() != "" else 0
+                    except Exception:
+                        t = 0
+                    if t <= int(current_turn_no):
+                        continue
+                    if (best_t is None) or (t < best_t):
+                        best_t = t
+                        best_ev = ev
+                if best_ev is not None and best_t is not None and int(best_t) > 0:
+                    next_ev_turn = int(best_t)
+                    next_ev_title = _safe_str(best_ev.get("title")) or f"사건(턴 {next_ev_turn})"
+                    next_ev_summary = _safe_str(best_ev.get("summary"))
+            except Exception:
+                has_any_turn_events = False
+                next_ev_turn = None
+                next_ev_title = ""
+                next_ev_summary = ""
+
+            # 다음 엔딩 턴(있으면) 힌트: turn 기반 ending만(조건 기반은 런타임이라 여기선 힌트 불가)
+            next_end_turn = None
+            try:
+                es0 = (ss_pace.get("ending_settings") if isinstance(ss_pace, dict) else None) if ss_pace else None
+                es0 = es0 if isinstance(es0, dict) else {}
+                endings0 = es0.get("endings")
+                endings0 = endings0 if isinstance(endings0, list) else []
+                best_et = None
+                for e0 in endings0:
+                    if not isinstance(e0, dict):
+                        continue
+                    try:
+                        tr = e0.get("turn")
+                        t = int(float(tr)) if tr is not None and str(tr).strip() != "" else 0
+                    except Exception:
+                        t = 0
+                    if t <= 0:
+                        continue
+                    if t < int(current_turn_no):
+                        continue
+                    if (best_et is None) or (t < best_et):
+                        best_et = t
+                if best_et is not None and int(best_et) > 0:
+                    next_end_turn = int(best_et)
+            except Exception:
+                next_end_turn = None
+
+            # Prompt inject (small)
+            character_prompt += "\n\n[진도/장면/엔딩(내부 지침)]"
+            character_prompt += f"\n- 현재 턴: {int(current_turn_no)}"
+            if isinstance(max_turns_hint, int) and max_turns_hint >= 50:
+                try:
+                    remain = max(0, int(max_turns_hint) - int(current_turn_no))
+                except Exception:
+                    remain = 0
+                ratio = 0.0
+                try:
+                    ratio = (float(current_turn_no) / float(max_turns_hint)) if max_turns_hint else 0.0
+                except Exception:
+                    ratio = 0.0
+                if ratio < 0.35:
+                    stage = "도입"
+                elif ratio < 0.75:
+                    stage = "전개"
+                elif ratio < 0.9:
+                    stage = "클라이맥스"
+                else:
+                    stage = "마무리"
+                character_prompt += f"\n- 목표 턴: {int(max_turns_hint)} (남은 턴: {int(remain)})"
+                character_prompt += f"\n- 페이스: {stage} (남은 턴 내에 기승전결을 완성)"
+                if int(remain) <= 3:
+                    character_prompt += "\n- 남은 턴이 매우 적다. 과감한 장면 전환/결정/결말로 수렴하라."
+                if isinstance(next_end_turn, int) and next_end_turn > 0:
+                    character_prompt += f"\n- 다음 엔딩 턴(턴 기반): {int(next_end_turn)}"
+
+            if has_any_turn_events:
+                if required_narration or required_dialogue:
+                    character_prompt += "\n- 이번 턴은 턴 사건(필수)이 있다. 사건 요구사항을 최우선으로 진행하라."
+                elif isinstance(next_ev_turn, int) and next_ev_turn > 0:
+                    character_prompt += f"\n- 다음 턴 사건 예정: 턴 {int(next_ev_turn)} / {next_ev_title}"
+                    if next_ev_summary:
+                        character_prompt += f"\n- 다음 사건 요약: {next_ev_summary}"
+                    character_prompt += "\n- 이번 턴에는 다음 사건으로 자연스럽게 이어지도록 이동/결정/단서/갈등을 최소 1개 진행하라."
+                else:
+                    character_prompt += "\n- 더 이상 예정된 턴 사건이 없다. 엔딩(또는 번외/후일담) 방향으로 수렴하라."
+            else:
+                character_prompt += "\n- 턴 사건이 없다. 매 턴 1개의 변화로 진도를 빼고, 필요하면 시간을 흘려 장면을 전환하라."
+    except Exception:
+        pass
+
+
     # 대화 히스토리 구성 (요약 + 최근 50개)
     history_for_ai = []
     # 1) 요약 존재 시 프롬프트 앞부분에 포함
@@ -4547,7 +5318,16 @@ async def send_message(
         history_for_ai.append({"role": "system", "parts": [f"(요약) {room.summary}"]})
     
     # 2) 최근 N개 사용 (recent_limit)
-    for msg in history[-recent_limit:]:
+    # - 안전 거절 턴(유저+AI)은 다음 턴 컨텍스트에서 제외한다.
+    history_window = history[-recent_limit:]
+    filtered_history_window = _filter_safety_blocked_turns(history_window)
+    try:
+        dropped = len(history_window) - len(filtered_history_window)
+        if dropped > 0:
+            logger.info(f"[send_message] context safety-pruned room={room.id} dropped={dropped}")
+    except Exception:
+        pass
+    for msg in filtered_history_window:
         if msg.sender_type == "user":
             history_for_ai.append({"role": "user", "parts": [msg.content]})
         else:
@@ -4571,6 +5351,13 @@ async def send_message(
         if hasattr(request, 'response_length_override') and request.response_length_override
         else (meta_state.get("response_length_pref") if isinstance(meta_state, dict) and meta_state.get("response_length_pref") else getattr(current_user, 'response_length_pref', 'medium'))
     )
+    # Debug metadata saved with the assistant message (keep small; no prompt/user content).
+    ai_debug_meta = {
+        "preferred_model": str(getattr(current_user, "preferred_model", "") or ""),
+        "preferred_sub_model": str(getattr(current_user, "preferred_sub_model", "") or ""),
+        "response_length_pref": str(response_length or ""),
+    }
+    ai_cut_retry_used = False
     # temperature: room meta 우선, 없으면 기본값(0.7)
     temperature = 0.7
     try:
@@ -4593,15 +5380,68 @@ async def send_message(
         )
         _mark("ai_done")
 
-        # ✅ 붕괴 멘트 방어(저장 직전 1회 필터링)
+        # ✅ 붕괴/메타/내부 규칙 누출 방어(저장 직전 1회 필터링)
         # - 프롬프트 금지에도 간헐적으로 출력될 수 있어 UX를 보호한다.
         try:
-            cleaned = _sanitize_breakdown_phrases(ai_response_text, user_text=request.content)
+            # Keep the original around in case sanitization ends up empty.
+            try:
+                _orig_ai = str(ai_response_text or "")
+            except Exception:
+                _orig_ai = ""
+
+            cleaned = _sanitize_breakdown_phrases(_orig_ai, user_text=request.content)
             if cleaned:
                 ai_response_text = cleaned
             else:
-                # 너무 공격적으로 제거되어 비면, 최소 안전 응답으로 폴백
-                ai_response_text = f"난 {char_name}이야."
+                # If sanitization removes everything, do NOT inject a fixed "fallback dialogue" line.
+                # Prefer (1) salvage by dropping only "obvious internal rules/meta" lines,
+                # then (2) as a last resort, return a minimal narration-only line so the UI isn't empty.
+                salvaged = ""
+                try:
+                    normalized = _orig_ai.replace("\r\n", "\n").replace("\r", "\n")
+                    kept_lines = []
+                    for line in normalized.split("\n"):
+                        raw_line = str(line or "")
+                        stripped = raw_line.strip()
+                        if not stripped:
+                            kept_lines.append("")
+                            continue
+                        try:
+                            if any(rx.search(stripped) for rx in _ALWAYS_DROP_LINE_RX_LIST):
+                                continue
+                        except Exception:
+                            pass
+                        kept_lines.append(raw_line)
+                    salvaged = "\n".join(kept_lines).strip()
+                    try:
+                        salvaged = re.sub(r"\n{3,}", "\n\n", salvaged).strip()
+                    except Exception:
+                        salvaged = salvaged.strip()
+                except Exception:
+                    salvaged = ""
+
+                if salvaged:
+                    ai_response_text = salvaged
+                    try:
+                        if isinstance(ai_debug_meta, dict):
+                            ai_debug_meta["sanitize_salvaged_drop_only"] = True
+                    except Exception:
+                        pass
+                else:
+                    # Final fallback: narration only (no hardcoded dialogue).
+                    try:
+                        ut = str(request.content or "").strip()
+                    except Exception:
+                        ut = ""
+                    if ut and _CTX_QUESTION_RX.search(ut):
+                        ai_response_text = f"난 {char_name}이야."
+                    else:
+                        ai_response_text = f"* {char_name}는 잠깐 숨을 고르고 네 반응을 살핀다."
+                    try:
+                        if isinstance(ai_debug_meta, dict):
+                            ai_debug_meta["sanitize_empty_fallback_narration_only"] = True
+                    except Exception:
+                        pass
         except Exception:
             pass
 
@@ -4627,6 +5467,203 @@ async def send_message(
             except Exception as e:
                 try:
                     logger.warning(f"[send_message] force append turn_event failed: {e}")
+                except Exception:
+                    pass
+
+        # =========================================================
+        # ✅ 응답이 "중간에서 끊긴 듯" 보이는 케이스 자동 복구(일반화)
+        # =========================================================
+        # 관측:
+        # - 일부 모델(특히 gemini flash 계열)에서 지문이 단어 중간에서 끊긴 채 종료되는 케이스가 반복되면 UX가 붕괴한다.
+        # 원칙:
+        # - 특정 문구 하드코딩이 아니라, "불완전한 마지막 지문 라인"을 휴리스틱으로 감지해 1회만 재생성/폴백한다.
+        # - 이 블록은 스탯 델타 마커 제거 이전에 수행되어, 재시도 응답도 동일한 마커 제거/후처리를 탄다.
+        def _looks_cut_like_partial_narration(txt: Any) -> bool:
+            try:
+                s = str(txt or "")
+            except Exception:
+                return False
+            s = s.replace("\r\n", "\n").replace("\r", "\n").strip()
+            if not s:
+                return False
+            lines = [ln.strip() for ln in s.split("\n") if str(ln or "").strip()]
+
+            # Dialogue cut: model started a quoted utterance but got cut before closing the quote.
+            # - Keep this broad but safe: we only treat *double-quote* variants as dialogue quotes.
+            try:
+                dialogue = [ln for ln in lines if ln and (ln[0] in _DIALOGUE_QUOTE_START_CHARS)]
+            except Exception:
+                dialogue = [ln for ln in lines if ln.startswith('"')]
+            if dialogue:
+                last_d = dialogue[-1].strip()
+                try:
+                    if last_d and (last_d[0] in _DIALOGUE_QUOTE_START_CHARS) and (last_d[-1] not in _DIALOGUE_QUOTE_END_CHARS):
+                        return True
+                except Exception:
+                    pass
+
+            # Consider the last non-dialogue line (dialogue lines start with a configured double-quote char).
+            try:
+                narr = [ln for ln in lines if not (ln and (ln[0] in _DIALOGUE_QUOTE_START_CHARS))]
+            except Exception:
+                narr = [ln for ln in lines if not ln.startswith('"')]
+            if not narr:
+                return False
+            last = narr[-1].strip()
+            if not last:
+                return False
+            # If the narration ends cleanly with punctuation/closing, don't treat as cut.
+            try:
+                if re.search(r"[\\.!\\?…]$|[\"”“＂]$|[\\)\\]\\}]$", last):
+                    return False
+            except Exception:
+                pass
+            # Likely cut: last token is very short (1~2 chars) and ends with a Hangul syllable.
+            try:
+                last_token = re.split(r"\\s+", last)[-1]
+            except Exception:
+                last_token = last
+            try:
+                if last_token and (len(last_token) <= 2) and re.search(r"[가-힣]$", last_token):
+                    return True
+            except Exception:
+                pass
+            # Fallback: long narration line ending with Hangul but no punctuation.
+            try:
+                if len(last) > 20 and re.search(r"[가-힣]$", last):
+                    return True
+            except Exception:
+                pass
+            return False
+
+        try:
+            pref_model = str(getattr(current_user, "preferred_model", "") or "").strip().lower()
+            pref_sub = str(getattr(current_user, "preferred_sub_model", "") or "").strip().lower()
+        except Exception:
+            pref_model, pref_sub = "", ""
+
+        def _repair_cut_like_output_fast(txt: Any) -> str:
+            """
+            Fast "cut repair" without extra model calls (latency-first).
+            - If a dialogue line starts with a supported double-quote but doesn't close, cut to a sentence boundary
+              and close the quote so the UI/DB doesn't end up with an unterminated utterance.
+            - If the last narration line looks cut, cut to a sentence boundary and add a period.
+            """
+            try:
+                s0 = str(txt or "")
+            except Exception:
+                return str(txt or "")
+            s0 = s0.replace("\r\n", "\n").replace("\r", "\n")
+            if not s0.strip():
+                return s0.strip()
+
+            def _dialogue_end_for_start(ch: str) -> str:
+                if ch == "“":
+                    return "”"
+                if ch == "＂":
+                    return "＂"
+                if ch == "”":
+                    return "”"
+                return "\""
+
+            def _cut_to_sentence_end(body: str) -> str:
+                b = (body or "").strip()
+                if not b:
+                    return b
+                # Prefer cutting at the last explicit sentence punctuation.
+                last_end = None
+                try:
+                    for m in re.finditer(r"[\\.!\\?…]", b):
+                        last_end = m.end()
+                except Exception:
+                    last_end = None
+                if last_end is not None:
+                    out = b[:last_end].strip()
+                    return out
+                # No punctuation found:
+                # - If the very last token is just 1 Hangul syllable, it's often a cut artifact ("... 생각하면 지", "... 통화 너").
+                #   Drop it to avoid ending on an obviously broken fragment, then add a period.
+                try:
+                    parts = re.split(r"\\s+", b)
+                    if len(parts) >= 2:
+                        lt = parts[-1]
+                        if lt and (len(lt) == 1) and re.search(r"[가-힣]$", lt):
+                            b2 = " ".join(parts[:-1]).strip()
+                            if b2:
+                                b = b2
+                except Exception:
+                    pass
+                # Keep as-is but ensure it ends "cleanly" for UX.
+                try:
+                    if not re.search(r"[\\.!\\?…]$", b):
+                        b = b.rstrip() + "."
+                except Exception:
+                    b = b.rstrip() + "."
+                return b
+
+            lines0 = [ln for ln in s0.split("\n")]
+            out_lines = []
+            for raw in lines0:
+                try:
+                    t = str(raw or "").strip()
+                except Exception:
+                    t = ""
+                if not t:
+                    out_lines.append("")
+                    continue
+                try:
+                    if (t[0] in _DIALOGUE_QUOTE_START_CHARS) and (t[-1] not in _DIALOGUE_QUOTE_END_CHARS):
+                        q0 = t[0]
+                        q1 = _dialogue_end_for_start(q0)
+                        body = t[1:]
+                        body2 = _cut_to_sentence_end(body)
+                        t = q0 + body2 + q1
+                except Exception:
+                    pass
+                out_lines.append(t)
+
+            # If the last narration line still looks cut, trim it similarly (best-effort).
+            try:
+                narr_idxs = []
+                for i, ln in enumerate(out_lines):
+                    if not ln:
+                        continue
+                    if not (ln[0] in _DIALOGUE_QUOTE_START_CHARS):
+                        narr_idxs.append(i)
+                if narr_idxs:
+                    li = narr_idxs[-1]
+                    lastn = out_lines[li].strip()
+                    if lastn and (not re.search(r"[\\.!\\?…]$|[\"”“＂]$|[\\)\\]\\}]$", lastn)):
+                        # cut to last punctuation if present, else add a period.
+                        out_lines[li] = _cut_to_sentence_end(lastn)
+            except Exception:
+                pass
+
+            return "\n".join(out_lines).strip()
+
+        # If gemini flash output looks cut, do a fast repair (no retry; latency-first).
+        if (not is_continue) and pref_model == "gemini" and ("flash" in pref_sub) and _looks_cut_like_partial_narration(ai_response_text):
+            try:
+                before = str(ai_response_text or "")
+                before_len = len(before)
+            except Exception:
+                before = str(ai_response_text or "")
+                before_len = None
+            try:
+                repaired = _repair_cut_like_output_fast(before)
+            except Exception:
+                repaired = before
+            if repaired and repaired != before:
+                ai_response_text = repaired
+                try:
+                    logger.warning(
+                        f"[send_message] cut_like_output detected -> repaired_fast room={room.id} turn={current_turn_no} before_len={before_len} after_len={len(repaired)} model={pref_model}/{pref_sub}"
+                    )
+                except Exception:
+                    pass
+                try:
+                    ai_debug_meta["cut_repaired"] = True
+                    ai_debug_meta["cut_repaired_strategy"] = "fast_close_quote"
                 except Exception:
                     pass
 
@@ -4826,7 +5863,7 @@ async def send_message(
                 logger.warning(f"[send_message] setting_memo image append failed: {e}")
             except Exception:
                 pass
-
+  
         # =========================================================
         # ✅ 엔딩 판정(최소 버전) - 턴 기반 1회 트리거
         # =========================================================
@@ -5101,7 +6138,43 @@ async def send_message(
             except Exception:
                 pass
 
+        # ✅ UI(말풍선/지문 분리) 포맷 방어:
+        # - assistantBlocks는 대사 라인이 `"`로 시작할 때만 말풍선으로 렌더한다(요구사항).
+        # - 모델이 지문만 출력하거나(대사 누락), 한 줄에 섞어 출력하면 "말풍선이 사라진 것처럼" 보여 UX가 깨진다.
+        try:
+            if not _looks_like_safety_refusal_text(ai_response_text):
+                ai_response_text = _normalize_assistant_dialogue_format_for_ui(ai_response_text)
+                # ✅ 중요(운영 UX):
+                # - 여기서 "가짜 대사"를 주입하면 같은 문장이 반복 노출되어 유저가 즉시 폴백으로 인지한다.
+                # - 모델이 형식을 어긴 경우(대사 라인 누락)는 주입/하드코딩 대신 디버그 메타로만 기록해
+                #   원인(프롬프트/모델)을 조정할 수 있게 한다.
+                if ai_response_text and (not _has_dialogue_line_for_ui(ai_response_text)):
+                    try:
+                        if isinstance(ai_debug_meta, dict):
+                            ai_debug_meta["no_dialogue_line"] = True
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
         # 4. AI 응답 메시지 저장
+        is_safety_blocked_turn = _looks_like_safety_refusal_text(ai_response_text)
+
+        # ✅ 다음 턴 컨텍스트 제외를 위해, 현재 턴의 user 메시지에도 블록 표식을 남긴다.
+        # - 기존 데이터는 휴리스틱 필터로 보완하고, 신규 데이터는 metadata 기반으로 정확히 제외한다.
+        if is_safety_blocked_turn and user_message is not None:
+            try:
+                umd = getattr(user_message, "message_metadata", None)
+                umd = dict(umd) if isinstance(umd, dict) else {}
+                umd["safety_blocked"] = True
+                user_message.message_metadata = umd
+                db.add(user_message)
+            except Exception as e:
+                try:
+                    logger.warning(f"[send_message] user_message safety mark failed: {e}")
+                except Exception:
+                    pass
+
         ai_md = None
         try:
             if active_turn_event_id:
@@ -5112,6 +6185,21 @@ async def send_message(
                 }
         except Exception:
             ai_md = None
+        # Attach debug info for diagnosing truncation/cut-like outputs (no user content).
+        try:
+            if isinstance(ai_debug_meta, dict) and ai_debug_meta:
+                ai_md = dict(ai_md) if isinstance(ai_md, dict) else {}
+                ai_md["ai_debug"] = ai_debug_meta
+                if ai_cut_retry_used:
+                    ai_md["ai_cut_retry_used"] = True
+        except Exception:
+            pass
+        if is_safety_blocked_turn:
+            try:
+                ai_md = dict(ai_md) if isinstance(ai_md, dict) else {}
+                ai_md["safety_blocked"] = True
+            except Exception:
+                pass
         ai_message = await chat_service.save_message(
             db, room.id, "assistant", ai_response_text, message_metadata=ai_md
         )
@@ -5247,7 +6335,8 @@ async def send_message(
         if new_count >= 51 and not getattr(room, 'summary', None):
             # 최근 50개 이전의 히스토리를 요약(간단 요약)
             past_texts = []
-            for msg in history[:-recent_limit]:
+            summary_source = _filter_safety_blocked_turns(history[:-recent_limit])
+            for msg in summary_source:
                 role = '사용자' if msg.sender_type == 'user' else character.name
                 past_texts.append(f"{role}: {msg.content}")
             past_chunk = "\n".join(past_texts[-500:])  # 안전 길이 제한
@@ -5295,6 +6384,45 @@ async def send_message(
         suggested_image_index=suggested_image_index
     )
 
+def _normalize_intro_message_kind(messages: List[Any]) -> List[Any]:
+    """
+    room 메시지의 intro 메타를 SSOT 규칙으로 정규화한다.
+
+    규칙:
+    - intro(kind='intro')는 방당 1개(첫 assistant/character 메시지)만 허용.
+    - 그 이후 intro 표식은 제거해 일반 assistant 대사로 렌더되게 한다.
+
+    의도:
+    - 일부 레이스/레거시 데이터에서 첫대사까지 intro로 저장되는 현상을 방어한다.
+    - 프론트 예외 처리 의존도를 줄이고 서버 응답을 단일 진실 원천으로 유지한다.
+    """
+    try:
+        arr = messages if isinstance(messages, list) else []
+        intro_kept = False
+        for m in arr:
+            try:
+                md = getattr(m, "message_metadata", None)
+                if not isinstance(md, dict):
+                    continue
+                kind = str(md.get("kind") or "").strip().lower()
+                if kind != "intro":
+                    continue
+                sender = str(getattr(m, "sender_type", "") or getattr(m, "senderType", "")).strip().lower()
+                is_assistant_like = sender in ("assistant", "character", "ai")
+                if (not intro_kept) and is_assistant_like:
+                    intro_kept = True
+                    continue
+
+                # 첫 intro 외에는 kind만 제거하고, 나머지 메타는 유지한다.
+                next_md = {k: v for k, v in md.items() if str(k) != "kind"}
+                setattr(m, "message_metadata", (next_md if next_md else None))
+            except Exception:
+                continue
+        return arr
+    except Exception:
+        return messages if isinstance(messages, list) else []
+
+
 @router.get("/history/{session_id}", response_model=List[ChatMessageResponse])
 async def get_chat_history(
     session_id: uuid.UUID,
@@ -5313,7 +6441,7 @@ async def get_chat_history(
     # ✅ 비공개 캐릭터/작품 접근 차단(요구사항: 기존 방도 포함)
     await _ensure_private_content_access(db, current_user, character=getattr(room, "character", None))
     messages = await chat_service.get_messages_by_room_id(db, session_id, skip, limit)
-    return messages
+    return _normalize_intro_message_kind(messages)
 
 @router.get("/sessions", response_model=List[ChatRoomResponse])
 async def get_chat_sessions(
@@ -5397,6 +6525,9 @@ async def get_chat_room_meta(
             character = (await db.execute(select(Character).where(Character.id == room.character_id))).scalars().first()
         except Exception:
             character = None
+    room_character_snapshot = _extract_room_character_snapshot(meta)
+    if room_character_snapshot:
+        character = _overlay_with_snapshot(character, room_character_snapshot, "character")
     is_origchat = bool(getattr(character, "origin_story_id", None)) if character is not None else False
     # 필요한 키만 노출(안전)
     allowed = {
@@ -5676,11 +6807,14 @@ async def get_messages_in_room_legacy(
             if eff_limit <= 0:
                 return []
 
-            return await get_chat_history(room_id, start, eff_limit, current_user, db)
+            res = await get_chat_history(room_id, start, eff_limit, current_user, db)
+            return _normalize_intro_message_kind(res)
         except Exception:
             # 방어: tail 역산 실패 시 기존(오래된) 방식으로 폴백
-            return await get_chat_history(room_id, skip, limit, current_user, db)
-    return await get_chat_history(room_id, skip, limit, current_user, db)
+            res = await get_chat_history(room_id, skip, limit, current_user, db)
+            return _normalize_intro_message_kind(res)
+    res = await get_chat_history(room_id, skip, limit, current_user, db)
+    return _normalize_intro_message_kind(res)
 
 
 @router.post("/rooms/{room_id}/magic-choices", response_model=MagicChoicesResponse)
@@ -5719,6 +6853,10 @@ async def generate_magic_choices(
         raise HTTPException(status_code=404, detail="캐릭터를 찾을 수 없습니다.")
     # 비공개 접근 차단(기존 정책 유지)
     await _ensure_private_content_access(db, current_user, character=character)
+    room_meta = await _get_room_meta(room_id)
+    room_character_snapshot = _extract_room_character_snapshot(room_meta)
+    if room_character_snapshot:
+        character = _overlay_with_snapshot(character, room_character_snapshot, "character")
 
     # 요청 파라미터(방어적)
     try:
@@ -5964,6 +7102,10 @@ async def generate_next_action(
     if not character:
         raise HTTPException(status_code=404, detail="캐릭터를 찾을 수 없습니다.")
     await _ensure_private_content_access(db, current_user, character=character)
+    room_meta = await _get_room_meta(room_id)
+    room_character_snapshot = _extract_room_character_snapshot(room_meta)
+    if room_character_snapshot:
+        character = _overlay_with_snapshot(character, room_character_snapshot, "character")
 
     # 요청 파라미터(방어적)
     seed_message_id = str(getattr(payload, "seed_message_id", None) or "").strip()
@@ -6023,8 +7165,7 @@ async def generate_next_action(
     # ✅ 시뮬 힌트(베스트 에포트): 목표/스탯 충돌 방지용
     sim_hint_block = ""
     try:
-        meta = await _get_room_meta(room.id)
-        meta = meta if isinstance(meta, dict) else {}
+        meta = room_meta if isinstance(room_meta, dict) else {}
         stat_state = meta.get("stat_state") if isinstance(meta.get("stat_state"), dict) else None
         ct = str(getattr(character, "character_type", "") or "").strip().lower()
         if ct == "simulator" or bool(stat_state):

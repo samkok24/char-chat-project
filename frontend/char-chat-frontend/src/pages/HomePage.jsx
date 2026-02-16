@@ -137,7 +137,28 @@ const _cmsShuffleWithSeed = (arr, seed) => {
   return list;
 };
 
+// ===== 메인 페이지 A/B 변형 =====
+// 페이지 전체 스냅샷 단위. 현재: 온보딩 문구 차이. 향후: 구좌/레이아웃/추천 등 확장 가능.
+// 세션(탭) 내 고정, 새 탭/새로고침 시 재배정. 한 방문 내 일관된 경험 유지.
+const HOME_AB_KEY = 'cc:ab:home';
+const getHomeVariant = () => {
+  try {
+    const stored = sessionStorage.getItem(HOME_AB_KEY);
+    if (stored === 'A' || stored === 'B') return stored;
+    const next = Math.random() < 0.5 ? 'A' : 'B';
+    sessionStorage.setItem(HOME_AB_KEY, next);
+    return next;
+  } catch (_) {
+    return 'A';
+  }
+};
+
 const HomePage = () => {
+  // 메인 페이지 A/B 변형 — 렌더 시 동기 세팅 (TrafficEventsBridge의 page_view보다 먼저 적용)
+  const [homeVariant] = useState(() => getHomeVariant());
+  window.__CC_PAGE_META = { ab_home: homeVariant };
+  useEffect(() => () => { window.__CC_PAGE_META = null; }, []);
+
   const isMobile = useIsMobile();
   const MOBILE_SLOT_STEP = 4;
   // 모바일 "4개 격자 + <> 페이지"용: 구좌별 페이지 상태
@@ -588,12 +609,12 @@ const HomePage = () => {
       if (missing.length === 0) return;
 
       // 너무 많은 병렬 호출은 피한다(홈 진입 시 급격한 트래픽 스파이크 방지)
-      const MAX_FETCH = 24;
+      const MAX_FETCH = 8;
       const queue = missing.slice(0, MAX_FETCH);
 
       const results = {};
       let cursor = 0;
-      const concurrency = 4;
+      const concurrency = 2;
 
       const worker = async () => {
         while (!cancelled) {
@@ -774,28 +795,6 @@ const HomePage = () => {
     // origserial이 아닌 탭으로 이동하면 sub 파라미터는 제거(URL 정리)
     if (tabQuery !== 'origserial') p.delete('sub');
     navigate({ pathname: location.pathname, search: p.toString() }, { replace: true });
-  };
-
-  const goToCharacterTab = () => {
-    /**
-     * 온보딩 CTA: "다른 작품들 구경하기"
-     *
-     * 의도/동작:
-     * - 홈 상단 탭 "캐릭터"로 이동한다.
-     *
-     * 방어적 처리:
-     * - URL 파싱 실패 시에도 안전하게 동작하도록 기본 경로로 폴백한다.
-     */
-    try {
-      const p = new URLSearchParams(location.search);
-      p.set('tab', 'character');
-      p.delete('sub');
-      navigate({ pathname: location.pathname, search: p.toString() }, { replace: true });
-    } catch (_) {
-      try {
-        navigate('/dashboard?tab=character', { replace: true });
-      } catch (__) {}
-    }
   };
 
   // ✅ URL 쿼리로 탭 상태 동기화(더보기 링크 등으로 이동 시 UI가 안 바뀌는 문제 방지)
@@ -1032,7 +1031,7 @@ const HomePage = () => {
     getNextPageParam: (lastPage) => lastPage.nextSkip,
     staleTime: 30 * 1000,
     cacheTime: 10 * 60 * 1000,
-    refetchOnWindowFocus: true,
+    refetchOnWindowFocus: false,
   });
 
   const characters = (characterPages?.pages || []).flatMap(p => p.items);
@@ -2228,10 +2227,14 @@ const HomePage = () => {
             <section className="mb-6">
               <div className="rounded-2xl border border-gray-800/80 bg-gradient-to-b from-gray-900/70 to-gray-900/30 p-5 sm:p-6 shadow-lg shadow-black/20">
                 <div className="text-xl sm:text-2xl font-semibold text-white">
-                  오리지널 또는 웹소설 캐릭터와 무한대로 대화할 수 있어요.
+                  {homeVariant === 'B'
+                    ? '오프닝에 따라 이야기의 결말이 달라집니다.'
+                    : '정해진 턴 안에 이야기의 결말에 도달해보세요.'}
                 </div>
                 <div className="text-sm text-gray-300 mt-1 leading-relaxed">
-                  검색으로 찾거나, 30초만에 새 캐릭터를 만들어 바로 대화할 수 있어요.
+                  {homeVariant === 'B'
+                    ? '선택한 오프닝에 따라 달라지는 결말을 경험해보세요.'
+                    : '공략에 성공하면, 최고의 결말이 기다리고 있습니다.'}
                 </div>
 
                 <div className="mt-4 grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
@@ -2334,31 +2337,16 @@ const HomePage = () => {
 
                   {/* ✅ 30초 생성 CTA(우): 모바일에서도 결과보다 위에 오도록 '컨트롤 다음'에 배치 */}
                   <div className="lg:col-span-4 self-start">
-                    <div className="rounded-xl border border-gray-800 bg-gray-950/20 p-4 flex flex-col">
-                      <div className="text-sm font-semibold text-white">바로 만들고 시작하기</div>
-                      <div className="text-xs text-gray-400 mt-1 leading-relaxed">
-                        원하는 캐릭터가 없으면 이미지와 한 줄 느낌만 입력하고 30초만에 만들 수 있어요.
-                      </div>
-                      <div className="mt-4">
-                        <Button
-                          type="button"
-                          className="w-full h-11 rounded-xl bg-purple-600 hover:bg-purple-700 text-white shadow-sm shadow-purple-900/30"
-                          onClick={() => openQuickMeet(onboardingSearchTerm || onboardingQueryRaw)}
-                        >
-                          30초만에 캐릭터와 대화하기
-                        </Button>
-                      </div>
-                      <div className="mt-2">
-                        <Button
-                          type="button"
-                          variant="outline"
-                          onClick={goToCharacterTab}
-                          className="w-full h-11 rounded-xl border-blue-500/40 bg-gray-900/30 text-blue-100 hover:bg-blue-500/10 hover:border-blue-400/60"
-                        >
-                          다른 작품들 구경하기
-                        </Button>
-                      </div>
-                    </div>
+                    <Button
+                      type="button"
+                      className="w-full h-20 sm:h-24 rounded-xl bg-purple-600 hover:bg-purple-700 text-white shadow-sm shadow-purple-900/30 flex flex-col items-center justify-center gap-1"
+                      onClick={() => openQuickMeet(onboardingSearchTerm || onboardingQueryRaw)}
+                    >
+                      <span className="text-lg sm:text-2xl font-bold leading-none">간단 캐릭터 생성</span>
+                      <span className="text-[11px] sm:text-sm text-purple-100/90 leading-tight">
+                        초심자도 쉽고 빠르게 만들어서 채팅할 수 있어요
+                      </span>
+                    </Button>
                   </div>
 
                 </div>
@@ -3124,4 +3112,3 @@ const HomePage = () => {
 };
 
 export default HomePage;
-

@@ -420,7 +420,8 @@ async def get_character_by_id(db: AsyncSession, character_id: uuid.UUID) -> Opti
         select(Character)
         .options(
             selectinload(Character.settings),
-            joinedload(Character.creator)
+            joinedload(Character.creator),
+            selectinload(Character.tags),
         )
         .where(Character.id == character_id)
     )
@@ -439,7 +440,10 @@ async def get_characters_by_creator(
     """생성자별 캐릭터 목록 조회"""
     query = (
         select(Character)
-        .options(joinedload(Character.creator))
+        .options(
+            joinedload(Character.creator),
+            selectinload(Character.tags),
+        )
         .where(Character.creator_id == creator_id)
     )
     
@@ -500,7 +504,10 @@ async def get_public_characters(
     """공개 캐릭터 목록 조회"""
     query = (
         select(Character)
-        .options(joinedload(Character.creator))
+        .options(
+            joinedload(Character.creator),
+            selectinload(Character.tags),
+        )
         .outerjoin(Story, Character.origin_story_id == Story.id)
         .where(and_(Character.is_public == True, Character.is_active == True))
         # ✅ 안전/의도:

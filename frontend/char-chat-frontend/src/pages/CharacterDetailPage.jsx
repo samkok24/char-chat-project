@@ -174,6 +174,19 @@ const CharacterDetailPage = () => {
     loadCharacterData();
   }, [characterId, isAuthenticated, mediaAssets]);
 
+  // ✅ 백필 pending 상태면 3초 간격으로 자동 refetch
+  useEffect(() => {
+    if (character?.start_sets?._backfill_status !== 'pending') return;
+    const interval = setInterval(async () => {
+      try {
+        const res = await charactersAPI.getCharacter(characterId);
+        if (res?.data) setCharacter(res.data);
+        if (res?.data?.start_sets?._backfill_status !== 'pending') clearInterval(interval);
+      } catch (_) {}
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [characterId, character?.start_sets?._backfill_status]);
+
   React.useEffect(() => {
     if ((mediaAssets || []).length > 0) {
       const urls = mediaAssets.map(a => a.url);
@@ -297,6 +310,25 @@ const CharacterDetailPage = () => {
   const searchParams = new URLSearchParams(location.search || '');
   const isWebNovel = (character?.source_type === 'IMPORTED') || (location.state?.source === 'webnovel') || (searchParams.get('source') === 'webnovel');
   const workId = location.state?.workId || searchParams.get('workId') || null;
+
+  // 상세 이미지 좌상단 "턴수 배지" 텍스트(일반 캐릭터챗만 기본값으로 ∞ 표시)
+  // - SSOT: start_sets.sim_options.max_turns (목록 응답은 start_sets 미포함이므로 max_turns 파생 필드도 함께 사용)
+  // - 원작챗/웹소설(IMPORT 포함)은 턴수 개념이 보장되지 않으므로 값이 있을 때만 표시
+  const turnBadgeText = (() => {
+    try {
+      const raw =
+        character?.max_turns
+        ?? character?.start_sets?.sim_options?.max_turns
+        ?? character?.start_sets?.sim_options?.maxTurns;
+      const n = Number(raw);
+      const turns = Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
+      if (turns != null) return `${turns}턴`;
+      if (!originStoryId && !isWebNovel) return '∞';
+      return null;
+    } catch (_) {
+      return (!originStoryId && !isWebNovel) ? '∞' : null;
+    }
+  })();
   
   // console.log('🔍 Character Debug:', {
   //   characterId,
@@ -460,13 +492,26 @@ const CharacterDetailPage = () => {
                 })()}
               </div>
               <div className="absolute top-2 left-2">
-                {character?.origin_story_id ? (
-                  <Badge className="bg-orange-400 text-black hover:bg-orange-400">원작챗</Badge>
-                ) : (isWebNovel || character?.source_type === 'IMPORTED') ? (
-                  <Badge className="bg-blue-600 text-white hover:bg-blue-600">웹소설</Badge>
-                ) : (
-                  <Badge className="bg-purple-600 text-white hover:bg-purple-600">캐릭터</Badge>
-                )}
+                {(turnBadgeText || originStoryId || isWebNovel || character?.source_type === 'IMPORTED') ? (
+                  <div className="flex flex-col items-start gap-1">
+                    {turnBadgeText ? (
+                      <Badge className="bg-purple-600/90 text-white hover:bg-purple-600 px-1.5 py-0.5 text-[11px]">
+                        {turnBadgeText}
+                      </Badge>
+                    ) : null}
+                    {(originStoryId || isWebNovel || character?.source_type === 'IMPORTED') ? (
+                      originStoryId ? (
+                        <Badge className="bg-orange-400 text-black hover:bg-orange-400 px-1.5 py-0.5 text-[11px]">
+                          원작챗
+                        </Badge>
+                      ) : (
+                        <Badge className="bg-blue-600 text-white hover:bg-blue-600 px-1.5 py-0.5 text-[11px]">
+                          웹소설
+                        </Badge>
+                      )
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
               {isOwner && (
                 <button
@@ -495,7 +540,13 @@ const CharacterDetailPage = () => {
               handleLike={handleLike}
               isOwner={isOwner}
               canTogglePublic={!!(isOwner || isAdmin)}
-              onEdit={() => navigate(`/characters/${characterId}/edit`)}
+              onEdit={() => {
+                if (character?.start_sets?._backfill_status === 'pending') {
+                  dispatchToast('info', '캐릭터 생성이 마무리되는 중이에요. 잠시 후 다시 시도해주세요.');
+                  return;
+                }
+                navigate(`/characters/${characterId}/edit`);
+              }}
               onDelete={deleteCharacter}
               onSettings={() => navigate(`/characters/${characterId}/settings`)}
               onTogglePublic={handleTogglePublic} // 핸들러 함수 전달

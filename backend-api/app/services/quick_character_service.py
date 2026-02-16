@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
+from difflib import SequenceMatcher
 import json
 import random
 import re
@@ -1215,7 +1216,12 @@ def _is_generated_seed_text(seed_text: Any) -> bool:
     return any(m in s for m in markers)
 
 
-def _build_local_random_profile(seed_text: str, tags_user: List[str], nonce: str) -> Tuple[str, str]:
+def _build_local_random_profile(
+    seed_text: str,
+    tags_user: List[str],
+    nonce: str,
+    mode_slug: str = "roleplay",
+) -> Tuple[str, str]:
     """
     LLM 응답이 비정상(빈 응답/비 JSON/파싱 실패 등)이어도 자동 생성 UX를 유지하기 위한 로컬 폴백.
 
@@ -1227,6 +1233,10 @@ def _build_local_random_profile(seed_text: str, tags_user: List[str], nonce: str
         r = random.Random(int(str(nonce or "").strip() or "0", 16))
     except Exception:
         r = random.Random()
+
+    mode = str(mode_slug or "").strip().lower()
+    if mode not in ("roleplay", "simulator"):
+        mode = "roleplay"
 
     # ✅ 작품명(제목형) 로컬 폴백
     #
@@ -1241,7 +1251,10 @@ def _build_local_random_profile(seed_text: str, tags_user: List[str], nonce: str
     rule = ["계약", "규칙", "위약금", "미션", "교칙", "서열", "등급", "난이도", "제한시간"]
     event = ["실종", "납치", "감금", "추적", "탈출", "복수", "재회", "각성", "역전", "거래"]
     # ✅ 프론트/프로필 제약(8~35자)과 일치하도록 길이 방어
-    title = f"{r.choice(adj)} {r.choice(noun)}의 {r.choice(hook)}".strip()
+    if mode == "simulator":
+        title = f"{r.choice(adj)} {r.choice(noun)} 시뮬레이션".strip()
+    else:
+        title = f"{r.choice(adj)} {r.choice(noun)}의 {r.choice(hook)}".strip()
     title = _clip(title, 35) or "이름 없는 이야기"
     # 너무 짧아지면(혹시 모를 조합) 최소 길이 보정
     if len(title) < 8:
@@ -1259,12 +1272,20 @@ def _build_local_random_profile(seed_text: str, tags_user: List[str], nonce: str
     ev = r.choice(event)
     # 4~5문장 구성(메타/운영 문구 없이, '훅'이 느껴지게)
     # - 300자 제한 안에서 문장수를 맞추기 위해 각 문장을 짧게 유지한다.
-    description = (
-        f"{title}는(은) {p}에서 시작된 {ev}에 휘말렸다. "
-        f"내 앞에는 {rr}이(가) 딱 하나 남았다. "
-        f"{r.choice(tones)}. "
-        f"오늘 밤, 한 번만 선을 넘으면 모든 게 바뀐다."
-    )
+    if mode == "simulator":
+        description = (
+            f"{title}는(은) {p}에서 {ev}이(가) 시작되는 상황이다. "
+            f"지금 목표는 {rr}을(를) 지키며 다음 턴으로 넘어가는 것이다. "
+            f"{r.choice(tones)}. "
+            f"선택 결과는 즉시 반영되고 리스크도 함께 커진다."
+        )
+    else:
+        description = (
+            f"{title}는(은) {p}에서 시작된 {ev}에 휘말렸다. "
+            f"내 앞에는 {rr}이(가) 딱 하나 남았다. "
+            f"{r.choice(tones)}. "
+            f"오늘 밤, 한 번만 선을 넘으면 모든 게 바뀐다."
+        )
     description = _clip(description.replace("\n", " ").strip(), 300)
     # 길이 하한 방어
     if len(description) < 20:
@@ -2083,7 +2104,8 @@ async def generate_quick_stat_draft(
         return False
 
     try:
-        raw = await get_ai_completion(prompt=f"{system}\n\n{user}", model=model, temperature=0.3, max_tokens=900)
+        # 스탯 JSON이 중간 절단되면 전체 폴백/빈 결과로 이어지므로 출력 여유를 높인다.
+        raw = await get_ai_completion(prompt=f"{system}\n\n{user}", model=model, temperature=0.3, max_tokens=1600)
         blob = _extract_json_object(raw)
         if not blob:
             return []
@@ -2101,7 +2123,7 @@ async def generate_quick_stat_draft(
                 ("- 시뮬 기본값: stats는 반드시 3~4개를 채워라.\n" if need_retry_count else ""),
                 "- JSON 외 텍스트 금지.",
             ])
-            raw = await get_ai_completion(prompt=retry, model=model, temperature=0.2, max_tokens=900)
+            raw = await get_ai_completion(prompt=retry, model=model, temperature=0.2, max_tokens=1400)
             blob = _extract_json_object(raw)
             if not blob:
                 return []
@@ -2400,6 +2422,42 @@ def _is_first_start_in_range(intro: str, first_line: str) -> bool:
         return False
 
 
+def _first_start_similarity(
+    intro_a: str,
+    first_line_a: str,
+    intro_b: str,
+    first_line_b: str,
+) -> float:
+    """
+    두 오프닝(도입부+첫대사)의 유사도를 방어적으로 계산한다.
+
+    의도:
+    - 오프닝2 자동생성 시 오프닝1과 과도하게 비슷한 결과를 감지해
+      1회 재생성 트리거로 사용한다.
+    """
+    def _norm(v: Any) -> str:
+        try:
+            s = _safe_text(v).strip().lower()
+            s = re.sub(r"\s+", " ", s)
+            return s
+        except Exception:
+            return ""
+
+    ai = _norm(intro_a)
+    af = _norm(first_line_a)
+    bi = _norm(intro_b)
+    bf = _norm(first_line_b)
+    if not (ai or af) or not (bi or bf):
+        return 0.0
+
+    a_full = f"{ai}\n{af}".strip()
+    b_full = f"{bi}\n{bf}".strip()
+    r_full = SequenceMatcher(None, a_full, b_full).ratio() if (a_full and b_full) else 0.0
+    r_intro = SequenceMatcher(None, ai, bi).ratio() if (ai and bi) else 0.0
+    r_first = SequenceMatcher(None, af, bf).ratio() if (af and bf) else 0.0
+    return float(max(r_full, r_intro, r_first))
+
+
 async def generate_quick_first_start(
     name: str,
     description: str,
@@ -2569,7 +2627,8 @@ async def generate_quick_first_start(
         return intro0, first0
 
     # 1차 생성
-    raw = await get_ai_completion(prompt=prompt, model=model, temperature=0.6, max_tokens=900)
+    # first-start는 intro+first_line JSON 완결이 중요하므로 토큰 상한을 높인다.
+    raw = await get_ai_completion(prompt=prompt, model=model, temperature=0.6, max_tokens=1600)
     intro, first_line = _parse_first_start(raw)
 
     # 2차 보정: 길이 조건이 크게 어긋나면 1회 재생성(문장 중간 절단 최소화 목적)
@@ -2581,7 +2640,7 @@ async def generate_quick_first_start(
             "- first_line은 10~50자를 반드시 만족하라. 한 문장으로 끝내고, 인사말은 금지.\n"
             "- JSON 외 텍스트를 절대 출력하지 마라."
         )
-        raw2 = await get_ai_completion(prompt=retry, model=model, temperature=0.5, max_tokens=700)
+        raw2 = await get_ai_completion(prompt=retry, model=model, temperature=0.5, max_tokens=1200)
         intro2, first2 = _parse_first_start(raw2)
         # 더 나은 결과만 채택
         if (len(_safe_text(intro2).strip()) > 0) and (len(_safe_text(first2).strip()) > 0):
@@ -2599,13 +2658,44 @@ async def generate_quick_first_start(
             "- 서사와 무관한 설명 문구는 쓰지 마라.\n"
             "- JSON 외 텍스트를 절대 출력하지 마라."
         )
-        raw3 = await get_ai_completion(prompt=retry_meta, model=model, temperature=0.5, max_tokens=700)
+        raw3 = await get_ai_completion(prompt=retry_meta, model=model, temperature=0.5, max_tokens=1200)
         intro3, first3 = _parse_first_start(raw3)
         if intro3 and first3 and (not _has_output_meta_wording(intro3)) and (not _has_output_meta_wording(first3)):
             intro, first_line = intro3, first3
         else:
             # 안전 폴백: 메타 문구가 남아 있으면 강제로 비워서 로컬 보정 사용
             intro, first_line = "", ""
+
+    # ✅ 오프닝 중복 유사도 가드(1회 재생성)
+    # - avoid_*가 주어진 경우에만 동작한다.
+    # - 오프닝2가 오프닝1과 거의 같은 경우를 방어한다.
+    if avoid_i or avoid_f:
+        try:
+            base_sim = _first_start_similarity(intro, first_line, avoid_i, avoid_f)
+            if base_sim >= 0.82:
+                retry_diverse = (
+                    f"{prompt}\n\n"
+                    "[중복 회피 강화]\n"
+                    "- 아래 '이전 오프닝'과 같은 장면/트리거/문장 구조를 반복하면 실패다.\n"
+                    "- 반드시 장소, 사건 트리거, 관계 긴장 요소 중 최소 1개 이상을 바꿔라.\n"
+                    "- first_line도 이전 표현을 재사용하지 마라.\n"
+                    "- JSON 외 텍스트를 절대 출력하지 마라."
+                )
+                raw4 = await get_ai_completion(prompt=retry_diverse, model=model, temperature=0.6, max_tokens=1300)
+                intro4, first4 = _parse_first_start(raw4)
+                if intro4 and first4 and (not _has_output_meta_wording(intro4)) and (not _has_output_meta_wording(first4)):
+                    cand_sim = _first_start_similarity(intro4, first4, avoid_i, avoid_f)
+                    if cand_sim < base_sim:
+                        intro, first_line = intro4, first4
+                        try:
+                            logger.info(f"[first_start] diversity guard improved similarity: {base_sim:.3f} -> {cand_sim:.3f}")
+                        except Exception:
+                            pass
+        except Exception as e:
+            try:
+                logger.warning(f"[first_start] diversity guard skipped: {type(e).__name__}:{str(e)[:120]}")
+            except Exception:
+                pass
 
     # 최종 방어 보정(범위 강제 + 문장 중간 절단 최소화)
     intro, first_line = _ensure_first_start_len(intro, first_line, base_mode)
@@ -3386,7 +3476,9 @@ planned_turns: {planned_turns}
 ]
 """.strip()
 
-    raw = await get_ai_completion(prompt=prompt, model=model, temperature=0.6, max_tokens=1800)
+    # turn_events는 사건 카드 N개를 한 번에 JSON 배열로 생성하므로 출력 토큰 여유를 크게 둔다.
+    # (출력이 중간에서 잘리면 ']'가 없어 파싱 실패 → 전체 폴백으로 떨어짐)
+    raw = await get_ai_completion(prompt=prompt, model=model, temperature=0.6, max_tokens=6000)
     arr_txt = _extract_json_array(raw)
     arr_txt = _fix_trailing_commas(arr_txt)
 
@@ -4110,7 +4202,8 @@ async def generate_quick_character_draft(req: QuickCharacterGenerateRequest) -> 
     except Exception:
         pass
 
-    fallback_name, fallback_description = _build_local_random_profile(seed_text, tags_user, nonce)
+    fallback_name = ""
+    fallback_description = ""
 
     # ✅ seed_text에서 문장형 제목 요청 여부를 코드 레벨로 감지
     # - 프론트의 useSentenceStyleName/quickGenTitleNameMode 토글 ON이면
@@ -4184,6 +4277,13 @@ async def generate_quick_character_draft(req: QuickCharacterGenerateRequest) -> 
     except Exception:
         mode_slug = "roleplay"
 
+    fallback_name, fallback_description = _build_local_random_profile(
+        seed_text,
+        tags_user,
+        nonce,
+        mode_slug=mode_slug,
+    )
+
     # ✅ 성향(남/여/전체) 규칙 강화(운영 UX)
     # - tags는 UI/슬러그/표기가 흔들릴 수 있다(예: "male", "남성", 공백 포함 등).
     # - 따라서 SSOT 헬퍼로 "성향 라벨"을 안전하게 정규화한다.
@@ -4216,6 +4316,23 @@ async def generate_quick_character_draft(req: QuickCharacterGenerateRequest) -> 
             )
     except Exception:
         mode_rules = ""
+
+    mode_lock_rules = ""
+    try:
+        if mode_slug == "simulator":
+            mode_lock_rules = (
+                "- [MODE LOCK: simulator]\n"
+                "  - Title must read like a playable scenario/system frame, not only a person-name hook.\n"
+                "  - Description must include one immediate objective and one concrete constraint/risk.\n"
+            )
+        else:
+            mode_lock_rules = (
+                "- [MODE LOCK: roleplay]\n"
+                "  - Title should foreground counterpart identity and relationship-driven stakes.\n"
+                "  - Description must include relationship distance/emotion shift plus one concrete conflict.\n"
+            )
+    except Exception:
+        mode_lock_rules = ""
 
     audience_rules = ""
     try:
@@ -4346,6 +4463,7 @@ async def generate_quick_character_draft(req: QuickCharacterGenerateRequest) -> 
 - (이미지 정보가 '없음'이면) 이미지를 억지로 추측하지 말고, 태그/소재/후킹 규칙을 우선으로 삼아라.
 - 현재 모드: {mode_slug} (seed_text 힌트 기반, 아래 모드 가드레일을 반드시 따른다)
 {mode_rules}
+{mode_lock_rules}
 {market_style_block}
 - 현재 성향 태그: {audience_slug or "없음"} (선택 태그에 포함되어 있으며, 아래 톤 가드레일을 반드시 따른다)
 {audience_rules}
@@ -5136,6 +5254,22 @@ async def generate_quick_character_draft(req: QuickCharacterGenerateRequest) -> 
         # ✅ 단일 결과가 아래 조건이면 1회 재생성으로 보정한다.
         # - 메타 문구(이미지/분위기/디테일/전개) 포함
         # - 구체성 부족(카테고리 2개 미만으로 추정)
+        mode_signal_ok = True
+        try:
+            blob_mode = f"{name} {description}"
+            if mode_slug == "simulator":
+                mode_signal_ok = _mentions_any(
+                    blob_mode,
+                    ["시뮬", "턴", "목표", "미션", "규칙", "제약", "리스크", "자원", "선택", "루트"],
+                )
+            else:
+                mode_signal_ok = _mentions_any(
+                    blob_mode,
+                    ["관계", "감정", "긴장", "거리", "비밀", "계약", "집착", "보호", "유혹", "로맨스"],
+                )
+        except Exception:
+            mode_signal_ok = True
+
         need_retry = (
             _looks_bland_title(name)
             or (not _len_ok_title(name))
@@ -5146,6 +5280,7 @@ async def generate_quick_character_draft(req: QuickCharacterGenerateRequest) -> 
             or _has_vague_hook_desc(description)
             or (_sentence_count_hint(description) == 1)  # 1문장이면 너무 뭉개지는 케이스가 많아 1회 보정
             or _has_overused_generic_hook_word(description)
+            or (not mode_signal_ok)
         )
         if need_retry:
             retry_user = f"""
@@ -5158,6 +5293,7 @@ async def generate_quick_character_draft(req: QuickCharacterGenerateRequest) -> 
 - (이미지 정보가 있을 때만) 이미지 그라운딩/이미지 힌트에 나온 관찰 요소를 최소 2개 이상 자연스럽게 포함할 것.
 - 현재 모드: {mode_slug} (아래 모드 가드레일을 반드시 따른다)
 {mode_rules}
+{mode_lock_rules}
 {market_style_block}
 - 현재 성향 태그: {audience_slug or "없음"} (아래 톤 가드레일을 반드시 따른다)
 {audience_rules}
@@ -5269,7 +5405,7 @@ async def generate_quick_character_draft(req: QuickCharacterGenerateRequest) -> 
         user_display_description=None,
         use_custom_description=False,
         introduction_scenes=[intro_scene],
-        character_type="roleplay",
+        character_type=mode_slug,
         base_language="ko",
         tags=tags_user,
     )

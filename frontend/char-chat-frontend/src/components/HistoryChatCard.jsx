@@ -126,9 +126,9 @@ export const HistoryChatCard = ({ character, onClick, onPin, onDelete, displayTi
           <div className="flex flex-col w-[70%] p-3 lg:p-3.5 pt-2.5 lg:pt-3 rounded-r-2xl relative pb-6">
             <div className="pb-0">
               <div className="flex justify-between items-start">
-                <div className="flex-1 mr-2">
-                  <div className="h-4 flex items-start gap-1">
-                    <h2 className="text-[17px] lg:text-[18px] font-semibold leading-tight cursor-pointer hover:text-gray-300 transition-colors text-white">
+                <div className="flex-1 mr-2 min-w-0">
+                  <div className="h-4 flex items-start gap-1 min-w-0">
+                    <h2 className="block w-full truncate whitespace-nowrap text-[17px] lg:text-[18px] font-semibold leading-tight cursor-pointer hover:text-gray-300 transition-colors text-white">
                       {displayTitle || character.name}
                     </h2>
                   </div>

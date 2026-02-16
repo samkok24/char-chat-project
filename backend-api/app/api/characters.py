@@ -11,6 +11,8 @@ from app.core.config import settings
 import json
 import logging
 import time
+import re
+import copy
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +31,30 @@ def _extract_max_turns_from_start_sets(start_sets: Any) -> Optional[int]:
     # ✅ SSOT: 공용 유틸(랭킹/목록/메타 등 여러 응답에서 동일 규칙 적용)
     return extract_max_turns_from_start_sets(start_sets)
 
-from app.core.database import get_db
+
+def _extract_tag_labels_for_list(character: Any) -> List[str]:
+    """
+    목록/격자 응답용 태그 라벨 추출.
+
+    의도:
+    - 프론트 격자 태그칩(모달과 동일)을 위해 목록 응답에도 tags를 내려준다.
+    - 관계 로딩/데이터 오염 상황에서도 500 없이 빈 배열로 폴백한다.
+    """
+    try:
+        rel = getattr(character, "tags", None) or []
+        out: List[str] = []
+        for t in rel:
+            v = str(getattr(t, "name", None) or getattr(t, "slug", None) or "").strip()
+            if not v:
+                continue
+            if v in out:
+                continue
+            out.append(v)
+        return out
+    except Exception:
+        return []
+
+from app.core.database import get_db, AsyncSessionLocal
 from app.core.security import get_current_user, get_current_active_user
 from app.core.security import get_current_user_optional  # 진짜 optional 의존성 사용
 from app.models.user import User
@@ -133,6 +158,412 @@ from app.services.comment_service import (
 )
 
 router = APIRouter()
+
+def _has_text(v: Any) -> bool:
+    try:
+        return bool(str(v or "").strip())
+    except Exception:
+        return False
+
+
+def _merge_detail_prefs_into_personality(base: str, interests: List[str], likes: List[str], dislikes: List[str]) -> str:
+    """
+    위저드와 동일한 규칙으로 personality에 디테일 키워드를 섹션 형태로 병합한다.
+    """
+    try:
+        s = str(base or "").strip()
+        s = re.sub(r"\n?\[관심사\][\s\S]*?(?=\n\[좋아하는 것\]|\n\[싫어하는 것\]|\n*$)", "", s, flags=re.M)
+        s = re.sub(r"\n?\[좋아하는 것\][\s\S]*?(?=\n\[관심사\]|\n\[싫어하는 것\]|\n*$)", "", s, flags=re.M)
+        s = re.sub(r"\n?\[싫어하는 것\][\s\S]*?(?=\n\[관심사\]|\n\[좋아하는 것\]|\n*$)", "", s, flags=re.M)
+        s = s.strip()
+
+        blocks = []
+        if interests:
+            blocks.append("[관심사]\n" + "\n".join(interests))
+        if likes:
+            blocks.append("[좋아하는 것]\n" + "\n".join(likes))
+        if dislikes:
+            blocks.append("[싫어하는 것]\n" + "\n".join(dislikes))
+
+        if not blocks:
+            return s
+        return ((s + "\n\n" + "\n\n".join(blocks)).strip() if s else "\n\n".join(blocks).strip())
+    except Exception:
+        return str(base or "").strip()
+
+
+def _has_any_ending_trace(endings: Any) -> bool:
+    arr = endings if isinstance(endings, list) else []
+    for e in arr:
+        if not isinstance(e, dict):
+            continue
+        if (
+            _has_text(e.get("title"))
+            or _has_text(e.get("base_condition"))
+            or _has_text(e.get("hint"))
+            or _has_text(e.get("epilogue"))
+        ):
+            return True
+    return False
+
+
+def _coerce_start_sets_dict(raw: Any) -> dict:
+    if isinstance(raw, dict):
+        try:
+            return copy.deepcopy(raw)
+        except Exception:
+            return dict(raw)
+    if isinstance(raw, str):
+        try:
+            obj = json.loads(raw)
+            if isinstance(obj, dict):
+                return obj
+        except Exception:
+            return {}
+    return {}
+
+
+def _pick_start_set_index(items: List[Any], opening_id: str) -> int:
+    oid = str(opening_id or "").strip()
+    if oid:
+        for idx, it in enumerate(items):
+            if isinstance(it, dict) and str(it.get("id") or "").strip() == oid:
+                return idx
+    return 0 if items else -1
+
+
+async def _generate_stats_with_claude_retry(
+    *,
+    name: str,
+    description: str,
+    world_setting: str,
+    mode: str,
+    tags: List[str],
+) -> List[dict]:
+    """
+    위저드 스탯 생성 공용 헬퍼.
+
+    원칙:
+    - 스탯 단계만 Claude로 생성한다(JSON 준수율 우선).
+    - 실패/빈 결과일 때만 스탯 부분을 1회 재시도한다(다른 단계 재실행 금지).
+    """
+    model = "claude"
+
+    try:
+        stats = await generate_quick_stat_draft(
+            name=name,
+            description=description,
+            world_setting=world_setting,
+            mode=mode,
+            tags=tags or [],
+            ai_model=model,
+        )
+    except Exception as e:
+        try:
+            logger.warning(f"[characters.quick-stat] first attempt failed, retrying once: {type(e).__name__}:{str(e)[:120]}")
+        except Exception:
+            pass
+        stats = []
+
+    if isinstance(stats, list) and stats:
+        return stats
+
+    # 빈 결과/실패 시에만 스탯 단계 1회 재시도
+    try:
+        retry_stats = await generate_quick_stat_draft(
+            name=name,
+            description=description,
+            world_setting=world_setting,
+            mode=mode,
+            tags=tags or [],
+            ai_model=model,
+        )
+        if isinstance(retry_stats, list):
+            return retry_stats
+    except Exception as e:
+        try:
+            logger.warning(f"[characters.quick-stat] retry failed: {type(e).__name__}:{str(e)[:120]}")
+        except Exception:
+            pass
+    return []
+
+
+async def _backfill_quick_create_30s_optional_fields(
+    *,
+    character_id: str,
+    creator_id: str,
+    name: str,
+    description: str,
+    world_setting: str,
+    opening_id: str,
+    opening_intro: str,
+    opening_first_line: str,
+    character_type: str,
+    max_turns: int,
+    min_turns: int,
+    sim_dating_elements: bool,
+    tags: List[str],
+    ai_model: str,
+) -> None:
+    """
+    30초 생성 응답 이후, 디테일/엔딩을 백그라운드에서 채우는 후처리.
+    """
+    t0 = time.perf_counter()
+    try:
+        cid = uuid.UUID(str(character_id))
+        uid = uuid.UUID(str(creator_id))
+    except Exception:
+        return
+
+    def _normalize_detail_keywords(raw: Any, defaults: List[str]) -> List[str]:
+        out: List[str] = []
+        arr = raw if isinstance(raw, list) else []
+        for item in arr:
+            t = str(item or "").strip()
+            if not t:
+                continue
+            t = " ".join(t.split())[:20].strip()
+            if not t or t in out:
+                continue
+            out.append(t)
+            if len(out) >= 3:
+                break
+        i = 0
+        while len(out) < 3 and i < len(defaults):
+            d = str(defaults[i] or "").strip()
+            if d and d not in out:
+                out.append(d)
+            i += 1
+        return out[:3]
+
+    def _is_complete_detail_payload(
+        personality: str,
+        speech_style: str,
+        interests: List[str],
+        likes: List[str],
+        dislikes: List[str],
+    ) -> bool:
+        return (
+            _has_text(personality)
+            and _has_text(speech_style)
+            and len(interests) >= 3
+            and len(likes) >= 3
+            and len(dislikes) >= 3
+        )
+
+    detail_personality = ""
+    detail_speech = ""
+    detail_interests: List[str] = []
+    detail_likes: List[str] = []
+    detail_dislikes: List[str] = []
+    detail_attempts = 0
+
+    while detail_attempts < 3:
+        detail_attempts += 1
+        try:
+            out = await generate_quick_detail(
+                name=name,
+                description=description,
+                world_setting=str(world_setting or ""),
+                mode=character_type,
+                section_modes=None,
+                tags=tags or [],
+                ai_model=ai_model,
+            ) or {}
+            detail_personality = str(out.get("personality") or "").strip()
+            detail_speech = str(out.get("speech_style") or "").strip()
+            detail_interests = [str(x or "").strip() for x in (out.get("interests") or []) if str(x or "").strip()][:3]
+            detail_likes = [str(x or "").strip() for x in (out.get("likes") or []) if str(x or "").strip()][:3]
+            detail_dislikes = [str(x or "").strip() for x in (out.get("dislikes") or []) if str(x or "").strip()][:3]
+            if _is_complete_detail_payload(
+                detail_personality,
+                detail_speech,
+                detail_interests,
+                detail_likes,
+                detail_dislikes,
+            ):
+                break
+            try:
+                logger.warning(
+                    "[characters.quick-create-30s][bg] detail incomplete "
+                    f"(attempt={detail_attempts}, p={bool(detail_personality)}, s={bool(detail_speech)}, "
+                    f"i={len(detail_interests)}, l={len(detail_likes)}, d={len(detail_dislikes)})"
+                )
+            except Exception:
+                pass
+        except Exception as e:
+            try:
+                logger.exception(
+                    "[characters.quick-create-30s][bg] detail generation failed "
+                    f"(attempt={detail_attempts}, non-fatal): {e}"
+                )
+            except Exception:
+                pass
+
+    # 30초 생성 누락 방지: 부분/실패 결과는 deterministic fallback으로 채운다.
+    if not detail_personality:
+        if character_type == "simulator":
+            detail_personality = (
+                f"{name}는 목표 달성과 리스크 관리를 우선으로 판단하며, 증거가 부족하면 즉시 결론내리지 않는다. "
+                "상대가 무리한 요청을 하면 대안을 제시하고 조건을 확인한 뒤에 행동한다."
+            )
+        else:
+            detail_personality = (
+                f"{name}는 차분하지만 경계심을 늦추지 않고, 유저의 말 속 의도를 빠르게 읽어 반응한다. "
+                "겉으로는 단정하지만 중요한 순간에는 감정을 드러내며 관계의 선을 분명히 지킨다."
+            )
+
+    if not detail_speech:
+        if character_type == "simulator":
+            detail_speech = (
+                "응답은 상황 요약 후 핵심 대사, 다음 행동 제안 순서로 짧게 구성한다. "
+                "조건이 바뀌면 마지막 한 줄에 반영하고, 모호한 경우 질문 1개로 다음 턴 선택을 유도한다."
+            )
+        else:
+            detail_speech = (
+                "짧고 명확한 문장으로 말하며, 감정이 올라가도 말끝을 흐리지 않는다. "
+                "상대가 흔들릴 때는 핵심 단어를 반복해 집중시키고 필요하면 단호하게 선을 긋는다."
+            )
+
+    detail_interests = _normalize_detail_keywords(detail_interests, ["비밀", "관찰", "새벽"])
+    detail_likes = _normalize_detail_keywords(detail_likes, ["정리", "집중", "신뢰"])
+    detail_dislikes = _normalize_detail_keywords(detail_dislikes, ["강요", "기만", "소음"])
+
+    merged_personality = _merge_detail_prefs_into_personality(
+        detail_personality,
+        detail_interests,
+        detail_likes,
+        detail_dislikes,
+    )
+    if merged_personality and len(merged_personality) > 2000:
+        merged_personality = merged_personality[:2000].rstrip()
+    if detail_speech and len(detail_speech) > 2000:
+        detail_speech = detail_speech[:2000].rstrip()
+
+    endings: List[dict] = []
+    attempts = 0
+    while len(endings) < 1 and attempts < 3:
+        attempts += 1
+        try:
+            d = await generate_quick_ending_draft(
+                name=name,
+                description=description,
+                world_setting=world_setting,
+                opening_intro=opening_intro or "",
+                opening_first_line=opening_first_line or "",
+                mode=character_type,
+                max_turns=max_turns,
+                min_turns=min_turns,
+                sim_variant=None,
+                sim_dating_elements=sim_dating_elements,
+                tags=tags or [],
+                ai_model=ai_model,
+            ) or {}
+            title = str(d.get("title") or "").strip()[:20]
+            base_condition = str(d.get("base_condition") or "").strip()[:500]
+            hint = str(d.get("hint") or "").strip()[:20]
+            suggested_turn = int(d.get("suggested_turn") or 0)
+            if not title or not base_condition:
+                continue
+
+            ep = await generate_quick_ending_epilogue(
+                name=name,
+                description=description,
+                world_setting=world_setting,
+                opening_intro=opening_intro or "",
+                opening_first_line=opening_first_line or "",
+                ending_title=title,
+                base_condition=base_condition,
+                hint=hint,
+                extra_conditions=[],
+                mode=character_type,
+                sim_variant=None,
+                sim_dating_elements=sim_dating_elements,
+                tags=tags or [],
+                ai_model=ai_model,
+            )
+            ep = str(ep or "").strip()
+            if not ep:
+                continue
+
+            endings.append({
+                "id": f"end_qc_{uuid.uuid4().hex[:10]}",
+                "turn": max(0, suggested_turn),
+                "title": title,
+                "base_condition": base_condition,
+                "epilogue": ep[:1000],
+                "hint": hint,
+                "extra_conditions": [],
+            })
+        except Exception as e:
+            try:
+                logger.exception(f"[characters.quick-create-30s][bg] ending generation attempt failed (attempt={attempts}): {e}")
+            except Exception:
+                pass
+            continue
+
+    async with AsyncSessionLocal() as bg_db:
+        try:
+            character = await bg_db.get(Character, cid)
+            if not character:
+                return
+            if character.creator_id != uid:
+                return
+
+            await bg_db.refresh(character, attribute_names=["personality", "speech_style", "start_sets"])
+            changed = False
+
+            if merged_personality and (not _has_text(getattr(character, "personality", None))):
+                character.personality = merged_personality
+                changed = True
+            if detail_speech and (not _has_text(getattr(character, "speech_style", None))):
+                character.speech_style = detail_speech
+                changed = True
+
+            if endings:
+                ss = _coerce_start_sets_dict(getattr(character, "start_sets", None))
+                items_raw = ss.get("items")
+                items = items_raw if isinstance(items_raw, list) else []
+                idx = _pick_start_set_index(items, opening_id)
+                if idx >= 0:
+                    item = items[idx] if isinstance(items[idx], dict) else {}
+                    es = item.get("ending_settings") if isinstance(item.get("ending_settings"), dict) else {}
+                    existing = es.get("endings") if isinstance(es.get("endings"), list) else []
+                    if not _has_any_ending_trace(existing):
+                        next_item = dict(item)
+                        next_es = dict(es)
+                        next_es["min_turns"] = int(next_es.get("min_turns") or min_turns or 30)
+                        next_es["endings"] = endings
+                        next_item["ending_settings"] = next_es
+                        next_items = list(items)
+                        next_items[idx] = next_item
+                        ss["items"] = next_items
+                        character.start_sets = ss
+                        changed = True
+
+            # 백필 완료 — endings 성공/실패 무관하게 _backfill_status 해제
+            ss = _coerce_start_sets_dict(getattr(character, "start_sets", None))
+            if ss.get("_backfill_status"):
+                ss.pop("_backfill_status", None)
+                character.start_sets = ss
+                changed = True
+
+            if changed:
+                await bg_db.commit()
+        except Exception as e:
+            try:
+                logger.exception(f"[characters.quick-create-30s][bg] persist failed: {e}")
+            except Exception:
+                pass
+            try:
+                await bg_db.rollback()
+            except Exception:
+                pass
+    try:
+        ms = int((time.perf_counter() - t0) * 1000)
+        logger.info(f"[perf] characters.quick-create-30s.bg_done ms={ms} character_id={cid}")
+    except Exception:
+        pass
 
 # 🔥 CAVEDUCK 스타일 고급 캐릭터 생성 API
 
@@ -298,6 +729,7 @@ async def quick_generate_character_draft(
 @router.post("/quick-create-30s", response_model=CharacterDetailResponse, status_code=status.HTTP_201_CREATED)
 async def quick_create_character_30s(
     payload: QuickCreate30sRequest,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -306,7 +738,7 @@ async def quick_create_character_30s(
 
     핵심 요구사항(운영 안정):
     - 공개 고정(is_public=true)
-    - 오프닝 1개 + 엔딩 2개는 "무조건" 생성(실패 시 전체 실패)
+    - 오프닝/턴사건까지는 동기 생성, 디테일/엔딩은 백그라운드 후처리
     - 설정메모 3개는 start_sets.setting_book.items(런타임 SSOT)에 저장
     - request_id가 있으면 중복 생성 방지(간단 idempotency)
     """
@@ -564,80 +996,10 @@ async def quick_create_character_30s(
                 )
 
         # =========================
-        # 2.5) 디테일 자동 생성(성격/말투/관심사/좋·싫)
-        # =========================
-        # ✅ 위저드(quick-generate-detail)와 동일한 결과를 30초 생성에도 저장한다.
-        # - interests/likes/dislikes는 Character 스키마에 별도 필드가 없으므로,
-        #   위저드와 동일하게 personality 텍스트에 섹션 형태로 병합해 저장한다(SSOT: 프롬프트 반영 목적).
-        # - 실패하더라도 30초 생성 전체를 실패시키지 않는다(운영/데모 안정).
-        detail_personality = ""
+        # 30초 응답 속도를 위해 디테일은 백그라운드 후처리로 이동한다.
+        # - 초기 저장은 비워두고, _backfill_quick_create_30s_optional_fields에서 완성/보정 후 채운다.
+        merged_personality = ""
         detail_speech = ""
-        detail_interests: List[str] = []
-        detail_likes: List[str] = []
-        detail_dislikes: List[str] = []
-        try:
-            out = await generate_quick_detail(
-                name=name,
-                description=one_line,
-                world_setting=str(world_setting or ""),
-                mode=character_type,
-                section_modes=None,
-                tags=tag_slugs,
-                ai_model=ai_model,
-            ) or {}
-            detail_personality = str(out.get("personality") or "").strip()
-            detail_speech = str(out.get("speech_style") or "").strip()
-            detail_interests = [str(x or "").strip() for x in (out.get("interests") or []) if str(x or "").strip()][:3]
-            detail_likes = [str(x or "").strip() for x in (out.get("likes") or []) if str(x or "").strip()][:3]
-            detail_dislikes = [str(x or "").strip() for x in (out.get("dislikes") or []) if str(x or "").strip()][:3]
-        except Exception as e:
-            try:
-                logger.exception(f"[characters.quick-create-30s] detail generation failed (non-fatal): {e}")
-            except Exception:
-                pass
-
-        def _merge_detail_prefs_into_personality(base: str, interests: List[str], likes: List[str], dislikes: List[str]) -> str:
-            """
-            ✅ 위저드와 동일한 규칙으로 personality에 디테일 키워드를 섹션 형태로 병합한다.
-
-            - [관심사] / [좋아하는 것] / [싫어하는 것] 섹션을 사용한다.
-            - 기존 텍스트에 동일 섹션이 있으면 제거 후 최신 값으로 다시 붙인다(중복 방지).
-            """
-            try:
-                s = str(base or "").strip()
-                # 기존 섹션 제거(중복 방지)
-                s = re.sub(r"\n?\[관심사\][\s\S]*?(?=\n\[좋아하는 것\]|\n\[싫어하는 것\]|\n*$)", "", s, flags=re.M)
-                s = re.sub(r"\n?\[좋아하는 것\][\s\S]*?(?=\n\[관심사\]|\n\[싫어하는 것\]|\n*$)", "", s, flags=re.M)
-                s = re.sub(r"\n?\[싫어하는 것\][\s\S]*?(?=\n\[관심사\]|\n\[좋아하는 것\]|\n*$)", "", s, flags=re.M)
-                s = s.strip()
-
-                blocks = []
-                if interests:
-                    blocks.append("[관심사]\n" + "\n".join(interests))
-                if likes:
-                    blocks.append("[좋아하는 것]\n" + "\n".join(likes))
-                if dislikes:
-                    blocks.append("[싫어하는 것]\n" + "\n".join(dislikes))
-
-                merged = s
-                if blocks:
-                    merged = (merged + "\n\n" + "\n\n".join(blocks)).strip() if merged else "\n\n".join(blocks).strip()
-                return merged
-            except Exception:
-                return str(base or "").strip()
-
-        merged_personality = _merge_detail_prefs_into_personality(
-            detail_personality,
-            detail_interests,
-            detail_likes,
-            detail_dislikes,
-        )
-        # 30초 생성은 입력 UI가 없으므로 과도한 길이로 인해 상세 페이지가 깨지지 않게 방어적으로 제한
-        # - DB 허용은 2000이지만, 위저드 UI 기준(300)을 맞춰 간결하게 유지한다.
-        if merged_personality and len(merged_personality) > 300:
-            merged_personality = merged_personality[:300].rstrip()
-        if detail_speech and len(detail_speech) > 300:
-            detail_speech = detail_speech[:300].rstrip()
 
         intro, first_line = await generate_quick_first_start(
             name=name,
@@ -673,7 +1035,6 @@ async def quick_create_character_30s(
                 ai_model=ai_model,
             )
             if isinstance(evs, list) and evs:
-                # 방어: 과도한 폭주 방지(서비스는 이미 상한을 두지만 1회 더 제한)
                 turn_events = evs[:20]
         except Exception as e:
             try:
@@ -681,72 +1042,8 @@ async def quick_create_character_30s(
             except Exception:
                 pass
 
-        # 엔딩 1개 생성(30초 모달 속도 최적화), 최대 3번 시도
-        endings = []
-        attempts = 0
-        while len(endings) < 1 and attempts < 3:
-            attempts += 1
-            try:
-                d = await generate_quick_ending_draft(
-                    name=name,
-                    description=one_line,
-                    world_setting=world_setting,
-                    opening_intro=intro or "",
-                    opening_first_line=first_line or "",
-                    mode=character_type,
-                    max_turns=max_turns,
-                    min_turns=30,
-                    sim_variant=None,
-                    sim_dating_elements=sim_dating_elements,
-                    tags=tag_slugs,
-                    ai_model=ai_model,
-                ) or {}
-                title = str(d.get("title") or "").strip()[:20]
-                base_condition = str(d.get("base_condition") or "").strip()[:500]
-                hint = str(d.get("hint") or "").strip()[:20]
-                suggested_turn = int(d.get("suggested_turn") or 0)
-                if not title or not base_condition:
-                    continue
-
-                ep = await generate_quick_ending_epilogue(
-                    name=name,
-                    description=one_line,
-                    world_setting=world_setting,
-                    opening_intro=intro or "",
-                    opening_first_line=first_line or "",
-                    ending_title=title,
-                    base_condition=base_condition,
-                    hint=hint,
-                    extra_conditions=[],
-                    mode=character_type,
-                    sim_variant=None,
-                    sim_dating_elements=sim_dating_elements,
-                    tags=tag_slugs,
-                    ai_model=ai_model,
-                )
-                ep = str(ep or "").strip()
-                if not ep:
-                    continue
-
-                endings.append({
-                    "id": f"end_qc_{uuid.uuid4().hex[:10]}",
-                    "turn": max(0, suggested_turn),
-                    "title": title,
-                    "base_condition": base_condition,
-                    "epilogue": ep[:1000],
-                    "hint": hint,
-                    "extra_conditions": [],
-                })
-            except Exception as e:
-                # 방어: 엔딩 생성은 재시도할 수 있으므로, 시도 단위 실패는 로깅 후 continue
-                try:
-                    logger.exception(f"[characters.quick-create-30s] ending generation attempt failed (attempt={attempts}): {e}")
-                except Exception:
-                    pass
-                continue
-
-        if len(endings) < 1:
-            raise HTTPException(status_code=500, detail="quick_create_failed: ending_generation_failed")
+        # 엔딩은 백그라운드에서 생성한다.
+        endings: List[dict] = []
 
         # =========================
         # 3) start_sets(SSOT) 구성
@@ -775,6 +1072,7 @@ async def quick_create_character_30s(
             "setting_book": setting_book,
             # UI 상단 프로필 옵션과의 호환(프론트는 여기서 max_turns를 읽음)
             "sim_options": {"max_turns": max_turns, "allow_infinite_mode": False, "sim_dating_elements": bool(sim_dating_elements)},
+            "_backfill_status": "pending",
         }
 
         # =========================
@@ -834,6 +1132,31 @@ async def quick_create_character_30s(
                 except Exception:
                     pass
 
+        # 디테일/엔딩은 백그라운드 후처리(30초 성공 조건에서 제외)
+        try:
+            background_tasks.add_task(
+                _backfill_quick_create_30s_optional_fields,
+                character_id=str(character.id),
+                creator_id=str(current_user.id),
+                name=name,
+                description=one_line,
+                world_setting=str(world_setting or ""),
+                opening_id=opening_id,
+                opening_intro=str(intro or ""),
+                opening_first_line=str(first_line or ""),
+                character_type=character_type,
+                max_turns=max_turns,
+                min_turns=30,
+                sim_dating_elements=bool(sim_dating_elements),
+                tags=tag_slugs,
+                ai_model=ai_model,
+            )
+        except Exception as e:
+            try:
+                logger.warning(f"[characters.quick-create-30s] background schedule failed (non-fatal): {e}")
+            except Exception:
+                pass
+
         return await convert_character_to_detail_response(character, db)
     finally:
         # 락 해제(선택)
@@ -860,29 +1183,30 @@ async def quick_generate_prompt(
     - DB 저장은 하지 않는다(SSOT: 실제 저장은 /characters/advanced)
     """
     try:
-        # ✅ 운영 고정(요구사항): 위저드 quick-*는 Gemini 3 Pro로 고정
-        forced_ai_model = "gemini"
+        # ✅ 운영 고정(요구사항): 위저드 quick-*는 기본적으로 Gemini 3 Pro로 고정
+        # - 예외: 스탯/디테일은 JSON/누락 안정성을 위해 Claude Haiku 4.5 경로를 사용한다.
+        forced_prompt_model = "gemini"
         mode = getattr(payload, "mode", None) or "simulator"
         max_turns = getattr(payload, "max_turns", None) or 200
         allow_infinite_mode = bool(getattr(payload, "allow_infinite_mode", False))
+        req_tags = getattr(payload, "tags", []) or []
         if mode == "simulator":
             prompt_text = await generate_quick_simulator_prompt(
                 name=payload.name,
                 description=payload.description,
                 max_turns=max_turns,
                 allow_infinite_mode=allow_infinite_mode,
-                tags=getattr(payload, "tags", []) or [],
-                ai_model=forced_ai_model,
+                tags=req_tags,
+                ai_model=forced_prompt_model,
                 sim_variant=getattr(payload, "sim_variant", None),
                 sim_dating_elements=getattr(payload, "sim_dating_elements", None),
             )
-            stats = await generate_quick_stat_draft(
+            stats = await _generate_stats_with_claude_retry(
                 name=payload.name,
                 description=payload.description,
                 world_setting=prompt_text,
                 mode=mode,
-                tags=getattr(payload, "tags", []) or [],
-                ai_model=forced_ai_model,
+                tags=req_tags,
             )
         elif mode == "roleplay":
             prompt_text = await generate_quick_roleplay_prompt(
@@ -890,17 +1214,15 @@ async def quick_generate_prompt(
                 description=payload.description,
                 max_turns=max_turns,
                 allow_infinite_mode=allow_infinite_mode,
-                tags=getattr(payload, "tags", []) or [],
-                ai_model=forced_ai_model,
+                tags=req_tags,
+                ai_model=forced_prompt_model,
             )
-            # ✅ RP: 상태창은 선택 항목이므로 기본은 비움(운영 안전)
-            stats = await generate_quick_stat_draft(
+            stats = await _generate_stats_with_claude_retry(
                 name=payload.name,
                 description=payload.description,
                 world_setting=prompt_text,
                 mode=mode,
-                tags=getattr(payload, "tags", []) or [],
-                ai_model=forced_ai_model,
+                tags=req_tags,
             )
         else:
             raise HTTPException(status_code=400, detail="mode_not_supported")
@@ -935,18 +1257,16 @@ async def quick_generate_stat(
     - DB 저장은 하지 않는다(SSOT: 실제 저장은 /characters/advanced).
     """
     try:
-        forced_ai_model = "gemini"
         mode = getattr(payload, "mode", None) or "simulator"
         if mode not in ("simulator", "roleplay"):
             raise HTTPException(status_code=400, detail="mode_not_supported")
 
-        stats = await generate_quick_stat_draft(
+        stats = await _generate_stats_with_claude_retry(
             name=payload.name,
             description=payload.description,
             world_setting=payload.world_setting,
             mode=mode,
             tags=getattr(payload, "tags", []) or [],
-            ai_model=forced_ai_model,
         )
         return QuickStatGenerateResponse(stats=stats or [])
     except HTTPException:
@@ -975,7 +1295,7 @@ async def quick_generate_first_start(
     - 300~1000자(도입부+첫대사 합산)로 생성한다.
     """
     try:
-        # ✅ 운영 고정(요구사항): 위저드 quick-*는 Gemini 3 Pro로 고정
+        # ✅ 운영 고정(요구사항): 위저드 첫시작은 Gemini 3 Pro로 고정
         forced_ai_model = "gemini"
         intro, first_line = await generate_quick_first_start(
             name=payload.name,
@@ -1014,8 +1334,9 @@ async def quick_generate_detail(
     - 관심사/좋아하는 것/싫어하는 것: 키워드 3개씩.
     """
     try:
-        # ✅ 운영 고정(요구사항): 위저드 quick-*는 Gemini 3 Pro로 고정
-        forced_ai_model = "gemini"
+        # ✅ 요구사항(안정성): 위저드/30초 디테일은 Claude Haiku 4.5로 고정
+        # - Gemini 계열은 프롬프트/형식 규칙을 그대로 복창하거나 JSON 파싱이 흔들리는 사례가 있었다.
+        forced_ai_model = "claude"
         out = await generate_quick_detail(
             name=payload.name,
             description=payload.description,
@@ -1707,6 +2028,7 @@ async def get_characters(
                     character_type=getattr(char, "character_type", None),
                     max_turns=_extract_max_turns_from_start_sets(getattr(char, "start_sets", None)),
                     image_descriptions=imgs if isinstance(imgs, list) else None,
+                    tags=_extract_tag_labels_for_list(char),
                     origin_story_id=getattr(char, 'origin_story_id', None),
                     is_origchat=bool(getattr(char, 'origin_story_id', None)),
                     chat_count=int(getattr(char, 'chat_count', 0) or 0),
@@ -1740,6 +2062,7 @@ async def get_characters(
                     img for img in (getattr(char, 'image_descriptions', []) or [])
                     if not (isinstance(img, dict) and str(img.get('url','')).startswith('cover:'))
                 ],
+                tags=_extract_tag_labels_for_list(char),
                 origin_story_id=getattr(char, 'origin_story_id', None),
                 is_origchat=bool(getattr(char, 'origin_story_id', None)),
                 chat_count=char.chat_count,
@@ -1804,6 +2127,7 @@ async def get_my_characters(
                     character_type=getattr(char, "character_type", None),
                     max_turns=_extract_max_turns_from_start_sets(getattr(char, "start_sets", None)),
                     image_descriptions=imgs if isinstance(imgs, list) else None,
+                    tags=_extract_tag_labels_for_list(char),
                     origin_story_id=getattr(char, 'origin_story_id', None),
                     is_origchat=bool(getattr(char, 'origin_story_id', None)),
                     chat_count=int(getattr(char, 'chat_count', 0) or 0),
@@ -2308,4 +2632,3 @@ async def delete_comment(
         )
     
     await delete_character_comment(db, comment_id)
-

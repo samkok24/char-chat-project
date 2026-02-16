@@ -3,7 +3,7 @@
 - 목적: 실시간 관측 필요 전 임시 지표 확인
 """
 from fastapi import APIRouter, Query, Depends, HTTPException, Request
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, List
 import os
 import hashlib
 import time
@@ -11,17 +11,36 @@ import json
 import logging
 import re
 from datetime import datetime, timedelta, timezone
+from pydantic import BaseModel, Field
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, or_
 
-from app.core.database import get_db
+import uuid as _uuid_mod
+
+from app.core.database import get_db, AsyncSessionLocal
 from app.core.security import get_current_user, get_current_user_optional
 from app.models.user import User
 from app.models.chat import ChatRoom, ChatMessage
+from app.models.user_activity_log import UserActivityLog
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+class PageTrafficEventIn(BaseModel):
+    """
+    프론트 SPA 페이지 뷰/이탈(탭 닫힘/새로고침/외부 이동) 이벤트 수집.
+
+    - 카드/상세/채팅 등 ID가 포함된 경로는 서버에서 정규화해 cardinality 폭주를 방지한다.
+    """
+    event: str = Field(..., description="page_view|page_leave|page_exit")
+    path: str = Field(..., description="window.location.pathname (권장: query 제외)")
+    session_id: Optional[str] = Field(None, description="프론트 세션 식별자(선택)")
+    client_id: Optional[str] = Field(None, description="브라우저 고정 식별자(선택)")
+    duration_ms: Optional[int] = Field(None, description="현재 path 체류시간(선택)")
+    user_id: Optional[str] = Field(None, description="로그인 유저 ID(선택)")
+    meta: Optional[str] = Field(None, description="AB테스트 등 추가 메타 (JSON string, 최대 500자)")
 
 # ===== 실시간 온라인(접속) 지표: Redis 하트비트 기반(베스트-에포트) =====
 # 운영 안전:
@@ -139,6 +158,105 @@ async def _read_float(key: str) -> float:
         return float(s)
     except Exception:
         return 0.0
+
+
+_UUID_SEG_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+_DIGITS_SEG_RE = re.compile(r"^\d+$")
+
+
+def _normalize_client_path(raw_path: str) -> str:
+    """
+    프론트에서 들어오는 경로를 "집계 가능한" 형태로 정규화한다.
+
+    - query/hash 제거
+    - UUID/숫자 세그먼트는 :id/:n 으로 치환해 cardinality 폭주 방지
+    """
+    s = (raw_path or "").strip()
+    if not s:
+        return "/"
+
+    # full URL이 들어오는 방어(예: https://host/path?x=1)
+    try:
+        if "://" in s:
+            from urllib.parse import urlparse
+            p = urlparse(s)
+            s = p.path or "/"
+    except Exception:
+        pass
+
+    # query/hash 제거
+    try:
+        s = s.split("?", 1)[0].split("#", 1)[0]
+    except Exception:
+        pass
+
+    if not s.startswith("/"):
+        s = "/" + s
+    try:
+        s = re.sub(r"/{2,}", "/", s)
+    except Exception:
+        pass
+
+    parts: List[str] = []
+    for seg in (s.split("/") or []):
+        seg = (seg or "").strip()
+        if not seg:
+            continue
+        if _UUID_SEG_RE.fullmatch(seg):
+            parts.append(":id")
+            continue
+        if _DIGITS_SEG_RE.fullmatch(seg):
+            parts.append(":n")
+            continue
+        parts.append(seg)
+
+    return "/" + "/".join(parts) if parts else "/"
+
+
+def _classify_page_group(path_norm: str) -> str:
+    """경로 기반 큰 분류(운영/분석 편의)."""
+    p = (path_norm or "").strip() or "/"
+    if p.startswith("/cms"):
+        return "admin"
+    if p.startswith("/ws/chat/") or p.startswith("/chat/"):
+        return "chat"
+    if p.startswith("/characters/create") or p.startswith("/characters/:id/edit"):
+        return "character_wizard"
+    if p.startswith("/agent"):
+        return "story_agent"
+    if p.startswith("/storydive"):
+        return "storydive"
+    if p.startswith("/stories/") and ("/chapters/" in p):
+        return "webnovel_reader"
+    if p.startswith("/stories/"):
+        return "webnovel_detail"
+    if p.startswith("/characters/"):
+        return "character_detail"
+    if p == "/" or p.startswith("/dashboard"):
+        return "home"
+    if p.startswith("/history"):
+        return "history"
+    if p.startswith("/login") or p.startswith("/verify") or p.startswith("/forgot-password") or p.startswith("/reset-password"):
+        return "auth"
+    return "other"
+
+
+def _page_group_label(group: str) -> str:
+    g = (group or "").strip().lower()
+    return {
+        "chat": "채팅",
+        "character_wizard": "캐릭터 생성/수정",
+        "story_agent": "스토리 에이전트",
+        "storydive": "스토리다이브",
+        "webnovel_reader": "웹소설 뷰어",
+        "webnovel_detail": "웹소설 상세",
+        "character_detail": "캐릭터 상세",
+        "history": "대화내역",
+        "home": "홈",
+        "auth": "인증",
+        "admin": "관리자",
+        "other": "기타",
+    }.get(g, g or "기타")
 
 
 @router.post("/online/heartbeat")
@@ -502,5 +620,538 @@ async def traffic_summary(
     }
 
 
+@router.post("/traffic/page-event")
+async def track_page_event(
+    payload: PageTrafficEventIn,
+    request: Request,
+    current_user: Optional[User] = Depends(get_current_user_optional),  # type: ignore
+):
+    """
+    SPA 페이지 트래픽(page_view/page_exit) 이벤트 수집.
+
+    - 이탈(page_exit)은 `pagehide/beforeunload` 기반이므로 "사이트 이탈"에 가깝다.
+    - 관리자(운영) 트래픽은 집계에서 제외한다.
+    """
+    try:
+        if current_user is not None and getattr(current_user, "is_admin", False):
+            return {"ok": True, "ignored": True, "reason": "admin"}
+    except Exception:
+        pass
+
+    ev = (payload.event or "").strip().lower()
+    if ev not in ("page_view", "page_leave", "page_exit"):
+        return {"ok": True, "ignored": True, "reason": "unknown_event"}
+
+    path_norm = _normalize_client_path(payload.path or "")
+    now_kst = datetime.now(_KST)
+    d = now_kst.strftime("%Y%m%d")
+
+    if ev == "page_view":
+        kind = "view"
+    elif ev == "page_leave":
+        kind = "leave"
+    else:
+        kind = "exit"
+
+    counter_key = f"metrics:page:{kind}:{d}:{path_norm}"
+    paths_set_key = f"metrics:page:paths:{d}"
+    dur_sum_key = f"metrics:page:{kind}_dur_sum:{d}:{path_norm}" if kind in ("leave", "exit") else ""
+
+    ttl_sec = 60 * 60 * 24 * 120  # 120d
+
+    try:
+        from app.core.database import redis_client
+
+        await redis_client.sadd(paths_set_key, path_norm)
+        await redis_client.incr(counter_key)
+
+        if kind in ("leave", "exit"):
+            try:
+                dur = int(payload.duration_ms or 0)
+            except Exception:
+                dur = 0
+            if dur > 0:
+                await redis_client.incrby(dur_sum_key, dur)
+
+        # best-effort TTL(과도한 메모리 증가 방지)
+        try:
+            await redis_client.expire(paths_set_key, ttl_sec)
+            await redis_client.expire(counter_key, ttl_sec)
+            if kind in ("leave", "exit") and dur_sum_key:
+                await redis_client.expire(dur_sum_key, ttl_sec)
+        except Exception:
+            pass
+
+    except Exception as e:
+        try:
+            logger.warning(f"[metrics.page] track failed (ignored): {e}")
+        except Exception:
+            pass
+
+    # --- HLL UV (경로별 + 글로벌) ---
+    visitor_id = ""
+    if payload.user_id:
+        visitor_id = f"u:{payload.user_id}"
+    elif payload.client_id:
+        visitor_id = f"c:{payload.client_id}"
+
+    if visitor_id and ev == "page_view":
+        try:
+            from app.core.database import redis_client as _rc
+            hll_key = f"metrics:page:uv:{d}:{path_norm}"
+            hll_global_key = f"metrics:page:uv_global:{d}"
+            await _rc.pfadd(hll_key, visitor_id)
+            await _rc.pfadd(hll_global_key, visitor_id)
+            try:
+                await _rc.expire(hll_key, ttl_sec)
+                await _rc.expire(hll_global_key, ttl_sec)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    # --- AB 테스트 Redis 카운터 (best-effort) ---
+    meta_str = (payload.meta or "")[:500].strip() or None
+    if meta_str:
+        try:
+            meta_obj = json.loads(meta_str) if meta_str else {}
+            if isinstance(meta_obj, dict):
+                from app.core.database import redis_client as _rc2
+                for mk, mv in meta_obj.items():
+                    if str(mk).startswith("ab_") and mv:
+                        ab_key = f"metrics:ab:{mk}:{mv}:{d}:{kind}"
+                        await _rc2.incr(ab_key)
+                        try:
+                            await _rc2.expire(ab_key, ttl_sec)
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
+    # --- DB 저장: 로그인 유저만 (best-effort) ---
+    if payload.user_id:
+        try:
+            uid = _uuid_mod.UUID(payload.user_id)
+            async with AsyncSessionLocal() as _db:
+                _db.add(UserActivityLog(
+                    user_id=uid,
+                    path=path_norm,
+                    path_raw=(payload.path or "")[:1000],
+                    page_group=_classify_page_group(path_norm),
+                    event=ev,
+                    duration_ms=int(payload.duration_ms or 0) or None,
+                    session_id=(payload.session_id or "")[:100] or None,
+                    client_id=(payload.client_id or "")[:100] or None,
+                    meta=meta_str,
+                ))
+                await _db.commit()
+        except Exception:
+            pass
+
+    return {"ok": True, "day": d, "path": path_norm, "event": ev}
 
 
+@router.get("/traffic/page-exits")
+async def page_exit_summary(
+    day: Optional[str] = Query(None, description="YYYYMMDD (KST), 기본: 오늘"),
+    top_n: int = Query(50, ge=1, le=500, description="상위 N개 경로"),
+    include_admin: bool = Query(False, description="관리자(/cms) 트래픽 포함 여부"),
+    current_user: User = Depends(get_current_user),
+):
+    """일별 '이탈 페이지' 집계(관리자 전용)."""
+    _ensure_admin(current_user)
+
+    now_kst = datetime.now(_KST)
+    d = _parse_day_yyyymmdd(day or "") or now_kst.strftime("%Y%m%d")
+
+    try:
+        from app.core.database import redis_client
+
+        paths_set_key = f"metrics:page:paths:{d}"
+        raw_paths = await redis_client.smembers(paths_set_key) or set()
+        paths: List[str] = []
+        for it in raw_paths:
+            try:
+                s = it.decode("utf-8") if isinstance(it, (bytes, bytearray)) else str(it)
+                s = s.strip()
+                if s:
+                    paths.append(s)
+            except Exception:
+                continue
+
+        # 방어: 키 폭주 시 상위 집계만 보고 싶어도 전체를 다 당기면 느리다.
+        # - 다만 정규화된 경로라 개수가 크지 않다고 가정(운영 초기).
+        view_keys = [f"metrics:page:view:{d}:{p}" for p in paths]
+        leave_keys = [f"metrics:page:leave:{d}:{p}" for p in paths]
+        exit_keys = [f"metrics:page:exit:{d}:{p}" for p in paths]
+        leave_dur_keys = [f"metrics:page:leave_dur_sum:{d}:{p}" for p in paths]
+        exit_dur_keys = [f"metrics:page:exit_dur_sum:{d}:{p}" for p in paths]
+
+        views_raw = await redis_client.mget(view_keys) if view_keys else []
+        leaves_raw = await redis_client.mget(leave_keys) if leave_keys else []
+        exits_raw = await redis_client.mget(exit_keys) if exit_keys else []
+        leave_durs_raw = await redis_client.mget(leave_dur_keys) if leave_dur_keys else []
+        exit_durs_raw = await redis_client.mget(exit_dur_keys) if exit_dur_keys else []
+
+        # --- UV: 경로별 HLL PFCOUNT ---
+        uv_keys = [f"metrics:page:uv:{d}:{p}" for p in paths]
+        uv_raw = []
+        for uk in uv_keys:
+            try:
+                uv_raw.append(int(await redis_client.pfcount(uk) or 0))
+            except Exception:
+                uv_raw.append(0)
+
+        total_unique_visitors = 0
+        try:
+            total_unique_visitors = int(await redis_client.pfcount(f"metrics:page:uv_global:{d}") or 0)
+        except Exception:
+            pass
+
+        rows_all = []
+        total_exits = 0
+        total_leaves = 0
+        total_views = 0
+        total_departures = 0
+
+        for idx, p in enumerate(paths):
+            def _to_int(v) -> int:
+                if v is None:
+                    return 0
+                try:
+                    s = v.decode("utf-8") if isinstance(v, (bytes, bytearray)) else str(v)
+                    return int(float(s))
+                except Exception:
+                    return 0
+
+            vcnt = _to_int(views_raw[idx] if idx < len(views_raw) else None)
+            lcnt = _to_int(leaves_raw[idx] if idx < len(leaves_raw) else None)
+            ecnt = _to_int(exits_raw[idx] if idx < len(exits_raw) else None)
+            lsum = _to_int(leave_durs_raw[idx] if idx < len(leave_durs_raw) else None)
+            esum = _to_int(exit_durs_raw[idx] if idx < len(exit_durs_raw) else None)
+
+            if vcnt <= 0 and lcnt <= 0 and ecnt <= 0:
+                continue
+
+            group = _classify_page_group(p)
+            if (not include_admin) and group == "admin":
+                continue
+
+            total_exits += max(0, int(ecnt))
+            total_leaves += max(0, int(lcnt))
+            total_views += max(0, int(vcnt))
+
+            departures = max(0, int(ecnt)) + max(0, int(lcnt))
+            total_departures += max(0, int(departures))
+
+            avg_exit_ms = None
+            try:
+                if ecnt > 0 and esum > 0:
+                    avg_exit_ms = round(float(esum) / float(ecnt), 2)
+            except Exception:
+                avg_exit_ms = None
+
+            avg_leave_ms = None
+            try:
+                if lcnt > 0 and lsum > 0:
+                    avg_leave_ms = round(float(lsum) / float(lcnt), 2)
+            except Exception:
+                avg_leave_ms = None
+
+            exit_rate = None
+            try:
+                if vcnt > 0 and ecnt >= 0:
+                    exit_rate = round(float(ecnt) / float(vcnt), 6)
+            except Exception:
+                exit_rate = None
+
+            leave_rate = None
+            try:
+                if vcnt > 0 and lcnt >= 0:
+                    leave_rate = round(float(lcnt) / float(vcnt), 6)
+            except Exception:
+                leave_rate = None
+
+            departure_rate = None
+            try:
+                if vcnt > 0 and departures >= 0:
+                    departure_rate = round(float(departures) / float(vcnt), 6)
+            except Exception:
+                departure_rate = None
+
+            uv = int(uv_raw[idx]) if idx < len(uv_raw) else 0
+
+            rows_all.append(
+                {
+                    "path": p,
+                    "group": group,
+                    "group_label": _page_group_label(group),
+                    "views": int(vcnt),
+                    "leaves": int(lcnt),
+                    "exits": int(ecnt),
+                    "exit_rate": exit_rate,
+                    "leave_rate": leave_rate,
+                    "departures": int(departures),
+                    "departure_rate": departure_rate,
+                    "avg_exit_duration_ms": avg_exit_ms,
+                    "avg_leave_duration_ms": avg_leave_ms,
+                    "unique_visitors": uv,
+                }
+            )
+
+        rows_all.sort(key=lambda r: (int(r.get("departures") or 0), int(r.get("views") or 0)), reverse=True)
+
+        # exit share 계산(상위 N에만 넣되, 분모는 전체 exits)
+        out_rows = []
+        for r in rows_all[: int(top_n)]:
+            exit_share = None
+            departure_share = None
+            try:
+                if total_exits > 0:
+                    exit_share = round(float(r.get("exits") or 0) / float(total_exits), 6)
+            except Exception:
+                exit_share = None
+            try:
+                if total_departures > 0:
+                    departure_share = round(float(r.get("departures") or 0) / float(total_departures), 6)
+            except Exception:
+                departure_share = None
+            rr = dict(r)
+            rr["exit_share"] = exit_share
+            rr["departure_share"] = departure_share
+            out_rows.append(rr)
+
+        # group summary
+        gmap: Dict[str, Dict[str, Any]] = {}
+        for r in rows_all:
+            g = str(r.get("group") or "other")
+            cur = gmap.get(g) or {"group": g, "group_label": _page_group_label(g), "views": 0, "leaves": 0, "exits": 0, "departures": 0, "unique_visitors": 0}
+            cur["views"] = int(cur.get("views") or 0) + int(r.get("views") or 0)
+            cur["leaves"] = int(cur.get("leaves") or 0) + int(r.get("leaves") or 0)
+            cur["exits"] = int(cur.get("exits") or 0) + int(r.get("exits") or 0)
+            cur["departures"] = int(cur.get("departures") or 0) + int(r.get("departures") or 0)
+            cur["unique_visitors"] = int(cur.get("unique_visitors") or 0) + int(r.get("unique_visitors") or 0)
+            gmap[g] = cur
+
+        groups = list(gmap.values())
+        for g in groups:
+            try:
+                vcnt = int(g.get("views") or 0)
+                lcnt = int(g.get("leaves") or 0)
+                ecnt = int(g.get("exits") or 0)
+                dcnt = int(g.get("departures") or 0)
+                g["exit_rate"] = round(float(ecnt) / float(vcnt), 6) if vcnt > 0 else None
+                g["leave_rate"] = round(float(lcnt) / float(vcnt), 6) if vcnt > 0 else None
+                g["departure_rate"] = round(float(dcnt) / float(vcnt), 6) if vcnt > 0 else None
+            except Exception:
+                g["exit_rate"] = None
+                g["leave_rate"] = None
+                g["departure_rate"] = None
+            try:
+                g["exit_share"] = round(float(g.get("exits") or 0) / float(total_exits), 6) if total_exits > 0 else None
+            except Exception:
+                g["exit_share"] = None
+            try:
+                g["departure_share"] = round(float(g.get("departures") or 0) / float(total_departures), 6) if total_departures > 0 else None
+            except Exception:
+                g["departure_share"] = None
+
+        groups.sort(key=lambda x: int(x.get("departures") or 0), reverse=True)
+
+        return {
+            "day": d,
+            "timezone": "Asia/Seoul",
+            "total_views": int(total_views),
+            "total_leaves": int(total_leaves),
+            "total_exits": int(total_exits),
+            "total_departures": int(total_departures),
+            "total_unique_visitors": int(total_unique_visitors),
+            "groups": groups,
+            "rows": out_rows,
+        }
+
+    except Exception as e:
+        try:
+            logger.warning(f"[metrics.page] read failed: {e}")
+        except Exception:
+            pass
+        return {
+            "day": d,
+            "timezone": "Asia/Seoul",
+            "total_views": 0,
+            "total_leaves": 0,
+            "total_exits": 0,
+            "total_departures": 0,
+            "total_unique_visitors": 0,
+            "groups": [],
+            "rows": [],
+            "error": str(e),
+        }
+
+
+@router.get("/user-activity/search")
+async def search_user_activity(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    query: Optional[str] = Query(None, description="이메일/닉네임 검색"),
+    user_id: Optional[str] = Query(None, description="유저 ID(UUID)"),
+    page_group: Optional[str] = Query(None, description="페이지 그룹 필터"),
+    start_date: Optional[str] = Query(None, description="시작일 YYYYMMDD(KST)"),
+    end_date: Optional[str] = Query(None, description="종료일 YYYYMMDD(KST)"),
+    page: int = Query(1, ge=1, description="페이지 번호"),
+    page_size: int = Query(50, ge=1, le=200, description="페이지 크기"),
+):
+    """유저 활동 로그 검색(관리자 전용)."""
+    _ensure_admin(current_user)
+
+    stmt = (
+        select(
+            UserActivityLog.id,
+            UserActivityLog.user_id,
+            User.email,
+            User.username,
+            UserActivityLog.path,
+            UserActivityLog.path_raw,
+            UserActivityLog.page_group,
+            UserActivityLog.event,
+            UserActivityLog.duration_ms,
+            UserActivityLog.created_at,
+        )
+        .join(User, User.id == UserActivityLog.user_id, isouter=True)
+    )
+
+    count_stmt = (
+        select(func.count(UserActivityLog.id))
+        .join(User, User.id == UserActivityLog.user_id, isouter=True)
+    )
+
+    # 필터
+    if query:
+        q = f"%{query.strip()}%"
+        flt = or_(User.email.ilike(q), User.username.ilike(q))
+        stmt = stmt.where(flt)
+        count_stmt = count_stmt.where(flt)
+
+    if user_id:
+        try:
+            uid = _uuid_mod.UUID(user_id)
+            stmt = stmt.where(UserActivityLog.user_id == uid)
+            count_stmt = count_stmt.where(UserActivityLog.user_id == uid)
+        except Exception:
+            pass
+
+    if page_group:
+        stmt = stmt.where(UserActivityLog.page_group == page_group.strip())
+        count_stmt = count_stmt.where(UserActivityLog.page_group == page_group.strip())
+
+    if start_date:
+        sd = _parse_day_yyyymmdd(start_date)
+        if sd:
+            try:
+                y, m, dd = int(sd[:4]), int(sd[4:6]), int(sd[6:8])
+                start_dt = datetime(y, m, dd, 0, 0, 0, tzinfo=_KST).astimezone(timezone.utc)
+                stmt = stmt.where(UserActivityLog.created_at >= start_dt)
+                count_stmt = count_stmt.where(UserActivityLog.created_at >= start_dt)
+            except Exception:
+                pass
+
+    if end_date:
+        ed = _parse_day_yyyymmdd(end_date)
+        if ed:
+            try:
+                y, m, dd = int(ed[:4]), int(ed[4:6]), int(ed[6:8])
+                end_dt = datetime(y, m, dd + 1, 0, 0, 0, tzinfo=_KST).astimezone(timezone.utc)
+                stmt = stmt.where(UserActivityLog.created_at < end_dt)
+                count_stmt = count_stmt.where(UserActivityLog.created_at < end_dt)
+            except Exception:
+                pass
+
+    total = int((await db.execute(count_stmt)).scalar() or 0)
+
+    stmt = stmt.order_by(UserActivityLog.created_at.desc())
+    stmt = stmt.offset((page - 1) * page_size).limit(page_size)
+
+    rows = (await db.execute(stmt)).all()
+
+    items = []
+    for r in rows:
+        items.append({
+            "id": str(r.id) if r.id else None,
+            "user_id": str(r.user_id) if r.user_id else None,
+            "email": r.email,
+            "username": r.username,
+            "path": r.path,
+            "path_raw": r.path_raw,
+            "page_group": r.page_group,
+            "event": r.event,
+            "duration_ms": r.duration_ms,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        })
+
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
+@router.get("/ab-summary")
+async def ab_summary(
+    test: str = Query(..., description="AB 테스트 키 (예: ab_home)"),
+    day: Optional[str] = Query(None, description="YYYYMMDD (KST), 기본: 오늘"),
+    current_user: User = Depends(get_current_user),
+):
+    """AB 테스트 변형별 PV/이탈 요약(관리자 전용)."""
+    _ensure_admin(current_user)
+
+    now_kst = datetime.now(_KST)
+    d = _parse_day_yyyymmdd(day or "") or now_kst.strftime("%Y%m%d")
+    test_key = (test or "").strip()
+    if not test_key.startswith("ab_"):
+        test_key = f"ab_{test_key}"
+
+    try:
+        from app.core.database import redis_client
+
+        # ab_home:A:20260216:view, ab_home:A:20260216:exit, ...
+        # 변형 목록을 scan으로 찾기
+        prefix = f"metrics:ab:{test_key}:"
+        variants: Dict[str, Dict[str, int]] = {}
+        cursor = 0
+        while True:
+            cursor, keys = await redis_client.scan(cursor, match=f"{prefix}*:{d}:*", count=200)
+            for k in keys:
+                key_str = k.decode("utf-8") if isinstance(k, (bytes, bytearray)) else str(k)
+                # metrics:ab:ab_home:A:20260216:view
+                parts = key_str.split(":")
+                # parts: [metrics, ab, ab_home, A, 20260216, view]
+                if len(parts) < 6:
+                    continue
+                variant = parts[3]
+                kind = parts[5]
+                val = await redis_client.get(key_str)
+                cnt = int(val or 0) if val else 0
+                if variant not in variants:
+                    variants[variant] = {"view": 0, "leave": 0, "exit": 0}
+                if kind in variants[variant]:
+                    variants[variant][kind] = cnt
+            if cursor == 0:
+                break
+
+        rows = []
+        for v, counts in sorted(variants.items()):
+            pv = counts.get("view", 0)
+            exits = counts.get("exit", 0)
+            leaves = counts.get("leave", 0)
+            departures = exits + leaves
+            rows.append({
+                "variant": v,
+                "views": pv,
+                "exits": exits,
+                "leaves": leaves,
+                "departures": departures,
+                "exit_rate": round(exits / pv, 6) if pv > 0 else None,
+                "departure_rate": round(departures / pv, 6) if pv > 0 else None,
+            })
+
+        return {"test": test_key, "day": d, "timezone": "Asia/Seoul", "variants": rows}
+
+    except Exception as e:
+        logger.warning(f"[metrics.ab] summary failed: {e}")
+        return {"test": test_key, "day": d, "timezone": "Asia/Seoul", "variants": [], "error": str(e)}

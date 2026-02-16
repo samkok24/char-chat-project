@@ -1,0 +1,196 @@
+{
+  "characters_list": {
+    "result": "SUCCESS",
+    "data": {
+      "characters": [
+        {
+          "_id": "68f41a4f51c07b2ac2837663",
+          "name": "아카데미의 실패작",
+          "target": "male",
+          "isAdult": false,
+          "genreId": "6825b1fb571e3f0f05c87768",
+          "profileImage": {
+            "origin": "https://d394jeh9729epj.cloudfront.net/8Jh9KM6Nvji-APKOVUI1S0hS/2313d6ce-c531-4402-9c8e-68f82205cdfc_origin.webp",
+            "w200": "https://d394jeh9729epj.cloudfront.net/8Jh9KM6Nvji-APKOVUI1S0hS/2313d6ce-c531-4402-9c8e-68f82205cdfc_w200.webp",
+            "w600": "https://d394jeh9729epj.cloudfront.net/8Jh9KM6Nvji-APKOVUI1S0hS/2313d6ce-c531-4402-9c8e-68f82205cdfc_w600.webp"
+          },
+          "imageCount": 8,
+          "totalMessageCount": 6286018,
+          "simpleDescription": "무능력자 신입생인 당신은 아카데미에서 살아남아야 한다.",
+          "visibility": "public",
+          "badges": [
+            {
+              "slug": "2025EndYearAward",
+              "name": "2025 연말결산",
+              "content": {
+                "type": "image",
+                "url": "https://d394jeh9729epj.cloudfront.net/asset/badge/end-year-award-2025-badge.webp"
+              },
+              "type": "thumbnail_top_right"
+            }
+          ],
+          "isMyContent": false,
+          "creator": {
+            "wrtnUid": "8Jh9KM6Nvji-APKOVUI1S0hS",
+            "nickname": "killin",
+            "userId": "6820992ce969cdb39ae40d9f",
+            "isCertifiedCreator": true,
+            "profileId": "68209b85b7ccc78d22f9b078"
+          },
+          "genre": {
+            "_id": "6825b1fb571e3f0f05c87768",
+            "name": "SF/판타지",
+            "type": "sf-fantasy"
+          },
+          "character": {
+            "_id": "68f41a4f51c07b2ac2837663",
+            "name": "아카데미의 실패작",
+            "target": "male",
+            "isAdult": false,
+            "genreId": "6825b1fb571e3f0f05c87768",
+            "profileImage": {
+              "origin": "https://d394jeh9729epj.cloudfront.net/8Jh9KM6Nvji-APKOVUI1S0hS/2313d6ce-c531-4402-9c8e-68f82205cdfc_origin.webp",
+              "w200": "https://d394jeh9729epj.cloudfront.net/8Jh9KM6Nvji-APKOVUI1S0hS/2313d6ce-c531-4402-9c8e-68f82205cdfc_w200.webp",
+              "w600": "https://d394jeh9729epj.cloudfront.net/8Jh9KM6Nvji-APKOVUI1S0hS/2313d6ce-c531-4402-9c8e-68f82205cdfc_w600.webp"
+            },
+            "imageCount": 8,
+            "totalMessageCount": 6286018,
+            "simpleDescription": "무능력자 신입생인 당신은 아카데미에서 살아남아야 한다.",
+            "visibility": "public",
+            "badges": [
+              {
+                "slug": "2025EndYearAward",
+                "name": "2025 연말결산",
+                "content": {
+                  "type": "image",
+                  "url": "https://d394jeh9729epj.cloudfront.net/asset/badge/end-year-award-2025-badge.webp"
+                },
+                "type": "thumbnail_top_right"
+              }
+            ],
+            "isMyContent": false
+          }
+        }
+      ],
+      "nextCursor": "eyJ0b3RhbE1lc3NhZ2VDb3VudCI6NjI4NjAxOCwiX2lkIjoiNjhmNDFhNGY1MWMwN2IyYWMyODM3NjYzIn0="
+    }
+  },
+  "character_detail": null,
+  "stories_list": {
+    "result": "SUCCESS",
+    "data": {
+      "stories": [
+        {
+          "_id": "671e455d2adc351cdc3c8f4e",
+          "userId": "6595aa3da5acaccf938fb6d0",
+          "wrtnUid": "8w3FtfXR1xm-KKKOQlNHMkZS",
+          "totalMessageCount": 3997388,
+          "initialMessages": [
+            "어릴 적부터 꿈에 그리던 명문 아카데미에 들어간 주인공은, 각 도시에서 온 유망한 인재들 속에서 간신히 100명 중 100번째로 합격하게 됩니다. 실력도 재능도 뛰어난 학생들 틈에 묻히지 않으려는 결심을 다지고, 아카데미로 향하는 길에 오직 앞날의 기대와 설렘이 가득합니다.\n\n그러나 그 길에서 주인공은 이상한 상황과 맞닥뜨립니다. 한 골목에서 납치당하고 있는 어린 소녀를 발견하게 된 것입니다. 혼자서 두려움도 있었지만, 모른 척할 수 없었던 주인공은 용기를 내어 소녀를 구해냅니다.\n\n그 순간, 소녀는 가만히 바라보다가 흥미롭다는 듯이 미소 지으며 한마디 합니다.\n\"재미있는 아이네.\"\n{{img::이레아}}\n그러더니 소녀는 어깨에 살짝 손을 올리고,  놀라기 전, 순식간에 환한 빛과 함께 사라져버립니다. 혼란스러워하는 주인공의 귀에 낯선 목소리가 들려옵니다.\n\n>\"축하합니다. 히든 직업의 주인이 되셨습니다. \n> 원하는 직업을 선택하세요.\""
+          ],
+          "defaultCrackerModel": "superchatPlus",
+          "chatModelId": "69485e1b9d2a7cdc6ebf95c1",
+          "creator": {
+            "nickname": "호요이이",
+            "wrtnUid": "8w3FtfXR1xm-KKKOQlNHMkZS",
+            "isCertifiedCreator": true,
+            "profileId": "671485cdadb30b11fe04f562"
+          },
+          "name": "아카데미 히든직업이되다",
+          "description": "🎊\"축하합니다. 히든 직업의 주인이 되셨습니다. 원하는 직업을 선택하세요.\"🎊\n\n✨[ 이미지30장 시뮬레이션 ]✨\n✔️슈퍼모드 필수 ✔️하렘 ✔️자유도1000% ✔️키워드북 20개 ✔️캐릭터12명\n\n",
+          "detailDescription": "🎊\"축하합니다. 히든 직업의 주인이 되셨습니다. 원하는 직업을 선택하세요.\"🎊\n\n✨[ 이미지30장 시뮬레이션 ]✨\n✔️슈퍼모드 필수 ✔️하렘 ✔️자유도1000% ✔️키워드북 20개 ✔️캐릭터12명\n\n",
+          "categories": [
+            {
+              "_id": "65e809961a9eea7b2f660934",
+              "name": "게임",
+              "recommendDescription": "내 맘대로 즐기는 텍스트 게임"
+            }
+          ],
+          "defaultSuperChatModel": {
+            "name": "Sonnet 3.7",
+            "model": "SONNET3.7",
+            "icon": {
+              "dark": "https://cdn-image.wrtn.ai/Character/builder/icons/super-chat-sonnet.png",
+              "light": "https://cdn-image.wrtn.ai/Character/builder/icons/super-chat-sonnet.png"
+            }
+          },
+          "chatCount": 110027,
+          "chatUserCount": 53270,
+          "likeCount": 9375,
+          "imageCount": 30,
+          "endingCount": 0,
+          "tags": [
+            "판타지",
+            "아카데미",
+            "로맨스",
+            "히든직업",
+            "하렘"
+          ],
+          "hasImage": true,
+          "isLiked": false,
+          "isDisliked": false,
+          "countryCode": "KR",
+          "status": "active",
+          "visibility": "public",
+          "profileImage": {
+            "origin": "https://d394jeh9729epj.cloudfront.net/8w3FtfXR1xm-KKKOQlNHMkZS/6761f850-9d0e-428d-a1fb-d23ea1fba8ec_origin.webp",
+            "w200": "https://d394jeh9729epj.cloudfront.net/8w3FtfXR1xm-KKKOQlNHMkZS/6761f850-9d0e-428d-a1fb-d23ea1fba8ec_w200.webp",
+            "w600": "https://d394jeh9729epj.cloudfront.net/8w3FtfXR1xm-KKKOQlNHMkZS/6761f850-9d0e-428d-a1fb-d23ea1fba8ec_w600.webp"
+          },
+          "replySuggestions": [
+            "“아니, 이게 도대체 무슨 일이야? 방금 그 소녀는 어디로 간 거지?”",
+            "“히든 직업의 주인이라니, 내가 뭘 선택해야 하는 거야?”",
+            "“내 머릿속에서 이 목소리는 뭐지? 누구… 아니, 뭐가 날 축하한다는 거야?”"
+          ],
+          "createdAt": "2024-10-27T13:51:25.403Z",
+          "updatedAt": "2025-12-25T06:40:36.809Z",
+          "isAdult": false,
+          "isConvertedToAdult": false,
+          "commentCount": 542,
+          "promptTemplate": {
+            "name": "시뮬레이션",
+            "template": "simulation",
+            "icon": {
+              "dark": "https://cdn-image.wrtn.ai/crack/prompt-template/simulation-dark.webp",
+              "light": "https://cdn-image.wrtn.ai/crack/prompt-template/simulation-light.webp"
+            }
+          },
+          "genre": {
+            "_id": "6825b1fb571e3f0f05c87764",
+            "name": "로맨스",
+            "type": "romance"
+          },
+          "target": {
+            "name": "남성향"
+          },
+          "chatType": {
+            "name": "시뮬레이션"
+          },
+          "badges": [
+            {
+              "slug": "2024_end_year_award",
+              "name": "2024 연말결산 어워드",
+              "content": {
+                "type": "image",
+                "url": "https://d394jeh9729epj.cloudfront.net/asset/badge/Award_Badge.png"
+              },
+              "type": "thumbnail_top_right"
+            }
+          ]
+        }
+      ],
+      "nextCursor": "eyJ0b3RhbE1lc3NhZ2VDb3VudCI6Mzk5NzM4OCwiX2lkIjoiNjcxZTQ1NWQyYWRjMzUxY2RjM2M4ZjRlIn0="
+    }
+  },
+  "story_detail": null,
+  "errors": [
+    {
+      "where": "character_detail",
+      "err": "no_id_from_characters_list"
+    },
+    {
+      "where": "story_detail",
+      "err": "no_id_from_stories_list"
+    }
+  ]
+}

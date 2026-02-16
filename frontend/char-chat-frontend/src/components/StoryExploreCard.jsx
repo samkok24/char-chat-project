@@ -8,7 +8,7 @@ import { useAuth } from '../contexts/AuthContext';
 
 const StoryExploreCard = ({ story, compact = false, onClick, variant = 'explore', showLikeBadge = true }) => {
   const navigate = useNavigate();
-  const cover = story?.cover_url ? `${story.cover_url}${story.cover_url.includes('?') ? '&' : '?'}v=${Date.now()}` : '';
+  const cover = String(story?.cover_url || '').trim();
   const username = story?.creator_username;
   const { profileVersion } = useAuth();
   const creatorAvatar = story?.creator_avatar_url || '';

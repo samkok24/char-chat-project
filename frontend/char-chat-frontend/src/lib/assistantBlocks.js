@@ -11,7 +11,15 @@
  * - 오탐을 줄이기 위해 "대사"는 비교적 보수적으로 판정한다.
  */
 
-const QUOTE_START = ['"', '“', '”', '「', '『', '〈', '《'];
+// ✅ 대사는 큰따옴표("...")만 대사로 취급한다(요구사항).
+// - UI에서 말풍선은 "대사"에만 사용하고, 나머지는 지문박스로 렌더한다.
+// - 모델이 “ ” 같은 스마트 큰따옴표를 써도 되도록 하려면 여기 배열에 추가하면 된다.
+// - 작은따옴표(‘ ’)는 '지문'으로 취급해야 하므로 여기에 넣지 않는다.
+// NOTE:
+// - 《》/「」/『』 같은 '괄호형 큰따옴표'는 작품명/용어 표기에 쓰여 지문에서 자주 등장하므로,
+//   대사 판정에 포함하면 오탐이 늘어난다(요구사항).
+const QUOTE_START = ['"', '“', '”', '＂'];
+const QUOTE_END = QUOTE_START;
 
 // ✅ 대사/서술 휴리스틱 보강(따옴표/별표가 없는 출력 대응)
 // - "짧은 문장 + 대화체 어미/물음표/감탄"은 대사로 취급
@@ -34,27 +42,17 @@ function isLikelyDialogueLine(line) {
   const s = String(line || '').trim();
   if (!s) return false;
 
-  // ✅ 명시적: 따옴표로 시작하면 대사로 본다(가장 안정)
+  // ✅ 요구사항: 대사는 큰따옴표로만 구분한다.
+  // - 따옴표가 없으면(물음표/감탄사/어미로 추정하지 않음) 모두 지문으로 렌더한다.
+  // - 지문이 "말풍선화"되며 문체가 바뀌는 체감의 1차 원인이 '오탐 대사 판정'이므로,
+  //   여기서는 의도적으로 보수적으로 판정한다.
   if (QUOTE_START.some((q) => s.startsWith(q))) return true;
 
-  // ✅ 흔한 패턴: "이름: “대사”" / "이름 - “대사”"
-  // - 이름 길이가 길면(서술 문장) 오탐 확률이 커서 1~12자 내로 제한
-  // - 구분자(:/：/-/–) 뒤에 따옴표가 나오는 케이스만 대사로 본다.
-  const m = s.match(/^(.{1,12}?)(\s*[:：\-–]\s*)([“"「『])/);
+  // ✅ 흔한 패턴: "이름: \"대사\"" / "이름 - \"대사\""
+  // - 라벨이 붙더라도 실제 대사 구간이 큰따옴표로 시작하면 대사로 본다.
+  // - 단, 이름 길이를 제한해(1~12자) 서술 문장의 오탐을 줄인다.
+  const m = s.match(/^(.{1,12}?)(\s*[:：\-–]\s*)(["“”＂])/);
   if (m) return true;
-
-  // ✅ 휴리스틱(따옴표 없음): 물음표/느낌표/말줄임표가 있으면 대사 가능성이 높다
-  if (/[?!]/.test(s) || /…|\.\.\./.test(s)) return true;
-
-  // ✅ 짧은 문장 + 대화체 어미(보수적)
-  // - 너무 짧은 묘사("시선을 올린다.") 같은 오탐을 줄이기 위해 묘사 힌트가 있으면 대사 판정을 약화
-  const len = s.length;
-  if (len <= 40) {
-    const hasNarrHint = NARRATION_HINTS.some((k) => s.includes(k));
-    const ending = s.replace(/[.\s]+$/g, '').trim();
-    const hasEnding = DIALOGUE_ENDINGS.some((e) => ending.endsWith(e));
-    if (hasEnding && !hasNarrHint) return true;
-  }
 
   return false;
 }
@@ -87,7 +85,19 @@ function classifyLine(line) {
       return String(s || '').trim();
     }
   };
-  const normalized = stripSpeakerPrefix(trimmed);
+  // ✅ "이름: \"대사\""처럼 라벨이 섞여도 UI 몰입이 깨지므로,
+  // - 라벨 다음이 큰따옴표일 때만 라벨을 제거한다(과잉 제거 방지).
+  const stripNameLabelBeforeQuote = (s) => {
+    try {
+      const src = String(s || '').trim();
+      const m = src.match(/^(.{1,12}?)(\s*[:：\-–]\s*)(["“”＂])(.*)$/);
+      if (!m) return src;
+      return (`"${m[4] || ''}`).trim();
+    } catch (_) {
+      return String(s || '').trim();
+    }
+  };
+  const normalized = stripNameLabelBeforeQuote(stripSpeakerPrefix(trimmed));
   if (!normalized) return { kind: 'narration', text: '' };
 
   // ✅ 명시적 지문: "* " 프리픽스는 서술로 취급 (기존 정책과 정합)
@@ -96,7 +106,13 @@ function classifyLine(line) {
   }
 
   if (isLikelyDialogueLine(normalized)) {
-    return { kind: 'dialogue', text: normalized };
+    // ✅ UI 표시: 바깥 큰따옴표는 "구분자"이므로 제거(말풍선에 따옴표가 그대로 보이는 UX 방지)
+    // - 단, 내부 따옴표는 건드리지 않는다.
+    let t = String(normalized || '').trim();
+    if (QUOTE_START.some((q) => t.startsWith(q))) t = t.slice(1);
+    if (QUOTE_END.some((q) => t.endsWith(q))) t = t.slice(0, -1);
+    t = t.trim();
+    return { kind: 'dialogue', text: t };
   }
 
   return { kind: 'narration', text: normalized };
@@ -146,9 +162,13 @@ export function parseAssistantBlocks(text) {
       continue;
     }
 
-    // ✅ narration은 연속 문단을 합쳐 중앙 박스로 보여준다
+    // ✅ 요구사항: 지문은 "개행(줄)" 단위로 지문박스가 낱개로 렌더되게 한다.
+    // - 모델이 지문을 여러 줄로 출력하면, 각 줄이 각각의 지문박스로 보이는 것이 UX가 더 명확하다.
+    // - 따라서 narration도 dialogue처럼 "한 줄 = 한 블록"으로 처리한다.
     if (bufferKind === 'narration' && kind === 'narration') {
-      buffer.push(t);
+      flush();
+      bufferKind = 'narration';
+      buffer = [t];
       continue;
     }
 

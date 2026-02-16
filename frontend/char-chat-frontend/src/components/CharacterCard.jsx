@@ -10,12 +10,10 @@ import { Heart } from 'lucide-react';
 import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
 import { Badge } from './ui/badge';
 import { formatCount } from '../lib/format';
-import { storiesAPI, charactersAPI } from '../lib/api';
+import { storiesAPI } from '../lib/api';
 import { useAuth } from '../contexts/AuthContext';
 import { replacePromptTokens } from '../lib/prompt';
-
-// ✅ 홈 격자에서 태그 API를 매 카드마다 반복 호출하지 않도록 간단 캐시(메모리) 사용
-const _HOME_CHAR_TAGS_CACHE = new Map();
+import { buildCharacterTagChipLabels } from '../lib/characterTagChips';
 
 /**
  * 캐릭터 카드(재사용 컴포넌트)
@@ -32,6 +30,7 @@ export const CharacterCard = ({
   onButtonClick,
   footerContent,
   showOriginBadge = false,
+  showNewBadge = true,
   variant = 'explore', // 'explore' | 'home'
 }) => {
   const navigate = useNavigate();
@@ -42,7 +41,6 @@ export const CharacterCard = ({
   const borderClass = isFromOrigChat ? 'border-orange-500/60' : (isWebNovel ? 'border-blue-500/40' : 'border-purple-500/40');
   const hoverBorderClass = isFromOrigChat ? 'hover:border-orange-500' : (isWebNovel ? 'hover:border-blue-500' : 'hover:border-purple-500');
   const [originTitle, setOriginTitle] = React.useState(character?.origin_story_title || '');
-  const [homeCharTags, setHomeCharTags] = React.useState([]);
   // ✅ 초기 런칭 UX:
   // - "대화수"는 초기엔 0이 많아 '사람 없음'으로 읽히기 쉬워 카드에서 아예 숨긴다.
   // - 좋아요도 0이면 굳이 표시하지 않는다(>0일 때만 노출).
@@ -133,46 +131,6 @@ export const CharacterCard = ({
     return () => { active = false; };
   }, [showOriginBadge, character?.origin_story_id, character?.origin_story_title]);
 
-  React.useEffect(() => {
-    /**
-     * 홈 격자 태그 로딩(방어적)
-     *
-     * 의도:
-     * - 캐릭터 목록 응답에는 tags가 포함되지 않아(백엔드 스키마), 별도 엔드포인트로 필요할 때만 보강한다.
-     * - 화면에 많이 노출되는 카드에서 네트워크 폭발을 막기 위해, 메모리 캐시로 1회만 로딩한다.
-     */
-    if (variant !== 'home') return;
-    const id = String(charId || '').trim();
-    if (!id) return;
-
-    try {
-      if (_HOME_CHAR_TAGS_CACHE.has(id)) {
-        setHomeCharTags(_HOME_CHAR_TAGS_CACHE.get(id) || []);
-        return;
-      }
-    } catch (_) {}
-
-    let cancelled = false;
-    const load = async () => {
-      try {
-        const res = await charactersAPI.getCharacterTags(id);
-        const rows = Array.isArray(res?.data) ? res.data : [];
-        const tags = rows
-          .map((t) => String(t?.name || t?.slug || '').trim())
-          .filter(Boolean)
-          ;
-        try { _HOME_CHAR_TAGS_CACHE.set(id, tags); } catch (_) {}
-        if (!cancelled) setHomeCharTags(tags);
-      } catch (e) {
-        // 태그는 부가 정보이므로 실패해도 카드/홈 UX는 깨지지 않게 한다.
-        try { _HOME_CHAR_TAGS_CACHE.set(id, []); } catch (_) {}
-        if (!cancelled) setHomeCharTags([]);
-      }
-    };
-    load();
-    return () => { cancelled = true; };
-  }, [variant, charId]);
-
   const avatarSrc = (() => {
     /**
      * ✅ 성능/UX(치명 포인트):
@@ -242,58 +200,6 @@ export const CharacterCard = ({
   })();
 
   /**
-   * ✅ 격자 카드 "태그 노출" 정책(요구사항)
-   *
-   * - 격자에서는 `남성향/여성향` → `롤플/시뮬/커스텀` 순으로 우선 노출한다.
-   * - 그 뒤에 나머지 태그도 이어서 "쭉" 노출한다(가독성 위해 최대 개수는 제한).
-   * - `전체`는 선택 정보가 아니므로(=전체 선택) 배지/태그를 숨긴다.
-   */
-  const getGridBadgeLabels = ({ rawTags }) => {
-    try {
-      const tags = Array.isArray(rawTags) ? rawTags : [];
-      const tagLabels = tags
-        .map((t) => String(t?.name || t?.slug || t || '').trim())
-        .filter(Boolean);
-
-      const modeRaw = String(
-        character?.basic_info?.character_type
-        ?? character?.character_type
-        ?? character?.prompt_type
-        ?? character?.start_sets?.basic_info?.character_type
-        ?? ''
-      ).trim();
-      const modeLower = modeRaw.toLowerCase();
-      const modeLabel = (() => {
-        if (!modeLower && !modeRaw) return '';
-        if (modeLower === 'roleplay' || modeRaw.includes('롤플')) return '롤플';
-        if (modeLower === 'simulator' || modeRaw.includes('시뮬')) return '시뮬';
-        if (modeLower === 'custom' || modeRaw.includes('커스텀')) return '커스텀';
-        return '';
-      })();
-
-      const audience = tagLabels.find((x) => x === '남성향' || x === '여성향' || x === '전체') || '';
-      const audienceLabel = (audience === '전체') ? '' : audience;
-
-      // ✅ 요청사항: 남성향/여성향 → 롤플/시뮬/커스텀 → 나머지 태그 순서로 이어서 노출
-      const out = [];
-      for (const x of [audienceLabel, modeLabel]) {
-        const v = String(x || '').trim();
-        if (!v) continue;
-        if (!out.includes(v)) out.push(v);
-      }
-      for (const x of tagLabels) {
-        const v = String(x || '').trim();
-        if (!v) continue;
-        if (v === '전체') continue;
-        if (!out.includes(v)) out.push(v);
-      }
-      return out;
-    } catch (_) {
-      return [];
-    }
-  };
-
-  /**
    * 태그 칩 렌더러
    *
    * 의도/원리:
@@ -330,7 +236,7 @@ export const CharacterCard = ({
     const creatorUsername = String(character?.creator_username || '').trim();
     const creatorId = String(character?.creator_id || '').trim();
     const showCreator = Boolean(creatorUsername && creatorId);
-    const badgeLabels = getGridBadgeLabels({ rawTags: homeCharTags });
+    const badgeLabels = buildCharacterTagChipLabels({ character, tags: character?.tags });
     const showBadges = Array.isArray(badgeLabels) && badgeLabels.length > 0;
 
     return (
@@ -367,7 +273,7 @@ export const CharacterCard = ({
           ) : null}
 
           {/* NEW */}
-          {isNew ? (
+          {(showNewBadge && isNew) ? (
             <div className="absolute top-2 right-2 z-10 pointer-events-none select-none">
               <div className="flex size-6 shrink-0 items-center justify-center rounded-sm bg-gradient-to-r from-orange-500 to-red-500 text-M/14 text-white font-extrabold shadow-md">
                 N
@@ -466,7 +372,7 @@ export const CharacterCard = ({
           </div>
         ) : null}
 
-        {isNew ? (
+        {(showNewBadge && isNew) ? (
           <div className="absolute top-2 right-2 z-10 pointer-events-none select-none">
             <div className="flex size-6 shrink-0 items-center justify-center rounded-sm bg-gradient-to-r from-orange-500 to-red-500 text-M/14 text-white font-extrabold shadow-md">
               N
@@ -500,7 +406,7 @@ export const CharacterCard = ({
 
       {/* ✅ 격자 배지(롤플/시뮬/커스텀 → 남성향/여성향) */}
       {(() => {
-        const badgeLabels = getGridBadgeLabels({ rawTags: character?.tags });
+        const badgeLabels = buildCharacterTagChipLabels({ character, tags: character?.tags });
         if (!Array.isArray(badgeLabels) || badgeLabels.length <= 0) return null;
         return (
         <div className="mt-0.5 flex w-full shrink-0 flex-wrap items-center gap-1 self-start">

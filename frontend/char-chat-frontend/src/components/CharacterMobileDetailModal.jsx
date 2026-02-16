@@ -524,7 +524,7 @@ export default function CharacterMobileDetailModal({
               onClick={goFullPage}
               className="absolute left-3 top-0 px-2 py-1 text-xs text-gray-300 hover:text-white"
             >
-              전체보기
+              자세히보기
             </button>
             <div className="text-sm font-semibold text-white">프로필 상세</div>
             <button
@@ -723,7 +723,9 @@ export default function CharacterMobileDetailModal({
                   className="w-full bg-red-600 hover:bg-red-700 text-white font-bold text-lg py-6"
                 >
                   <div className="flex flex-col items-center leading-tight">
-                    <div className="text-xs font-semibold text-white/90">선택한 오프닝으로</div>
+                    {!isOrigChatCharacter ? (
+                      <div className="text-xs font-semibold text-white/90">선택한 오프닝으로</div>
+                    ) : null}
                     <div className="text-lg font-extrabold">새로 대화</div>
                   </div>
                 </Button>
@@ -735,8 +737,10 @@ export default function CharacterMobileDetailModal({
                 className="w-full bg-red-600 hover:bg-red-700 text-white font-bold text-lg py-6"
               >
                 <div className="flex flex-col items-center leading-tight">
-                  <div className="text-xs font-semibold text-white/90">선택한 오프닝으로</div>
-                  <div className="text-lg font-extrabold">대화시작</div>
+                  {!isOrigChatCharacter ? (
+                    <div className="text-xs font-semibold text-white/90">선택한 오프닝으로</div>
+                  ) : null}
+                  <div className="text-lg font-extrabold">새로 대화</div>
                 </div>
               </Button>
             )}

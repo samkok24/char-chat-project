@@ -10,7 +10,7 @@ import { Badge } from './ui/badge';
 const WebtoonItem = ({ story }) => {
   const navigate = useNavigate();
   const storyId = story?.id;
-  const cover = story?.cover_url ? `${story.cover_url}${story.cover_url.includes('?') ? '&' : '?'}v=${Date.now()}` : '';
+  const cover = String(story?.cover_url || '').trim();
   const coverSrc = resolveImageUrl(cover) || '';
   const username = story?.creator_username;
 
@@ -107,9 +107,9 @@ const TopWebtoons = () => {
       // 웹툰만 필터링 (is_webtoon === true)
       return items.filter(story => story.is_webtoon === true);
     },
-    staleTime: 0,
-    refetchOnWindowFocus: true,
-    refetchOnMount: 'always',
+    staleTime: 60 * 1000,
+    refetchOnWindowFocus: false,
+    refetchOnMount: false,
   });
 
   React.useEffect(() => {
@@ -146,4 +146,3 @@ const TopWebtoons = () => {
 };
 
 export default TopWebtoons;
-

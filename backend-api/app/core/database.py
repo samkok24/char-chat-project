@@ -122,12 +122,19 @@ else:
             ctx.verify_mode = ssl.CERT_NONE
         _connect_args["ssl"] = ctx
 
+    # ✅ Supabase Session-mode pooler(port 5432)는 동시 클라이언트 수가 제한됨.
+    # - pool_size: 기본 유지 커넥션 수 (SQLAlchemy 기본 5 → 3으로 축소)
+    # - max_overflow: 피크 시 추가 허용 (SQLAlchemy 기본 10 → 2로 축소)
+    # - 합계 최대 5개로 Supabase Free/Pro 한도 안에서 안정 운영
     engine = create_async_engine(
         _engine_url,
         echo=settings.DEBUG,
         future=True,
         pool_pre_ping=True,
         pool_recycle=300,
+        pool_size=3,
+        max_overflow=2,
+        pool_timeout=30,
         connect_args=_connect_args if _connect_args else None,
     )
 
