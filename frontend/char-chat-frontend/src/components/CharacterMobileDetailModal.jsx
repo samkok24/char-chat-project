@@ -24,6 +24,7 @@ export default function CharacterMobileDetailModal({
   open,
   onOpenChange,
   characterId,
+  initialData = null,
 }) {
   const navigate = useNavigate();
   const { user, isAuthenticated } = useAuth();
@@ -39,8 +40,8 @@ export default function CharacterMobileDetailModal({
       return res.data || null;
     },
     enabled: open && !!cid,
-    staleTime: 0,
-    refetchOnMount: 'always',
+    staleTime: 30_000,
+    placeholderData: initialData || undefined,
   });
 
   const isOrigChatCharacter = !!character?.origin_story_id;
@@ -102,8 +103,7 @@ export default function CharacterMobileDetailModal({
       }
     },
     enabled: open && !!cid && !!isAuthenticated,
-    staleTime: 0,
-    refetchOnMount: 'always',
+    staleTime: 30_000,
   });
 
   const lastRoomIdForThisCharacter = React.useMemo(() => {
@@ -130,8 +130,7 @@ export default function CharacterMobileDetailModal({
       return Array.isArray(res?.data) ? res.data : [];
     },
     enabled: open && !!cid,
-    staleTime: 0,
-    refetchOnMount: 'always',
+    staleTime: 60_000,
   });
 
   // ✅ 모바일 상세페이지의 "이미지 갤러리" 흐름을 그대로 따른다.
@@ -151,8 +150,7 @@ export default function CharacterMobileDetailModal({
       }
     },
     enabled: open && !!cid,
-    staleTime: 0,
-    refetchOnMount: 'always',
+    staleTime: 60_000,
   });
 
   React.useEffect(() => {
@@ -252,8 +250,7 @@ export default function CharacterMobileDetailModal({
       return !!res?.data?.is_liked;
     },
     enabled: open && !!cid && !!isAuthenticated,
-    staleTime: 0,
-    refetchOnMount: 'always',
+    staleTime: 10_000,
   });
   React.useEffect(() => {
     /**
@@ -396,8 +393,7 @@ export default function CharacterMobileDetailModal({
       }
     },
     enabled: open && !!cid,
-    staleTime: 0,
-    refetchOnMount: 'always',
+    staleTime: 30_000,
   });
 
   const handleCommentSubmit = async (e) => {

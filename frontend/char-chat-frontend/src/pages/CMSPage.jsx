@@ -248,6 +248,7 @@ const CMSPage = () => {
   const [pageExitSummary, setPageExitSummary] = React.useState(null);
   const [pageExitReloadKey, setPageExitReloadKey] = React.useState(0);
   const [pageExitQuery, setPageExitQuery] = React.useState('');
+  const [revisitData, setRevisitData] = React.useState(null);
 
   // ===== 유저 로그 서브탭 + 유저 활동 =====
   const [userLogSubTab, setUserLogSubTab] = React.useState('traffic'); // 'traffic' | 'activity' | 'ab'
@@ -654,7 +655,7 @@ const CMSPage = () => {
     };
   }, [isAdmin, activeTab, usersReloadKey, onlineReloadKey]);
 
-  // 유저 로그(이탈 페이지): /metrics/traffic/page-exits
+  // 유저 로그(이탈 페이지): /metrics/traffic/page-exits + 재유입 요약
   React.useEffect(() => {
     if (!isAdmin) return;
     if (activeTab !== 'userLogs') return;
@@ -667,12 +668,16 @@ const CMSPage = () => {
         const d = String(pageExitDay || '').trim();
         if (d) params.day = d;
         params.top_n = 200;
-        const res = await metricsAPI.getPageExitSummary(params);
+        const [exitRes, revisitRes] = await Promise.all([
+          metricsAPI.getPageExitSummary(params),
+          metricsAPI.getRevisitSummary(d ? { day: d } : {}),
+        ]);
         if (!active) return;
-        setPageExitSummary(res?.data || null);
+        setPageExitSummary(exitRes?.data || null);
+        setRevisitData(revisitRes?.data || null);
       } catch (e) {
         try { console.error('[CMSPage] metricsAPI.getPageExitSummary failed:', e); } catch (_) {}
-        if (active) setPageExitSummary(null);
+        if (active) { setPageExitSummary(null); setRevisitData(null); }
       } finally {
         if (active) setPageExitLoading(false);
       }
@@ -1256,6 +1261,8 @@ const CMSPage = () => {
       origin_story_id: c?.origin_story_id ? String(c.origin_story_id) : null,
       is_origchat: !!c?.origin_story_id || !!c?.is_origchat,
       source_type: c?.source_type,
+      character_type: c?.character_type || null,
+      tags: Array.isArray(c?.tags) ? c.tags.map((t) => String(t?.name || t?.slug || t || '').trim()).filter(Boolean) : [],
       chat_count: Number(c?.chat_count ?? c?.chatCount ?? 0) || 0,
       like_count: Number(c?.like_count ?? c?.likeCount ?? 0) || 0,
       creator_id: c?.creator_id || null,
@@ -2470,16 +2477,14 @@ const CMSPage = () => {
 
                     {pageExitSummary ? (
                       <>
-                        {/* 요약 카드 7개 */}
-                        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
+                        {/* 요약 카드 */}
+                        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-5 gap-3">
                           {[
                             { label: '페이지 조회 (PV)', value: Number(pageExitSummary?.total_views || 0).toLocaleString() },
                             { label: '유니크 방문자 (UV)', value: Number(pageExitSummary?.total_unique_visitors || 0).toLocaleString() },
                             { label: '사이트 이탈 (탭 닫기)', value: Number(pageExitSummary?.total_exits || 0).toLocaleString() },
                             { label: '페이지 이동 (내부 전환)', value: Number(pageExitSummary?.total_leaves || 0).toLocaleString() },
                             { label: '총 이동+이탈', value: Number(pageExitSummary?.total_departures || 0).toLocaleString() },
-                            { label: '날짜', value: String(pageExitSummary?.day || '-') },
-                            { label: '타임존', value: String(pageExitSummary?.timezone || 'Asia/Seoul') },
                           ].map((c, i) => (
                             <div key={i} className="rounded-md border border-gray-800 bg-gray-900/30 p-3">
                               <div className="text-xs text-gray-500">{c.label}</div>
@@ -2487,6 +2492,34 @@ const CMSPage = () => {
                             </div>
                           ))}
                         </div>
+
+                        {/* 재유입 카드 (로그인 유저 기준) */}
+                        {revisitData && revisitData.total_active > 0 && (
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                            <div className="rounded-md border border-gray-800 bg-gray-900/30 p-3">
+                              <div className="text-xs text-gray-500">활동 유저 (로그인)</div>
+                              <div className="text-lg font-bold text-white">{Number(revisitData.total_active).toLocaleString()}</div>
+                            </div>
+                            <div className="rounded-md border border-emerald-900/50 bg-emerald-950/20 p-3">
+                              <div className="text-xs text-emerald-400">재유입</div>
+                              <div className="text-lg font-bold text-emerald-300">{Number(revisitData.returning || 0).toLocaleString()}</div>
+                              <div className="text-[11px] text-emerald-500/80">
+                                {revisitData.returning_rate != null ? `${(revisitData.returning_rate * 100).toFixed(1)}%` : '-'}
+                              </div>
+                            </div>
+                            <div className="rounded-md border border-blue-900/50 bg-blue-950/20 p-3">
+                              <div className="text-xs text-blue-400">신규</div>
+                              <div className="text-lg font-bold text-blue-300">{Number(revisitData.new || 0).toLocaleString()}</div>
+                              <div className="text-[11px] text-blue-500/80">
+                                {revisitData.total_active > 0 && revisitData.new != null ? `${((revisitData.new / revisitData.total_active) * 100).toFixed(1)}%` : '-'}
+                              </div>
+                            </div>
+                            <div className="rounded-md border border-gray-800 bg-gray-900/30 p-3">
+                              <div className="text-xs text-gray-500">날짜</div>
+                              <div className="text-lg font-bold text-white">{String(revisitData.day || pageExitSummary?.day || '-')}</div>
+                            </div>
+                          </div>
+                        )}
 
                         {/* 차트 영역 */}
                         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -2799,7 +2832,7 @@ const CMSPage = () => {
                   <CardHeader>
                     <CardTitle className="text-white">A/B 테스트 비교</CardTitle>
                     <CardDescription className="text-gray-400">
-                      메인 페이지 변형(A/B)별 조회·이탈 수를 비교합니다. 변형은 유저 브라우저에 고정 할당됩니다.
+                      메인 페이지 변형(A/B)별 조회·이탈 수를 비교합니다. 로그인 유저는 계정 기준, 비로그인은 브라우저 기준으로 고정 할당됩니다.
                     </CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-4">
