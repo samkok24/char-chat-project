@@ -425,6 +425,10 @@ export const SocketProvider = ({ children }) => {
           setSocketError('');
           setMessages((prev) => {
             const prevArr = Array.isArray(prev) ? prev : [];
+            const mid = String(message?.id || message?._id || '').trim();
+            if (mid && prevArr.some(m => String(m?.id || m?._id || '').trim() === mid)) {
+              return prevArr;
+            }
             const next = [...prevArr, message];
             try {
               const rid = getRoomIdFromMessage(message);

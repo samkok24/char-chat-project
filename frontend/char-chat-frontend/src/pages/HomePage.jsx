@@ -3,7 +3,7 @@
  * CAVEDUCK 스타일: API 캐싱으로 성능 최적화
  */
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../contexts/AuthContext';
@@ -89,6 +89,7 @@ import {
   isPopupDismissed,
   dismissPopup,
 } from '../lib/cmsPopups';
+import { resolveHomeAbVariant } from '../lib/homeAb';
 
 const CHARACTER_PAGE_SIZE = 40;
 
@@ -137,28 +138,7 @@ const _cmsShuffleWithSeed = (arr, seed) => {
   return list;
 };
 
-// ===== 메인 페이지 A/B 변형 =====
-// 페이지 전체 스냅샷 단위. 현재: 온보딩 문구 차이. 향후: 구좌/레이아웃/추천 등 확장 가능.
-// 세션(탭) 내 고정, 새 탭/새로고침 시 재배정. 한 방문 내 일관된 경험 유지.
-const HOME_AB_KEY = 'cc:ab:home';
-const getHomeVariant = () => {
-  try {
-    const stored = sessionStorage.getItem(HOME_AB_KEY);
-    if (stored === 'A' || stored === 'B') return stored;
-    const next = Math.random() < 0.5 ? 'A' : 'B';
-    sessionStorage.setItem(HOME_AB_KEY, next);
-    return next;
-  } catch (_) {
-    return 'A';
-  }
-};
-
 const HomePage = () => {
-  // 메인 페이지 A/B 변형 — 렌더 시 동기 세팅 (TrafficEventsBridge의 page_view보다 먼저 적용)
-  const [homeVariant] = useState(() => getHomeVariant());
-  window.__CC_PAGE_META = { ab_home: homeVariant };
-  useEffect(() => () => { window.__CC_PAGE_META = null; }, []);
-
   const isMobile = useIsMobile();
   const MOBILE_SLOT_STEP = 4;
   // 모바일 "4개 격자 + <> 페이지"용: 구좌별 페이지 상태
@@ -185,10 +165,22 @@ const HomePage = () => {
   const requireAuth = useRequireAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  // 메인 페이지 A/B 변형(SSOT):
+  // - 로그인: user_id 기준 고정
+  // - 비로그인: client_id 기준 고정
+  // - QA: ?ab_home=A|B 오버라이드 지원
+  const homeAb = useMemo(
+    () => resolveHomeAbVariant({ userId: user?.id, search: location?.search }),
+    [user?.id, location?.search]
+  );
+  const homeVariant = homeAb.variant;
+  window.__CC_PAGE_META = { ab_home: homeAb.variant };
+  useEffect(() => () => { window.__CC_PAGE_META = null; }, []);
 
   // ✅ PC 홈: 일반 캐릭터챗 카드 클릭 시 "모바일 상세 모달"로 프리뷰(요구사항)
   const [pcMobileDetailOpen, setPcMobileDetailOpen] = useState(false);
   const [pcMobileDetailCharacterId, setPcMobileDetailCharacterId] = useState('');
+  const [pcMobileDetailInitialData, setPcMobileDetailInitialData] = useState(null);
   const isEligibleHomePcModal = React.useCallback((c) => {
     try {
       if (!c) return false;
@@ -221,6 +213,7 @@ const HomePage = () => {
         navigate(`/characters/${id}`);
         return;
       }
+      setPcMobileDetailInitialData(c || null);
       setPcMobileDetailCharacterId(id);
       setPcMobileDetailOpen(true);
     } catch (_) {}
@@ -630,11 +623,15 @@ const HomePage = () => {
             // ✅ NEW 배지(48h)도 커스텀 구좌에서 항상 뜨게: created_at/updated_at까지 같이 보강한다.
             const createdAt = c?.created_at ?? c?.createdAt ?? null;
             const updatedAt = c?.updated_at ?? c?.updatedAt ?? null;
+            const tags = Array.isArray(c?.tags) ? c.tags.map((t) => String(t?.name || t?.slug || t || '').trim()).filter(Boolean) : [];
+            const characterType = c?.character_type || null;
             results[id] = {
               chat_count: chatCount,
               like_count: likeCount,
               ...(createdAt ? { created_at: createdAt } : {}),
               ...(updatedAt ? { updated_at: updatedAt } : {}),
+              ...(tags.length > 0 ? { tags } : {}),
+              ...(characterType ? { character_type: characterType } : {}),
               __meta_hydrated: true,
             };
           } catch (e) {
@@ -2086,9 +2083,13 @@ const HomePage = () => {
             open={pcMobileDetailOpen}
             onOpenChange={(v) => {
               setPcMobileDetailOpen(Boolean(v));
-              if (!v) setPcMobileDetailCharacterId('');
+              if (!v) {
+                setPcMobileDetailCharacterId('');
+                setPcMobileDetailInitialData(null);
+              }
             }}
             characterId={pcMobileDetailCharacterId}
+            initialData={pcMobileDetailInitialData}
           />
         ) : null}
         {/* ===== 홈 팝업(CMS) ===== */}

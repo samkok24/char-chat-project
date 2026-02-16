@@ -1003,6 +1003,7 @@ export const metricsAPI = {
   getOnlineNow: (params = {}) => api.get('/metrics/online', { params }),
   searchUserActivity: (params = {}) => api.get('/metrics/user-activity/search', { params }),
   getAbSummary: (params = {}) => api.get('/metrics/ab-summary', { params }),
+  getRevisitSummary: (params = {}) => api.get('/metrics/traffic/revisit-summary', { params }),
 };
 
 // 📖 회차(Chapters) API

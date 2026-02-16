@@ -34,7 +34,7 @@ const RecommendedCharacters = ({ title } = {}) => {
   // - 패턴: 캐릭터챗 2개 → 원작챗 1개 (2:1)
   const MIX_PATTERN = ['regular', 'regular', 'origchat'];
 
-  const { data = [], isLoading, isError } = useQuery({
+  const { data = [], isLoading, isFetching, isError, refetch } = useQuery({
     queryKey: ['recommended-characters-home', 'likes', 'mixed', 'regular+origchat', isMobile ? 'm' : 'd'],
     queryFn: async () => {
       /**
@@ -70,36 +70,53 @@ const RecommendedCharacters = ({ title } = {}) => {
         return out;
       };
 
-      try {
-        // 2:1 비율로 섞기 위해 각각 별도로 조회 (API 2회, UI는 안정적으로 유지)
-        const regularLimit = Math.ceil((RECOMMENDED_LIMIT * 2) / 3);
-        const origChatLimit = Math.ceil(RECOMMENDED_LIMIT / 3);
+      // ✅ 캐시 고착 방지:
+      // - 과거에는 Promise.all 실패 시 []를 반환해 "빈 결과 성공"으로 캐시되었다.
+      // - 이제는 allSettled로 부분 성공은 살리고, 완전 실패는 에러로 처리해 재시도를 유도한다.
+      const regularLimit = Math.ceil((RECOMMENDED_LIMIT * 2) / 3);
+      const origChatLimit = Math.ceil(RECOMMENDED_LIMIT / 3);
 
-        const [regularRes, origChatRes] = await Promise.all([
-          charactersAPI.getCharacters({
-            sort: 'likes',
-            limit: regularLimit,
-            only: 'regular',
-            source_type: 'ORIGINAL',
-          }),
-          charactersAPI.getCharacters({
-            sort: 'likes',
-            limit: origChatLimit,
-            only: 'origchat',
-          }),
-        ]);
+      const [regularRes, origChatRes] = await Promise.allSettled([
+        charactersAPI.getCharacters({
+          sort: 'likes',
+          limit: regularLimit,
+          only: 'regular',
+          source_type: 'ORIGINAL',
+        }),
+        charactersAPI.getCharacters({
+          sort: 'likes',
+          limit: origChatLimit,
+          only: 'origchat',
+        }),
+      ]);
 
-        const regularItems = safeArr(regularRes?.data);
-        const origChatItems = safeArr(origChatRes?.data);
-        return mixByPattern(regularItems, origChatItems, RECOMMENDED_LIMIT);
-      } catch (err) {
-        console.error('Failed to load recommended characters:', err);
-        return [];
+      const regularItems = regularRes.status === 'fulfilled' ? safeArr(regularRes.value?.data) : [];
+      const origChatItems = origChatRes.status === 'fulfilled' ? safeArr(origChatRes.value?.data) : [];
+      const mixed = mixByPattern(regularItems, origChatItems, RECOMMENDED_LIMIT);
+
+      const regularFailed = regularRes.status === 'rejected';
+      const origFailed = origChatRes.status === 'rejected';
+      const bothFailed = regularFailed && origFailed;
+      const partialFailedAndEmpty = (regularFailed || origFailed) && mixed.length === 0;
+
+      if (bothFailed || partialFailedAndEmpty) {
+        const reason = bothFailed ? 'both sources failed' : 'partial failure with empty merged result';
+        const err = new Error(`[recommended] ${reason}`);
+        console.error('Failed to load recommended characters:', {
+          reason,
+          regularFailed,
+          origFailed,
+        });
+        throw err;
       }
+
+      return mixed;
     },
-    staleTime: 5 * 60 * 1000,
-    refetchOnWindowFocus: false,
-    refetchOnMount: false,
+    staleTime: 30_000,
+    retry: 2,
+    refetchOnWindowFocus: true,
+    refetchOnReconnect: true,
+    refetchOnMount: 'always',
   });
 
   // ✅ 경쟁사 체감 크기(카드가 너무 작아 보이지 않게):
@@ -107,8 +124,9 @@ const RecommendedCharacters = ({ title } = {}) => {
   // - lg에서는 5열(=10개/페이지, 5x2)로 맞추고, 더 넓은 화면에서만 6열로 확장한다.
   const pageSize = isMobile ? 4 : 10;
   const [page, setPage] = useState(0);
-  const items = data || [];
-  const empty = !isLoading && (!items || items.length === 0);
+  const items = useMemo(() => (Array.isArray(data) ? data : []), [data]);
+  const showError = !isLoading && isError && items.length === 0;
+  const empty = !isLoading && !showError && (!items || items.length === 0);
   const pageCount = Math.max(1, Math.ceil(items.length / pageSize));
   const hasCarousel = items.length > pageSize;
   const slotTitle = String(title || '').trim() || '챕터8이 추천하는 캐릭터';
@@ -169,9 +187,22 @@ const RecommendedCharacters = ({ title } = {}) => {
           {isLoading && Array.from({ length: skeletonCount }).map((_, idx) => (
             <RecommendedSkeleton key={idx} />
           ))}
-          {!isLoading && !isError && visibleItems.map((c) => (
+          {!isLoading && visibleItems.map((c) => (
             <RecommendedItem key={c.id} character={c} />
           ))}
+          {showError && (
+            <li className="col-span-full text-center text-gray-400 py-8 space-y-2">
+              <div>추천 캐릭터를 불러오지 못했습니다.</div>
+              <button
+                type="button"
+                onClick={() => { void refetch(); }}
+                disabled={isFetching}
+                className="px-3 py-1.5 text-xs rounded-md bg-gray-800 hover:bg-gray-700 text-white disabled:opacity-50"
+              >
+                다시 시도
+              </button>
+            </li>
+          )}
           {empty && (
             <li className="col-span-full text-center text-gray-400 py-8">
               추천 캐릭터가 아직 없습니다.

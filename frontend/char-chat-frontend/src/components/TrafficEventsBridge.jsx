@@ -1,60 +1,22 @@
 import React from 'react';
 import { useLocation } from 'react-router-dom';
 import { API_BASE_URL } from '../lib/api';
+import { getOrCreateClientId, getOrCreateSessionId } from '../lib/clientIdentity';
 import { useAuth } from '../contexts/AuthContext';
-
-const CLIENT_ID_KEY = 'cc:client_id:v1';
-const SESSION_KEY = 'cc:session:v1';
-const SESSION_TTL_MS = 30 * 60 * 1000; // 30m
-
-const safeUuid = () => {
-  try {
-    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-      return crypto.randomUUID();
-    }
-  } catch (_) {}
-  try {
-    return `u_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
-  } catch (_) {
-    return `u_${Date.now()}`;
-  }
-};
-
-const getOrCreateClientId = () => {
-  try {
-    const cur = String(localStorage.getItem(CLIENT_ID_KEY) || '').trim();
-    if (cur) return cur;
-    const next = safeUuid();
-    localStorage.setItem(CLIENT_ID_KEY, next);
-    return next;
-  } catch (_) {
-    return safeUuid();
-  }
-};
-
-const getOrCreateSessionId = () => {
-  const now = Date.now();
-  try {
-    const raw = localStorage.getItem(SESSION_KEY);
-    const obj = raw ? JSON.parse(raw) : null;
-    const id = String(obj?.id || '').trim();
-    const ts = Number(obj?.ts || 0);
-    if (id && ts && (now - ts) <= SESSION_TTL_MS) {
-      // bump last seen
-      try { localStorage.setItem(SESSION_KEY, JSON.stringify({ id, ts: now })); } catch (_) {}
-      return id;
-    }
-  } catch (_) {}
-  const next = safeUuid();
-  try { localStorage.setItem(SESSION_KEY, JSON.stringify({ id: next, ts: now })); } catch (_) {}
-  return next;
-};
 
 const buildUrl = () => {
   try {
     const base = String(API_BASE_URL || '').replace(/\/$/, '');
     if (!base) return '';
     return `${base}/metrics/traffic/page-event`;
+  } catch (_) {
+    return '';
+  }
+};
+
+const getAccessToken = () => {
+  try {
+    return String(localStorage.getItem('access_token') || '').trim();
   } catch (_) {
     return '';
   }
@@ -88,9 +50,12 @@ const sendEvent = (payload, { beacon = false } = {}) => {
   }
 
   try {
+    const headers = { 'Content-Type': 'application/json' };
+    const token = getAccessToken();
+    if (token) headers.Authorization = `Bearer ${token}`;
     fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body,
       keepalive: true,
     }).catch(() => {});
@@ -107,13 +72,24 @@ const sendEvent = (payload, { beacon = false } = {}) => {
  */
 const TrafficEventsBridge = () => {
   const location = useLocation();
-  const { user } = useAuth();
+  const { user, loading } = useAuth();
 
   const clientIdRef = React.useRef('');
   const sessionIdRef = React.useRef('');
   const lastPathRef = React.useRef('');
   const enterTsRef = React.useRef(Date.now());
   const exitSentRef = React.useRef(false);
+  const pageMetaRef = React.useRef(null);
+
+  // 렌더 시점에 page meta 스냅샷 (cleanup effect보다 먼저 실행됨)
+  // - 페이지 이동 시 이전 페이지의 cleanup이 window.__CC_PAGE_META를 null로 지우기 전에 캡처
+  try {
+    const m = window.__CC_PAGE_META;
+    pageMetaRef.current = (m && typeof m === 'object' && Object.keys(m).length > 0)
+      ? JSON.stringify(m) : null;
+  } catch (_) {
+    pageMetaRef.current = null;
+  }
 
   React.useEffect(() => {
     try { clientIdRef.current = getOrCreateClientId(); } catch (_) {}
@@ -122,6 +98,8 @@ const TrafficEventsBridge = () => {
 
   // page view: pathname 기준(쿼리는 cardinality 폭주 방지 위해 제외)
   React.useEffect(() => {
+    // 인증 상태 결정 전에는 이벤트를 보내지 않는다(관리자 누출 방지)
+    if (loading) return;
     // 운영자 트래픽은 집계에서 제외(백엔드에서도 무시하지만 중복 방어)
     if (user?.is_admin) return;
 
@@ -134,6 +112,8 @@ const TrafficEventsBridge = () => {
     try { sessionIdRef.current = getOrCreateSessionId(); } catch (_) {}
 
     // SPA 라우트 전환(내부 이동)도 페이지 이탈로 기록
+    // - 이 시점에 이전 페이지의 cleanup이 window.__CC_PAGE_META를 이미 클리어했을 수 있으므로
+    //   렌더 시점에 캡처한 pageMetaRef를 명시적으로 전달한다.
     if (prevPath && prevPath !== path) {
       const durationMs = Math.max(0, now - prevEnterTs);
       sendEvent({
@@ -143,6 +123,7 @@ const TrafficEventsBridge = () => {
         session_id: sessionIdRef.current || undefined,
         client_id: clientIdRef.current || undefined,
         user_id: user?.id || undefined,
+        meta: pageMetaRef.current || undefined,
       });
     }
 
@@ -158,9 +139,11 @@ const TrafficEventsBridge = () => {
       user_id: user?.id || undefined,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [location?.pathname]);
+  }, [location?.pathname, loading, user?.is_admin, user?.id]);
 
   React.useEffect(() => {
+    // 인증 상태 결정 전에는 이벤트를 보내지 않는다(관리자 누출 방지)
+    if (loading) return;
     if (user?.is_admin) return;
 
     const onExit = () => {
@@ -178,6 +161,7 @@ const TrafficEventsBridge = () => {
           session_id: sessionIdRef.current || undefined,
           client_id: clientIdRef.current || undefined,
           user_id: user?.id || undefined,
+          meta: pageMetaRef.current || undefined,
         },
         { beacon: true }
       );
@@ -191,7 +175,7 @@ const TrafficEventsBridge = () => {
       try { window.removeEventListener('pagehide', onExit); } catch (_) {}
       try { window.removeEventListener('beforeunload', onExit); } catch (_) {}
     };
-  }, [user?.is_admin]);
+  }, [loading, user?.is_admin, user?.id]);
 
   return null;
 };

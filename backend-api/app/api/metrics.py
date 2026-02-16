@@ -1155,3 +1155,71 @@ async def ab_summary(
     except Exception as e:
         logger.warning(f"[metrics.ab] summary failed: {e}")
         return {"test": test_key, "day": d, "timezone": "Asia/Seoul", "variants": [], "error": str(e)}
+
+
+@router.get("/traffic/revisit-summary")
+async def revisit_summary(
+    day: Optional[str] = Query(None, description="YYYYMMDD (KST), 기본: 오늘"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """로그인 유저 기준 신규/재유입 요약(관리자 전용)."""
+    _ensure_admin(current_user)
+
+    now_kst = datetime.now(_KST)
+    d = _parse_day_yyyymmdd(day or "") or now_kst.strftime("%Y%m%d")
+
+    try:
+        y, m, dd = int(d[:4]), int(d[4:6]), int(d[6:8])
+        day_start = datetime(y, m, dd, 0, 0, 0, tzinfo=_KST).astimezone(timezone.utc)
+        day_end = day_start + timedelta(days=1)
+    except Exception:
+        raise HTTPException(status_code=400, detail="날짜 형식이 올바르지 않습니다.")
+
+    try:
+        # 1) 해당일 활동한 로그인 유저 (page_view 기준)
+        today_stmt = (
+            select(UserActivityLog.user_id)
+            .where(UserActivityLog.created_at >= day_start)
+            .where(UserActivityLog.created_at < day_end)
+            .where(UserActivityLog.event == "page_view")
+            .distinct()
+        )
+        today_rows = (await db.execute(today_stmt)).scalars().all()
+        today_ids = list(today_rows)
+        total_active = len(today_ids)
+
+        if total_active == 0:
+            return {
+                "day": d, "timezone": "Asia/Seoul",
+                "total_active": 0, "returning": 0, "new": 0,
+                "returning_rate": None,
+            }
+
+        # 2) 그 중 해당일 이전에도 page_view 기록이 있는 유저 = 재유입
+        returning_stmt = (
+            select(UserActivityLog.user_id)
+            .where(UserActivityLog.user_id.in_(today_ids))
+            .where(UserActivityLog.created_at < day_start)
+            .where(UserActivityLog.event == "page_view")
+            .distinct()
+        )
+        returning_rows = (await db.execute(returning_stmt)).scalars().all()
+        returning_count = len(returning_rows)
+        new_count = total_active - returning_count
+
+        return {
+            "day": d, "timezone": "Asia/Seoul",
+            "total_active": total_active,
+            "returning": returning_count,
+            "new": new_count,
+            "returning_rate": round(returning_count / total_active, 4) if total_active > 0 else None,
+        }
+
+    except Exception as e:
+        logger.warning(f"[metrics.revisit] summary failed: {e}")
+        return {
+            "day": d, "timezone": "Asia/Seoul",
+            "total_active": 0, "returning": 0, "new": 0,
+            "returning_rate": None, "error": str(e),
+        }
