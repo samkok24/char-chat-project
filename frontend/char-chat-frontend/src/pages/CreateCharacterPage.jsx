@@ -1694,9 +1694,9 @@ const CreateCharacterPage = () => {
         return null;
       }
 
-      // ✅ 요구사항: "위저드만" 제미니 고정(다른 화면/로직에는 영향 주지 않음)
+      // ✅ 요구사항: "위저드만" 하이쿠4.5(claude) 고정(다른 화면/로직에는 영향 주지 않음)
       const aiModel = useNormalCreateWizard
-        ? 'gemini'
+        ? 'claude'
         : (String(user?.preferred_model || 'claude').trim().toLowerCase() || 'claude');
       const ss = (formData?.basic_info?.start_sets && typeof formData.basic_info.start_sets === 'object')
         ? formData.basic_info.start_sets
@@ -3422,9 +3422,9 @@ const CreateCharacterPage = () => {
       }
 
       setQuickSecretGenLoading(true);
-      // ✅ 요구사항: "위저드만" 제미니 고정(다른 화면/로직에는 영향 주지 않음)
+      // ✅ 요구사항: "위저드만" 하이쿠4.5(claude) 고정(다른 화면/로직에는 영향 주지 않음)
       const aiModel = useNormalCreateWizard
-        ? 'gemini'
+        ? 'claude'
         : (String(user?.preferred_model || 'claude').trim().toLowerCase() || 'claude');
       const res = await charactersAPI.quickGenerateSecretDraft({
         name,
@@ -5697,9 +5697,9 @@ const CreateCharacterPage = () => {
       quickTurnEventsGenAbortRef.current = false;
 
       setQuickTurnEventsGenLoadingId(sid);
-      // ✅ 요구사항: "위저드만" 제미니 고정(다른 화면/로직에는 영향 주지 않음)
+      // ✅ 요구사항: "위저드만" 하이쿠4.5(claude) 고정(다른 화면/로직에는 영향 주지 않음)
       const aiModel = useNormalCreateWizard
-        ? 'gemini'
+        ? 'claude'
         : (String(user?.preferred_model || 'claude').trim().toLowerCase() || 'claude');
       const simDatingElements = !!sim?.sim_dating_elements;
       const res = await charactersAPI.quickGenerateTurnEventsDraft({
@@ -6092,7 +6092,7 @@ const CreateCharacterPage = () => {
             world_setting: worldForStat,
             mode,
             tags: Array.isArray(selectedTagSlugs) ? selectedTagSlugs : [],
-            ai_model: (useNormalCreateWizard ? 'gemini' : (String(user?.preferred_model || 'claude').trim().toLowerCase() || 'claude')),
+            ai_model: (useNormalCreateWizard ? 'claude' : (String(user?.preferred_model || 'claude').trim().toLowerCase() || 'claude')),
           });
 
           const raw = Array.isArray(statRes?.data?.stats) ? statRes.data.stats : [];
@@ -6214,9 +6214,9 @@ const CreateCharacterPage = () => {
         const minTurnsRaw = Number(es?.min_turns ?? 30);
         const minTurns = Number.isFinite(minTurnsRaw) ? Math.max(10, Math.floor(minTurnsRaw)) : 30;
 
-        // ✅ 요구사항: "위저드만" 제미니 고정(다른 화면/로직에는 영향 주지 않음)
+        // ✅ 요구사항: "위저드만" 하이쿠4.5(claude) 고정(다른 화면/로직에는 영향 주지 않음)
         const aiModel = useNormalCreateWizard
-          ? 'gemini'
+          ? 'claude'
           : (String(user?.preferred_model || 'claude').trim().toLowerCase() || 'claude');
         const model = (aiModel === 'gpt' ? 'gpt' : (aiModel === 'gemini' ? 'gemini' : 'claude'));
 
@@ -6518,7 +6518,7 @@ const CreateCharacterPage = () => {
       }
       // ✅ 요구사항: "위저드만" 제미니 고정(다른 화면/로직에는 영향 주지 않음)
       const aiModel = useNormalCreateWizard
-        ? 'gemini'
+        ? 'claude'
         : (String(user?.preferred_model || 'claude').trim().toLowerCase() || 'claude');
       const ss = (formData?.basic_info?.start_sets && typeof formData.basic_info.start_sets === 'object')
         ? formData.basic_info.start_sets
