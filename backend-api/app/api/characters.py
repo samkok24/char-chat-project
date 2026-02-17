@@ -1234,9 +1234,8 @@ async def quick_generate_prompt(
     - DB 저장은 하지 않는다(SSOT: 실제 저장은 /characters/advanced)
     """
     try:
-        # ✅ 운영 고정(요구사항): 위저드 quick-*는 기본적으로 Gemini 3 Pro로 고정
-        # - 예외: 스탯/디테일은 JSON/누락 안정성을 위해 Claude Haiku 4.5 경로를 사용한다.
-        forced_prompt_model = "gemini"
+        # ✅ 운영 고정(요구사항): 위저드 quick-*는 Claude Haiku 4.5 경로로 고정
+        forced_prompt_model = "claude"
         mode = getattr(payload, "mode", None) or "simulator"
         max_turns = getattr(payload, "max_turns", None) or 200
         allow_infinite_mode = bool(getattr(payload, "allow_infinite_mode", False))
@@ -1461,8 +1460,8 @@ async def quick_generate_turn_events(
     - DB 저장은 하지 않는다(SSOT: 실제 저장은 /characters/advanced).
     """
     try:
-        # ✅ 운영 고정(요구사항): 위저드 quick-*는 Gemini 3 Pro로 고정
-        forced_ai_model = "gemini"
+        # ✅ 운영 고정(요구사항): 위저드 quick-*는 Claude Haiku 4.5 경로로 고정
+        forced_ai_model = "claude"
         events = await generate_quick_turn_events(
             name=payload.name,
             description=payload.description,
@@ -1501,8 +1500,8 @@ async def quick_generate_ending_draft(
     - 프론트 입력 필드(start_sets.items[].ending_settings.endings[])에 채울 "초안 데이터"만 생성한다.
     """
     try:
-        # ✅ 운영 고정(요구사항): 위저드 quick-*는 Gemini 3 Pro로 고정
-        forced_ai_model = "gemini"
+        # ✅ 운영 고정(요구사항): 위저드 quick-*는 Claude Haiku 4.5 경로로 고정
+        forced_ai_model = "claude"
         d = await generate_quick_ending_draft(
             name=payload.name,
             description=payload.description,
@@ -1555,8 +1554,8 @@ async def quick_generate_ending_epilogue(
     - 프론트 입력 필드(start_sets.ending_settings.endings[].epilogue)에 채울 초안 텍스트만 생성한다.
     """
     try:
-        # ✅ 운영 고정(요구사항): 위저드 quick-*는 Gemini 3 Pro로 고정
-        forced_ai_model = "gemini"
+        # ✅ 운영 고정(요구사항): 위저드 quick-*는 Claude Haiku 4.5 경로로 고정
+        forced_ai_model = "claude"
         ep = await generate_quick_ending_epilogue(
             name=payload.name,
             description=payload.description,
