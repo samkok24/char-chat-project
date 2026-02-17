@@ -651,35 +651,19 @@ async def quick_generate_character_draft(
                 # 변환 실패 시 원본 유지
                 pass
 
-        # ✅ QuickMeet 프로필 자동생성: 유저 모델설정(SSOT)을 그대로 따른다.
-        # - 프론트가 기본값(gemini)을 보내더라도, 모델설정에서 Claude/GPT 등을 선택했다면 그 값을 우선한다.
+        # ✅ 운영 고정(요구사항): quick-generate는 Claude 경로로 고정한다.
+        # - 생성계 품질 일관성을 위해 유저/프론트 모델 설정을 무시한다.
         try:
-            preferred_model = str(getattr(current_user, "preferred_model", "") or "").strip().lower()
+            payload = QuickCharacterGenerateRequest(
+                **{
+                    **payload.model_dump(),
+                    "ai_model": "claude",
+                    "ai_sub_model": None,
+                }
+            )
         except Exception:
-            preferred_model = ""
-        try:
-            preferred_sub_model = str(getattr(current_user, "preferred_sub_model", "") or "").strip()
-        except Exception:
-            preferred_sub_model = ""
-        if preferred_model in ("gemini", "claude", "gpt"):
-            try:
-                # ✅ 요청사항: "제미니는 제미니인데, 서브모델만 Pro로"
-                # - 실험 전 기본이 flash였다면, QuickMeet 프로필 자동생성에서는
-                #   저장된 preferred_sub_model이 flash로 남아 계속 flash가 호출될 수 있다.
-                # - provider(gemini/claude/gpt) 정책은 건드리지 않고,
-                #   gemini일 때만 sub_model을 gemini-3-pro-preview로 치환한다.
-                if preferred_model == "gemini":
-                    preferred_sub_model = "gemini-3-pro-preview"
-                payload = QuickCharacterGenerateRequest(
-                    **{
-                        **payload.model_dump(),
-                        "ai_model": preferred_model,
-                        "ai_sub_model": preferred_sub_model or None,
-                    }
-                )
-            except Exception:
-                # 방어: 모델 주입 실패 시 원본 유지
-                pass
+            # 방어: 모델 주입 실패 시 원본 유지
+            pass
 
         draft = await generate_quick_character_draft(payload)
 
@@ -1421,8 +1405,8 @@ async def quick_generate_secret(
     - 유저에게 노출되면 안 되는 비밀 설정을 200~600자 수준으로 생성한다.
     """
     try:
-        # ✅ 운영 고정(요구사항): 위저드 quick-*는 Gemini 3 Pro로 고정
-        forced_ai_model = "gemini"
+        # ✅ 운영 고정(요구사항): 위저드 quick-*는 Claude Haiku 4.5 경로로 고정
+        forced_ai_model = "claude"
         secret_text = await generate_quick_secret_info(
             name=payload.name,
             description=payload.description,
