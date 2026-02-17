@@ -86,6 +86,8 @@ from app.schemas.quick_character import (
     QuickVisionHintsRequest,
     QuickVisionHintsResponse,
     QuickCreate30sRequest,
+    QuickConceptGenerateRequest,
+    QuickConceptGenerateResponse,
     QuickPromptGenerateRequest,
     QuickPromptGenerateResponse,
     QuickStatGenerateRequest,
@@ -135,6 +137,7 @@ from app.services.quick_character_service import (
     generate_quick_character_draft,
     generate_quick_simulator_prompt,
     generate_quick_roleplay_prompt,
+    generate_quick_concept,
     build_quick_vision_hints,
     generate_quick_first_start,
     generate_quick_detail,
@@ -818,6 +821,13 @@ async def quick_create_character_30s(
             raise HTTPException(status_code=400, detail="name_required")
         if not one_line:
             raise HTTPException(status_code=400, detail="one_line_intro_required")
+        # 작품 컨셉(선택): 30초 생성에서는 보조 입력으로만 사용하고, 프로필 한줄소개(description) SSOT는 유지한다.
+        profile_concept = str(getattr(payload, "profile_concept", "") or "").strip()[:1500]
+        description_for_generation = one_line
+        if profile_concept:
+            description_for_generation = (
+                f"{one_line}\n\n[작품 컨셉(추가 참고)]\n{profile_concept}"
+            )[:3000]
 
         # 태그(slug): 성향/스타일은 필수로 포함
         extra_tags = getattr(payload, "tags", None) or []
@@ -924,7 +934,7 @@ async def quick_create_character_30s(
         if character_type == "simulator":
             world_setting = await generate_quick_simulator_prompt(
                 name=name,
-                description=one_line,
+                description=description_for_generation,
                 max_turns=max_turns,
                 allow_infinite_mode=False,
                 tags=tag_slugs,
@@ -934,7 +944,7 @@ async def quick_create_character_30s(
             )
             stats = await generate_quick_stat_draft(
                 name=name,
-                description=one_line,
+                description=description_for_generation,
                 world_setting=world_setting,
                 mode=character_type,
                 tags=tag_slugs,
@@ -956,7 +966,7 @@ async def quick_create_character_30s(
         else:
             world_setting = await generate_quick_roleplay_prompt(
                 name=name,
-                description=one_line,
+                description=description_for_generation,
                 max_turns=max_turns,
                 allow_infinite_mode=False,
                 tags=tag_slugs,
@@ -967,7 +977,7 @@ async def quick_create_character_30s(
             try:
                 stats = await generate_quick_stat_draft(
                     name=name,
-                    description=one_line,
+                    description=description_for_generation,
                     world_setting=world_setting,
                     mode=character_type,
                     tags=tag_slugs,
@@ -1003,7 +1013,7 @@ async def quick_create_character_30s(
 
         intro, first_line = await generate_quick_first_start(
             name=name,
-            description=one_line,
+            description=description_for_generation,
             world_setting=world_setting,
             mode=character_type,
             sim_variant=None,
@@ -1023,7 +1033,7 @@ async def quick_create_character_30s(
         try:
             evs = await generate_quick_turn_events(
                 name=name,
-                description=one_line,
+                description=description_for_generation,
                 world_setting=str(world_setting or ""),
                 opening_intro=str(intro or ""),
                 opening_first_line=str(first_line or ""),
@@ -1070,6 +1080,10 @@ async def quick_create_character_30s(
             "selectedId": opening_id,
             "items": [start_set_item],
             "setting_book": setting_book,
+            "profile_concept": {
+                "enabled": bool(profile_concept),
+                "text": str(profile_concept or "")[:1500],
+            },
             # UI 상단 프로필 옵션과의 호환(프론트는 여기서 max_turns를 읽음)
             "sim_options": {"max_turns": max_turns, "allow_infinite_mode": False, "sim_dating_elements": bool(sim_dating_elements)},
             "_backfill_status": "pending",
@@ -1139,7 +1153,7 @@ async def quick_create_character_30s(
                 character_id=str(character.id),
                 creator_id=str(current_user.id),
                 name=name,
-                description=one_line,
+                description=description_for_generation,
                 world_setting=str(world_setting or ""),
                 opening_id=opening_id,
                 opening_intro=str(intro or ""),
@@ -1168,6 +1182,43 @@ async def quick_create_character_30s(
                     logger.warning(f"[characters.quick-create-30s] redis delete failed (lock_key): {e}")
                 except Exception:
                     pass
+
+
+@router.post("/quick-generate-concept", response_model=QuickConceptGenerateResponse)
+async def quick_generate_concept_endpoint(
+    payload: QuickConceptGenerateRequest,
+    current_user: User = Depends(get_current_active_user),
+):
+    """
+    위저드 '프로필' 단계: 작품 컨셉 AI 자동 생성.
+
+    - 프로필(이름/한줄소개/태그/성향/턴수)을 AI에 전달해 산문형 컨셉을 생성한다.
+    - DB 저장은 하지 않는다(SSOT: 실제 저장은 /characters/advanced).
+    """
+    try:
+        mode = getattr(payload, "mode", None) or "roleplay"
+        concept_text = await generate_quick_concept(
+            name=payload.name,
+            description=payload.description,
+            mode=mode,
+            tags=getattr(payload, "tags", []) or [],
+            audience=getattr(payload, "audience", "전체") or "전체",
+            max_turns=getattr(payload, "max_turns", 200) or 200,
+            sim_variant=getattr(payload, "sim_variant", None),
+            sim_dating_elements=getattr(payload, "sim_dating_elements", None),
+        )
+        return QuickConceptGenerateResponse(concept=concept_text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        try:
+            logger.exception(f"[characters.quick-generate-concept] failed: {e}")
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="quick_generate_concept_failed"
+        )
 
 
 @router.post("/quick-generate-prompt", response_model=QuickPromptGenerateResponse)
@@ -1295,8 +1346,8 @@ async def quick_generate_first_start(
     - 300~1000자(도입부+첫대사 합산)로 생성한다.
     """
     try:
-        # ✅ 운영 고정(요구사항): 위저드 첫시작은 Gemini 3 Pro로 고정
-        forced_ai_model = "gemini"
+        # ✅ 운영 고정(요구사항): 위저드 첫시작은 Claude Haiku 4.5로 고정
+        forced_ai_model = "claude"
         intro, first_line = await generate_quick_first_start(
             name=payload.name,
             description=payload.description,

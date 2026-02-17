@@ -1,7 +1,7 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { X, ChevronLeft, ChevronRight } from 'lucide-react';
+import { X, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
 import { api, charactersAPI, mediaAPI, chatAPI } from '../lib/api';
@@ -80,6 +80,16 @@ export default function CharacterMobileDetailModal({
   })();
   // ✅ 오프닝 선택(모바일 상세 모달)
   const [selectedOpeningId, setSelectedOpeningId] = React.useState('');
+
+  const selectedOpeningTitle = React.useMemo(() => {
+    try {
+      const items = Array.isArray(character?.start_sets?.items) ? character.start_sets.items : [];
+      const sid = String(selectedOpeningId || '').trim();
+      if (!sid || items.length === 0) return '';
+      const found = items.find((x) => String(x?.id || '').trim() === sid);
+      return String(found?.title || '').trim();
+    } catch (_) { return ''; }
+  }, [character?.start_sets?.items, selectedOpeningId]);
 
   const { data: recentRooms = [] } = useQuery({
     queryKey: ['pc-mobile-detail', 'recent-rooms', cid, user?.id || 'anon'],
@@ -540,8 +550,8 @@ export default function CharacterMobileDetailModal({
             <div className="h-full overflow-y-auto scrollbar-hide">
               <div className="w-full pl-5 pr-2">
                 {isLoading ? (
-                  <div className="py-6 text-sm text-gray-300">
-                    불러오는 중…
+                  <div className="flex items-center justify-center py-16">
+                    <Loader2 className="w-8 h-8 animate-spin text-gray-400" />
                   </div>
                 ) : isError || !character ? (
                   <div className="py-6 text-sm text-gray-300">
@@ -716,28 +726,26 @@ export default function CharacterMobileDetailModal({
                 <Button
                   type="button"
                   onClick={startNewChat}
-                  className="w-full bg-red-600 hover:bg-red-700 text-white font-bold text-lg py-6"
+                  className="w-full overflow-hidden bg-red-600 hover:bg-red-700 text-white font-bold text-lg py-6"
                 >
-                  <div className="flex flex-col items-center leading-tight">
-                    {!isOrigChatCharacter ? (
-                      <div className="text-xs font-semibold text-white/90">선택한 오프닝으로</div>
-                    ) : null}
-                    <div className="text-lg font-extrabold">새로 대화</div>
-                  </div>
+                  {!isOrigChatCharacter && selectedOpeningTitle ? (
+                    <span className="block w-full min-w-0 truncate text-sm font-bold px-1">'{selectedOpeningTitle}'로 새로 대화</span>
+                  ) : (
+                    <span className="text-lg font-extrabold">새로 대화</span>
+                  )}
                 </Button>
               </div>
             ) : (
               <Button
                 type="button"
                 onClick={startChat}
-                className="w-full bg-red-600 hover:bg-red-700 text-white font-bold text-lg py-6"
+                className="w-full overflow-hidden bg-red-600 hover:bg-red-700 text-white font-bold text-lg py-6"
               >
-                <div className="flex flex-col items-center leading-tight">
-                  {!isOrigChatCharacter ? (
-                    <div className="text-xs font-semibold text-white/90">선택한 오프닝으로</div>
-                  ) : null}
-                  <div className="text-lg font-extrabold">새로 대화</div>
-                </div>
+                {!isOrigChatCharacter && selectedOpeningTitle ? (
+                  <span className="block w-full min-w-0 truncate text-sm font-bold px-1">'{selectedOpeningTitle}'로 새로 대화</span>
+                ) : (
+                  <span className="text-lg font-extrabold">대화 시작</span>
+                )}
               </Button>
             )}
           </div>

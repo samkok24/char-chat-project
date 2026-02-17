@@ -68,6 +68,16 @@ const CharacterDetailPage = () => {
   // 시작 버튼을 누르면 해당 오프닝으로 채팅이 시작된다.
   const [selectedOpeningId, setSelectedOpeningId] = useState('');
 
+  const selectedOpeningName = React.useMemo(() => {
+    try {
+      const items = Array.isArray(character?.start_sets?.items) ? character.start_sets.items : [];
+      const sid = String(selectedOpeningId || '').trim();
+      if (!sid || items.length === 0) return '';
+      const found = items.find((x) => String(x?.id || '').trim() === sid);
+      return String(found?.title || '').trim();
+    } catch (_) { return ''; }
+  }, [character?.start_sets?.items, selectedOpeningId]);
+
   // Media assets for this character
   const { data: mediaAssets = [], refetch: refetchMedia } = useQuery({
     queryKey: ['media-assets', 'character', characterId],
@@ -624,6 +634,7 @@ const CharacterDetailPage = () => {
               isWebNovel={isWebNovel}
               originStoryId={originStoryId}
               openingId={selectedOpeningId}
+              openingName={selectedOpeningName}
             />
             <CharacterDetails 
               character={character}
