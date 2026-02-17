@@ -33,11 +33,12 @@ import {
 } from 'lucide-react';
 import { formatCount } from '../lib/format';
 import { replacePromptTokens } from '../lib/prompt';
+import { clearCreateCharacterDraft, hasCreateCharacterDraft } from '../lib/createCharacterDraft';
 import AppLayout from '../components/layout/AppLayout';
 import { CharacterCard as SharedCharacterCard, CharacterCardSkeleton as SharedCharacterCardSkeleton } from '../components/CharacterCard';
 import StoryExploreCard from '../components/StoryExploreCard';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../components/ui/tabs';
-import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogAction } from '../components/ui/alert-dialog';
+import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogAction, AlertDialogCancel, AlertDialogFooter } from '../components/ui/alert-dialog';
 
 const PAGE_SIZE = 24;
 
@@ -201,10 +202,33 @@ const MyCharactersPage = () => {
   const [selectedCharIds, setSelectedCharIds] = useState(new Set());
   const [isBulkDeletingChars, setIsBulkDeletingChars] = useState(false);
   const [doneModal, setDoneModal] = useState({ open: false, message: '' });
+  const [draftPromptOpen, setDraftPromptOpen] = useState(false);
 
   const { user } = useAuth();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const handleCreateCharacterClick = useCallback((e) => {
+    try { e?.preventDefault?.(); } catch (_) {}
+    try {
+      if (hasCreateCharacterDraft()) {
+        setDraftPromptOpen(true);
+        return;
+      }
+    } catch (_) {}
+    navigate('/characters/create');
+  }, [navigate]);
+
+  const handleDraftStartFresh = useCallback(() => {
+    try { clearCreateCharacterDraft(); } catch (_) {}
+    try { setDraftPromptOpen(false); } catch (_) {}
+    try { navigate('/characters/create'); } catch (_) {}
+  }, [navigate]);
+
+  const handleDraftLoad = useCallback(() => {
+    try { setDraftPromptOpen(false); } catch (_) {}
+    try { navigate('/characters/create'); } catch (_) {}
+  }, [navigate]);
+
   const resolveTabFromHash = useCallback((hash) => {
     switch (hash) {
       case '#favorites':
@@ -453,6 +477,7 @@ const MyCharactersPage = () => {
     return (
       <Link
         to="/characters/create"
+        onClick={handleCreateCharacterClick}
         className="flex w-full sm:w-auto items-center justify-center px-4 py-2.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors font-medium text-sm shadow-lg"
       >
         <Plus className="w-5 h-5 mr-2" />
@@ -597,7 +622,7 @@ const MyCharactersPage = () => {
                 <h3 className="text-lg font-semibold text-white mb-2">아직 만든 캐릭터가 없습니다</h3>
                 <p className="text-gray-400 mb-6">나만의 AI 캐릭터를 만들어 특별한 대화를 시작해보세요!</p>
                 <Button
-                  onClick={() => navigate('/characters/create')}
+                  onClick={handleCreateCharacterClick}
                   className="bg-purple-600 text-white px-4 py-2 rounded-lg font-medium border-0 transition-none hover:bg-purple-600"
                 >
                   <Plus className="w-4 h-4 mr-2" />
@@ -635,6 +660,20 @@ const MyCharactersPage = () => {
               <AlertDialogDescription>{doneModal.message || '선택 항목이 삭제되었습니다.'}</AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogAction onClick={()=> setDoneModal({ open: false, message: '' })}>확인</AlertDialogAction>
+          </AlertDialogContent>
+        </AlertDialog>
+        <AlertDialog open={draftPromptOpen} onOpenChange={setDraftPromptOpen}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>임시저장된 초안을 찾았어요</AlertDialogTitle>
+              <AlertDialogDescription>
+                이어서 불러오시겠어요? 새로 만들기를 선택하면 기존 임시저장은 삭제됩니다.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel onClick={handleDraftLoad}>불러오기</AlertDialogCancel>
+              <AlertDialogAction onClick={handleDraftStartFresh}>새로 만들기</AlertDialogAction>
+            </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
       </main>

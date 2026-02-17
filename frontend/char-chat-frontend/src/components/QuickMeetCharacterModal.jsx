@@ -17,6 +17,7 @@ import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../contexts/AuthContext';
 import { charactersAPI, filesAPI, mediaAPI, tagsAPI } from '../lib/api';
+import { clearCreateCharacterDraft, hasCreateCharacterDraft } from '../lib/createCharacterDraft';
 import { resolveImageUrl } from '../lib/images';
 import { buildImageGenerationPrompt, styleKeyFromQuickMeetStyleSlug } from '../lib/imageGenerationPrompt';
 import { buildAutoGenModeHint } from '../lib/autoGenModeHints';
@@ -26,6 +27,7 @@ import { guessNameGenderFromTitle, recommendAudienceSlugFromTitle } from '../lib
 import { QUICK_MEET_GENRE_CHIPS, QUICK_MEET_TYPE_CHIPS, QUICK_MEET_HOOK_CHIPS, QUICK_MEET_HOOK_CHIPS_SIMULATOR, shuffleCopy, getQuickMeetGenrePriority, uniqStringsPreserveOrder } from '../lib/quickMeetFixedChips';
 import CharLimitCounter from './CharLimitCounter';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from './ui/alert-dialog';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Textarea } from './ui/textarea';
@@ -461,6 +463,7 @@ const QUICK_MEET_SIM_DATING_PRO_WRITER_LINE =
 // ✅ 한줄소개 상한은 모드별로 다르다(시뮬 400, 그 외 300)
 const QUICK_MEET_KEYWORDS_RAW_MAX_LEN = 120;
 const QUICK_MEET_SETTING_MEMO_MAX_LEN = 200;
+const QUICK_MEET_PROFILE_CONCEPT_MAX_LEN = 1500;
 
 /**
  * ✅ 온보딩 필수 선택(메타) 옵션
@@ -536,6 +539,7 @@ export default function QuickMeetCharacterModal({
   const [imgModalSeedGallery, setImgModalSeedGallery] = useState(null); // crop용 임시 갤러리(업로드 전 프리뷰 포함)
   const [profileAutoGenUseImage, setProfileAutoGenUseImage] = useState(false); // ✅ 프로필 자동생성에서 이미지 정보 포함 여부(기본 OFF)
   const [useSentenceStyleName, setUseSentenceStyleName] = useState(false); // ✅ 문장형 제목 생성 여부(기본 OFF=제목형)
+  const [draftPromptOpen, setDraftPromptOpen] = useState(false);
   const isCoarsePointer = useMemo(() => {
     try {
       return typeof window !== 'undefined' && !!window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
@@ -564,6 +568,8 @@ export default function QuickMeetCharacterModal({
   const [simDatingElements, setSimDatingElements] = useState(false); // ✅ 시뮬 내 미연시 요소(ON/OFF)
   const [maxTurns, setMaxTurns] = useState(125); // 100~150 기본값 (속도 최적화)
   const [settingMemos, setSettingMemos] = useState(['', '', '']); // 설정메모 3개(선택)
+  const [profileConceptText, setProfileConceptText] = useState(''); // 작품컨셉(선택)
+  const [profileConceptAutoGenLoading, setProfileConceptAutoGenLoading] = useState(false); // 작품컨셉 자동생성 로딩
   const requestIdRef = useRef('');
   const [advancedOpen, setAdvancedOpen] = useState(false); // 추가입력(접기/펼치기)
 
@@ -576,7 +582,7 @@ export default function QuickMeetCharacterModal({
   const [profileAutoGenMode, setProfileAutoGenMode] = useState('auto'); // ✅ 요구사항: 알아서 생성만 사용
   const [profileAutoGenKeywordsRaw, setProfileAutoGenKeywordsRaw] = useState(''); // auto 모드에서만 사용(선택)
   const [overwriteConfirmOpen, setOverwriteConfirmOpen] = useState(false);
-  const [overwriteConfirmKind, setOverwriteConfirmKind] = useState(''); // 'name' | 'oneLine' | 'profile'
+  const [overwriteConfirmKind, setOverwriteConfirmKind] = useState(''); // 'name' | 'oneLine' | 'profile' | 'concept'
   const [overwriteConfirmTargets, setOverwriteConfirmTargets] = useState([]); // ['작품명', '한줄소개']
   const [scrollbarActive, setScrollbarActive] = useState(false);
   
@@ -1269,6 +1275,7 @@ export default function QuickMeetCharacterModal({
     setImageGenModel('gemini-2.5-flash-image');
     setImageGenRatio('1:1');
     setImageGenOpen(false);
+    setDraftPromptOpen(false);
     setImageTrayGallery([]);
     setImgModalOpen(false);
     setImgModalInitialCropIndex(-1);
@@ -1277,6 +1284,8 @@ export default function QuickMeetCharacterModal({
     setSimDatingElements(false);
     setMaxTurns(125);
     setSettingMemos(['', '', '']);
+    setProfileConceptText('');
+    setProfileConceptAutoGenLoading(false);
     setAdvancedOpen(false);
     setGenrePool(shuffleCopy(QUICK_MEET_GENRE_CHIPS));
     setGenreExpanded(false);
@@ -1293,6 +1302,41 @@ export default function QuickMeetCharacterModal({
       try { URL.revokeObjectURL(imagePreviewUrl); } catch (e) { try { console.warn('[QuickMeetCharacterModal] revokeObjectURL failed:', e); } catch (err) { void err; } }
     }
     setImagePreviewUrl('');
+  };
+
+  const moveToCreateWizard = ({ clearDraft = false } = {}) => {
+    try {
+      if (isBusy) {
+        dispatchToast('error', '진행 중에는 이동할 수 없어요. 잠시만 기다려주세요.');
+        return;
+      }
+      if (clearDraft) {
+        try { clearCreateCharacterDraft(); } catch (_) {}
+      }
+      try { onClose?.(); } catch (e) { try { console.warn('[QuickMeetCharacterModal] onClose failed:', e); } catch (_) {} }
+      try { resetAll(); } catch (e) { try { console.warn('[QuickMeetCharacterModal] resetAll failed:', e); } catch (_) {} }
+      try { navigate('/characters/create'); } catch (e) { try { console.warn('[QuickMeetCharacterModal] navigate failed:', e); } catch (_) {} }
+    } catch (e) {
+      try { console.warn('[QuickMeetCharacterModal] moveToCreateWizard failed:', e); } catch (_) {}
+    }
+  };
+
+  const handleMoveToRichCreate = () => {
+    try {
+      if (isBusy) {
+        dispatchToast('error', '진행 중에는 이동할 수 없어요. 잠시만 기다려주세요.');
+        return;
+      }
+      try {
+        if (hasCreateCharacterDraft()) {
+          setDraftPromptOpen(true);
+          return;
+        }
+      } catch (_) {}
+      moveToCreateWizard({ clearDraft: false });
+    } catch (e) {
+      try { console.warn('[QuickMeetCharacterModal] handleMoveToRichCreate failed:', e); } catch (_) {}
+    }
   };
 
   // 모달 열릴 때 초기값 반영 + 태그 로드(방어적)
@@ -1321,6 +1365,8 @@ export default function QuickMeetCharacterModal({
     setSimDatingElements(false);
     setMaxTurns(125);
     setSettingMemos(['', '', '']);
+    setProfileConceptText('');
+    setProfileConceptAutoGenLoading(false);
     setAdvancedOpen(false);
     requestIdRef.current = '';
     setProfileThemeSuggestions({ roleplay: [], simulator: [] });
@@ -1579,7 +1625,7 @@ export default function QuickMeetCharacterModal({
      * - 단, 실수로 입력값을 날리지 않도록 덮어쓰기 직전에 경고 모달을 띄운다.
      */
     try {
-      if (generating || autoGenLoading) return;
+      if (generating || autoGenLoading || profileConceptAutoGenLoading) return;
       const k = String(kind || '').trim();
       const t = Array.isArray(targets) ? targets.filter(Boolean) : [];
       if (!k || t.length === 0) return;
@@ -1599,7 +1645,7 @@ export default function QuickMeetCharacterModal({
      * - kind에 따라 해당 자동생성을 "강제로" 실행한다(덮어쓰기).
      */
     try {
-      if (generating || autoGenLoading) return;
+      if (generating || autoGenLoading || profileConceptAutoGenLoading) return;
       const kind = String(overwriteConfirmKind || '').trim();
       setOverwriteConfirmOpen(false);
 
@@ -1618,6 +1664,10 @@ export default function QuickMeetCharacterModal({
           forceOverwrite: true,
           nameOverride: lastAutoGeneratedNameRef.current || name,
         });
+        return;
+      }
+      if (kind === 'concept') {
+        await handleAutoGenerateProfileConcept({ forceOverwrite: true });
         return;
       }
     } catch (e) {
@@ -3098,6 +3148,78 @@ export default function QuickMeetCharacterModal({
     }
   };
 
+  const handleAutoGenerateProfileConcept = async ({ forceOverwrite = false } = {}) => {
+    /**
+     * ✅ 30초 모달: 작품컨셉 자동생성(선택)
+     *
+     * 의도/원리:
+     * - 위저드와 동일한 `/characters/quick-generate-concept`를 사용해 품질 일관성을 유지한다.
+     * - 생성 결과는 30초 생성 payload에 함께 담아 서버에서 보조 입력으로 활용한다.
+     */
+    if (generating || autoGenLoading || profileConceptAutoGenLoading) return;
+
+    const n = String(name || '').trim();
+    const d = String(seedText || '').trim();
+    if (!n) {
+      dispatchToast('error', '작품명을 먼저 입력/자동생성해주세요.');
+      return;
+    }
+    if (!d) {
+      dispatchToast('error', '한줄소개를 먼저 입력/자동생성해주세요.');
+      return;
+    }
+    if (hasAnyText(profileConceptText) && !forceOverwrite) {
+      openOverwriteConfirm('concept', ['작품컨셉']);
+      return;
+    }
+
+    setProfileConceptAutoGenLoading(true);
+    try {
+      const audience = selectedAudienceSlug || (REQUIRED_AUDIENCE_CHOICES[0]?.slug || '남성향');
+      const style = selectedStyleSlug || (REQUIRED_STYLE_CHOICES[0]?.slug || '애니풍');
+      const tagsForConcept = (() => {
+        try {
+          const arr = (Array.isArray(selectedTagSlugs) ? selectedTagSlugs : [])
+            .map((x) => String(x || '').trim())
+            .filter(Boolean);
+          return arr.length ? arr : [audience, style];
+        } catch (_) {
+          return [audience, style];
+        }
+      })();
+      const mode = (String(characterType || 'roleplay').toLowerCase() === 'simulator') ? 'simulator' : 'roleplay';
+
+      const res = await charactersAPI.quickGenerateConceptDraft({
+        name: n,
+        description: d.slice(0, 500),
+        mode,
+        tags: tagsForConcept,
+        audience,
+        max_turns: Number.isFinite(Number(maxTurns)) ? Math.max(50, Math.floor(Number(maxTurns))) : 125,
+        ...(mode === 'simulator'
+          ? {
+              sim_variant: (simDatingElements ? 'dating' : 'scenario'),
+              sim_dating_elements: !!simDatingElements,
+            }
+          : {}),
+      });
+
+      const concept = String(res?.data?.concept || '').trim();
+      if (!concept) throw new Error('concept_empty');
+      setProfileConceptText(concept.slice(0, QUICK_MEET_PROFILE_CONCEPT_MAX_LEN));
+      dispatchToast('success', '작품컨셉이 자동 생성되었습니다.');
+    } catch (e) {
+      console.error('[QuickMeetCharacterModal] auto-generate profile concept failed:', e);
+      const m = String(e?.message || '');
+      const msg = (m === 'concept_empty')
+        ? '작품컨셉 자동생성 결과가 비어있습니다. 잠시 후 다시 시도해주세요.'
+        : '작품컨셉 자동생성에 실패했습니다. 잠시 후 다시 시도해주세요.';
+      dispatchToast('error', msg);
+    } finally {
+      setProfileConceptAutoGenLoading(false);
+    }
+  };
+
   const handleGenerateDraft = async () => {
     // ✅ 요구사항: 글자수 초과는 "오류(Alert)"가 아니라 인라인 경고로만 안내한다.
     // - 따라서 초과 상태에서는 조용히 차단(버튼 비활성화 + 경고 문구)하고,
@@ -3167,6 +3289,10 @@ export default function QuickMeetCharacterModal({
         one_line_intro: String(seedText || '').trim().slice(0, ((String(characterType || '').toLowerCase() === 'simulator') ? PROFILE_ONE_LINE_MAX_LEN_SIMULATOR : PROFILE_ONE_LINE_MAX_LEN)),
         tags: otherTags,
         setting_memos: memos,
+        profile_concept: (() => {
+          const t = String(profileConceptText || '').trim();
+          return t ? t.slice(0, QUICK_MEET_PROFILE_CONCEPT_MAX_LEN) : undefined;
+        })(),
         // ✅ 요구사항: 시뮬 내 미연시 요소 토글(OFF면 의미 없으므로 서버에 굳이 강제하지 않아도 되지만, 상태 전달은 허용)
         sim_dating_elements: (String(characterType || 'roleplay').toLowerCase() === 'simulator') ? !!simDatingElements : undefined,
       };
@@ -3236,7 +3362,7 @@ export default function QuickMeetCharacterModal({
   const previewDesc = String(createdCharacter?.description || '').trim();
   const previewGreeting = String(createdCharacter?.greeting || '').trim();
   // ✅ UX/안정성: 자동생성/생성 진행 중에는 입력을 잠가 레이스(덮어쓰기/불일치)를 원천 차단한다.
-  const isBusy = !!(generating || autoGenLoading);
+  const isBusy = !!(generating || autoGenLoading || profileConceptAutoGenLoading);
 
   /**
    * ✅ 글자수 초과 감지(에러 대신 인라인 경고용)
@@ -3251,14 +3377,16 @@ export default function QuickMeetCharacterModal({
   const seedLen = String(seedText ?? '').length;
   const keywordsLen = String(profileAutoGenKeywordsRaw ?? '').length;
   const memoLens = (Array.isArray(settingMemos) ? settingMemos : []).map((v) => String(v ?? '').length);
+  const conceptLen = String(profileConceptText ?? '').length;
 
   const oneLineMaxLen = (characterType === 'simulator') ? PROFILE_ONE_LINE_MAX_LEN_SIMULATOR : PROFILE_ONE_LINE_MAX_LEN;
   const isOverName = nameLen > PROFILE_NAME_MAX_LEN;
   const isOverSeed = seedLen > oneLineMaxLen;
   const isOverKeywords = keywordsLen > QUICK_MEET_KEYWORDS_RAW_MAX_LEN;
   const isOverMemos = memoLens.some((x) => x > QUICK_MEET_SETTING_MEMO_MAX_LEN);
+  const isOverConcept = conceptLen > QUICK_MEET_PROFILE_CONCEPT_MAX_LEN;
 
-  const hasAnyOverLimit = !!(isOverName || isOverSeed || isOverKeywords || isOverMemos);
+  const hasAnyOverLimit = !!(isOverName || isOverSeed || isOverKeywords || isOverMemos || isOverConcept);
 
   const renderBottomProgressBar = (pct) => {
     /**
@@ -4408,6 +4536,48 @@ export default function QuickMeetCharacterModal({
                       <div className="text-[11px] text-gray-500">선택 입력이며, 최대 3개까지 가능합니다.</div>
                     </div>
 
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-xs sm:text-sm font-semibold text-gray-200">작품컨셉</div>
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          className="h-9 sm:h-10 rounded-lg sm:rounded-xl bg-gray-800 text-gray-100 hover:bg-gray-700 px-3 text-xs sm:text-sm"
+                          onClick={() => handleAutoGenerateProfileConcept({ forceOverwrite: false })}
+                          disabled={isBusy}
+                          title={hasAnyText(profileConceptText) ? '덮어쓰기 확인 후 작품컨셉을 자동생성합니다.' : '작품명/한줄소개를 바탕으로 작품컨셉을 자동생성합니다.'}
+                        >
+                          <span className="inline-flex items-center gap-2">
+                            {profileConceptAutoGenLoading ? (
+                              <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
+                            ) : (
+                              <Sparkles className="w-4 h-4 opacity-90" aria-hidden="true" />
+                            )}
+                            <span>{profileConceptAutoGenLoading ? '생성 중' : '작품컨셉 자동생성'}</span>
+                          </span>
+                        </Button>
+                      </div>
+                      <div className="relative">
+                        <Textarea
+                          value={String(profileConceptText || '')}
+                          onChange={(e) => setProfileConceptText(String(e?.target?.value || ''))}
+                          placeholder="선택 입력: 작품의 분위기, 관계 흐름, 핵심 루프/목표 등을 자유롭게 적어주세요."
+                          className="pr-16 pb-6 rounded-lg sm:rounded-xl bg-gray-950/30 border-gray-700 text-gray-100 placeholder:text-gray-500 focus-visible:ring-purple-500/30 focus-visible:border-purple-500/40 text-sm sm:text-base"
+                          rows={5}
+                          disabled={isBusy}
+                        />
+                        <CharLimitCounter value={String(profileConceptText || '')} max={QUICK_MEET_PROFILE_CONCEPT_MAX_LEN} />
+                      </div>
+                      {isOverConcept ? (
+                        <div className="text-[11px] sm:text-xs text-rose-400">
+                          작품컨셉은 최대 {QUICK_MEET_PROFILE_CONCEPT_MAX_LEN}자까지 입력할 수 있어요. (현재 {conceptLen}자)
+                        </div>
+                      ) : null}
+                      <div className="text-[11px] text-gray-500">
+                        선택 입력이며, 30초 생성 시 프롬프트/오프닝 품질 보강용으로 함께 전달됩니다.
+                      </div>
+                    </div>
+
                     {/* ✅ 요구사항: 태그선택(회색 버튼)을 "추가입력" 안으로 이동 */}
                     <div className="space-y-2">
                       <div className="flex items-center justify-between gap-2">
@@ -4459,29 +4629,7 @@ export default function QuickMeetCharacterModal({
                     type="button"
                     variant="outline"
                     className="flex-1 h-11 rounded-xl border-gray-700 bg-gray-800/40 text-gray-200 hover:bg-gray-800/60 text-sm font-semibold"
-                    onClick={() => {
-                      /**
-                       * ✅ "더 풍부하게 생성하기" 이동 버튼
-                       *
-                       * 의도:
-                       * - Quick Meet(30초) 대신, 위저드/커스텀 프롬프트 등 "정식 캐릭터 생성" 흐름으로 안내한다.
-                       *
-                       * 동작:
-                       * - 진행 중(isBusy)에는 닫기/이동을 막고 토스트로 안내한다(방어).
-                       * - 모달을 닫고(reset 포함) `/characters/create`로 이동한다.
-                       */
-                      try {
-                        if (isBusy) {
-                          dispatchToast('error', '진행 중에는 이동할 수 없어요. 잠시만 기다려주세요.');
-                          return;
-                        }
-                        try { onClose?.(); } catch (e) { try { console.warn('[QuickMeetCharacterModal] onClose failed:', e); } catch (_) {} }
-                        try { resetAll(); } catch (e) { try { console.warn('[QuickMeetCharacterModal] resetAll failed:', e); } catch (_) {} }
-                        try { navigate('/characters/create'); } catch (e) { try { console.warn('[QuickMeetCharacterModal] navigate failed:', e); } catch (_) {} }
-                      } catch (e) {
-                        try { console.warn('[QuickMeetCharacterModal] rich-create click failed:', e); } catch (_) {}
-                      }
-                    }}
+                    onClick={handleMoveToRichCreate}
                     disabled={isBusy}
                   >
                     더 풍부하게 생성하기
@@ -4694,8 +4842,24 @@ export default function QuickMeetCharacterModal({
         }}
         initialCropIndex={imgModalInitialCropIndex}
       />
+      <AlertDialog open={draftPromptOpen} onOpenChange={setDraftPromptOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>임시저장된 초안을 찾았어요</AlertDialogTitle>
+            <AlertDialogDescription>
+              이어서 불러오시겠어요? 새로 만들기를 선택하면 기존 임시저장은 삭제됩니다.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => moveToCreateWizard({ clearDraft: false })} disabled={isBusy}>
+              불러오기
+            </AlertDialogCancel>
+            <AlertDialogAction onClick={() => moveToCreateWizard({ clearDraft: true })} disabled={isBusy}>
+              새로 만들기
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }
-
-

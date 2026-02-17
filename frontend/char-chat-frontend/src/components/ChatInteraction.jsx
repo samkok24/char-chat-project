@@ -13,7 +13,7 @@ import { usersAPI, chatAPI, origChatAPI } from '../lib/api';
 import { getReadingProgress } from '../lib/readingProgress';
 import { Loader2 } from 'lucide-react';
 
-const ChatInteraction = ({ onStartChat, characterId, isAuthenticated, isWebNovel = false, originStoryId = null, openingId = '' }) => {
+const ChatInteraction = ({ onStartChat, characterId, isAuthenticated, isWebNovel = false, originStoryId = null, openingId = '', openingName = '' }) => {
   const navigate = useNavigate();
   const isOrigChatCharacter = !!originStoryId;
   const safeOriginStoryId = (() => {
@@ -171,21 +171,29 @@ const ChatInteraction = ({ onStartChat, characterId, isAuthenticated, isWebNovel
           <Button onClick={handleContinue} disabled={startingOrigChat} className="w-full bg-gray-700 hover:bg-gray-600 text-white font-semibold py-5">
             계속 대화
           </Button>
-          <Button onClick={handleNew} disabled={startingOrigChat} className="w-full bg-red-600 hover:bg-red-700 text-white font-semibold py-5">
+          <Button onClick={handleNew} disabled={startingOrigChat} className="w-full overflow-hidden bg-red-600 hover:bg-red-700 text-white font-semibold py-5">
             {startingOrigChat ? (
               <span className="inline-flex items-center gap-2">
                 <Loader2 className="w-4 h-4 animate-spin" /> 준비 중...
               </span>
-            ) : (isOrigChatCharacter ? '새로 대화' : '선택한 오프닝으로 새로 대화')}
+            ) : (isOrigChatCharacter ? '새로 대화' : (
+              openingName
+                ? <span className="block w-full min-w-0 truncate">'{openingName}'로 새로 대화</span>
+                : '새로 대화'
+            ))}
           </Button>
         </div>
       ) : (
         <Button
           onClick={isOrigChatCharacter ? handleContinue : onStartChat}
           disabled={startingOrigChat}
-          className="w-full bg-red-600 hover:bg-red-700 text-white font-bold text-lg py-6"
+          className="w-full overflow-hidden bg-red-600 hover:bg-red-700 text-white font-bold text-lg py-6"
         >
-          {isOrigChatCharacter ? '새로 대화' : (isWebNovel ? '등장인물과 원작챗 시작' : '대화 시작')}
+          {isOrigChatCharacter ? '새로 대화' : (isWebNovel ? '등장인물과 원작챗 시작' : (
+            openingName
+              ? <span className="block w-full min-w-0 truncate">'{openingName}'로 새로 대화</span>
+              : '대화 시작'
+          ))}
         </Button>
       )}
     </div>

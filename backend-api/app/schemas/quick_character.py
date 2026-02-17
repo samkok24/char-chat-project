@@ -99,6 +99,32 @@ class QuickCreate30sRequest(BaseModel):
     tags: List[str] = Field(default_factory=list, description="추가 태그 slug 목록(선택)")
     # 설정메모(최대 3개, 각 200자 권장) → start_sets.setting_book.items 로 저장
     setting_memos: List[str] = Field(default_factory=list, description="설정메모(최대 3개, 각 200자 권장)")
+    # 작품 컨셉(선택): 위저드와 동일한 보조 입력. 30초 생성에서는 품질 보강 + start_sets에 저장.
+    profile_concept: Optional[str] = Field(
+        None,
+        min_length=1,
+        max_length=1500,
+        description="작품 컨셉(선택, 1~1500자). 프롬프트/오프닝 생성 보조 입력 및 start_sets.profile_concept 저장.",
+    )
+
+
+class QuickConceptGenerateRequest(BaseModel):
+    """작품 컨셉 AI 자동 생성 요청 (위저드 전용)"""
+
+    name: str = Field(..., min_length=1, max_length=100, description="캐릭터 이름(프로필 입력값)")
+    description: str = Field(..., min_length=1, max_length=500, description="한줄소개(프로필 입력값)")
+    mode: Literal["simulator", "roleplay"] = Field("roleplay", description="모드 (simulator, roleplay)")
+    tags: List[str] = Field(default_factory=list, description="선택된 태그(성향/스타일 등)")
+    audience: str = Field("전체", max_length=24, description="성향(남성향/여성향/전체)")
+    max_turns: int = Field(200, ge=10, le=5000, description="최대 턴수(10~5000)")
+    sim_variant: Optional[str] = Field(None, max_length=16, description="시뮬 유형(dating/scenario)")
+    sim_dating_elements: Optional[bool] = Field(None, description="시뮬 내 미연시 요소 포함 여부")
+
+
+class QuickConceptGenerateResponse(BaseModel):
+    """작품 컨셉 AI 자동 생성 응답"""
+
+    concept: str = Field(..., min_length=1, max_length=1500, description="생성된 작품 컨셉 텍스트(산문형)")
 
 
 class QuickPromptGenerateRequest(BaseModel):

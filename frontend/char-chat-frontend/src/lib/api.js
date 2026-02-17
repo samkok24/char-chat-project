@@ -611,6 +611,10 @@ export const charactersAPI = {
   quickCreateCharacter30s: (data) =>
     api.post('/characters/quick-create-30s', data),
 
+  // ⚡ 위저드(일반 캐릭터): 작품 컨셉 AI 자동 생성
+  quickGenerateConceptDraft: (data) =>
+    api.post('/characters/quick-generate-concept', data),
+
   // ⚡ 위저드(일반 캐릭터): 프롬프트(world_setting) 자동 생성
   quickGeneratePromptDraft: (data) =>
     api.post('/characters/quick-generate-prompt', data),

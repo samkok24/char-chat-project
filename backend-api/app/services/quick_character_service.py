@@ -835,6 +835,54 @@ def _has_output_meta_wording(text: str) -> bool:
     return False
 
 
+def _has_first_start_meta_wording(text: str) -> bool:
+    """
+    오프닝(first_start) 전용 메타 문구 감지.
+
+    의도:
+    - 오프닝은 서사 문장 안에서 '시스템/업데이트/안내' 같은 단어가 자연스럽게 등장할 수 있으므로
+      단어 포함만으로 차단하지 않는다.
+    - 대신 실제 운영/메타 형식(라벨형, 공지형, 링크/명령어형)만 차단한다.
+    """
+    s = _safe_text(text)
+    if not s:
+        return False
+    lower = s.lower()
+
+    # URL/도메인 패턴
+    if re.search(r"(https?://|www\.)", lower):
+        return True
+    # 명령어 패턴(!xxx)
+    if re.search(r"![A-Za-z가-힣]", s):
+        return True
+
+    # [공지], 【안내】, (SYSTEM) 등 "괄호 라벨형" 메타 안내
+    if re.search(
+        r"(?:^|[\n\r])\s*[\[【(]\s*"
+        r"(공지|안내|시스템|system|업데이트|업뎃|패치|버전|ver|필독|고정댓글|명령어|커맨드|command|링크|주소|참조|프로챗)"
+        r"\s*[\]】)]",
+        s,
+        re.IGNORECASE,
+    ):
+        return True
+
+    # 공지:, 안내:, 시스템: 형태의 "접두 라벨형" 메타 안내
+    if re.search(
+        r"(?:^|[\n\r])\s*"
+        r"(공지|안내|시스템|system|업데이트|업뎃|패치|버전|ver|필독|고정댓글|명령어|커맨드|command|링크|주소|참조|프로챗)"
+        r"\s*[:：]",
+        s,
+        re.IGNORECASE,
+    ):
+        return True
+
+    # 노골적인 운영 안내 문구
+    if re.search(r"(공지사항|업데이트\s*안내|패치\s*노트|명령어\s*목록|링크\s*참조)", lower):
+        return True
+
+    return False
+
+
 def _score_profile_candidate(
     *,
     mode_hint: str,
@@ -1310,6 +1358,7 @@ SIMULATOR_PROMPT_SYSTEM = """### [SYSTEM_PROMPT_START]
 #       실사용 스타일의 '시뮬레이션 캐릭터 시트(=프롬프트)'를 생성한다.
 
 # Guidelines:
+0. **작품 컨셉 활용(중요)**: 입력에 '작품 컨셉'이 포함되어 있으면 그 의미/방향성만 참고하되, 문장을 그대로 복붙하지 마라. 반드시 너의 문체로 재작성하라.
 1. **서사적 깊이**: 캐릭터의 '외모' 기술 시, 단순 미사여구가 아닌 그들의 삶과 플롯의 진행도를 암시하는 소품(낡은 슈트, 각성 시 변하는 눈빛 등)을 배치하라.
 2. **능력의 구체성**: 기술의 이름뿐만 아니라 그 기술이 플롯의 전환점(Climax)에서 어떻게 쓰일지, 그리고 유저의 조력으로 어떻게 진화할지 기술하라.
 3. **심리적 결핍 & 이중성**: 유저(당신)만이 해결 가능한 '치명적 결핍'을 설정하여, 관계 개선이 곧 서사의 전개가 되도록 하라.
@@ -1407,6 +1456,7 @@ ROLEPLAY_PROMPT_SYSTEM = """### [SYSTEM_PROMPT_START]
 #       '실사용형 롤플레잉 캐릭터 시트'를 생성한다.
 #
 # 핵심 원칙(실사용 품질):
+# - **작품 컨셉 활용(중요)**: 입력에 '작품 컨셉'이 포함되어 있으면 그 의미/방향성만 참고하되, 문장을 그대로 복붙하지 마라. 반드시 너의 문체로 재작성하라.
 # - 시뮬레이터(턴/보상/진행률) "설계"와 섞지 않는다. (롤플에서 턴/보상/미션 설계 강제 금지)
 # - 상태창(호감도/컨디션/관계거리 등)은 "선택"이다. 포함하더라도 **짧게**, **대화와 분리**, **복잡한 실시간 계산 강제 금지**.
 # - ✅ (실사용 규율) 아래 규칙은 "몰입 붕괴"를 막는 최우선 제약이다:
@@ -1473,6 +1523,257 @@ ROLEPLAY_PROMPT_SYSTEM = """### [SYSTEM_PROMPT_START]
 - **주의**: {정확한 수학적 계산/실시간 갱신을 강제하지 말고, 일관된 "상태 요약" 수준으로 유지}
 #
 ### [SYSTEM_PROMPT_END]"""
+
+
+# ---------------------------------------------------------------------------
+# 작품 컨셉 AI 생성 시스템 프롬프트 (위저드 전용)
+# ---------------------------------------------------------------------------
+
+RP_CONCEPT_SYSTEM = """# Role: 롤플레잉 작품 컨셉 설계자
+
+# Task
+주어진 캐릭터 프로필 정보를 바탕으로, 1:1 롤플레잉의 몰입을 위한
+작품 컨셉을 작성한다.
+
+이 텍스트는 이후 "캐릭터 시트(프롬프트) 자동생성"의 보조 입력으로 들어간다.
+한줄소개가 이미 말한 내용을 반복하지 말고,
+한줄소개가 암시만 하고 말하지 않은 것 — 분위기, 관계의 출발점,
+감정 방향, 세계의 질감 — 을 구체화하라.
+
+# 규칙
+
+1. **한줄소개 반복 금지.**
+   한줄소개가 "무엇"을 말했다면,
+   컨셉은 "어떤 분위기에서 / 어떤 거리감으로 / 어떤 감정을 향해"를 말한다.
+   한줄소개 원문에서 12자 이상 연속으로 동일한 문구를 재사용하지 마라.
+   단, 캐릭터 이름·고유명사는 예외로 그대로 사용할 수 있다.
+
+2. **태그가 이야기의 주인공이다.**
+   - 순애·연애·썸 → 설렘·따뜻함·심장이 뛰는 순간이 이야기의 축.
+   - 집착·얀데레 → 상대의 과잉 감정, 벗어날 수 없는 끌림이 축.
+   - 오피스·직장 → 사회적 거리와 사적 감정의 줄다리기가 축.
+   - 판타지·이세계 → 낯선 세계의 경이와 동행의 유대가 축.
+   - 액션·스릴러 → 긴장 속 신뢰, 위기 속 유대가 축.
+   - 일상 → 반복되는 하루 속 조금씩 달라지는 사이가 축.
+   - 공포·미스터리 → 불안 속에서 서로에게 기대는 관계가 축.
+   - 태그가 섞인 경우 자연스럽게 결합하되, 우선순위를 따른다:
+     감정/관계 태그(순애, 집착, 썸 등)가 코어,
+     장르/배경 태그(스릴러, 판타지, 오피스 등)는 코어를 빛내는 무대·압력 장치.
+     감정/관계 태그가 없으면 장르 태그가 코어가 된다.
+   - ⚠️ 핵심 원칙: 태그의 감정/경험이 항상 주인공이다.
+     계약·비밀·제약·거리감 같은 장치는 등장할 수 있지만,
+     반드시 태그의 핵심 감정을 "돋보이게 하는 도구"로만 쓴다.
+     장치가 태그의 감정을 압도하거나 대체하면 실패다.
+
+3. **태그 미인식 폴백.**
+   입력된 태그가 위 목록 어디에도 해당하지 않으면,
+   한줄소개에서 핵심 감정 또는 행동 동사를 추출하여
+   그것을 이야기의 축으로 삼는다.
+
+4. **성향은 "맛(taste)"으로만 반영한다.**
+   - 남성향: 매력 포인트 선명, 감정선 빠른 진입, 직관적 후킹.
+   - 여성향: 감정의 결, 미묘한 거리감 변화, 설렘의 디테일.
+   - 전체: 중립, 특정 성향 편향 없음.
+
+5. **반드시 포함할 4가지** (순서·형식 자유, 자연스러운 문장으로):
+   a) 분위기/공간감 — 계절·빛·소리·온도 등 감각 1~2개로 장면 환기.
+   b) 관계의 출발선 — 유저와 캐릭터의 첫 거리감.
+   c) 감정 방향 — 핵심 감정 흐름 (A→B 형태).
+   d) 고유 디테일 1개 — 이 캐릭터/세계만의 독특한 요소.
+
+6. **턴수 반영:**
+   - 50턴 미만: 단일 장면/에피소드, 감정 변화 1개에 올인.
+   - 50~199턴: 한 감정선에 집중, 빠른 관계 변화.
+   - 200~499턴: 서서히 깊어지는 관계, 일상 에피소드 여유.
+   - 500~999턴: 중장기 서사, 관계의 단계적 전환 2~3회.
+   - 1000턴+: 계절·시간 흐름 속 장기 관계 성장.
+
+7. **출력 형식:**
+   불릿(·/-), 헤더(#/##), 따옴표(""), 라벨(분위기:, 감정:), 설명문 금지.
+   오직 읽히는 산문 한 덩어리만 출력한다.
+   작성 후 자수·문장 수·단락 수를 검증하고,
+   하나라도 미충족이면 조건에 맞게 즉시 1회 재작성한다."""
+
+SIM_CONCEPT_SYSTEM = """# Role: 시뮬레이션 작품 컨셉 설계자
+
+# Task
+주어진 캐릭터 프로필 정보를 바탕으로, 턴 기반 시뮬레이션이
+재미있게 굴러가기 위한 작품 컨셉을 작성한다.
+
+이 텍스트는 이후 "캐릭터 시트(프롬프트) 자동생성"의 보조 입력으로 들어간다.
+한줄소개가 이미 말한 내용을 반복하지 말고,
+한줄소개가 암시만 하고 말하지 않은 것 — 시작 상황, 핵심 루프,
+진행 감각, 세계의 규칙 — 을 구체화하라.
+
+# 규칙
+
+1. **한줄소개 반복 금지.**
+   한줄소개가 "무엇"을 말했다면,
+   컨셉은 "어떤 규칙으로 / 어떻게 진행되며 / 무엇이 걸려 있는지"를 말한다.
+   한줄소개 원문에서 12자 이상 연속으로 동일한 문구를 재사용하지 마라.
+   단, 캐릭터 이름·고유명사는 예외로 그대로 사용할 수 있다.
+
+2. **태그가 이야기의 주인공이다.**
+   - 경영·건설·요리 → 내가 만들고 키우는 성취감이 축.
+   - 생존·서바이벌 → 살아남는 긴장감과 자원 관리가 축.
+   - 연애·미연시 → 관계 선택과 호감도 변화가 축.
+   - 학교·아카데미 → 성장·경쟁·동료 관계가 축.
+   - 판타지·이세계 → 탐험·발견·강해지는 감각이 축.
+   - 스포츠·대회 → 훈련·성장·대결의 쾌감이 축.
+   - 태그가 섞인 경우 자연스럽게 결합하되, 우선순위를 따른다:
+     체험/행동 태그(경영, 생존, 연애 등)가 코어 루프를 결정,
+     배경/세계관 태그(판타지, 학교, SF 등)는 코어 루프가 돌아가는 무대.
+     체험 태그가 없으면 배경 태그에서 자연스러운 루프를 유추한다.
+   - ⚠️ 핵심 원칙: 태그의 핵심 경험이 항상 주인공이다.
+     제약·위험·비용·경쟁 같은 시스템 요소는 등장할 수 있지만,
+     반드시 태그의 핵심 재미를 "돋보이게 하는 도구"로만 쓴다.
+     장치가 태그의 재미를 압도하거나 대체하면 실패다.
+
+3. **태그 미인식 폴백.**
+   입력된 태그가 위 목록 어디에도 해당하지 않으면,
+   한줄소개에서 핵심 행동 동사 또는 목표를 추출하여
+   그것을 중심 루프로 삼는다.
+
+4. **sim_variant · 미연시 요소 반영:**
+   - dating + 미연시 요소=true →
+     호감도·루트 분기가 핵심 시스템. 관계 변화가 진행의 축.
+   - scenario →
+     목표·자원·선택지 중심. 로맨스는 태그에 있을 때만 부가 요소.
+   - dating + 미연시 요소=false →
+     관계 중심이되 수치보다 서사적 분기 중심.
+
+5. **반드시 포함할 4가지** (순서·형식 자유, 자연스러운 문장으로):
+   a) 시작 상황 — 1턴째 유저가 마주하는 구체적 장면.
+   b) 핵심 루프 — 매 턴 반복되는 행동→결과 사이클 1개.
+   c) 진행 감각 — 턴이 쌓이면 무엇이 변하는지.
+   d) 고유 규칙 1개 — 이 시뮬레이션만의 독특한 시스템 요소.
+
+6. **턴수 반영:**
+   - 50턴 미만: 단일 시나리오, 핵심 선택 1~2개로 결말 도달.
+   - 50~199턴: 핵심 루프 1개, 빠른 진행, 분기 적음.
+   - 200~499턴: 2~3개 분기점, 중간 이벤트/전환점.
+   - 500~999턴: 중장기 운영, 시스템 확장/변화 1~2회.
+   - 1000턴+: 장기 운영, 계절/시대 변화, 복합 시스템.
+
+7. **출력 형식:**
+   불릿(·/-), 헤더(#/##), 따옴표(""), 라벨(시작:, 루프:), 설명문 금지.
+   오직 읽히는 산문 한 덩어리만 출력한다.
+   작성 후 자수·문장 수·단락 수를 검증하고,
+   하나라도 미충족이면 조건에 맞게 즉시 1회 재작성한다."""
+
+
+def _concept_char_range(max_turns: int) -> Tuple[int, int]:
+    """턴수 연동 컨셉 자수 범위."""
+    if max_turns < 50:
+        return (300, 500)
+    if max_turns < 200:
+        return (350, 650)
+    if max_turns < 500:
+        return (500, 900)
+    if max_turns < 1000:
+        return (600, 1000)
+    return (700, 1100)
+
+
+async def generate_quick_concept(
+    name: str,
+    description: str,
+    mode: str,
+    tags: List[str],
+    audience: str,
+    max_turns: int,
+    sim_variant: Optional[str] = None,
+    sim_dating_elements: Optional[bool] = None,
+) -> str:
+    """
+    위저드 '프로필' 단계: 작품 컨셉 AI 자동 생성 (Claude Haiku 4.5).
+
+    의도:
+    - 기존 프론트엔드 템플릿(buildAutoProfileConceptDraftText)을 대체하여
+      AI가 입력(이름/한줄소개/태그/성향/턴수)에 맞는 산문형 컨셉을 생성한다.
+    - downstream 프롬프트 생성기(SIMULATOR/ROLEPLAY_PROMPT_SYSTEM)의 보조 입력으로 사용.
+    """
+    base_name = _clip(name, 100)
+    base_desc = _clip(description, 500)
+    tags_block = ", ".join([_clip(t, 40) for t in (tags or []) if _safe_text(t)])[:400]
+    audience_norm = _safe_text(audience) or "미지정"
+
+    try:
+        mt = int(max_turns or 0)
+    except Exception:
+        mt = 200
+    if mt < 10:
+        mt = 200
+    if mt > 5000:
+        mt = 5000
+
+    min_chars, max_chars = _concept_char_range(mt)
+
+    system_prompt = SIM_CONCEPT_SYSTEM if mode == "simulator" else RP_CONCEPT_SYSTEM
+
+    # sim_variant/dating_elements 블록 (시뮬레이터 전용)
+    sim_block = ""
+    if mode == "simulator":
+        sv = str(sim_variant or "").strip().lower()
+        de = bool(sim_dating_elements)
+        if sv == "dating" and de:
+            sim_block = "\n- 시뮬 유형: 미연시(dating), 미연시 요소: ON (호감도/루트/공략 핵심)"
+        elif sv == "dating":
+            sim_block = "\n- 시뮬 유형: 미연시(dating), 미연시 요소: OFF (서사적 분기 중심)"
+        elif sv == "scenario":
+            sim_block = "\n- 시뮬 유형: 시나리오(scenario), 목표/자원/선택지 중심"
+
+    user_prompt = f"""{system_prompt}
+
+# Input
+- 캐릭터 이름: {base_name}
+- 한줄소개: {base_desc}
+- 태그: {tags_block or "없음"}
+- 성향: {audience_norm}
+- 최대 턴수: {mt}{sim_block}
+
+위 규칙을 따라 {min_chars}~{max_chars}자, 4~8문장, 단락 1개의 작품 컨셉을 작성하라.
+출력은 컨셉 본문만. 제목/라벨/마크다운 헤더 없이."""
+
+    # Claude Haiku 4.5 사용 (속도 우선)
+    result = await get_ai_completion(
+        prompt=user_prompt,
+        model="claude",
+        temperature=0.8,
+        max_tokens=1200,
+    )
+
+    text = _safe_text(result).strip()
+
+    # 마크다운/불릿/헤더 잔여물 제거
+    lines = text.split("\n")
+    cleaned = []
+    for line in lines:
+        stripped = line.strip()
+        # 헤더(#), 불릿(-/·/*), 라벨(XX:) 패턴 제거
+        if stripped.startswith("#"):
+            continue
+        if stripped.startswith(("- ", "· ", "* ", "→ ")):
+            stripped = stripped[2:].strip()
+        cleaned.append(stripped)
+    text = " ".join(s for s in cleaned if s).strip()
+
+    # 자수 범위 강제
+    if len(text) > max_chars:
+        # 문장부호 경계에서 자르기
+        cut = text[:max_chars]
+        for sep in (".", "다.", "요.", "!"):
+            idx = cut.rfind(sep)
+            if idx >= int(max_chars * 0.7):
+                cut = cut[: idx + len(sep)]
+                break
+        text = cut.strip()
+
+    if len(text) < min_chars:
+        # 최소 미달이면 그대로 반환 (best-effort, 짧아도 유효한 컨셉)
+        pass
+
+    return text
 
 
 def _ensure_char_len_range(text: str, min_chars: int, max_chars: int, *, filler: Optional[str] = None) -> str:
@@ -2647,7 +2948,7 @@ async def generate_quick_first_start(
             intro, first_line = intro2, first2
 
     # ✅ 메타/운영성 문구 차단(오프닝 결과물)
-    if _has_output_meta_wording(intro) or _has_output_meta_wording(first_line):
+    if _has_first_start_meta_wording(intro) or _has_first_start_meta_wording(first_line):
         try:
             logger.warning("[first_start] meta wording detected, retry once")
         except Exception:
@@ -2660,7 +2961,7 @@ async def generate_quick_first_start(
         )
         raw3 = await get_ai_completion(prompt=retry_meta, model=model, temperature=0.5, max_tokens=1200)
         intro3, first3 = _parse_first_start(raw3)
-        if intro3 and first3 and (not _has_output_meta_wording(intro3)) and (not _has_output_meta_wording(first3)):
+        if intro3 and first3 and (not _has_first_start_meta_wording(intro3)) and (not _has_first_start_meta_wording(first3)):
             intro, first_line = intro3, first3
         else:
             # 안전 폴백: 메타 문구가 남아 있으면 강제로 비워서 로컬 보정 사용
@@ -2683,7 +2984,7 @@ async def generate_quick_first_start(
                 )
                 raw4 = await get_ai_completion(prompt=retry_diverse, model=model, temperature=0.6, max_tokens=1300)
                 intro4, first4 = _parse_first_start(raw4)
-                if intro4 and first4 and (not _has_output_meta_wording(intro4)) and (not _has_output_meta_wording(first4)):
+                if intro4 and first4 and (not _has_first_start_meta_wording(intro4)) and (not _has_first_start_meta_wording(first4)):
                     cand_sim = _first_start_similarity(intro4, first4, avoid_i, avoid_f)
                     if cand_sim < base_sim:
                         intro, first_line = intro4, first4

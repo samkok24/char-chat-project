@@ -6,9 +6,11 @@ import React from 'react';
 import { resolveImageUrl } from '../lib/images';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
+import { clearCreateCharacterDraft, hasCreateCharacterDraft } from '../lib/createCharacterDraft';
 import { Button } from './ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
 import { Badge } from './ui/badge';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from './ui/alert-dialog';
 import {
   MessageCircle,
   Plus,
@@ -32,11 +34,34 @@ import {
 const Header = () => {
   const { user, isAuthenticated, logout } = useAuth();
   const navigate = useNavigate();
+  const [draftPromptOpen, setDraftPromptOpen] = React.useState(false);
 
   const handleLogout = () => {
     logout();
     navigate('/');
   };
+
+  const handleCreateCharacterClick = React.useCallback((e) => {
+    try { e?.preventDefault?.(); } catch (_) {}
+    try {
+      if (hasCreateCharacterDraft()) {
+        setDraftPromptOpen(true);
+        return;
+      }
+    } catch (_) {}
+    navigate('/characters/create');
+  }, [navigate]);
+
+  const handleDraftStartFresh = React.useCallback(() => {
+    try { clearCreateCharacterDraft(); } catch (_) {}
+    try { setDraftPromptOpen(false); } catch (_) {}
+    try { navigate('/characters/create'); } catch (_) {}
+  }, [navigate]);
+
+  const handleDraftLoad = React.useCallback(() => {
+    try { setDraftPromptOpen(false); } catch (_) {}
+    try { navigate('/characters/create'); } catch (_) {}
+  }, [navigate]);
 
   return (
     <header className="bg-white/80 backdrop-blur-sm shadow-sm border-b sticky top-0 z-50">
@@ -54,7 +79,7 @@ const Header = () => {
           <div className="flex items-center space-x-4">
             {isAuthenticated ? (
               <>
-                <Button variant="outline" onClick={() => navigate('/characters/create')}>
+                <Button variant="outline" onClick={handleCreateCharacterClick}>
                   <Plus className="w-4 h-4 mr-2" />
                   캐릭터 생성
                 </Button>
@@ -135,6 +160,20 @@ const Header = () => {
             )}
           </div>
         </div>
+        <AlertDialog open={draftPromptOpen} onOpenChange={setDraftPromptOpen}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>임시저장된 초안을 찾았어요</AlertDialogTitle>
+              <AlertDialogDescription>
+                이어서 불러오시겠어요? 새로 만들기를 선택하면 기존 임시저장은 삭제됩니다.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel onClick={handleDraftLoad}>불러오기</AlertDialogCancel>
+              <AlertDialogAction onClick={handleDraftStartFresh}>새로 만들기</AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
     </header>
   );

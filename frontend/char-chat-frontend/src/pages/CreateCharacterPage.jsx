@@ -74,6 +74,28 @@ import DropzoneGallery from '../components/DropzoneGallery';
 import ErrorBoundary from '../components/ErrorBoundary';
 import { z } from 'zod';
 
+const buildQuickGenerateSeedWithinLimit = (lines, maxChars = 1900) => {
+  /**
+   * Keep seed_text under backend validation limit (2000).
+   * - QuickCharacterGenerateRequest.seed_text max_length=2000
+   * - Reserve small headroom for safety.
+   */
+  try {
+    const arr = Array.isArray(lines) ? lines.map((x) => String(x || '').trim()).filter(Boolean) : [];
+    const out = [];
+    let total = 0;
+    for (const ln of arr) {
+      const add = ln.length + (out.length ? 1 : 0); // '\n'
+      if (total + add > maxChars) break;
+      out.push(ln);
+      total += add;
+    }
+    return out.join('\n');
+  } catch (_) {
+    return '';
+  }
+};
+
 /**
  * ✅ 필수 선택 옵션(메타) 정의
  *
@@ -243,6 +265,7 @@ const CreateCharacterPage = () => {
   const [isAutoSaving, setIsAutoSaving] = useState(false);
   const [lastSavedAt, setLastSavedAt] = useState(null);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const CONCEPT_PENDING_SAVE_BLOCK_TOAST = '작품 컨셉 생성 중에는 임시저장/저장을 할 수 없습니다. 잠시 후 다시 시도해주세요.';
   // ✅ 이탈 경고(요구사항): 임시저장 없이 뒤로가기(앱/브라우저) 방지
   // - 브라우저 back(popstate)은 취소 불가라, pushState로 "가드 엔트리"를 1개 쌓아 confirm을 띄운다.
   const leaveBypassRef = useRef(false);
@@ -1645,20 +1668,27 @@ const CreateCharacterPage = () => {
 
       const name = String(formData?.basic_info?.name || '').trim();
       const desc = String(formData?.basic_info?.description || '').trim();
-      const concept = (() => {
+      const descForPrompt = (() => {
+        // ✅ 작품 컨셉 본문만 추출(헤더는 name/desc와 중복) + 3000자 방어
         try {
           const ss = (formData?.basic_info?.start_sets && typeof formData.basic_info.start_sets === 'object')
             ? formData.basic_info.start_sets
             : null;
           const pc = (ss && typeof ss.profile_concept === 'object' && ss.profile_concept) ? ss.profile_concept : null;
           const enabled = !!pc?.enabled;
-          if (!enabled) return '';
-          return String(pc?.text || '').trim().slice(0, PROFILE_CONCEPT_MAX_LEN);
+          if (!enabled) return desc;
+          const raw = String(pc?.text || '').trim().slice(0, PROFILE_CONCEPT_MAX_LEN);
+          if (isProfileConceptPendingText(raw)) return desc;
+          if (!raw) return desc;
+          let body = raw;
+          const bi = raw.indexOf('## ');
+          if (bi > 0) body = raw.slice(bi);
+          if (!body.trim()) return desc;
+          return `${desc}\n\n[작품 컨셉(추가 참고)]\n${body}`.slice(0, 3000);
         } catch (_) {
-          return '';
+          return desc;
         }
       })();
-      const descForPrompt = concept ? `${desc}\n\n[작품 컨셉(추가 참고)]\n${concept}` : desc;
       if (!name || !desc) {
         dispatchToast('error', '프로필 정보를 먼저 입력해주세요.');
         return null;
@@ -3241,9 +3271,9 @@ const CreateCharacterPage = () => {
       quickDetailGenAbortRef.current = false;
 
       setQuickDetailGenLoading(true);
-      // ✅ 요구사항: "위저드만" 제미니 고정(다른 화면/로직에는 영향 주지 않음)
+      // ✅ 요구사항: "위저드만" Claude 고정(다른 화면/로직에는 영향 주지 않음)
       const aiModel = useNormalCreateWizard
-        ? 'gemini'
+        ? 'claude'
         : (String(user?.preferred_model || 'claude').trim().toLowerCase() || 'claude');
       const res = await charactersAPI.quickGenerateDetailDraft({
         name,
@@ -3733,6 +3763,10 @@ const CreateCharacterPage = () => {
   }, [isEditMode, useNormalCreateWizard, isOrigChatCharacter, draftRestored, selectedTagSlugs]);
 
   const handleManualDraftSave = () => {
+    if (useNormalCreateWizard && isProfileConceptAutoGenerating) {
+      try { dispatchToast('warning', CONCEPT_PENDING_SAVE_BLOCK_TOAST); } catch (_) {}
+      return;
+    }
     try {
       const key = `cc_draft_${isEditMode ? characterId : 'new'}`;
       const manualKey = `${key}_manual`;
@@ -4581,6 +4615,10 @@ const CreateCharacterPage = () => {
   // [3단계] 저장 로직 단순화
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (useNormalCreateWizard && isProfileConceptAutoGenerating) {
+      try { dispatchToast('warning', CONCEPT_PENDING_SAVE_BLOCK_TOAST); } catch (_) {}
+      return;
+    }
     setLoading(true);
     setError('');
 
@@ -4809,6 +4847,7 @@ const CreateCharacterPage = () => {
           const pc = (ss && typeof ss.profile_concept === 'object' && ss.profile_concept) ? ss.profile_concept : null;
           if (!pc?.enabled) return '';
           const raw = String(pc?.text || '').trim();
+          if (isProfileConceptPendingText(raw)) return '';
           if (!raw) return '';
           // ✅ 길이/토큰 방어(컨셉도 prompt로 들어가므로 동일 정책 적용)
           return sanitizePromptTokens(raw).slice(0, PROFILE_CONCEPT_MAX_LEN);
@@ -5326,6 +5365,8 @@ const CreateCharacterPage = () => {
   const [quickGenLoading, setQuickGenLoading] = useState(false);
   // ✅ 프로필 자동생성 취소/원문복구
   const quickGenAbortRef = useRef(false);
+  // ✅ 프로필 작품컨셉 AI 요청 경합 방지: 최신 요청만 반영
+  const profileConceptAutoGenReqSeqRef = useRef(0);
   const profileAutoGenPrevNameRef = useRef('');
   const profileAutoGenPrevDescRef = useRef('');
   const profileAutoGenPrevConceptRef = useRef(null); // { enabled: boolean, text: string } | null
@@ -5335,6 +5376,26 @@ const CreateCharacterPage = () => {
   // - OFF: 빠르고 트렌디하게 생성(이미지 분석 없이도 되는, 가벼운 후킹 중심)
   // - ON : 삽입한 이미지에 정확하게 생성(이미지 단서 기반 앵커 강화)
   const [profileAutoGenUseImage, setProfileAutoGenUseImage] = useState(false);
+  const isProfileConceptPendingText = (v) => {
+    try {
+      return /^작품\s*컨셉\s*생성\s*중(?:\.{0,3})?$/.test(String(v || '').trim());
+    } catch (_) {
+      return false;
+    }
+  };
+  const isProfileConceptAutoGenerating = (() => {
+    if (!useNormalCreateWizard) return false;
+    try {
+      const ss = (formData?.basic_info?.start_sets && typeof formData.basic_info.start_sets === 'object')
+        ? formData.basic_info.start_sets
+        : null;
+      const pc = (ss && typeof ss.profile_concept === 'object' && ss.profile_concept) ? ss.profile_concept : null;
+      if (!pc || !pc.enabled) return false;
+      return isProfileConceptPendingText(pc.text);
+    } catch (_) {
+      return false;
+    }
+  })();
   const hasProfileImageForAutoGen = useMemo(() => {
     /**
      * ✅ 위저드 프로필 자동생성: 이미지 존재 여부
@@ -5437,9 +5498,9 @@ const CreateCharacterPage = () => {
       quickFirstStartGenAbortRef.current = false;
 
       setQuickFirstStartGenLoadingId(sid);
-      // ✅ 요구사항: "위저드만" 제미니 고정(다른 화면/로직에는 영향 주지 않음)
+      // ✅ 요구사항: "위저드만" Claude 고정(다른 화면/로직에는 영향 주지 않음)
       const aiModel = useNormalCreateWizard
-        ? 'gemini'
+        ? 'claude'
         : (String(user?.preferred_model || 'claude').trim().toLowerCase() || 'claude');
       const sim = (ss && typeof ss?.sim_options === 'object' && ss.sim_options) ? ss.sim_options : {};
       const simDatingElements = !!sim?.sim_dating_elements;
@@ -6007,7 +6068,9 @@ const CreateCharacterPage = () => {
               const pc = (ss && typeof ss.profile_concept === 'object' && ss.profile_concept) ? ss.profile_concept : null;
               const enabled = !!pc?.enabled;
               if (!enabled) return '';
-              return String(pc?.text || '').trim().slice(0, PROFILE_CONCEPT_MAX_LEN);
+              const raw = String(pc?.text || '').trim().slice(0, PROFILE_CONCEPT_MAX_LEN);
+              if (!raw || isProfileConceptPendingText(raw)) return '';
+              return raw;
             } catch (_) {
               return '';
             }
@@ -6472,14 +6535,23 @@ const CreateCharacterPage = () => {
         description: (() => {
           // ✅ 작품 컨셉(선택, 고급): 프롬프트 자동생성에만 참고로 추가한다.
           // - 비필수/옵션이며, 입력되어도 원문을 그대로 전달해 모델 이해를 돕는다.
+          // - concept 헤더(작품명/한줄소개/성향)는 name/desc와 중복이므로 본문(## 이하)만 추출한다.
+          // - 스키마 max_length=3000 초과 방지를 위해 최종 slice(0, 3000) 적용.
           try {
             const ss2 = (formData?.basic_info?.start_sets && typeof formData.basic_info.start_sets === 'object')
               ? formData.basic_info.start_sets
               : null;
             const pc = (ss2 && typeof ss2.profile_concept === 'object' && ss2.profile_concept) ? ss2.profile_concept : null;
             const enabled = !!pc?.enabled;
-            const concept = enabled ? String(pc?.text || '').trim().slice(0, PROFILE_CONCEPT_MAX_LEN) : '';
-            return concept ? `${desc}\n\n[작품 컨셉(추가 참고)]\n${concept}` : desc;
+            const rawConcept = enabled ? String(pc?.text || '').trim().slice(0, PROFILE_CONCEPT_MAX_LEN) : '';
+            if (isProfileConceptPendingText(rawConcept)) return desc;
+            if (!rawConcept) return desc;
+            // 헤더(작품명/한줄소개/성향 등) 제거 — '## ' 으로 시작하는 본문 섹션만 추출
+            let conceptBody = rawConcept;
+            const bodyIdx = rawConcept.indexOf('## ');
+            if (bodyIdx > 0) conceptBody = rawConcept.slice(bodyIdx);
+            if (!conceptBody.trim()) return desc;
+            return `${desc}\n\n[작품 컨셉(추가 참고)]\n${conceptBody}`.slice(0, 3000);
           } catch (_) {
             return desc;
           }
@@ -6798,6 +6870,7 @@ const CreateCharacterPage = () => {
   const handleCancelProfileGeneration = useCallback(() => {
     try {
       quickGenAbortRef.current = true;
+      profileConceptAutoGenReqSeqRef.current += 1; // ✅ 늦게 도착한 컨셉 응답 무효화
       setQuickGenLoading(false);
       
       // ✅ 취소 시 원문 복구 (원문이 있든 없든) - 3개 필드 모두
@@ -6968,7 +7041,9 @@ const CreateCharacterPage = () => {
           const pc = (ss && typeof ss.profile_concept === 'object' && ss.profile_concept) ? ss.profile_concept : null;
           const enabled = !!pc?.enabled;
           if (!enabled) return '';
-          return String(pc?.text || '').trim().slice(0, PROFILE_CONCEPT_MAX_LEN);
+          const raw = String(pc?.text || '').trim().slice(0, PROFILE_CONCEPT_MAX_LEN);
+          if (!raw || isProfileConceptPendingText(raw)) return '';
+          return raw;
         } catch (_) {
           return '';
         }
@@ -7892,6 +7967,8 @@ const CreateCharacterPage = () => {
         profileAutoGenPrevConceptRef.current = null;
       }
       quickGenAbortRef.current = false;
+      profileConceptAutoGenReqSeqRef.current += 1;
+      const conceptReqSeq = profileConceptAutoGenReqSeqRef.current;
       
       setQuickGenLoading(true);
       // ✅ 요구사항: "위저드만" 제미니 고정(다른 화면/로직에는 영향 주지 않음)
@@ -7910,9 +7987,20 @@ const CreateCharacterPage = () => {
       })();
       // ✅ QuickMeet와 동일: 이미지 정보 포함 OFF면 image_url을 보내지 않는다.
       const imageUrlForAi = profileAutoGenUseImage ? resolvedImageUrlForAi : null;
+      const imageUrlForAiSafe = (() => {
+        try {
+          const raw = String(imageUrlForAi || '').trim();
+          if (!raw) return null;
+          // backend schema: image_url max_length=500
+          if (raw.length > 500) return null;
+          return raw;
+        } catch (_) {
+          return null;
+        }
+      })();
 
       // 1) 작품명 생성(이미지+선택값 기반)
-      const seedNameOnly = [
+      const seedNameOnly = buildQuickGenerateSeedWithinLimit([
         `랜덤 시드: ${nonce}`,
         prevAutoName ? `직전 생성된 작품명(중복 금지): ${prevAutoName}` : null,
         prevAutoName ? '중요: 이번에는 위 작품명과 "절대" 같은 작품명을 쓰지 마. 완전히 다른 이름으로 새로 만들어.' : null,
@@ -7951,12 +8039,22 @@ const CreateCharacterPage = () => {
         styleSlug ? `이미지 스타일: ${styleSlug}` : null,
         promptTypeLabel ? `프롬프트 타입: ${promptTypeLabel}` : null,
         maxTurns ? `분량(진행 턴수): ${maxTurns}턴` : null,
-      ].filter(Boolean).join('\n');
+      ].filter(Boolean), 1900);
+      const requestNameForQuickDraft = (() => {
+        try {
+          const raw = String(placeholderName || '').trim();
+          if (!raw) return '캐릭터';
+          // backend schema: name max_length=100
+          return raw.length > 100 ? raw.slice(0, 100) : raw;
+        } catch (_) {
+          return '캐릭터';
+        }
+      })();
 
       const resName = await charactersAPI.quickGenerateCharacterDraft({
-        name: placeholderName,
+        name: requestNameForQuickDraft,
         seed_text: seedNameOnly,
-        image_url: imageUrlForAi,
+        image_url: imageUrlForAiSafe,
         tags: Array.isArray(selectedTagSlugs) ? selectedTagSlugs : [],
         // ✅ SSOT: 유저가 선택한 모드(롤플/시뮬/커스텀)를 서버에 명시 전달
         // - 서버는 이 값이 있을 때만 1순위로 사용하고, 없으면 레거시(키워드 추정)로 폴백한다.
@@ -7998,7 +8096,7 @@ const CreateCharacterPage = () => {
       try { setChatPreviewSnapshot((prev) => ({ ...prev, name: nextName })); } catch (_) {}
 
       // 2) 한줄소개 생성(이미지+선택값+작품명 기반)
-      const seedDescOnly = [
+      const seedDescOnly = buildQuickGenerateSeedWithinLimit([
         `랜덤 시드: ${nonce}_desc`,
         `작품명(name): ${nextName}`,
         autoGenModeHintForDesc,
@@ -8020,12 +8118,12 @@ const CreateCharacterPage = () => {
         styleSlug ? `이미지 스타일: ${styleSlug}` : null,
         promptTypeLabel ? `프롬프트 타입: ${promptTypeLabel}` : null,
         maxTurns ? `분량(진행 턴수): ${maxTurns}턴` : null,
-      ].filter(Boolean).join('\n');
+      ].filter(Boolean), 1900);
 
       const resDesc = await charactersAPI.quickGenerateCharacterDraft({
         name: nextName,
         seed_text: seedDescOnly,
-        image_url: imageUrlForAi,
+        image_url: imageUrlForAiSafe,
         tags: Array.isArray(selectedTagSlugs) ? selectedTagSlugs : [],
         // ✅ SSOT: 유저가 선택한 모드(롤플/시뮬/커스텀)를 서버에 명시 전달
         character_type: (promptType === 'simulator' ? 'simulator' : (promptType === 'custom' ? 'custom' : 'roleplay')),
@@ -8051,14 +8149,14 @@ const CreateCharacterPage = () => {
       // ✅ 요구사항: 4~5문장 강제(1회 보정). 길이만 맞추면 여전히 2~3문장으로 수렴하는 문제가 있어 방어적으로 보정한다.
       const sentenceCount = countSentencesRoughKo(nextDesc0);
       if (sentenceCount < 4 || sentenceCount > 5) {
-        const seedDescRetry = [
+        const seedDescRetry = buildQuickGenerateSeedWithinLimit([
           seedDescOnly,
           `중요: 한줄소개(description)는 반드시 4~5문장이어야 한다. 문장 끝은 마침표로 끝내라. (${PROFILE_ONE_LINE_MIN_LEN}~${PROFILE_ONE_LINE_MAX_LEN}자, 줄바꿈 금지)`,
-        ].join('\n');
+        ], 1900);
         const resDesc2 = await charactersAPI.quickGenerateCharacterDraft({
           name: nextName,
           seed_text: seedDescRetry,
-          image_url: imageUrlForAi,
+          image_url: imageUrlForAiSafe,
           tags: Array.isArray(selectedTagSlugs) ? selectedTagSlugs : [],
           // ✅ SSOT: 유저가 선택한 모드(롤플/시뮬/커스텀)를 서버에 명시 전달
           character_type: (promptType === 'simulator' ? 'simulator' : (promptType === 'custom' ? 'custom' : 'roleplay')),
@@ -8080,45 +8178,66 @@ const CreateCharacterPage = () => {
       }
 
       // ✅ 자동생성 버튼을 1회라도 눌렀다면, 작품 컨셉(고급/선택) 토글을 자동으로 ON.
-      // - 처음부터 노출하면 부담이 크므로, 자동생성 흐름에서만 자연스럽게 보여준다.
-      // - 내용이 비어있다면 기본 템플릿을 채워 "무엇을 쓰면 되는지" 즉시 보이게 한다.
+      // - AI API로 작품 컨셉을 생성한다(best-effort).
+      // - 플레이스홀더를 먼저 세팅 → API 응답 후 교체 → 실패 시 기존 템플릿 폴백.
       try {
+        // 즉시 placeholder 세팅 (UI 반응성)
         updateStartSets((prev) => {
           const cur = (prev && typeof prev === 'object') ? prev : {};
           const existing = (cur.profile_concept && typeof cur.profile_concept === 'object') ? cur.profile_concept : {};
-          const existingText = String(existing?.text || '').trim();
-          // ✅ 시뮬 옵션(SSOT: start_sets.sim_options) 기반으로 작품 컨셉 템플릿에 상태를 반영
-          // - "까먹지 않게" 하는 정보는 프롬프트 조립(payload)에서도 들어가지만,
-          //   유저가 작품 컨셉을 보는 순간에도 시뮬/미연시 ON 여부가 한눈에 보이도록 최소 문장만 추가한다.
-          const simOptions = (cur?.sim_options && typeof cur.sim_options === 'object') ? cur.sim_options : {};
-          const isSim = String(formData?.basic_info?.character_type || 'roleplay').trim() === 'simulator';
-          const simDatingOn = isSim && !!simOptions?.sim_dating_elements;
-          const defaultText = [
-            `작품명: ${nextName}`,
-            `한줄소개: ${nextDescFinal}`,
-            ...(isSim ? ['모드: 시뮬레이션'] : []),
-            ...(simDatingOn ? ['시뮬 내 미연시 요소(가중): ON'] : []),
-            '',
-            '## 작품 컨셉(선택, 고급)',
-            '- 장르/톤:',
-            '- 핵심 갈등/목표:',
-            '- 관계/역할(혐관/서브캐/삼각관계 등):',
-            '- 세계관 규칙/금기:',
-            '- 전개 포인트(턴 진행 방식):',
-            '',
-            '(이 내용은 프롬프트 자동생성 시 참고합니다.)',
-          ].join('\n');
-          // ✅ 요구사항: 프로필 자동생성 시 작품 컨셉도 "전체 덮어쓰기"로 크게 갱신
-          const nextText = buildAutoProfileConceptDraftText({ name: nextName, desc: nextDescFinal, isSim, simDatingOn }) || defaultText;
           return {
             ...cur,
-            profile_concept: {
-              ...(existing || {}),
-              enabled: true,
-              text: nextText,
-            },
+            profile_concept: { ...(existing || {}), enabled: true, text: '작품 컨셉 생성 중...' },
           };
         });
+        // AI 컨셉 생성 (best-effort, 실패해도 프로필 생성 자체는 막지 않음)
+        const _isSim = promptType === 'simulator';
+        const conceptPayload = {
+          name: nextName,
+          description: nextDescFinal,
+          mode: _isSim ? 'simulator' : 'roleplay',
+          tags: (Array.isArray(selectedTagSlugs) ? selectedTagSlugs : []).map((x) => String(x || '').trim()).filter(Boolean),
+          audience: audienceSlug || '전체',
+          max_turns: maxTurns || 200,
+          ...(_isSim ? { sim_variant: (() => { try { const ss = formData?.basic_info?.start_sets; const sim = (ss && typeof ss === 'object' && ss.sim_options && typeof ss.sim_options === 'object') ? ss.sim_options : {}; return String(sim?.sim_variant || '').trim() || undefined; } catch (_) { return undefined; } })() } : {}),
+          ...(simDatingElements ? { sim_dating_elements: true } : {}),
+        };
+        charactersAPI.quickGenerateConceptDraft(conceptPayload)
+          .then((res) => {
+            if (quickGenAbortRef.current) return;
+            if (profileConceptAutoGenReqSeqRef.current !== conceptReqSeq) return;
+            const text = String(res?.data?.concept || '').trim();
+            if (text && text.length >= 50) {
+              updateStartSets((prev) => {
+                const cur = (prev && typeof prev === 'object') ? prev : {};
+                const existing = (cur.profile_concept && typeof cur.profile_concept === 'object') ? cur.profile_concept : {};
+                return { ...cur, profile_concept: { ...(existing || {}), enabled: true, text } };
+              });
+            } else {
+              // 응답이 너무 짧으면 기존 템플릿 폴백
+              const fallback = buildAutoProfileConceptDraftText({ name: nextName, desc: nextDescFinal, isSim: _isSim, simDatingOn: simDatingElements });
+              if (fallback) {
+                updateStartSets((prev) => {
+                  const cur = (prev && typeof prev === 'object') ? prev : {};
+                  const existing = (cur.profile_concept && typeof cur.profile_concept === 'object') ? cur.profile_concept : {};
+                  return { ...cur, profile_concept: { ...(existing || {}), enabled: true, text: fallback } };
+                });
+              }
+            }
+          })
+          .catch(() => {
+            if (quickGenAbortRef.current) return;
+            if (profileConceptAutoGenReqSeqRef.current !== conceptReqSeq) return;
+            // AI 실패 시 기존 템플릿 폴백
+            const fallback = buildAutoProfileConceptDraftText({ name: nextName, desc: nextDescFinal, isSim: _isSim, simDatingOn: simDatingElements });
+            if (fallback) {
+              updateStartSets((prev) => {
+                const cur = (prev && typeof prev === 'object') ? prev : {};
+                const existing = (cur.profile_concept && typeof cur.profile_concept === 'object') ? cur.profile_concept : {};
+                return { ...cur, profile_concept: { ...(existing || {}), enabled: true, text: fallback } };
+              });
+            }
+          });
       } catch (_) {}
       // 자동생성 후에는 기본 잠금 상태로 복귀(요구사항)
       try { setProfileConceptEditMode(false); } catch (_) {}
@@ -8974,7 +9093,23 @@ const CreateCharacterPage = () => {
               {/* 선택된 탭 편집(심플 UI): 박스 중첩 제거 + textarea 자동 확장 */}
               <div className="space-y-4">
                 <div>
-                  <Label className="text-white">오프닝 이름(탭 제목)</Label>
+                  <div className="flex items-center justify-between">
+                    <Label className="text-white">오프닝 이름(탭 제목)</Label>
+                    <button
+                      type="button"
+                      onClick={() => handleAutoGenerateFirstStart(activeId)}
+                      disabled={quickFirstStartGenLoadingId === activeId}
+                      className="h-7 px-2.5 rounded-md bg-white/10 text-white text-xs font-semibold hover:bg-white/15 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
+                      aria-label="오프닝 자동 생성"
+                      title="오프닝 자동 생성"
+                    >
+                      {quickFirstStartGenLoadingId === activeId ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                      ) : (
+                        '자동 생성'
+                      )}
+                    </button>
+                  </div>
                   <div className="relative mt-2">
                     <Input
                       value={activeTitleRaw}
@@ -9069,22 +9204,6 @@ const CreateCharacterPage = () => {
                   {String(activeSet?.firstLine || '').length > 500 ? (
                     <p className="mt-1 text-xs text-rose-400">최대 500자까지 입력할 수 있어요.</p>
                   ) : null}
-                  <div className="mt-3 flex justify-end">
-                    <button
-                      type="button"
-                      onClick={() => handleAutoGenerateFirstStart(activeId)}
-                      disabled={quickFirstStartGenLoadingId === activeId}
-                      className="h-9 px-3 rounded-lg bg-white/10 text-white text-sm font-semibold hover:bg-white/15 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
-                      aria-label="오프닝 자동 생성"
-                      title="오프닝 자동 생성"
-                    >
-                      {quickFirstStartGenLoadingId === activeId ? (
-                        <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                      ) : (
-                        '자동 생성'
-                      )}
-                    </button>
-                  </div>
                 </div>
 
                 {/* ✅ 턴수별 사건(오프닝 내): 햄버거 카드 + 필수 지문/대사 */}
@@ -13643,7 +13762,8 @@ const CreateCharacterPage = () => {
               <button
                 type="button"
                 onClick={handleManualDraftSave}
-                className="h-8 px-1 text-xs sm:h-9 sm:px-2 sm:text-sm font-semibold text-white/80 hover:text-white transition-colors whitespace-nowrap"
+                disabled={isProfileConceptAutoGenerating}
+                className="h-8 px-1 text-xs sm:h-9 sm:px-2 sm:text-sm font-semibold text-white/80 hover:text-white transition-colors whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
                 aria-label="임시저장"
                 title="임시저장"
               >
@@ -13661,6 +13781,8 @@ const CreateCharacterPage = () => {
               <Button 
                 onClick={handleSubmit}
                 disabled={loading || (useNormalCreateWizard && (
+                  isProfileConceptAutoGenerating
+                  ||
                   String(formData?.basic_info?.name || '').length > PROFILE_NAME_MAX_LEN
                   || String(formData?.basic_info?.name || '').trim().length === 0
                   || String(formData?.basic_info?.description || '').length > PROFILE_ONE_LINE_MAX_LEN
