@@ -77,6 +77,7 @@ import {
   setHomeSlots as persistHomeSlots,
   isHomeSlotActive,
   isDefaultHomeSlotsConfig,
+  sanitizeHomeSlot,
 } from '../lib/cmsSlots';
 import {
   HOME_POPUPS_STORAGE_KEY,
@@ -1921,13 +1922,28 @@ const HomePage = () => {
   const activeHomeSlots = React.useMemo(() => {
     const now = Date.now();
     const arr = Array.isArray(homeSlots) ? homeSlots : [];
-    return arr.filter((s) => {
-      try {
-        return isHomeSlotActive(s, now);
-      } catch (_) {
-        return false;
-      }
-    });
+    return arr
+      .filter((s) => {
+        try {
+          return isHomeSlotActive(s, now);
+        } catch (_) {
+          return false;
+        }
+      })
+      .map((s) => {
+        try {
+          return sanitizeHomeSlot(s);
+        } catch (_) {
+          return null;
+        }
+      })
+      .filter((s) => {
+        try {
+          return !!String(s?.id || '').trim();
+        } catch (_) {
+          return false;
+        }
+      });
   }, [homeSlots]);
 
   // 홈에서 이미 불러온 캐릭터 목록 메타(태그/모드/카운트)를 custom 구좌 카드에도 즉시 재사용한다.
@@ -2329,6 +2345,18 @@ const HomePage = () => {
 
     // 알 수 없는 구좌는 홈에 반영하지 않는다(추후 구좌 타입 확장 시 연결)
     return null;
+  };
+
+  const safeRenderHomeSlot = (slot) => {
+    try {
+      return renderHomeSlot(slot);
+    } catch (e) {
+      try {
+        const sid = String(slot?.id || '').trim() || '(unknown-slot)';
+        console.error('[HomePage] slot render failed:', sid, e);
+      } catch (_) {}
+      return null;
+    }
   };
 
   return (
@@ -2916,9 +2944,9 @@ const HomePage = () => {
           {!isCharacterTab && !isOrigSerialTab && (
             <>
           {/* CMS 구좌(탐색/최근대화/스토리다이브 제외) */}
-          {(splitSlots.pre || []).map((slot) => (
-            <React.Fragment key={String(slot?.id || '') || String(slot?.title || '')}>
-              {renderHomeSlot(slot)}
+          {(splitSlots.pre || []).map((slot, idx) => (
+            <React.Fragment key={String(slot?.id || '') || String(slot?.title || '') || `slot-pre-${idx}`}>
+              {safeRenderHomeSlot(slot)}
             </React.Fragment>
           ))}
 
@@ -3044,9 +3072,9 @@ const HomePage = () => {
             );
           })()}
 
-          {(splitSlots.post || []).map((slot) => (
-            <React.Fragment key={String(slot?.id || '') || String(slot?.title || '')}>
-              {renderHomeSlot(slot)}
+          {(splitSlots.post || []).map((slot, idx) => (
+            <React.Fragment key={String(slot?.id || '') || String(slot?.title || '') || `slot-post-${idx}`}>
+              {safeRenderHomeSlot(slot)}
             </React.Fragment>
           ))}
 
