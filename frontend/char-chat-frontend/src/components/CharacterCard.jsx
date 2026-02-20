@@ -14,6 +14,8 @@ import { storiesAPI } from '../lib/api';
 import { useAuth } from '../contexts/AuthContext';
 import { replacePromptTokens } from '../lib/prompt';
 import { buildCharacterTagChipLabels } from '../lib/characterTagChips';
+const originStoryTitleCache = new Map();
+const originStoryTitleInFlight = new Map();
 
 /**
  * 캐릭터 카드(재사용 컴포넌트)
@@ -117,15 +119,38 @@ export const CharacterCard = ({
     let active = true;
     const fetchTitleIfNeeded = async () => {
       if (!showOriginBadge) return;
-      const sid = character?.origin_story_id;
+      const sid = String(character?.origin_story_id || '').trim();
       if (!sid) return;
-      if (character?.origin_story_title) return; // already provided
-      try {
-        const res = await storiesAPI.getStory(sid);
-        if (!active) return;
-        const t = res.data?.title;
-        if (t) setOriginTitle(t);
-      } catch (_) {}
+      if (character?.origin_story_title) {
+        const initial = String(character.origin_story_title).trim();
+        if (!initial) return;
+        originStoryTitleCache.set(sid, initial);
+        setOriginTitle(initial);
+        return;
+      }
+
+      const cached = originStoryTitleCache.get(sid);
+      if (cached) {
+        setOriginTitle(cached);
+        return;
+      }
+
+      let pending = originStoryTitleInFlight.get(sid);
+      if (!pending) {
+        pending = storiesAPI
+          .getStory(sid)
+          .then((res) => String(res?.data?.title || '').trim())
+          .catch(() => '')
+          .finally(() => {
+            originStoryTitleInFlight.delete(sid);
+          });
+        originStoryTitleInFlight.set(sid, pending);
+      }
+
+      const title = await pending;
+      if (!active || !title) return;
+      originStoryTitleCache.set(sid, title);
+      setOriginTitle(title);
     };
     fetchTitleIfNeeded();
     return () => { active = false; };

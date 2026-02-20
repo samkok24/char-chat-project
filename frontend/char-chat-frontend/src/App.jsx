@@ -27,7 +27,7 @@ const queryClient = new QueryClient({
       retry: 1,
       refetchOnWindowFocus: true, // false → true (포커스 시 갱신)
       refetchOnReconnect: true, // false → true (재연결 시 갱신)
-      refetchOnMount: 'always', // false → true (마운트 시 갱신, staleTime 체크함)
+      refetchOnMount: true, // stale일 때만 갱신 (초기 진입 과호출 완화)
     },
   },
 });

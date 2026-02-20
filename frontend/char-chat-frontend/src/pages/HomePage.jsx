@@ -68,7 +68,6 @@ import RecommendedCharacters from '../components/RecommendedCharacters';
 import TopStories from '../components/TopStories';
 import TopOrigChat from '../components/TopOrigChat';
 import WebNovelSection from '../components/WebNovelSection';
-import QuickMeetCharacterModal from '../components/QuickMeetCharacterModal';
 import CharacterMobileDetailModal from '../components/CharacterMobileDetailModal';
 import { useIsMobile } from '../hooks/use-mobile';
 import {
@@ -92,6 +91,7 @@ import {
 import { resolveHomeAbVariant } from '../lib/homeAb';
 
 const CHARACTER_PAGE_SIZE = 40;
+const QuickMeetCharacterModal = React.lazy(() => import('../components/QuickMeetCharacterModal'));
 
 // ✅ 캐릭터 탭 고정 태그칩(요구사항): "모두" 옆에 롤플/시뮬/커스텀을 항상 노출
 // - 실제 필터는 서버에서 character_type으로 해석(태그 매핑이 없는 기존 데이터도 동작하도록)
@@ -1005,8 +1005,7 @@ const HomePage = () => {
     isLoading: loading,
     isFetchingNextPage,
     hasNextPage,
-    fetchNextPage,
-    refetch
+    fetchNextPage
   } = useInfiniteQuery({
     queryKey: ['characters', 'infinite', searchQuery, effectiveTagsKey, sourceFilter],
     queryFn: async ({ pageParam = 0 }) => {
@@ -1264,10 +1263,6 @@ const HomePage = () => {
   }, [characters, exploreStories, sourceFilter]);
 
   // 페이지 진입/검색 변경 시 첫 페이지 새로고침
-  useEffect(() => {
-    refetch();
-  }, [location, searchQuery, selectedTags, sourceFilter, refetch]);
-
   // 캐릭터 탭 페이지 초기화
   useEffect(() => {
     if (!isCharacterTab) {
@@ -2355,12 +2350,16 @@ const HomePage = () => {
             </section>
           )}
 
-          <QuickMeetCharacterModal
-            open={quickMeetOpen}
-            onClose={() => setQuickMeetOpen(false)}
-            initialName={quickMeetInitialName}
-            initialSeedText={quickMeetInitialSeedText}
-          />
+          {quickMeetOpen && (
+            <React.Suspense fallback={null}>
+              <QuickMeetCharacterModal
+                open={quickMeetOpen}
+                onClose={() => setQuickMeetOpen(false)}
+                initialName={quickMeetInitialName}
+                initialSeedText={quickMeetInitialSeedText}
+              />
+            </React.Suspense>
+          )}
 
           {/* 상단 필터 바 + 검색 */}
           <div className="mb-6">
