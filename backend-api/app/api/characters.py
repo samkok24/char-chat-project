@@ -1673,6 +1673,7 @@ async def convert_character_to_detail_response(character: Character, db: AsyncSe
     """캐릭터 모델을 상세 응답으로 변환"""
     # 예시 대화 조회
     example_dialogues = await get_character_example_dialogues(db, character.id)
+    tag_labels = _extract_tag_labels_for_list(character)
 
     if settings.ENVIRONMENT == "production":
         # JSON/기본값 보정 (마이그레이션 데이터 대비)
@@ -1707,6 +1708,7 @@ async def convert_character_to_detail_response(character: Character, db: AsyncSe
             start_sets=start_sets,
             character_type=getattr(character, 'character_type', 'roleplay'),
             base_language=getattr(character, 'base_language', 'ko'),
+            tags=tag_labels,
             avatar_url=getattr(character, 'avatar_url', None),
             image_descriptions=imgs if isinstance(imgs, list) else None,
             voice_settings=voice,
@@ -1751,6 +1753,7 @@ async def convert_character_to_detail_response(character: Character, db: AsyncSe
         start_sets=getattr(character, 'start_sets', None),
         character_type=getattr(character, 'character_type', 'roleplay'),
         base_language=getattr(character, 'base_language', 'ko'),
+        tags=tag_labels,
         avatar_url=character.avatar_url,
         image_descriptions=getattr(character, 'image_descriptions', []),
         voice_settings=getattr(character, 'voice_settings', None),
