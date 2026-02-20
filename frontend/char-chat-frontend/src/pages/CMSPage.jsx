@@ -746,7 +746,7 @@ const CMSPage = () => {
   if (!isAdmin) {
     return (
       <AppLayout>
-        <div className="min-h-screen bg-gray-900 text-white p-4 sm:p-6 lg:p-8">
+        <div className="min-h-full bg-gray-900 text-white p-4 sm:p-6 lg:p-8">
           <div className="max-w-3xl mx-auto">
             <Card className="bg-gray-800 border-gray-700">
               <CardHeader>
@@ -2067,10 +2067,10 @@ const CMSPage = () => {
 
   return (
     <AppLayout>
-      <div className="min-h-screen bg-gray-900 text-white p-4 sm:p-6 lg:p-8">
+      <div className="min-h-full bg-gray-900 text-white p-4 sm:p-6 lg:p-8">
         <div className="max-w-5xl mx-auto space-y-6">
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
+          <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+            <div className="flex items-center gap-2 min-w-0">
               <Settings className="w-6 h-6 text-purple-300" />
               <div>
                   <div className="text-xl font-bold text-white">관리자 페이지</div>
@@ -2079,7 +2079,7 @@ const CMSPage = () => {
                   </div>
                 </div>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap justify-end w-full sm:w-auto">
                 {(isAiModelsTab || isUsersTab || isUserLogsTab) ? (
                   <>
                     {isUsersTab && (

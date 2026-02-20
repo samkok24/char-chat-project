@@ -37,7 +37,7 @@ const TopOrigChat = ({ title } = {}) => {
        * - 격자(2/4/7열) 디자인은 유지한다(카드 크기 불변).
        * - 랭킹 데이터가 부족하면 origchat 캐릭터 목록에서 chats 기준으로 보강한다.
        */
-      const target = isMobile ? 4 : 14;
+      const target = isMobile ? 4 : 10;
 
       const res = await rankingAPI.getDaily({ kind: 'origchat' });
       const baseItems = Array.isArray(res.data?.items) ? res.data.items : [];
@@ -161,6 +161,5 @@ const TopOrigChat = ({ title } = {}) => {
 };
 
 export default TopOrigChat;
-
 
 

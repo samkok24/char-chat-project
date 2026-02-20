@@ -33,7 +33,7 @@ const TrendingCharacters = ({ title } = {}) => {
        * - 격자(2/4/7열) 디자인은 유지한다(카드 크기 불변).
        * - 데이터가 부족할 때만 'chats' 정렬의 일반 캐릭터로 보강한다.
        */
-      const target = isMobile ? 4 : 14;
+      const target = isMobile ? 4 : 10;
 
       const baseRes = await rankingAPI.getDaily({ kind: 'character' });
       const baseItems = Array.isArray(baseRes.data?.items) ? baseRes.data.items : [];
@@ -160,5 +160,4 @@ const TrendingCharacters = ({ title } = {}) => {
 };
 
 export default TrendingCharacters;
-
 
