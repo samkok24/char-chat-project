@@ -212,6 +212,36 @@ const HomePage = () => {
       }
     };
 
+    const findLatestResource = (predicate) => {
+      try {
+        const entries = (performance.getEntriesByType?.('resource') || []);
+        const matches = entries.filter((x) => {
+          try { return !!predicate?.(x); } catch (_) { return false; }
+        });
+        if (!matches.length) return null;
+        matches.sort((a, b) => Number(b?.responseEnd || 0) - Number(a?.responseEnd || 0));
+        return matches[0] || null;
+      } catch (_) {
+        return null;
+      }
+    };
+
+    const summarizeResource = (entry) => {
+      if (!entry) return null;
+      try {
+        return {
+          name: String(entry.name || ''),
+          startMs: Math.round(Number(entry.startTime || 0)),
+          endMs: Math.round(Number(entry.responseEnd || 0)),
+          durationMs: Math.round(Number(entry.duration || 0)),
+          transferKB: Math.round((Number(entry.transferSize || 0) / 1024) * 10) / 10,
+          encodedKB: Math.round((Number(entry.encodedBodySize || 0) / 1024) * 10) / 10,
+        };
+      } catch (_) {
+        return null;
+      }
+    };
+
     const finalize = (trigger = 'unknown') => {
       if (perfState.done) return;
       if (!(Number(perfState.bannerAt) > 0)) return;
@@ -232,6 +262,38 @@ const HomePage = () => {
         trigger,
       };
 
+      try {
+        const bannerImgSrc = String(window.__CC_HOME_BANNER_LAST_SRC || '').trim();
+        const stripHash = (v) => {
+          const s = String(v || '');
+          const i = s.indexOf('#');
+          return i >= 0 ? s.slice(0, i) : s;
+        };
+        const stripQuery = (v) => {
+          const s = String(v || '');
+          const i = s.indexOf('?');
+          return i >= 0 ? s.slice(0, i) : s;
+        };
+        const bannerImgEntry = bannerImgSrc
+          ? (
+            findLatestResource((r) => {
+              const n = String(r?.name || '');
+              const a = stripHash(n);
+              const b = stripHash(bannerImgSrc);
+              return a === b || stripQuery(a) === stripQuery(b);
+            })
+          )
+          : null;
+
+        payload.network = {
+          bannerConfig: summarizeResource(findLatestResource((r) => String(r?.name || '').includes('/cms/home/banners'))),
+          homeSlots: summarizeResource(findLatestResource((r) => String(r?.name || '').includes('/cms/home/slots'))),
+          tags: summarizeResource(findLatestResource((r) => String(r?.name || '').includes('/tags'))),
+          characters: summarizeResource(findLatestResource((r) => String(r?.name || '').includes('/characters'))),
+          bannerImage: summarizeResource(bannerImgEntry),
+        };
+      } catch (_) {}
+
       try { performance.mark('home:render:done'); } catch (_) {}
       try { performance.measure('home:render:total', 'home:render:start', 'home:render:done'); } catch (_) {}
       try { window.__CC_HOME_RENDER_PERF = payload; } catch (_) {}
@@ -248,6 +310,7 @@ const HomePage = () => {
           payload.trigger
         );
       } catch (_) {}
+      try { console.info('[Perf][Home][Net]', payload.network || {}); } catch (_) {}
     };
 
     const scheduleFinalizeCheck = (trigger = 'mutation') => {

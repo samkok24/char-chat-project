@@ -204,14 +204,14 @@ const HomeBannerCarousel = ({ className = '' }) => {
 
   const renderBanners = Array.isArray(banners) ? banners : [];
   const snapCount = renderBanners.length;
-  const reportBannerReady = React.useCallback((reason = 'ready') => {
+  const reportBannerReady = React.useCallback((reason = 'ready', meta = {}) => {
     if (bannerReadyReportedRef.current) return;
     bannerReadyReportedRef.current = true;
     try {
       const at = (typeof performance !== 'undefined' && typeof performance.now === 'function')
         ? performance.now()
         : Date.now();
-      const detail = { reason, at, snapCount };
+      const detail = { reason, at, snapCount, ...(meta || {}) };
       try { window.__CC_HOME_BANNER_READY = detail; } catch (_) {}
       window.dispatchEvent(new CustomEvent('home:banner-ready', { detail }));
     } catch (_) {}
@@ -380,12 +380,16 @@ const HomeBannerCarousel = ({ className = '' }) => {
                   onLoad={(e) => {
                     // 방어: 이전 로드 실패로 display:none 이 남아있을 수 있으므로 복구
                     try { e.currentTarget.style.display = ''; } catch (_) {}
-                    reportBannerReady('image-loaded');
+                    const loadedSrc = String(e?.currentTarget?.currentSrc || e?.currentTarget?.src || '').trim();
+                    try { window.__CC_HOME_BANNER_LAST_SRC = loadedSrc; } catch (_) {}
+                    reportBannerReady('image-loaded', { src: loadedSrc });
                   }}
                   onError={(e) => {
                     // 방어: 이미지 로드 실패 시 배경만 남긴다.
                     try { e.currentTarget.style.display = 'none'; } catch (_) {}
-                    reportBannerReady('image-error');
+                    const failedSrc = String(e?.currentTarget?.currentSrc || e?.currentTarget?.src || '').trim();
+                    try { window.__CC_HOME_BANNER_LAST_SRC = failedSrc; } catch (_) {}
+                    reportBannerReady('image-error', { src: failedSrc });
                   }}
                 />
               </picture>
