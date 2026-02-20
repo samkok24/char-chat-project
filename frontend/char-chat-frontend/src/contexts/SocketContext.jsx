@@ -181,6 +181,8 @@ export const SocketProvider = ({ children }) => {
   const { user, isAuthenticated } = useAuth();
   const currentRoomRef = useRef(null);
   const messagesRef = useRef([]);
+  const joinedRoomIdsRef = useRef(new Set());
+  const joiningRoomPromisesRef = useRef(new Map());
   /**
    * ✅ 표시 대상(의도한) 룸 ID ref — 방 전환 레이스 방지
    *
@@ -307,6 +309,10 @@ export const SocketProvider = ({ children }) => {
           reconnectionDelay: 500,
           reconnectionDelayMax: 5000,
         });
+        try {
+          joinedRoomIdsRef.current = new Set();
+          joiningRoomPromisesRef.current = new Map();
+        } catch (_) {}
 
           newSocket.on('connect', () => {
             console.log('Socket 연결됨:', newSocket.id);
@@ -351,6 +357,10 @@ export const SocketProvider = ({ children }) => {
           // ✅ 로딩이 영구 유지되지 않도록 해제(재연결 시 다시 로드됨)
           setHistoryLoading(false);
           clearHistoryTimeout();
+          try {
+            joinedRoomIdsRef.current.clear();
+            joiningRoomPromisesRef.current.clear();
+          } catch (_) {}
         });
 
         newSocket.on('connected', (data) => {
@@ -391,7 +401,10 @@ export const SocketProvider = ({ children }) => {
           try {
             const rid = String(data?.roomId || data?.room?.id || '').trim();
             if (!isDesiredRoom(rid)) return;
-            if (rid) setDesiredRoomId(rid);
+            if (rid) {
+              setDesiredRoomId(rid);
+              joinedRoomIdsRef.current.add(rid);
+            }
           } catch (_) {}
           // room_joined가 오면 "입장 지연" 타임아웃은 종료한다.
           clearHistoryTimeout();
@@ -406,6 +419,7 @@ export const SocketProvider = ({ children }) => {
           try {
             const rid = String(data?.roomId || '').trim();
             if (!isDesiredRoom(rid)) return;
+            if (rid) joinedRoomIdsRef.current.delete(rid);
           } catch (_) {}
           setCurrentRoom(null);
           // 소켓 재연결 중에도 UI가 공백이 되지 않도록 즉시 비우지 않음

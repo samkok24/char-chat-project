@@ -51,18 +51,32 @@ const CharacterDetailPage = () => {
   // 2. useLocation hook을 호출하여 location 객체를 가져옵니다.
   const location = useLocation();
   const queryClient = useQueryClient();
+  const preloadedCharacter = React.useMemo(() => {
+    try {
+      const raw = location?.state?.preloadedCharacter;
+      if (!raw || typeof raw !== 'object') return null;
+      const pid = String(raw?.id || '').trim();
+      if (!pid || pid !== String(characterId || '').trim()) return null;
+      return raw;
+    } catch (_) {
+      return null;
+    }
+  }, [location?.state, characterId]);
 
-  const [character, setCharacter] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [character, setCharacter] = useState(preloadedCharacter);
+  const [loading, setLoading] = useState(!preloadedCharacter);
   const [error, setError] = useState('');
   
   // Caveduck UI를 위한 임시 상태
-  const [activeImage, setActiveImage] = useState('');
-  const [galleryImages, setGalleryImages] = useState([]);
+  const [activeImage, setActiveImage] = useState(() => String(preloadedCharacter?.avatar_url || '').trim());
+  const [galleryImages, setGalleryImages] = useState(() => {
+    const seed = String(preloadedCharacter?.avatar_url || '').trim();
+    return seed ? [seed] : [];
+  });
   const [isLiked, setIsLiked] = useState(false);
   // 첫 번째 이미지의 가로세로 비율을 기억하여 메인 프리뷰의 사이즈를 고정
   const [baseRatio, setBaseRatio] = useState(1); // height/width
-  const [likeCount, setLikeCount] = useState(0);
+  const [likeCount, setLikeCount] = useState(() => Number(preloadedCharacter?.like_count ?? 0) || 0);
   const [imgModalOpen, setImgModalOpen] = useState(false);
   // ✅ 오프닝 선택(상세페이지): 유저가 시작 오프닝을 고르면 첫상황/첫대사가 즉시 바뀌고,
   // 시작 버튼을 누르면 해당 오프닝으로 채팅이 시작된다.
@@ -101,10 +115,17 @@ const CharacterDetailPage = () => {
   };
 
   useEffect(() => {
+    let mounted = true;
     const loadCharacterData = async () => {
-      setLoading(true);
+      const hasWarmCharacter = Boolean(preloadedCharacter);
+      if (!hasWarmCharacter) setLoading(true);
+      setError('');
+      setComments([]);
+      setTags([]);
+      setIsLiked(false);
       try {
         const response = await charactersAPI.getCharacter(characterId);
+        if (!mounted) return;
         const characterData = response.data;
         setCharacter(characterData);
         setLikeCount(characterData.like_count || 0);
@@ -140,32 +161,45 @@ const CharacterDetailPage = () => {
         
         // 중복 제거 (아바타와 갤러리 이미지가 같을 수 있으므로)
         const uniqueImages = [...new Set(allImages)];
-        const fromAssets = (mediaAssets || []).map(a => a.url);
-        const finalImages = fromAssets.length > 0 ? fromAssets : uniqueImages;
-        setGalleryImages(finalImages);
-        const first = finalImages[0] || DEFAULT_SQUARE_URI;
+        const firstBatch = uniqueImages.length > 0 ? uniqueImages : [DEFAULT_SQUARE_URI];
+        setGalleryImages(firstBatch);
+        const first = firstBatch[0] || DEFAULT_SQUARE_URI;
         setActiveImage(first); // 기본 이미지
         // 상세 메인 프리뷰는 항상 3:4(세로형)로 고정
         setBaseRatio(4/3);
+        setLoading(false);
         
         // 좋아요 상태 확인
-        if (isAuthenticated) {
-          const likeStatusResponse = await charactersAPI.getLikeStatus(characterId);
-          setIsLiked(likeStatusResponse.data.is_liked);
-        }
+        void (async () => {
+          if (!isAuthenticated) return;
+          try {
+            const likeStatusResponse = await charactersAPI.getLikeStatus(characterId);
+            if (!mounted) return;
+            setIsLiked(!!likeStatusResponse?.data?.is_liked);
+          } catch (_) {}
+        })();
 
         // 댓글 로드
-        const commentsResponse = await charactersAPI.getComments(characterId);
-        setComments(commentsResponse.data);
+        void (async () => {
+          try {
+            const commentsResponse = await charactersAPI.getComments(characterId);
+            if (!mounted) return;
+            setComments(Array.isArray(commentsResponse?.data) ? commentsResponse.data : []);
+          } catch (_) {}
+        })();
 
         // 태그 로드
-        try {
-          const tagRes = await api.get(`/characters/${characterId}/tags`);
-          setTags(tagRes.data || []);
-        } catch (_) {}
+        void (async () => {
+          try {
+            const tagRes = await api.get(`/characters/${characterId}/tags`);
+            if (!mounted) return;
+            setTags(Array.isArray(tagRes?.data) ? tagRes.data : []);
+          } catch (_) {}
+        })();
 
 
       } catch (err) {
+        if (!mounted) return;
         console.error('캐릭터 정보 로드 실패:', err);
         const status = err?.response?.status;
         if (status === 404) {
@@ -177,12 +211,12 @@ const CharacterDetailPage = () => {
         } else {
           setError('캐릭터 정보를 불러오는 중 오류가 발생했습니다.');
         }
-      } finally {
         setLoading(false);
       }
     };
     loadCharacterData();
-  }, [characterId, isAuthenticated, mediaAssets]);
+    return () => { mounted = false; };
+  }, [characterId, isAuthenticated, user?.id, user?.is_admin, preloadedCharacter]);
 
   // ✅ 백필 pending 상태면 3초 간격으로 자동 refetch
   useEffect(() => {

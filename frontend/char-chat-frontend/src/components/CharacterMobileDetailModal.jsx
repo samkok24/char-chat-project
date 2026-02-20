@@ -354,7 +354,11 @@ export default function CharacterMobileDetailModal({
 
   const goFullPage = () => {
     if (!cid) return;
-    navigate(`/characters/${cid}`);
+    navigate(`/characters/${cid}`, {
+      state: {
+        preloadedCharacter: character || null,
+      },
+    });
     try {
       onOpenChange(false);
     } catch (_) {}
@@ -754,4 +758,3 @@ export default function CharacterMobileDetailModal({
     </div>
   );
 }
-
