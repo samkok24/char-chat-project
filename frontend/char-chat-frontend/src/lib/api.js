@@ -1000,6 +1000,7 @@ export const metricsAPI = {
   getTraffic: (params = {}) => api.get('/metrics/traffic', { params }),
   trackPageEvent: (data) => api.post('/metrics/traffic/page-event', data),
   getPageExitSummary: (params = {}) => api.get('/metrics/traffic/page-exits', { params }),
+  getAuthModalSummary: (params = {}) => api.get('/metrics/traffic/auth-modals', { params }),
   // ✅ 실시간 온라인(접속) - Redis 하트비트 기반(관리자/운영 판단용)
   // - heartbeat: 유저가 접속 중임을 짧은 TTL로 갱신(실패해도 무시해도 됨)
   onlineHeartbeat: () => api.post('/metrics/online/heartbeat'),

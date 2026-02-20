@@ -198,9 +198,19 @@ export function setHomeBanners(banners) {
   }
 }
 
+/**
+ * 서버/메모리에서 받은 배너 배열을 바로 활성/디바이스 조건으로 필터링한다.
+ * - localStorage round-trip 없이 즉시 렌더 상태를 만들 때 사용한다.
+ */
+export function getActiveHomeBannersFromItems(items, atMs = Date.now(), device = 'pc') {
+  const arr = Array.isArray(items) ? items : [];
+  const normalized = arr.map(sanitizeHomeBanner);
+  return normalized.filter((b) => isHomeBannerActive(b, atMs) && isHomeBannerVisibleOnDevice(b, device));
+}
+
 export function getActiveHomeBanners(atMs = Date.now(), device = 'pc') {
   const all = getHomeBanners();
-  return (all || []).filter((b) => isHomeBannerActive(b, atMs) && isHomeBannerVisibleOnDevice(b, device));
+  return getActiveHomeBannersFromItems(all, atMs, device);
 }
 
 

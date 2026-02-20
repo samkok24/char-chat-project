@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { authAPI } from '../lib/api';
+import { authAPI, metricsAPI } from '../lib/api';
+import { getOrCreateClientId, getOrCreateSessionId } from '../lib/clientIdentity';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
 import { Card, CardContent, CardDescription } from './ui/card';
 import { Alert, AlertDescription } from './ui/alert';
@@ -32,6 +33,7 @@ const StatusMessage = ({ type, message }) => {
 
 const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
   const { login, register } = useAuth();
+  const trackedModalEventRef = useRef('');
   
   // view: 'login' | 'register' | 'success'
   const [view, setView] = useState(initialTab === 'register' ? 'register' : 'login');
@@ -62,6 +64,45 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
   const [resetLoading, setResetLoading] = useState(false);
 
   // 모달 열릴 때 초기화
+  useEffect(() => {
+    const sendModalEvent = (eventName) => {
+      if (!eventName) return;
+      let path = '/';
+      let clientId;
+      let sessionId;
+      try { path = String(window.location?.pathname || '/'); } catch (_) {}
+      try { clientId = getOrCreateClientId(); } catch (_) {}
+      try { sessionId = getOrCreateSessionId(); } catch (_) {}
+      try {
+        metricsAPI.trackPageEvent({
+          event: eventName,
+          path,
+          client_id: clientId || undefined,
+          session_id: sessionId || undefined,
+        }).catch(() => {});
+      } catch (_) {}
+    };
+
+    if (!isOpen) {
+      trackedModalEventRef.current = '';
+      return;
+    }
+
+    // 첫 오픈은 initialTab 기준으로 집계(이전 state 잔상 방지)
+    if (!trackedModalEventRef.current) {
+      const initialEvent = initialTab === 'register' ? 'modal_register_open' : 'modal_login_open';
+      sendModalEvent(initialEvent);
+      trackedModalEventRef.current = initialEvent;
+      return;
+    }
+
+    const currentEvent = view === 'register' ? 'modal_register_open' : view === 'login' ? 'modal_login_open' : '';
+    if (currentEvent && trackedModalEventRef.current !== currentEvent) {
+      sendModalEvent(currentEvent);
+      trackedModalEventRef.current = currentEvent;
+    }
+  }, [isOpen, initialTab, view]);
+
   useEffect(() => {
     if (isOpen) {
       setView(initialTab === 'register' ? 'register' : 'login');
