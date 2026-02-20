@@ -752,7 +752,7 @@ const HomePage = () => {
 
       const results = {};
       let cursor = 0;
-      const concurrency = 2;
+      const concurrency = 6;
 
       const worker = async () => {
         while (!cancelled) {
@@ -1867,6 +1867,42 @@ const HomePage = () => {
     });
   }, [homeSlots]);
 
+  // 홈에서 이미 불러온 캐릭터 목록 메타(태그/모드/카운트)를 custom 구좌 카드에도 즉시 재사용한다.
+  const homeCharacterMetaById = React.useMemo(() => {
+    const out = {};
+    const put = (c) => {
+      try {
+        const id = String(c?.id || '').trim();
+        if (!id) return;
+        const prev = out[id] || {};
+        const next = { ...prev };
+
+        const tags = Array.isArray(c?.tags)
+          ? c.tags.map((t) => String(t?.name || t?.slug || t || '').trim()).filter(Boolean)
+          : [];
+        const characterType = String(c?.character_type || c?.characterType || '').trim();
+        const chatCount = Number(c?.chat_count ?? c?.chatCount);
+        const likeCount = Number(c?.like_count ?? c?.likeCount);
+        const createdAt = c?.created_at ?? c?.createdAt ?? null;
+        const updatedAt = c?.updated_at ?? c?.updatedAt ?? null;
+
+        if (tags.length > 0) next.tags = tags;
+        if (characterType) next.character_type = characterType;
+        if (Number.isFinite(chatCount)) next.chat_count = chatCount;
+        if (Number.isFinite(likeCount)) next.like_count = likeCount;
+        if (createdAt) next.created_at = createdAt;
+        if (updatedAt) next.updated_at = updatedAt;
+
+        out[id] = next;
+      } catch (_) {}
+    };
+
+    (characters || []).forEach(put);
+    (origChatCharacters || []).forEach(put);
+    (dailyTagCharacters || []).forEach(put);
+    return out;
+  }, [characters, origChatCharacters, dailyTagCharacters]);
+
   // 스토리다이브/최근대화/탐색은 CMS 구좌 조작 대상에서 제외(요구사항)
   // - 스토리다이브 구좌는 기존 위치(고정)에서 그대로 렌더링한다.
   // - CMS 구좌들은 (기본) "일상" 슬롯을 기준으로 스토리다이브 위/아래로 분리해 렌더링한다.
@@ -2175,8 +2211,19 @@ const HomePage = () => {
                       return <StoryExploreCard key={key} story={x.item} compact variant="home" showLikeBadge={false} />;
                   }
                   // ✅ CMS 커스텀 구좌: 저장된 스냅샷(item)의 chat_count가 0/누락일 수 있어 최신 값으로 보정한다.
+                  const baseItem = x.item || {};
+                  const fromList = rid ? homeCharacterMetaById?.[rid] : null;
                   const live = rid ? cmsLiveCountsByCharId?.[rid] : null;
-                  const merged = live ? { ...(x.item || {}), ...live } : x.item;
+                  const merged = { ...baseItem, ...(fromList || {}), ...(live || {}) };
+                  const mergedTags = [live?.tags, fromList?.tags, baseItem?.tags]
+                    .find((arr) => Array.isArray(arr) && arr.length > 0);
+                  if (Array.isArray(mergedTags) && mergedTags.length > 0) {
+                    merged.tags = mergedTags;
+                  }
+                  const mergedType = [live?.character_type, fromList?.character_type, baseItem?.character_type]
+                    .map((v) => String(v || '').trim())
+                    .find(Boolean);
+                  if (mergedType) merged.character_type = mergedType;
                   // ✅ CMS 커스텀 구좌는 "탐색 카드"가 아니라 홈 구좌(격자) 스타일로 노출해야 한다.
                   return (
                     <CharacterCard

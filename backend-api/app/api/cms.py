@@ -20,6 +20,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, text
+from sqlalchemy.orm import selectinload
 from typing import List
 import logging
 from datetime import datetime, timezone
@@ -31,6 +32,7 @@ from app.core.config import settings
 from app.core.security import get_current_user
 from app.models.user import User
 from app.models.site_config import SiteConfig
+from app.models.character import Character
 from app.schemas.cms import HomeBanner, HomeSlot, TagDisplayConfig, HomePopup, HomePopupItem, HomePopupConfig
 
 logger = logging.getLogger(__name__)
@@ -511,6 +513,141 @@ def _normalize_slots(items: List[HomeSlot]) -> List[dict]:
     return out
 
 
+async def _enrich_slot_character_picks(db: AsyncSession, slots: List[dict]) -> List[dict]:
+    """
+    커스텀 구좌 contentPicks.character.item에 최신 캐릭터 메타를 보강한다.
+
+    목적:
+    - 과거 스냅샷(태그/모드 누락)이라도 홈 첫 렌더에서 즉시 태그칩이 노출되게 한다.
+    - 프론트가 상세 API 하이드레이션을 기다리며 태그가 늦게 뜨는 현상을 줄인다.
+    """
+    try:
+        raw_slots = slots if isinstance(slots, list) else []
+        if not raw_slots:
+            return raw_slots
+
+        id_map = {}
+        for s in raw_slots:
+            if not isinstance(s, dict):
+                continue
+            picks = s.get("contentPicks")
+            if not isinstance(picks, list):
+                continue
+            for p in picks:
+                if not isinstance(p, dict):
+                    continue
+                if str(p.get("type") or "").strip().lower() != "character":
+                    continue
+                item = p.get("item")
+                if not isinstance(item, dict):
+                    continue
+                sid = str(item.get("id") or "").strip()
+                if not sid or sid in id_map:
+                    continue
+                try:
+                    id_map[sid] = uuid.UUID(sid)
+                except Exception:
+                    continue
+
+        if not id_map:
+            return raw_slots
+
+        rows = await db.execute(
+            select(Character)
+            .options(selectinload(Character.tags))
+            .where(Character.id.in_(list(id_map.values())))
+        )
+        characters = rows.scalars().all() if rows else []
+
+        meta_by_id = {}
+        for c in (characters or []):
+            try:
+                cid = str(getattr(c, "id"))
+                tags_out = []
+                for t in (getattr(c, "tags", None) or []):
+                    v = str(getattr(t, "name", None) or getattr(t, "slug", None) or "").strip()
+                    if not v or v in tags_out:
+                        continue
+                    tags_out.append(v)
+                meta_by_id[cid] = {
+                    "character_type": str(getattr(c, "character_type", "") or "").strip() or None,
+                    "tags": tags_out,
+                    "chat_count": int(getattr(c, "chat_count", 0) or 0),
+                    "like_count": int(getattr(c, "like_count", 0) or 0),
+                    "created_at": getattr(c, "created_at", None),
+                    "updated_at": getattr(c, "updated_at", None),
+                }
+            except Exception:
+                continue
+
+        out = []
+        for s in raw_slots:
+            if not isinstance(s, dict):
+                out.append(s)
+                continue
+            slot = dict(s)
+            picks = slot.get("contentPicks")
+            if not isinstance(picks, list):
+                out.append(slot)
+                continue
+
+            next_picks = []
+            for p in picks:
+                if not isinstance(p, dict):
+                    next_picks.append(p)
+                    continue
+                if str(p.get("type") or "").strip().lower() != "character":
+                    next_picks.append(p)
+                    continue
+                item = p.get("item")
+                if not isinstance(item, dict):
+                    next_picks.append(p)
+                    continue
+                sid = str(item.get("id") or "").strip()
+                meta = meta_by_id.get(sid)
+                if not meta:
+                    next_picks.append(p)
+                    continue
+
+                next_item = dict(item)
+                ctype = str(meta.get("character_type") or "").strip()
+                tags = meta.get("tags") or []
+                if ctype:
+                    next_item["character_type"] = ctype
+                if isinstance(tags, list) and len(tags) > 0:
+                    next_item["tags"] = tags
+                next_item["chat_count"] = int(meta.get("chat_count", 0) or 0)
+                next_item["like_count"] = int(meta.get("like_count", 0) or 0)
+
+                created_at = meta.get("created_at")
+                updated_at = meta.get("updated_at")
+                if created_at:
+                    try:
+                        next_item["created_at"] = created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at)
+                    except Exception:
+                        pass
+                if updated_at:
+                    try:
+                        next_item["updated_at"] = updated_at.isoformat() if hasattr(updated_at, "isoformat") else str(updated_at)
+                    except Exception:
+                        pass
+
+                next_pick = dict(p)
+                next_pick["item"] = next_item
+                next_picks.append(next_pick)
+
+            slot["contentPicks"] = next_picks
+            out.append(slot)
+
+        return out
+    except Exception as e:
+        try:
+            logger.warning(f"[cms] slot character picks enrich skipped: {_safe_exc(e)}")
+        except Exception:
+            pass
+        return slots
+
+
 @router.get("/home/banners", response_model=List[HomeBanner], summary="홈 배너 설정(공개)")
 async def get_home_banners(db: AsyncSession = Depends(get_db)):
     """홈 배너 설정 조회(유저/비로그인 공개)."""
@@ -547,7 +684,8 @@ async def get_home_slots(db: AsyncSession = Depends(get_db)):
         value = cfg.value if cfg else None
         if isinstance(value, list):
             normalized = _normalize_slots([HomeSlot.model_validate(x) for x in value])
-            return normalized
+            enriched = await _enrich_slot_character_picks(db, normalized)
+            return enriched
         return _default_home_slots()
     except Exception as e:
         # ✅ 배포 DB 스키마 불일치 등으로 ORM이 깨지는 경우 raw SQL로 폴백
@@ -555,7 +693,8 @@ async def get_home_slots(db: AsyncSession = Depends(get_db)):
             raw = await _get_config_value_raw(db, CONFIG_KEY_HOME_SLOTS)
             if isinstance(raw, list):
                 normalized = _normalize_slots([HomeSlot.model_validate(x) for x in raw])
-                return normalized
+                enriched = await _enrich_slot_character_picks(db, normalized)
+                return enriched
         except Exception:
             pass
         try:
@@ -801,6 +940,7 @@ async def put_home_slots(
     _ensure_admin(current_user)
     try:
         normalized = _normalize_slots(payload)
+        normalized = await _enrich_slot_character_picks(db, normalized)
         cfg = await _get_config(db, CONFIG_KEY_HOME_SLOTS)
         if cfg:
             cfg.value = normalized
@@ -821,6 +961,7 @@ async def put_home_slots(
         # ✅ 배포 DB 스키마/권한/컬럼 불일치로 ORM 저장이 실패할 수 있어 raw SQL 폴백을 1회 시도한다.
         try:
             normalized = _normalize_slots(payload)
+            normalized = await _enrich_slot_character_picks(db, normalized)
             await _upsert_config_raw(db, CONFIG_KEY_HOME_SLOTS, normalized)
             return normalized
         except Exception as e2:
