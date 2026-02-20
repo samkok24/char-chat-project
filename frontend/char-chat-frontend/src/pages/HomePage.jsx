@@ -174,8 +174,154 @@ const HomePage = () => {
     [user?.id, location?.search]
   );
   const homeVariant = homeAb.variant;
+  const homeMainRootRef = useRef(null);
+  const homeRenderPerfRef = useRef({
+    startAt: 0,
+    bannerAt: null,
+    bannerReason: '',
+    done: false,
+    settleTimer: null,
+  });
   window.__CC_PAGE_META = { ab_home: homeAb.variant };
   useEffect(() => () => { window.__CC_PAGE_META = null; }, []);
+
+  useEffect(() => {
+    const now = () => ((typeof performance !== 'undefined' && typeof performance.now === 'function')
+      ? performance.now()
+      : Date.now());
+    const perfState = homeRenderPerfRef.current;
+    perfState.startAt = now();
+    perfState.bannerAt = null;
+    perfState.bannerReason = '';
+    perfState.done = false;
+    perfState.settleTimer = null;
+    try { performance.mark('home:render:start'); } catch (_) {}
+
+    const root = homeMainRootRef.current;
+    if (!root) return undefined;
+
+    const hasPendingMainLoading = () => {
+      try {
+        const pending = root.querySelectorAll('.animate-pulse, .animate-spin, [aria-busy="true"], [data-loading="true"]');
+        for (const el of pending) {
+          if (!el.closest('[data-home-history-section="true"]')) return true;
+        }
+        return false;
+      } catch (_) {
+        return false;
+      }
+    };
+
+    const finalize = (trigger = 'unknown') => {
+      if (perfState.done) return;
+      if (!(Number(perfState.bannerAt) > 0)) return;
+      perfState.done = true;
+      if (perfState.settleTimer) {
+        try { window.clearTimeout(perfState.settleTimer); } catch (_) {}
+        perfState.settleTimer = null;
+      }
+
+      const endAt = now();
+      const payload = {
+        startedAt: perfState.startAt,
+        bannerAt: perfState.bannerAt,
+        finishedAt: endAt,
+        totalMs: Math.max(0, Math.round(endAt - perfState.startAt)),
+        bannerToMainMs: Math.max(0, Math.round(endAt - perfState.bannerAt)),
+        bannerReason: perfState.bannerReason || 'unknown',
+        trigger,
+      };
+
+      try { performance.mark('home:render:done'); } catch (_) {}
+      try { performance.measure('home:render:total', 'home:render:start', 'home:render:done'); } catch (_) {}
+      try { window.__CC_HOME_RENDER_PERF = payload; } catch (_) {}
+      try { window.dispatchEvent(new CustomEvent('home:render-complete', { detail: payload })); } catch (_) {}
+      try {
+        console.info(
+          '[Perf][Home] banner->main(ms):',
+          payload.bannerToMainMs,
+          '| total(ms):',
+          payload.totalMs,
+          '| bannerReason:',
+          payload.bannerReason,
+          '| trigger:',
+          payload.trigger
+        );
+      } catch (_) {}
+    };
+
+    const scheduleFinalizeCheck = (trigger = 'mutation') => {
+      if (perfState.done) return;
+      if (!(Number(perfState.bannerAt) > 0)) return;
+      if (hasPendingMainLoading()) {
+        if (perfState.settleTimer) {
+          try { window.clearTimeout(perfState.settleTimer); } catch (_) {}
+          perfState.settleTimer = null;
+        }
+        return;
+      }
+      if (perfState.settleTimer) {
+        try { window.clearTimeout(perfState.settleTimer); } catch (_) {}
+      }
+      perfState.settleTimer = window.setTimeout(() => {
+        if (hasPendingMainLoading()) return;
+        finalize(trigger);
+      }, 250);
+    };
+
+    const onBannerReady = (e) => {
+      try {
+        if (Number(perfState.bannerAt) > 0) return;
+        const at = Number(e?.detail?.at);
+        perfState.bannerAt = Number.isFinite(at) && at > 0 ? at : now();
+        perfState.bannerReason = String(e?.detail?.reason || '').trim() || 'unknown';
+      } catch (_) {
+        perfState.bannerAt = now();
+        perfState.bannerReason = 'unknown';
+      }
+      scheduleFinalizeCheck('banner-event');
+    };
+
+    let rafId = 0;
+    let pollId = 0;
+    let observer = null;
+    try { window.addEventListener('home:banner-ready', onBannerReady); } catch (_) {}
+    try {
+      const pre = window.__CC_HOME_BANNER_READY;
+      const preAt = Number(pre?.at);
+      if (pre && Number.isFinite(preAt) && preAt >= (perfState.startAt - 100)) {
+        onBannerReady({ detail: pre });
+      }
+    } catch (_) {}
+    try {
+      observer = new MutationObserver(() => scheduleFinalizeCheck('mutation'));
+      observer.observe(root, {
+        subtree: true,
+        childList: true,
+        attributes: true,
+        attributeFilter: ['class', 'aria-busy', 'data-loading'],
+      });
+    } catch (_) {}
+    try {
+      rafId = window.requestAnimationFrame(() => scheduleFinalizeCheck('raf'));
+    } catch (_) {}
+    try {
+      pollId = window.setInterval(() => scheduleFinalizeCheck('poll'), 500);
+    } catch (_) {}
+
+    return () => {
+      try { window.removeEventListener('home:banner-ready', onBannerReady); } catch (_) {}
+      try { if (observer) observer.disconnect(); } catch (_) {}
+      try { if (rafId) window.cancelAnimationFrame(rafId); } catch (_) {}
+      try { if (pollId) window.clearInterval(pollId); } catch (_) {}
+      try {
+        if (perfState.settleTimer) {
+          window.clearTimeout(perfState.settleTimer);
+          perfState.settleTimer = null;
+        }
+      } catch (_) {}
+    };
+  }, []);
 
   // ✅ PC 홈: 일반 캐릭터챗 카드 클릭 시 "모바일 상세 모달"로 프리뷰(요구사항)
   const [pcMobileDetailOpen, setPcMobileDetailOpen] = useState(false);
@@ -2184,7 +2330,11 @@ const HomePage = () => {
         {/* 메인 컨텐츠 */}
         {/* ✅ 경쟁사 레이아웃 체감: 데스크탑 본문 좌우 여백을 줄여 카드 폭을 키운다 */}
         {/* ✅ 경쟁사처럼 본문 최대폭을 두고(센터 정렬) 좌/우 여백을 만든다 */}
-        <main className="mx-auto w-full max-w-[1220px] px-4 sm:px-5 lg:px-6 py-4 sm:py-6">
+        <main
+          ref={homeMainRootRef}
+          data-home-main-root="true"
+          className="mx-auto w-full max-w-[1220px] px-4 sm:px-5 lg:px-6 py-4 sm:py-6"
+        >
           {/* ✅ 요구사항: 홈 상단 '메인/스토리 에이전트' 탭 제거 → 콘텐츠를 위로 당겨 렌더링 */}
           {/* 데스크탑: 공지/관리자 아이콘은 우측에 유지 */}
           <div className="hidden md:flex items-center justify-end gap-2 mb-3">
@@ -2790,7 +2940,7 @@ const HomePage = () => {
               {/* 관심 캐릭터 섹션 숨김 */}
               {/* <section className="mt-10 hidden" aria-hidden="true"></section> */}
 
-              <section className="mt-10 mb-10">
+              <section className="mt-10 mb-10" data-home-history-section="true">
                 <div className="flex items-center justify-between mb-5">
                   <h2 className="text-xl font-normal text-white">최근 대화</h2>
                   <Link to="/history" className="text-sm text-gray-400 hover:text-white">더보기</Link>

@@ -9,6 +9,7 @@ import {
   HOME_BANNERS_STORAGE_KEY,
   HOME_BANNERS_CHANGED_EVENT,
   getActiveHomeBanners,
+  getActiveHomeBannersFromItems,
   isDefaultHomeBannersConfig,
   setHomeBanners,
 } from '../lib/cmsBanners';
@@ -65,6 +66,15 @@ const withCacheBust = (url, versionKey) => {
   }
 };
 
+let homeBannersRequestInFlight = null;
+const requestHomeBanners = async () => {
+  if (homeBannersRequestInFlight) return homeBannersRequestInFlight;
+  homeBannersRequestInFlight = cmsAPI.getHomeBanners().finally(() => {
+    homeBannersRequestInFlight = null;
+  });
+  return homeBannersRequestInFlight;
+};
+
 const HomeBannerCarousel = ({ className = '' }) => {
   const { user } = useAuth();
   const isAdmin = !!user?.is_admin;
@@ -81,6 +91,8 @@ const HomeBannerCarousel = ({ className = '' }) => {
   const [isHovering, setIsHovering] = React.useState(false);
   const [banners, setBanners] = React.useState(() => getActiveHomeBanners(Date.now(), deviceKey));
   const touchStartXRef = React.useRef(null);
+  const didInitRefreshRef = React.useRef(false);
+  const bannerReadyReportedRef = React.useRef(false);
 
   const refresh = React.useCallback(() => {
     try {
@@ -118,6 +130,10 @@ const HomeBannerCarousel = ({ className = '' }) => {
 
   // 디바이스가 바뀌면(리사이즈 등) 배너 필터링을 다시 적용한다.
   React.useEffect(() => {
+    if (!didInitRefreshRef.current) {
+      didInitRefreshRef.current = true;
+      return;
+    }
     refresh();
   }, [refresh]);
 
@@ -135,7 +151,7 @@ const HomeBannerCarousel = ({ className = '' }) => {
     let active = true;
     const load = async () => {
       try {
-        const res = await cmsAPI.getHomeBanners();
+        const res = await requestHomeBanners();
         if (!active) return;
         const arr = Array.isArray(res?.data) ? res.data : null;
         if (arr) {
@@ -151,6 +167,13 @@ const HomeBannerCarousel = ({ className = '' }) => {
           } catch (_) {}
           if (!skipApply) {
             try { setHomeBanners(arr); } catch (_) {}
+            try {
+              const nextActive = getActiveHomeBannersFromItems(arr, Date.now(), deviceKey);
+              setBanners(nextActive);
+            } catch (_) {
+              refresh();
+            }
+            return;
           }
           refresh();
         }
@@ -160,7 +183,7 @@ const HomeBannerCarousel = ({ className = '' }) => {
     };
     load();
     return () => { active = false; };
-  }, [refresh]);
+  }, [deviceKey, isAdmin, refresh]);
 
   // CMS 변경(같은 탭 이벤트) + storage(다른 탭) 구독
   React.useEffect(() => {
@@ -181,6 +204,35 @@ const HomeBannerCarousel = ({ className = '' }) => {
 
   const renderBanners = Array.isArray(banners) ? banners : [];
   const snapCount = renderBanners.length;
+  const reportBannerReady = React.useCallback((reason = 'ready') => {
+    if (bannerReadyReportedRef.current) return;
+    bannerReadyReportedRef.current = true;
+    try {
+      const at = (typeof performance !== 'undefined' && typeof performance.now === 'function')
+        ? performance.now()
+        : Date.now();
+      const detail = { reason, at, snapCount };
+      try { window.__CC_HOME_BANNER_READY = detail; } catch (_) {}
+      window.dispatchEvent(new CustomEvent('home:banner-ready', { detail }));
+    } catch (_) {}
+  }, [snapCount]);
+
+  React.useEffect(() => {
+    if (snapCount <= 0) {
+      reportBannerReady('no-active-banner');
+    }
+  }, [snapCount, reportBannerReady]);
+
+  React.useEffect(() => {
+    if (snapCount <= 0) return;
+    const idx = Math.max(0, Math.min(snapCount - 1, Number(selected) || 0));
+    const b = renderBanners[idx];
+    const img = String(b?.imageUrl || '').trim();
+    const mobileImg = String(b?.mobileImageUrl || '').trim();
+    if (!img && !mobileImg) {
+      reportBannerReady('banner-without-image');
+    }
+  }, [renderBanners, selected, snapCount, reportBannerReady]);
 
   // 배너 목록이 바뀌면 현재 선택 인덱스를 안전하게 보정한다.
   React.useEffect(() => {
@@ -328,10 +380,12 @@ const HomeBannerCarousel = ({ className = '' }) => {
                   onLoad={(e) => {
                     // 방어: 이전 로드 실패로 display:none 이 남아있을 수 있으므로 복구
                     try { e.currentTarget.style.display = ''; } catch (_) {}
+                    reportBannerReady('image-loaded');
                   }}
                   onError={(e) => {
                     // 방어: 이미지 로드 실패 시 배경만 남긴다.
                     try { e.currentTarget.style.display = 'none'; } catch (_) {}
+                    reportBannerReady('image-error');
                   }}
                 />
               </picture>

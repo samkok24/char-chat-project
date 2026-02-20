@@ -249,6 +249,7 @@ const CMSPage = () => {
   const [pageExitReloadKey, setPageExitReloadKey] = React.useState(0);
   const [pageExitQuery, setPageExitQuery] = React.useState('');
   const [revisitData, setRevisitData] = React.useState(null);
+  const [authModalSummary, setAuthModalSummary] = React.useState(null);
 
   // ===== 유저 로그 서브탭 + 유저 활동 =====
   const [userLogSubTab, setUserLogSubTab] = React.useState('traffic'); // 'traffic' | 'activity' | 'ab'
@@ -668,16 +669,18 @@ const CMSPage = () => {
         const d = String(pageExitDay || '').trim();
         if (d) params.day = d;
         params.top_n = 200;
-        const [exitRes, revisitRes] = await Promise.all([
+        const [exitRes, revisitRes, modalRes] = await Promise.all([
           metricsAPI.getPageExitSummary(params),
           metricsAPI.getRevisitSummary(d ? { day: d } : {}),
+          metricsAPI.getAuthModalSummary(d ? { day: d } : {}),
         ]);
         if (!active) return;
         setPageExitSummary(exitRes?.data || null);
         setRevisitData(revisitRes?.data || null);
+        setAuthModalSummary(modalRes?.data || null);
       } catch (e) {
         try { console.error('[CMSPage] metricsAPI.getPageExitSummary failed:', e); } catch (_) {}
-        if (active) { setPageExitSummary(null); setRevisitData(null); }
+        if (active) { setPageExitSummary(null); setRevisitData(null); setAuthModalSummary(null); }
       } finally {
         if (active) setPageExitLoading(false);
       }
@@ -2494,6 +2497,23 @@ const CMSPage = () => {
                         </div>
 
                         {/* 재유입 카드 (로그인 유저 기준) */}
+                        {authModalSummary && (
+                          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                            <div className="rounded-md border border-fuchsia-900/50 bg-fuchsia-950/20 p-3">
+                              <div className="text-xs text-fuchsia-400">로그인 모달 오픈</div>
+                              <div className="text-lg font-bold text-fuchsia-300">{Number(authModalSummary?.login_modal_opens || 0).toLocaleString()}</div>
+                            </div>
+                            <div className="rounded-md border border-indigo-900/50 bg-indigo-950/20 p-3">
+                              <div className="text-xs text-indigo-400">회원가입 모달 오픈</div>
+                              <div className="text-lg font-bold text-indigo-300">{Number(authModalSummary?.register_modal_opens || 0).toLocaleString()}</div>
+                            </div>
+                            <div className="rounded-md border border-gray-800 bg-gray-900/30 p-3">
+                              <div className="text-xs text-gray-500">모달 오픈 합계</div>
+                              <div className="text-lg font-bold text-white">{Number(authModalSummary?.total_modal_opens || 0).toLocaleString()}</div>
+                            </div>
+                          </div>
+                        )}
+
                         {revisitData && revisitData.total_active > 0 && (
                           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                             <div className="rounded-md border border-gray-800 bg-gray-900/30 p-3">
@@ -2752,8 +2772,19 @@ const CMSPage = () => {
                             </TableRow>
                           ) : (
                             activityData.items.map((item, idx) => {
-                              const evLabel = item.event === 'page_view' ? '방문' : item.event === 'page_leave' ? '이동' : '이탈';
-                              const evColor = item.event === 'page_view' ? 'text-green-400' : item.event === 'page_leave' ? 'text-yellow-400' : 'text-red-400';
+                              const evLabel =
+                                item.event === 'page_view' ? '방문'
+                                  : item.event === 'page_leave' ? '이동'
+                                    : item.event === 'page_exit' ? '이탈'
+                                      : item.event === 'modal_login_open' ? '로그인모달'
+                                        : item.event === 'modal_register_open' ? '회원가입모달'
+                                          : String(item.event || '-');
+                              const evColor =
+                                item.event === 'page_view' ? 'text-green-400'
+                                  : item.event === 'page_leave' ? 'text-yellow-400'
+                                    : item.event === 'page_exit' ? 'text-red-400'
+                                      : (item.event === 'modal_login_open' || item.event === 'modal_register_open') ? 'text-fuchsia-400'
+                                        : 'text-gray-300';
                               const durMs = Number(item.duration_ms || 0);
                               let durText = '-';
                               if (durMs > 0) {

@@ -27,6 +27,10 @@ from app.models.user_activity_log import UserActivityLog
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+_PAGE_EVENTS = {"page_view", "page_leave", "page_exit"}
+_AUTH_MODAL_EVENTS = {"modal_login_open", "modal_register_open"}
+_TRACKABLE_EVENTS = _PAGE_EVENTS | _AUTH_MODAL_EVENTS
+
 
 class PageTrafficEventIn(BaseModel):
     """
@@ -34,7 +38,7 @@ class PageTrafficEventIn(BaseModel):
 
     - 카드/상세/채팅 등 ID가 포함된 경로는 서버에서 정규화해 cardinality 폭주를 방지한다.
     """
-    event: str = Field(..., description="page_view|page_leave|page_exit")
+    event: str = Field(..., description="page_view|page_leave|page_exit|modal_login_open|modal_register_open")
     path: str = Field(..., description="window.location.pathname (권장: query 제외)")
     session_id: Optional[str] = Field(None, description="프론트 세션 식별자(선택)")
     client_id: Optional[str] = Field(None, description="브라우저 고정 식별자(선택)")
@@ -639,48 +643,64 @@ async def track_page_event(
         pass
 
     ev = (payload.event or "").strip().lower()
-    if ev not in ("page_view", "page_leave", "page_exit"):
+    if ev not in _TRACKABLE_EVENTS:
         return {"ok": True, "ignored": True, "reason": "unknown_event"}
 
     path_norm = _normalize_client_path(payload.path or "")
     now_kst = datetime.now(_KST)
     d = now_kst.strftime("%Y%m%d")
 
-    if ev == "page_view":
-        kind = "view"
-    elif ev == "page_leave":
-        kind = "leave"
-    else:
-        kind = "exit"
+    is_page_event = ev in _PAGE_EVENTS
 
-    counter_key = f"metrics:page:{kind}:{d}:{path_norm}"
-    paths_set_key = f"metrics:page:paths:{d}"
-    dur_sum_key = f"metrics:page:{kind}_dur_sum:{d}:{path_norm}" if kind in ("leave", "exit") else ""
+    kind = ""
+    counter_key = ""
+    paths_set_key = ""
+    dur_sum_key = ""
+    if is_page_event:
+        if ev == "page_view":
+            kind = "view"
+        elif ev == "page_leave":
+            kind = "leave"
+        else:
+            kind = "exit"
+
+        counter_key = f"metrics:page:{kind}:{d}:{path_norm}"
+        paths_set_key = f"metrics:page:paths:{d}"
+        dur_sum_key = f"metrics:page:{kind}_dur_sum:{d}:{path_norm}" if kind in ("leave", "exit") else ""
 
     ttl_sec = 60 * 60 * 24 * 120  # 120d
 
     try:
         from app.core.database import redis_client
 
-        await redis_client.sadd(paths_set_key, path_norm)
-        await redis_client.incr(counter_key)
-
-        if kind in ("leave", "exit"):
-            try:
-                dur = int(payload.duration_ms or 0)
-            except Exception:
-                dur = 0
-            if dur > 0:
-                await redis_client.incrby(dur_sum_key, dur)
-
-        # best-effort TTL(과도한 메모리 증가 방지)
+        event_counter_key = f"metrics:event:{ev}:{d}"
+        await redis_client.incr(event_counter_key)
         try:
-            await redis_client.expire(paths_set_key, ttl_sec)
-            await redis_client.expire(counter_key, ttl_sec)
-            if kind in ("leave", "exit") and dur_sum_key:
-                await redis_client.expire(dur_sum_key, ttl_sec)
+            await redis_client.expire(event_counter_key, ttl_sec)
         except Exception:
             pass
+
+        if is_page_event:
+            await redis_client.sadd(paths_set_key, path_norm)
+            await redis_client.incr(counter_key)
+
+            if kind in ("leave", "exit"):
+                try:
+                    dur = int(payload.duration_ms or 0)
+                except Exception:
+                    dur = 0
+                if dur > 0:
+                    await redis_client.incrby(dur_sum_key, dur)
+
+        # best-effort TTL(과도한 메모리 증가 방지)
+        if is_page_event:
+            try:
+                await redis_client.expire(paths_set_key, ttl_sec)
+                await redis_client.expire(counter_key, ttl_sec)
+                if kind in ("leave", "exit") and dur_sum_key:
+                    await redis_client.expire(dur_sum_key, ttl_sec)
+            except Exception:
+                pass
 
     except Exception as e:
         try:
@@ -712,7 +732,7 @@ async def track_page_event(
 
     # --- AB 테스트 Redis 카운터 (best-effort) ---
     meta_str = (payload.meta or "")[:500].strip() or None
-    if meta_str:
+    if meta_str and is_page_event:
         try:
             meta_obj = json.loads(meta_str) if meta_str else {}
             if isinstance(meta_obj, dict):
@@ -985,6 +1005,54 @@ async def page_exit_summary(
             "total_unique_visitors": 0,
             "groups": [],
             "rows": [],
+            "error": str(e),
+        }
+
+
+@router.get("/traffic/auth-modals")
+async def auth_modal_summary(
+    day: Optional[str] = Query(None, description="YYYYMMDD (KST), 기본: 오늘"),
+    current_user: User = Depends(get_current_user),
+):
+    """로그인/회원가입 모달 오픈 집계(관리자 전용)."""
+    _ensure_admin(current_user)
+
+    now_kst = datetime.now(_KST)
+    d = _parse_day_yyyymmdd(day or "") or now_kst.strftime("%Y%m%d")
+
+    try:
+        from app.core.database import redis_client
+        login_key = f"metrics:event:modal_login_open:{d}"
+        register_key = f"metrics:event:modal_register_open:{d}"
+        vals = await redis_client.mget([login_key, register_key])
+
+        def _to_int(v) -> int:
+            if v is None:
+                return 0
+            try:
+                s = v.decode("utf-8") if isinstance(v, (bytes, bytearray)) else str(v)
+                return int(float(s))
+            except Exception:
+                return 0
+
+        login_opens = _to_int(vals[0] if vals and len(vals) > 0 else None)
+        register_opens = _to_int(vals[1] if vals and len(vals) > 1 else None)
+        return {
+            "day": d,
+            "login_modal_opens": int(login_opens),
+            "register_modal_opens": int(register_opens),
+            "total_modal_opens": int(login_opens + register_opens),
+        }
+    except Exception as e:
+        try:
+            logger.warning(f"[metrics.auth-modal] read failed: {e}")
+        except Exception:
+            pass
+        return {
+            "day": d,
+            "login_modal_opens": 0,
+            "register_modal_opens": 0,
+            "total_modal_opens": 0,
             "error": str(e),
         }
 
