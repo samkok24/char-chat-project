@@ -465,14 +465,16 @@ async def _get_config(db: AsyncSession, key: str) -> SiteConfig | None:
     return res.scalar_one_or_none()
 
 
-def _normalize_banners(items: List[HomeBanner]) -> List[dict]:
+def _normalize_banners(items: List[HomeBanner], *, touch_updated: bool = True) -> List[dict]:
     """
     배너 저장값을 서버에서 멱등/안전하게 정리한다.
 
     의도:
     - 프론트의 로컬스토리지 구현은 '빈 배열'을 저장하면 기본값으로 되돌리는 동작이 있어,
       서버도 동일하게 최소 1개(기본 배너)를 유지해 일관성을 맞춘다.
-    - updatedAt은 저장 시점으로 갱신하여 캐시 버스터로 사용 가능하게 한다.
+    - touch_updated=True 인 경우에만 updatedAt을 현재 시각으로 갱신한다.
+      (PUT 저장 경로에서만 사용)
+    - 조회(GET) 경로에서는 기존 updatedAt을 보존해, 불필요한 캐시 무효화를 막는다.
     """
     now = _now_iso()
     out: List[dict] = []
@@ -482,7 +484,10 @@ def _normalize_banners(items: List[HomeBanner]) -> List[dict]:
             d["id"] = f"bn_{uuid.uuid4().hex[:12]}"
         if not d.get("createdAt"):
             d["createdAt"] = now
-        d["updatedAt"] = now
+        if touch_updated:
+            d["updatedAt"] = now
+        elif not d.get("updatedAt"):
+            d["updatedAt"] = d.get("createdAt") or now
         out.append(d)
     if len(out) == 0:
         return _default_home_banners()
@@ -656,7 +661,7 @@ async def get_home_banners(db: AsyncSession = Depends(get_db)):
         value = cfg.value if cfg else None
         if isinstance(value, list):
             # 스키마로 한번 더 방어적으로 검증/정리
-            normalized = _normalize_banners([HomeBanner.model_validate(x) for x in value])
+            normalized = _normalize_banners([HomeBanner.model_validate(x) for x in value], touch_updated=False)
             return normalized
         return _default_home_banners()
     except Exception as e:
@@ -664,7 +669,7 @@ async def get_home_banners(db: AsyncSession = Depends(get_db)):
         try:
             raw = await _get_config_value_raw(db, CONFIG_KEY_HOME_BANNERS)
             if isinstance(raw, list):
-                normalized = _normalize_banners([HomeBanner.model_validate(x) for x in raw])
+                normalized = _normalize_banners([HomeBanner.model_validate(x) for x in raw], touch_updated=False)
                 return normalized
         except Exception:
             pass

@@ -123,8 +123,13 @@ export function sanitizeHomeBanner(raw) {
   const startAt = obj.startAt ? String(obj.startAt) : null;
   const endAt = obj.endAt ? String(obj.endAt) : null;
 
+  // 중요: 조회/렌더 경로에서 updatedAt을 매번 now로 덮어쓰면
+  // withCacheBust(v=updatedAt) 값이 계속 바뀌어 배너 이미지 캐시가 무효화된다.
+  // 서버/로컬에 이미 저장된 타임스탬프는 보존하고, 값이 없을 때만 보완한다.
   const createdAt = obj.createdAt ? String(obj.createdAt) : nowIso();
-  const updatedAt = nowIso();
+  const updatedAt = obj.updatedAt
+    ? String(obj.updatedAt)
+    : (obj.createdAt ? String(obj.createdAt) : nowIso());
 
   return {
     id,
