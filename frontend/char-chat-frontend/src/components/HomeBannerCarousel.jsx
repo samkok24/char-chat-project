@@ -90,6 +90,8 @@ const HomeBannerCarousel = ({ className = '' }) => {
   const [selected, setSelected] = React.useState(0);
   const [isHovering, setIsHovering] = React.useState(false);
   const [banners, setBanners] = React.useState(() => getActiveHomeBanners(Date.now(), deviceKey));
+  const preloadedBannerSrcRef = React.useRef(new Set());
+  const bannerSwitchPendingRef = React.useRef(null);
   const touchStartXRef = React.useRef(null);
   const didInitRefreshRef = React.useRef(false);
   const bannerReadyReportedRef = React.useRef(false);
@@ -273,9 +275,67 @@ const HomeBannerCarousel = ({ className = '' }) => {
     };
   }, [isHovering, snapCount]);
 
+  const selectBanner = React.useCallback((nextIdx, reason = 'manual') => {
+    if (snapCount <= 0) return;
+    const to = Math.max(0, Math.min(snapCount - 1, Number(nextIdx) || 0));
+    const from = Math.max(0, Math.min(snapCount - 1, Number(selected) || 0));
+    const at = (typeof performance !== 'undefined' && typeof performance.now === 'function')
+      ? performance.now()
+      : Date.now();
+    bannerSwitchPendingRef.current = { from, to, reason, at };
+    try { setSelected(to); } catch (_) {}
+  }, [selected, snapCount]);
+
   const handleDotClick = (idx) => {
-    try { setSelected(Number(idx) || 0); } catch (_) {}
+    selectBanner(idx, 'dot');
   };
+
+  const getBannerSources = React.useCallback((banner) => {
+    const img = String(banner?.imageUrl || '').trim();
+    const mobileImg = String(banner?.mobileImageUrl || '').trim();
+    const versionKey = banner?.updatedAt || banner?.createdAt || '';
+    const imgSrc = withCacheBust(resolveImageUrl(img) || img, versionKey);
+    const mobileSrc = withCacheBust(resolveImageUrl(mobileImg) || mobileImg, versionKey);
+    return { imgSrc, mobileSrc };
+  }, []);
+
+  const preloadBannerSrc = React.useCallback((src) => {
+    try {
+      const s = String(src || '').trim();
+      if (!s) return;
+      if (preloadedBannerSrcRef.current.has(s)) return;
+      preloadedBannerSrcRef.current.add(s);
+      const im = new Image();
+      try { im.decoding = 'async'; } catch (_) {}
+      im.src = s;
+      try {
+        if (typeof im.decode === 'function') {
+          im.decode().catch(() => {});
+        }
+      } catch (_) {}
+    } catch (_) {}
+  }, []);
+
+  React.useEffect(() => {
+    if (snapCount <= 0) return;
+    const current = Math.max(0, Math.min(snapCount - 1, Number(selected) || 0));
+    const targets = [current];
+    if (snapCount > 1) {
+      targets.push((current + 1) % snapCount);
+      targets.push((current - 1 + snapCount) % snapCount);
+    }
+    if (snapCount > 2) {
+      targets.push((current + 2) % snapCount);
+    }
+    const uniqTargets = Array.from(new Set(targets));
+    for (const i of uniqTargets) {
+      const b = renderBanners[i];
+      if (!b) continue;
+      const { imgSrc, mobileSrc } = getBannerSources(b);
+      preloadBannerSrc(imgSrc);
+      preloadBannerSrc(mobileSrc);
+    }
+  }, [snapCount, selected, renderBanners, getBannerSources, preloadBannerSrc]);
 
   if (!renderBanners.length) {
     return (
@@ -317,16 +377,9 @@ const HomeBannerCarousel = ({ className = '' }) => {
       {(() => {
         const idx = Math.max(0, Math.min(snapCount - 1, Number(selected) || 0));
         const b = renderBanners[idx];
-        // ✅ UX/성능: 상단 배너는 "첫 화면"에서 가장 먼저 보이므로 0번만 우선 로드한다.
-        // - 나머지는 lazy로 유지해 네트워크 과부하를 막는다.
-        const isPriority = idx === 0;
-        const img = String(b?.imageUrl || '').trim();
-        const mobileImg = String(b?.mobileImageUrl || '').trim();
+        // 단일 슬라이드 렌더 구조라 현재 보이는 배너 이미지는 즉시 로딩한다.
         const href = String(b?.linkUrl || '').trim();
-        const versionKey = b?.updatedAt || b?.createdAt || '';
-        // ✅ /static 상대경로는 환경(dev/prod)에 따라 base가 달라질 수 있으므로 resolveImageUrl로 정규화한다.
-        const imgSrc = withCacheBust(resolveImageUrl(img) || img, versionKey);
-        const mobileSrc = withCacheBust(resolveImageUrl(mobileImg) || mobileImg, versionKey);
+        const { imgSrc, mobileSrc } = getBannerSources(b);
         const openInNewTab = !!b?.openInNewTab;
         const clickable = !!href;
         const external = clickable && isExternalUrl(href);
@@ -355,8 +408,8 @@ const HomeBannerCarousel = ({ className = '' }) => {
                 if (typeof startX !== 'number' || typeof endX !== 'number') return;
                 const dx = endX - startX;
                 const TH = 40;
-                if (dx > TH && snapCount > 1) setSelected((p) => Math.max(0, (Number(p) || 0) - 1));
-                if (dx < -TH && snapCount > 1) setSelected((p) => Math.min(snapCount - 1, (Number(p) || 0) + 1));
+                if (dx > TH && snapCount > 1) selectBanner((Number(selected) || 0) - 1, 'swipe-prev');
+                if (dx < -TH && snapCount > 1) selectBanner((Number(selected) || 0) + 1, 'swipe-next');
               } catch (_) {
                 touchStartXRef.current = null;
               }
@@ -372,16 +425,37 @@ const HomeBannerCarousel = ({ className = '' }) => {
                   <source media="(max-width: 639px)" srcSet={mobileSrc} />
                 ) : null}
                 <img
+                  key={`banner-img-${String(b?.id || idx)}-${idx}`}
                   src={imgSrc || mobileSrc}
                   alt={b?.title || '배너'}
                   className="absolute inset-0 w-full h-full object-cover"
-                  loading={isPriority ? 'eager' : 'lazy'}
-                  fetchPriority={isPriority ? 'high' : 'auto'}
+                  loading="eager"
+                  fetchPriority="high"
+                  decoding="auto"
                   onLoad={(e) => {
                     // 방어: 이전 로드 실패로 display:none 이 남아있을 수 있으므로 복구
                     try { e.currentTarget.style.display = ''; } catch (_) {}
                     const loadedSrc = String(e?.currentTarget?.currentSrc || e?.currentTarget?.src || '').trim();
                     try { window.__CC_HOME_BANNER_LAST_SRC = loadedSrc; } catch (_) {}
+                    try {
+                      const mark = bannerSwitchPendingRef.current;
+                      if (mark && Number(mark.to) === Number(idx)) {
+                        const doneAt = (typeof performance !== 'undefined' && typeof performance.now === 'function')
+                          ? performance.now()
+                          : Date.now();
+                        const durationMs = Math.max(0, Number(doneAt) - Number(mark.at || doneAt));
+                        const perf = {
+                          from: mark.from,
+                          to: mark.to,
+                          reason: mark.reason,
+                          durationMs: Math.round(durationMs * 10) / 10,
+                          src: loadedSrc,
+                        };
+                        try { window.__CC_HOME_BANNER_SWITCH_LAST = perf; } catch (_) {}
+                        try { console.info('[Perf][BannerSwitch]', perf); } catch (_) {}
+                        bannerSwitchPendingRef.current = null;
+                      }
+                    } catch (_) {}
                     reportBannerReady('image-loaded', { src: loadedSrc });
                   }}
                   onError={(e) => {
@@ -444,7 +518,7 @@ const HomeBannerCarousel = ({ className = '' }) => {
                   type="button"
                   aria-label="이전 배너"
                   disabled={!canPrev}
-                  onClick={() => setSelected((p) => Math.max(0, (Number(p) || 0) - 1))}
+                  onClick={() => selectBanner((Number(selected) || 0) - 1, 'arrow-prev')}
                   className="absolute left-3 top-1/2 -translate-y-1/2 z-10 h-9 w-9 rounded-full bg-gray-900/60 border border-gray-700 text-gray-100 hover:bg-gray-800/80 disabled:opacity-30 disabled:pointer-events-none flex items-center justify-center"
                 >
                   <ChevronLeft className="w-5 h-5" />
@@ -453,7 +527,7 @@ const HomeBannerCarousel = ({ className = '' }) => {
                   type="button"
                   aria-label="다음 배너"
                   disabled={!canNext}
-                  onClick={() => setSelected((p) => Math.min(snapCount - 1, (Number(p) || 0) + 1))}
+                  onClick={() => selectBanner((Number(selected) || 0) + 1, 'arrow-next')}
                   className="absolute right-3 top-1/2 -translate-y-1/2 z-10 h-9 w-9 rounded-full bg-gray-900/60 border border-gray-700 text-gray-100 hover:bg-gray-800/80 disabled:opacity-30 disabled:pointer-events-none flex items-center justify-center"
                 >
                   <ChevronRight className="w-5 h-5" />
