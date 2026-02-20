@@ -254,6 +254,10 @@ export function sanitizeHomeSlot(raw) {
         const originStoryId = src?.origin_story_id || src?.originStoryId || null;
         const chatCount = Number(src?.chat_count ?? src?.chatCount ?? 0) || 0;
         const likeCount = Number(src?.like_count ?? src?.likeCount ?? 0) || 0;
+        const characterType = String(src?.character_type || src?.characterType || '').trim() || null;
+        const tags = Array.isArray(src?.tags)
+          ? src.tags.map((x) => String(x?.name || x?.slug || x || '').trim()).filter(Boolean)
+          : [];
         contentPicks.push({
           type: 'character',
           item: {
@@ -267,6 +271,8 @@ export function sanitizeHomeSlot(raw) {
             source_type: src?.source_type,
             chat_count: chatCount,
             like_count: likeCount,
+            character_type: characterType,
+            tags,
             creator_id: src?.creator_id || null,
             creator_username: src?.creator_username || '',
             creator_avatar_url: src?.creator_avatar_url || '',

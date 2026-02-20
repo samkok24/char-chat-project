@@ -748,8 +748,7 @@ const HomePage = () => {
       if (missing.length === 0) return;
 
       // 너무 많은 병렬 호출은 피한다(홈 진입 시 급격한 트래픽 스파이크 방지)
-      const MAX_FETCH = 8;
-      const queue = missing.slice(0, MAX_FETCH);
+      const queue = missing;
 
       const results = {};
       let cursor = 0;
@@ -769,7 +768,14 @@ const HomePage = () => {
             // ✅ NEW 배지(48h)도 커스텀 구좌에서 항상 뜨게: created_at/updated_at까지 같이 보강한다.
             const createdAt = c?.created_at ?? c?.createdAt ?? null;
             const updatedAt = c?.updated_at ?? c?.updatedAt ?? null;
-            const tags = Array.isArray(c?.tags) ? c.tags.map((t) => String(t?.name || t?.slug || t || '').trim()).filter(Boolean) : [];
+            const rawTags = Array.isArray(c?.tags)
+              ? c.tags
+              : (Array.isArray(c?.tag_names)
+                ? c.tag_names
+                : (Array.isArray(c?.tagLabels)
+                  ? c.tagLabels
+                  : (Array.isArray(c?.tag_slugs) ? c.tag_slugs : [])));
+            const tags = rawTags.map((t) => String(t?.name || t?.slug || t || '').trim()).filter(Boolean);
             const characterType = c?.character_type || null;
             results[id] = {
               chat_count: chatCount,
