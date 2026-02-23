@@ -32,14 +32,13 @@ DEFAULT_TAG_NAMES = [
     '종족','천사','악마','요정','귀신','엘프','오크','몬무스','뱀파이어','외계인','로봇','동물',
 ]
 
-async def _ensure_seed_tags(db: AsyncSession) -> None:
-    """기본 태그 시드(멱등).
+_seed_done = False  # 프로세스당 1회만 시드
 
-    요구사항:
-    - 운영 중에도 "기본 태그(하드코딩 리스트)"는 항상 선택 가능해야 한다.
-    - 기존에는 tags 테이블이 완전히 비어있을 때만 시드했는데,
-      유저가 태그를 일부 생성한 상태에서는 기본 태그가 추가되지 않아 UI에 안 보이는 문제가 생긴다.
-    """
+async def _ensure_seed_tags(db: AsyncSession) -> None:
+    """기본 태그 시드(멱등, 프로세스당 1회만 실행)."""
+    global _seed_done
+    if _seed_done:
+        return
     try:
         rows = (await db.execute(select(Tag.slug))).scalars().all()
         existing = set([str(s) for s in rows if s is not None])
@@ -56,11 +55,12 @@ async def _ensure_seed_tags(db: AsyncSession) -> None:
     if to_add:
         db.add_all(to_add)
         await db.commit()
+    _seed_done = True
 
 
 @router.get("/", response_model=List[TagResponse])
 async def list_tags(db: AsyncSession = Depends(get_db)):
-    # 빈 DB에서도 바로 사용할 수 있도록 안전 시드
+    # 빈 DB에서도 바로 사용할 수 있도록 안전 시드 (프로세스당 1회)
     try:
         await _ensure_seed_tags(db)
     except Exception:

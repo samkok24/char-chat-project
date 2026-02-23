@@ -47,8 +47,9 @@ const RubyChargePage = () => {
   const [checkedIn, setCheckedIn] = useState(false);
   const [checkingIn, setCheckingIn] = useState(false);
 
-  /* ── 잔액 + 출석 상태 조회 ── */
+  /* ── 잔액 + 출석 상태 조회 (로그인 시에만) ── */
   useEffect(() => {
+    if (!user) { setBalanceLoading(false); return; }
     let mounted = true;
     (async () => {
       try {
@@ -77,7 +78,7 @@ const RubyChargePage = () => {
       }
     })();
     return () => { mounted = false; };
-  }, []);
+  }, [user]);
 
   // 1초 카운트다운(표시용)
   useEffect(() => {
@@ -157,43 +158,60 @@ const RubyChargePage = () => {
           <h1 className="text-xl font-bold">루비</h1>
         </div>
 
-        {/* ── 잔액 카드 ── */}
-        <div className="bg-gray-800 rounded-xl border border-gray-700 p-5 mb-4">
-          <p className="text-sm text-gray-400 mb-1">나의 루비</p>
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Gem className="w-6 h-6 text-pink-400" />
-              <span className="text-3xl font-bold">
-                {balanceLoading ? '...' : balance.toLocaleString()}
-              </span>
-              <span className="text-lg text-gray-500">개</span>
+        {/* ── 잔액 카드 (로그인 시에만) ── */}
+        {user && (
+          <div className="bg-gray-800 rounded-xl border border-gray-700 p-5 mb-4">
+            <p className="text-sm text-gray-400 mb-1">나의 루비</p>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Gem className="w-6 h-6 text-pink-400" />
+                <span className="text-3xl font-bold">
+                  {balanceLoading ? '...' : balance.toLocaleString()}
+                </span>
+                <span className="text-lg text-gray-500">개</span>
+              </div>
+              <button
+                onClick={() => navigate('/ruby/history')}
+                className="text-sm text-gray-400 hover:text-gray-200 border border-gray-600 rounded-lg px-3 py-1.5 transition-colors"
+              >
+                전체 내역
+              </button>
             </div>
+          </div>
+        )}
+
+        {/* ── 타이머 리필 요약 (로그인 시에만) ── */}
+        {user && (
+          <div className="bg-gray-800 rounded-xl border border-gray-700 p-4 mb-6 flex items-center justify-between">
+            <div className="flex items-center gap-2 text-sm text-gray-300">
+              <Timer className="w-4 h-4 text-purple-400" />
+              <span>타이머 리필</span>
+              <span className="font-semibold text-purple-400">{timerCurrent}/{timerMax}</span>
+            </div>
+            <span className="text-xs text-gray-500">
+              다음 +1💎: {Math.floor(timerNextMinutes / 60)}시간 {timerNextMinutes % 60}분 후
+            </span>
+          </div>
+        )}
+
+        {/* ── 비로그인 안내 ── */}
+        {!user && (
+          <div className="bg-purple-500/10 border border-purple-500/30 rounded-xl p-4 mb-6 text-center">
+            <p className="text-sm text-purple-300 mb-2">로그인하면 무료 루비와 출석 보상을 받을 수 있어요!</p>
             <button
-              onClick={() => navigate('/ruby/history')}
-              className="text-sm text-gray-400 hover:text-gray-200 border border-gray-600 rounded-lg px-3 py-1.5 transition-colors"
+              onClick={() => navigate('/login')}
+              className="text-sm font-semibold text-purple-400 hover:text-purple-300 underline transition-colors"
             >
-              전체 내역
+              로그인하기
             </button>
           </div>
-        </div>
-
-        {/* ── 타이머 리필 요약 ── */}
-        <div className="bg-gray-800 rounded-xl border border-gray-700 p-4 mb-6 flex items-center justify-between">
-          <div className="flex items-center gap-2 text-sm text-gray-300">
-            <Timer className="w-4 h-4 text-purple-400" />
-            <span>타이머 리필</span>
-            <span className="font-semibold text-purple-400">{timerCurrent}/{timerMax}</span>
-          </div>
-          <span className="text-xs text-gray-500">
-            다음 +1💎: {Math.floor(timerNextMinutes / 60)}시간 {timerNextMinutes % 60}분 후
-          </span>
-        </div>
+        )}
 
         {/* ── 탭 ── */}
         <div className="flex border-b border-gray-700 mb-6">
           {[
             { key: 'charge', label: '루비 충전' },
-            { key: 'free', label: '무료 루비' },
+            ...(user ? [{ key: 'free', label: '무료 루비' }] : []),
           ].map(tab => (
             <button
               key={tab.key}
@@ -292,11 +310,11 @@ const RubyChargePage = () => {
 
             {/* 결제 버튼 */}
             <Button
-              onClick={handlePurchase}
-              disabled={isProcessing || !selectedProduct}
+              onClick={user ? handlePurchase : () => navigate('/login')}
+              disabled={user ? (isProcessing || !selectedProduct) : false}
               className="w-full h-12 text-base font-semibold bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white rounded-xl border-0"
             >
-              {isProcessing ? '처리 중...' : (
+              {!user ? '로그인 후 결제하기' : isProcessing ? '처리 중...' : (
                 selected ? `${selected.price.toLocaleString()}원 결제하기` : '상품을 선택해주세요'
               )}
             </Button>

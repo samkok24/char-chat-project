@@ -1122,19 +1122,23 @@ const HomePage = () => {
   const [selectedTags, setSelectedTags] = useState([]); // slug 배열
   const [showAllTags, setShowAllTags] = useState(false);
   const visibleTagLimit = 18;
-  const { data: allTags = [] } = useQuery({
+  const {
+    data: allTags = [],
+    isLoading: tagsLoading,
+    isError: tagsLoadError,
+    refetch: refetchAllTags,
+  } = useQuery({
     queryKey: ['tags-used-or-all'],
     queryFn: async () => {
-      try {
-        const all = (await tagsAPI.getTags()).data || [];
-        const filteredAll = Array.isArray(all) ? all.filter(t => typeof t.slug === 'string' && !t.slug.startsWith('cover:')) : [];
-        return filteredAll;
-      } catch (e) {
-        console.error('태그 목록 로드 실패:', e);
-        return [];
+      const all = (await tagsAPI.getTags()).data;
+      if (!Array.isArray(all)) {
+        throw new Error('태그 목록 응답 형식이 올바르지 않습니다.');
       }
+      return all.filter((t) => typeof t?.slug === 'string' && !t.slug.startsWith('cover:'));
     },
     staleTime: 5 * 60 * 1000,
+    retry: 2,
+    retryDelay: (attempt) => Math.min(1000 * (2 ** Math.max(0, attempt - 1)), 4000),
   });
 
   // 사용량 Top5 별도 조회 (정렬에 활용)
@@ -3195,6 +3199,20 @@ const HomePage = () => {
                       </button>
                     );
                   })}
+                  {tagsLoading && visibleCharacterTabTags.length === 0 && (
+                    Array.from({ length: 8 }).map((_, i) => (
+                      <span key={`tag-skel-${i}`} className="px-3 py-1 rounded-full bg-gray-800 border border-gray-700 animate-pulse" style={{ width: `${48 + (i % 3) * 16}px`, height: '28px', display: 'inline-block' }} />
+                    ))
+                  )}
+                  {!tagsLoading && tagsLoadError && visibleCharacterTabTags.length === 0 && (
+                    <button
+                      type="button"
+                      onClick={() => { void refetchAllTags(); }}
+                      className="px-3 py-1 rounded-full border text-xs sm:text-sm flex-shrink-0 whitespace-nowrap bg-red-900/30 text-red-200 border-red-700 hover:bg-red-900/40"
+                    >
+                      태그 불러오기 실패 · 다시 시도
+                    </button>
+                  )}
                   {visibleCharacterTabTags.map((t) => {
                     const slug = String(t?.slug || '').trim();
                     const name = String(t?.name || t?.slug || '').trim();
