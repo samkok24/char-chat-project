@@ -3409,7 +3409,7 @@ const HomePage = () => {
           <span>|</span>
           <Link to="/legal/refund" className="hover:text-gray-300 transition-colors">환불정책</Link>
         </div>
-        <p className="mt-2 text-gray-600">&copy; 2026 StoryDive. All rights reserved.</p>
+        <p className="mt-2 text-gray-600">&copy; 2026 챕터8. All rights reserved.</p>
       </footer>
 
       </div>
