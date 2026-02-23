@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { usersAPI, memoryNotesAPI, userPersonasAPI } from '../lib/api';
+import { usersAPI, memoryNotesAPI, userPersonasAPI, pointAPI } from '../lib/api';
 import { 
   Dialog, 
   DialogContent, 
@@ -24,6 +24,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from './ui/collapsible';
+import RubyChargeModal from './RubyChargeModal';
 
 const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, onModelChange, initialTab = 'model', characterName = '캐릭터', characterId, onUpdateChatSettings, isOrigChat = false }) => {
   // temperature 기본값: 백엔드 ai_service의 기본 temperature(0.7)와 정합
@@ -91,6 +92,8 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
   const [newPersonaDescription, setNewPersonaDescription] = useState('');
   const [editingPersona, setEditingPersona] = useState(null);
   const [activePersona, setActivePersona] = useState(null);
+  const [rubyBalance, setRubyBalance] = useState(0);
+  const [chargeModalOpen, setChargeModalOpen] = useState(false);
 
   const SPEED_SUB_MODELS = [
     // ✅ 요구사항 우선순위: Haiku 4.5 -> Gemini 2.5 Flash -> Gemini 3 Flash (Preview)
@@ -309,6 +312,25 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
     if (isOpen) load();
   }, [isOpen]);
 
+  // ✅ 유료 모델 선택 전 잔액 확인:
+  // - 루비 부족 모델 클릭 시 결제 모달을 즉시 띄우기 위해 현재 잔액을 미리 가져온다.
+  useEffect(() => {
+    if (!isOpen || isOrigChat) return;
+    let mounted = true;
+    (async () => {
+      try {
+        const res = await pointAPI.getBalance();
+        if (!mounted) return;
+        setRubyBalance(Number(res?.data?.balance ?? 0));
+      } catch (_) {
+        if (!mounted) return;
+        // 잔액 조회 실패 시에는 안전하게 0으로 간주해 유료 모델 오선택을 막는다.
+        setRubyBalance(0);
+      }
+    })();
+    return () => { mounted = false; };
+  }, [isOpen, isOrigChat]);
+
   // 캐릭터별 기억노트 로드
   useEffect(() => {
     if (isOpen && characterId && activeTab === 'notes') {
@@ -502,6 +524,7 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
   };
 
   return (
+    <>
     <Dialog open={isOpen} onOpenChange={onClose}>
       <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto p-4 sm:p-6" aria-describedby="model-modal-desc">
         <DialogHeader>
@@ -638,6 +661,8 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
                     const effModelId = modelId === 'speed' ? (subModel.targetModel || 'gemini') : modelId;
                     const effSubId = modelId === 'speed' ? (subModel.targetSubModel || subModel.id) : subModel.id;
                     const selected = isSelected(effModelId, effSubId);
+                    const modelCost = Number(subModel?.cost || 0);
+                    const insufficientRuby = (!isOrigChat && modelCost > 0 && rubyBalance < modelCost);
                     return (
                   <div
                     key={subModel.id}
@@ -650,6 +675,11 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
                     onClick={() => {
                       // ✅ 원작챗: 모델 선택 기능 준비중 → 클릭 비활성
                       if (isOrigChat) return;
+                      // ✅ 잔액 부족 모델 클릭 시: 선택 변경 대신 결제 모달 오픈
+                      if (insufficientRuby) {
+                        try { setChargeModalOpen(true); } catch (_) {}
+                        return;
+                      }
                       // ✅ speed 그룹에서 선택한 경우: UI 체크는 speed에 유지
                       try {
                         setSelectedUiGroup(modelId === 'speed' ? 'speed' : effModelId);
@@ -668,6 +698,11 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
                               </span>
                             ) : (
                               <span className="text-xs text-emerald-500 font-semibold">무료</span>
+                            )}
+                            {insufficientRuby && (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-300">
+                                루비 부족
+                              </span>
                             )}
                             {subModel.badge && (
                               <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${subModel.badgeClass || 'bg-pink-600 text-white'}`}>{subModel.badge}</span>
@@ -1056,11 +1091,6 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
               </div>
             </div>
 
-            {/* 출력 속도 */}
-            <div className="mt-2 p-3 rounded-lg border">
-              <div className="text-sm text-gray-700 mb-2">대화 출력 속도: {typingSpeed} chars/s</div>
-              <input type="range" min="10" max="80" value={typingSpeed} onChange={(e)=>setTypingSpeed(parseInt(e.target.value)||40)} className="w-full" />
-            </div>
             {/* 답변 길이 라디오 (이 탭으로 이동) */}
             <div className="mt-2 p-3 rounded-lg border">
               <div className="text-sm text-gray-700 mb-2">답변 길이</div>
@@ -1261,6 +1291,8 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
         </div>
       </DialogContent>
     </Dialog>
+    <RubyChargeModal open={chargeModalOpen} onOpenChange={setChargeModalOpen} />
+    </>
   );
 };
 

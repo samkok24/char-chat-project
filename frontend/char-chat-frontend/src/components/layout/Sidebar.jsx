@@ -53,14 +53,20 @@ const Sidebar = ({ collapsed = false, onToggleCollapsed }) => {
     let mounted = true;
     const load = async () => {
       try {
-        const [balRes, timerRes] = await Promise.all([
+        const [balRes, timerRes] = await Promise.allSettled([
           pointAPI.getBalance(),
           pointAPI.getTimerStatus(),
         ]);
-        if (mounted) {
-          setRubyBalance(balRes.data?.balance ?? 0);
-          setTimerCurrent(Number(timerRes?.data?.current ?? 0));
-          setTimerMax(Number(timerRes?.data?.max ?? 15));
+        if (!mounted) return;
+        if (balRes.status === 'fulfilled') {
+          setRubyBalance(Number(balRes.value?.data?.balance ?? 0));
+        } else {
+          // balance 실패 시 기존 값 유지, 초기값만 안전하게 0으로 채움
+          setRubyBalance((prev) => (prev === null ? 0 : prev));
+        }
+        if (timerRes.status === 'fulfilled') {
+          setTimerCurrent(Number(timerRes.value?.data?.current ?? 0));
+          setTimerMax(Number(timerRes.value?.data?.max ?? 15));
         }
       } catch { /* best-effort */ }
     };
