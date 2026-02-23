@@ -207,11 +207,7 @@ const PublicRoute = ({ children }) => {
 
           <Route
             path="/ruby/charge"
-            element={
-              <ProtectedRoute>
-                <RubyChargePage />
-              </ProtectedRoute>
-            }
+            element={<RubyChargePage />}
           />
           <Route
             path="/ruby/history"
