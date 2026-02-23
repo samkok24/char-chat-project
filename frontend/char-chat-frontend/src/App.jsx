@@ -18,6 +18,7 @@ import ToastEventsBridge from './components/ToastEventsBridge';
 import PresenceHeartbeatBridge from './components/PresenceHeartbeatBridge';
 import PostLoginRedirectBridge from './components/PostLoginRedirectBridge';
 import TrafficEventsBridge from './components/TrafficEventsBridge';
+import ErrorBoundary from './components/ErrorBoundary';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -73,11 +74,13 @@ const MaintenancePage = React.lazy(() => import('./pages/MaintenancePage'));
 const ContactPage = React.lazy(() => import('./pages/ContactPage'));
 const FAQPage = React.lazy(() => import('./pages/FAQPage'));
 const NoticePage = React.lazy(() => import('./pages/NoticePage'));
+const LegalPage = React.lazy(() => import('./pages/LegalPage'));
 const CMSPage = React.lazy(() => import('./pages/CMSPage'));
 
 // ⏳ 나중에 필요한 페이지들 (지연 로딩)
 const ProfilePage = React.lazy(() => import('./pages/ProfilePage'));
 const RubyChargePage = React.lazy(() => import('./pages/RubyChargePage'));
+const RubyHistoryPage = React.lazy(() => import('./pages/RubyHistoryPage'));
 const CreateCharacterPage = React.lazy(() => import('./pages/CreateCharacterPage'));
 const MyCharactersPage = React.lazy(() => import('./pages/MyCharactersPage'));
 const StoryImporterPage = React.lazy(() => import('./pages/StoryImporterPage'));
@@ -162,7 +165,17 @@ const PublicRoute = ({ children }) => {
           <Route path="/faq" element={<FAQPage />} />
           <Route path="/notices" element={<NoticePage />} />
           <Route path="/notices/:noticeId" element={<NoticePage />} />
-          <Route path="/cms" element={<ProtectedRoute><CMSPage /></ProtectedRoute>} />
+          <Route path="/legal/:type" element={<LegalPage />} />
+          <Route
+            path="/cms"
+            element={
+              <ProtectedRoute>
+                <ErrorBoundary>
+                  <CMSPage />
+                </ErrorBoundary>
+              </ProtectedRoute>
+            }
+          />
 
           <Route
             path="/characters/:characterId"
@@ -197,6 +210,14 @@ const PublicRoute = ({ children }) => {
             element={
               <ProtectedRoute>
                 <RubyChargePage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/ruby/history"
+            element={
+              <ProtectedRoute>
+                <RubyHistoryPage />
               </ProtectedRoute>
             }
           />

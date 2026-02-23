@@ -75,6 +75,59 @@ import Sidebar from '../components/layout/Sidebar';
 import { useLoginModal } from '../contexts/LoginModalContext';
 import { consumePostLoginDraft, setPostLoginRedirect } from '../lib/postLoginRedirect';
 
+function dedupeMessagesById(items) {
+  const arr = Array.isArray(items) ? items : [];
+  const out = [];
+  const byId = new Map();
+
+  for (const it of arr) {
+    const id = String(it?.id || '').trim();
+    if (!id) {
+      out.push(it);
+      continue;
+    }
+    if (!byId.has(id)) {
+      byId.set(id, out.length);
+      out.push(it);
+      continue;
+    }
+    const idx = byId.get(id);
+    const prev = out[idx] || {};
+    out[idx] = { ...prev, ...it };
+  }
+  return out;
+}
+
+function resolveChatStreamErrorMessage(err, fallbackMessage = '전송에 실패했습니다. 다시 시도해주세요.') {
+  const raw = String(err?.message || err?.detail || '').trim();
+  const lower = raw.toLowerCase();
+
+  if (raw === 'InsufficientRuby' || lower.includes('insufficientruby')) {
+    return '루비가 부족합니다. 충전 후 다시 시도하거나, 무료 모델(Gemini 2.5 Flash)로 전환해보세요.';
+  }
+
+  if (
+    raw.includes('Another request is already in progress') ||
+    lower.includes('already in progress')
+  ) {
+    return '이미 응답 생성 중입니다. 잠시만 기다렸다가 다시 시도해주세요.';
+  }
+
+  if (raw === 'AiTimeout' || lower.includes('aitimeout') || lower.includes('timeout')) {
+    return '응답이 지연되어 자동으로 중단되었습니다. 잠시 후 다시 시도해주세요.';
+  }
+
+  if (
+    lower.includes('stream auth failed') ||
+    lower.includes('unauthorized') ||
+    lower.includes('not_authenticated')
+  ) {
+    return '로그인 상태가 만료되었습니다. 다시 로그인 후 시도해주세요.';
+  }
+
+  return fallbackMessage;
+}
+
 const ChatPage = () => {
   const { characterId } = useParams();
   const location = useLocation();
@@ -280,6 +333,12 @@ const ChatPage = () => {
   // 이미지 캐러셀 상태
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
   const [characterImages, setCharacterImages] = useState([]);
+  // ✅ 이미지 코드([[img:...]])용: 대표이미지(avatar)를 제외한 상황별 이미지만 resolve 대상
+  const codeResolvableImages = useMemo(() => {
+    const avatar = String(character?.avatar_url || '').trim();
+    if (!avatar) return characterImages;
+    return characterImages.filter((u) => String(u || '').trim() !== avatar);
+  }, [characterImages, character?.avatar_url]);
   const [imageKeywords, setImageKeywords] = useState([]); // [{url, keywords:[]}] 키워드 트리거용
   const [aiMessageImages, setAiMessageImages] = useState({}); // messageId -> imageUrl (말풍선 아래 이미지)
   // ✅ 새로고침 UX 안정화:
@@ -303,6 +362,7 @@ const ChatPage = () => {
   // ✅ 새로고침 후에도 "... 로딩 말풍선"을 유지하기 위한 최소 상태(세션)
   // - 소켓 aiTyping/origTurnLoading은 새로고침 시 초기화되므로, "응답 대기 중" 플래그를 룸 단위로 보존한다.
   const [persistedTypingTs, setPersistedTypingTs] = useState(null); // number(ms) | null
+  const [sseAwaitingFirstDelta, setSseAwaitingFirstDelta] = useState(false);
   // ✅ A안(가짜 스트리밍/타이핑 효과): UI에서만 "천천히 출력" (서버/DB 데이터 불변)
   //
   // 의도/동작:
@@ -1367,6 +1427,24 @@ const ChatPage = () => {
       setSocketSendDelayActive(false);
       return;
     }
+    // SSE 경로 보호:
+    // - 스트림 첫 델타 대기 중이거나, assistant 스트리밍 말풍선이 이미 보이면
+    //   "소켓 전송 지연" 팝업은 오탐이므로 비활성화한다.
+    const hasStreamingAssistant = (() => {
+      try {
+        return Array.isArray(messages) && messages.some((m) => {
+          const t = String(m?.senderType || m?.sender_type || '').toLowerCase();
+          if (t !== 'assistant' && t !== 'ai' && t !== 'character') return false;
+          return Boolean(m?.isStreaming);
+        });
+      } catch (_) {
+        return false;
+      }
+    })();
+    if (sseAwaitingFirstDelta || hasStreamingAssistant) {
+      setSocketSendDelayActive(false);
+      return;
+    }
     // 3초 이상 pending이면 네트워크 지연으로 간주(유저 불안 완화)
     let cancelled = false;
     const t = setTimeout(() => {
@@ -1376,7 +1454,7 @@ const ChatPage = () => {
       cancelled = true;
       try { clearTimeout(t); } catch (_) {}
     };
-  }, [isOrigChat, connected, messages, aiTyping]);
+  }, [isOrigChat, connected, messages, aiTyping, sseAwaitingFirstDelta]);
 
   const notifyCompletion = (meta) => {
     if (!chatRoomId) return;
@@ -3424,6 +3502,7 @@ const ChatPage = () => {
       return true;
     } catch (e) {
       console.error('상황 적용 실패', e);
+      try { setSseAwaitingFirstDelta(false); } catch (_) {}
       try { clearTypingPersist(chatRoomId); } catch (_) {}
       if (handleOrigchatDeleted(e)) return;
       if (handleAccessDenied(e)) return;
@@ -3463,6 +3542,74 @@ const ChatPage = () => {
 
 
   }, [isOrigChat, hasMoreMessages, historyLoading, getMessageHistory, chatRoomId, currentPage]);
+
+  const sseDeltaPipelinesRef = useRef(new Map()); // streamId -> { roomId, buffer, timer }
+
+  const appendStreamingChunkById = useCallback((streamId, roomId, chunkText) => {
+    const chunk = String(chunkText || '');
+    if (!chunk) return;
+    setMessages((prev) => {
+      const idx = prev.findIndex((m) => String(m?.id || '') === String(streamId));
+      if (idx < 0) {
+        return [
+          ...prev,
+          {
+            id: streamId,
+            roomId,
+            senderType: 'assistant',
+            content: chunk,
+            created_at: new Date().toISOString(),
+            isStreaming: true,
+            pending: true,
+          },
+        ];
+      }
+      const next = [...prev];
+      const cur = next[idx] || {};
+      next[idx] = {
+        ...cur,
+        content: `${String(cur?.content || '')}${chunk}`,
+        isStreaming: true,
+        pending: true,
+      };
+      return next;
+    });
+  }, []);
+
+  const clearSseDeltaPipeline = useCallback((streamId) => {
+    try {
+      const key = String(streamId || '').trim();
+      if (!key) return;
+      const map = sseDeltaPipelinesRef.current;
+      const st = map.get(key);
+      if (!st) return;
+      if (st.timer) {
+        try { clearInterval(st.timer); } catch (_) {}
+      }
+      map.delete(key);
+    } catch (_) {}
+  }, []);
+
+  const pushSseDeltaChunk = useCallback((streamId, roomId, chunkText) => {
+    const key = String(streamId || '').trim();
+    const chunk = String(chunkText || '');
+    if (!key || !chunk) return;
+    appendStreamingChunkById(key, roomId, chunk);
+  }, [appendStreamingChunkById]);
+
+  useEffect(() => {
+    return () => {
+      try {
+        const map = sseDeltaPipelinesRef.current;
+        for (const [, st] of map.entries()) {
+          if (st?.timer) {
+            try { clearInterval(st.timer); } catch (_) {}
+          }
+        }
+        map.clear();
+      } catch (_) {}
+    };
+  }, []);
 
 
   const handleSendMessage = async (e, overrideText = null) => {
@@ -3537,7 +3684,7 @@ const ChatPage = () => {
       } catch (_) {}
     }
 
-    // 원작챗은 소켓 연결 여부와 무관하게 HTTP로 턴을 보냄
+    // 일반챗/원작챗 모두 소켓 연결 여부와 무관하게 HTTP 기반 전송 경로를 사용
     const messageContentRaw = draft.trim();
     const firstToken = String(messageContentRaw.split(/\s+/)[0] || '').trim();
     const tokenNoSpace = firstToken.replace(/\s+/g, '').trim();
@@ -3548,7 +3695,7 @@ const ChatPage = () => {
       tokenLower.startsWith('!stat') ||
       tokenLower.startsWith('!status')
     );
-    if (!roomIdForSend || (!isOrigChat && !connected && !isStatCmd)) return;
+    if (!roomIdForSend) return;
     // 방어적: 원작챗은 한 턴씩 순차 처리(중복 전송/경합 방지)
     if (isOrigChat && origTurnLoading) {
       showToastOnce({ key: `orig-busy:${roomIdForSend}`, type: 'info', message: '응답 생성 중입니다. 잠시만 기다려 주세요.' });
@@ -3615,7 +3762,6 @@ const ChatPage = () => {
     // ✅ 나레이션은 "* " (별표+공백/개행)으로만 판별: "**" 또는 "*abc*" 같은 인라인 강조로 말풍선 전체가 이탤릭 되는 오작동 방지
     const isNarration = /^\*\s/.test(messageContentRaw);
     const messageContent = isNarration ? messageContentRaw.replace(/^\*\s*/, '') : messageContentRaw;
-    const messageType = isNarration ? 'narration' : 'text';
     
     // ✅ 상황 입력 모드(원작챗): 별도 입력 박스 없이 "메인 입력창 전송 = 상황 적용"
     if (isOrigChat && showSituation) {
@@ -3696,6 +3842,8 @@ const ChatPage = () => {
         try { window.dispatchEvent(new Event('chat:roomsChanged')); } catch (_) {}
       } catch (err) {
         console.error('원작챗 턴 실패', err);
+        try { setSseAwaitingFirstDelta(false); } catch (_) {}
+        try { setSseAwaitingFirstDelta(false); } catch (_) {}
         try { clearTypingPersist(roomIdForSend); } catch (_) {}
         if (handleOrigchatDeleted(err)) {
           try { setNewMessage(''); } catch (_) {}
@@ -3736,12 +3884,14 @@ const ChatPage = () => {
       if (inputRef.current) { inputRef.current.style.height = 'auto'; }
       return;
     } else {
-      // Send message via socket (낙관적 추가 + ack 기반 롤백)
+      // Send message via SSE stream (낙관적 추가 + 스트리밍 갱신 + 최종 응답 동기화)
       // ✅ 요술봉 모드: 전송 시 기존 선택지는 즉시 비움(다음 AI 응답 후 다시 생성)
       if (magicMode) {
         try { setMagicChoices([]); } catch (_) {}
       }
+
       const tempId = `temp-user-${Date.now()}`;
+      const streamAiId = `temp-ai-stream-${Date.now()}`;
       const tempUserMessage = {
         id: tempId,
         roomId: roomIdForSend,
@@ -3766,30 +3916,162 @@ const ChatPage = () => {
       if (inputRef.current) {
         inputRef.current.style.height = 'auto';
       }
+
       try {
-        // ✅ 일반 챗도 settings_patch를 "변경 직후 1회"만 전송 → 이후 메시지는 룸 메타를 사용
-        // (응답 길이/temperature를 한번 바꾸면 계속 적용되도록)
         // ✅ 새로고침/탭 재로드에도 "... 로딩"을 유지하기 위한 세션 플래그(일반챗)
+        try { setSseAwaitingFirstDelta(true); } catch (_) {}
         try { markTypingPersist(roomIdForSend, 'chat'); } catch (_) {}
-        await sendSocketMessage(
-          roomIdForSend,
-          messageContent,
-          messageType,
-          { settingsPatch: (settingsSyncedRef.current ? null : chatSettings) }
+        const emitRelayMessages = (items = []) => {
+          try {
+            if (!socket) return;
+            const list = Array.isArray(items) ? items.filter(Boolean) : [];
+            if (!list.length) return;
+            try {
+              // SSE 경로에서 소켓이 잠시 끊겨도, relay 이벤트를 버퍼링/재전송하도록 재연결 시도
+              if (!socket.connected && typeof socket.connect === 'function') socket.connect();
+            } catch (_) {}
+            socket.emit('relay_messages', { roomId: roomIdForSend, messages: list }, (resp) => {
+              try {
+                if (resp && resp.ok === false) console.warn('[ChatPage] relay_messages failed:', resp);
+              } catch (_) {}
+            });
+          } catch (_) {}
+        };
+
+        const streamResult = await chatAPI.sendMessageStream(
+          {
+            room_id: roomIdForSend,
+            character_id: characterId,
+            content: messageContent,
+            settings_patch: (settingsSyncedRef.current ? null : chatSettings),
+          },
+          {
+            onDelta: (delta) => {
+              const chunk = String(delta || '');
+              if (!chunk) return;
+              try { setSseAwaitingFirstDelta(false); } catch (_) {}
+              pushSseDeltaChunk(streamAiId, roomIdForSend, chunk);
+            },
+          }
         );
+
+        if (!streamResult?.ok || !streamResult?.data) {
+          throw streamResult?.error || new Error('stream send failed');
+        }
+        clearSseDeltaPipeline(streamAiId, { flush: true });
+
+        const payload = streamResult.data || {};
+        const savedUser = payload?.user_message || null;
+        const savedAi = payload?.ai_message || null;
+        const savedEnding = payload?.ending_message || null;
+        const meta = payload?.meta || {};
+
+        setMessages((prev) => {
+          let next = Array.isArray(prev) ? [...prev] : [];
+
+          // 1) 임시 유저 메시지를 서버 저장본으로 치환
+          if (savedUser && savedUser.id) {
+            next = next.map((m) => (
+              (String(m?.id || '') === String(tempId) || String(m?.id || '') === String(savedUser.id))
+                ? { ...m, ...savedUser, senderType: savedUser.sender_type || 'user', pending: false }
+                : m
+            ));
+          } else {
+            next = next.map((m) => (
+              String(m?.id || '') === String(tempId)
+                ? { ...m, pending: false }
+                : m
+            ));
+          }
+
+          // 2) 스트리밍 말풍선 -> 서버 저장 AI 메시지로 치환
+          if (savedAi && savedAi.id) {
+            const aiMapped = {
+              ...savedAi,
+              senderType: savedAi.sender_type || 'assistant',
+              pending: false,
+              isStreaming: false,
+            };
+            const aiIdx = next.findIndex((m) => String(m?.id || '') === String(streamAiId));
+            if (aiIdx >= 0) next[aiIdx] = { ...next[aiIdx], ...aiMapped };
+            else if (!next.some((m) => String(m?.id || '') === String(savedAi.id))) next.push(aiMapped);
+          } else {
+            next = next.map((m) => (
+              String(m?.id || '') === String(streamAiId)
+                ? { ...m, pending: false, isStreaming: false }
+                : m
+            ));
+          }
+
+          // 3) 엔딩 메시지(선택) 추가
+          if (savedEnding && savedEnding.id && !next.some((m) => String(m?.id || '') === String(savedEnding.id))) {
+            next.push({ ...savedEnding, senderType: savedEnding.sender_type || 'assistant' });
+          }
+
+          return dedupeMessagesById(next);
+        });
+
+        // ✅ SSE 실시간 스트리밍 완료 → savedAi.id를 done 처리하여 가짜 UI 스트리밍 재실행 방지
+        if (savedAi?.id) {
+          try { uiStreamDoneByIdRef.current[String(savedAi.id)] = true; } catch (_) {}
+        }
+
+        // ✅ 다른 디바이스(모바일/PC 동시 접속) 즉시 동기화
+        emitRelayMessages([
+          (savedUser && savedUser.id) ? {
+            id: savedUser.id,
+            senderType: 'user',
+            senderId: savedUser.sender_id || user?.id,
+            senderName: user?.username || user?.nickname || 'user',
+            content: savedUser.content || messageContent,
+            messageType: isNarration ? 'narration' : 'text',
+            timestamp: savedUser.created_at || new Date().toISOString(),
+            message_metadata: savedUser.message_metadata || undefined,
+          } : null,
+          savedAi && savedAi.id ? {
+            id: savedAi.id,
+            senderType: 'character',
+            senderId: savedAi.sender_id || characterId,
+            senderName: character?.name || 'AI',
+            content: savedAi.content || '',
+            timestamp: savedAi.created_at || new Date().toISOString(),
+            message_metadata: savedAi.message_metadata || undefined,
+          } : null,
+          savedEnding && savedEnding.id ? {
+            id: savedEnding.id,
+            senderType: 'character',
+            senderId: savedEnding.sender_id || characterId,
+            senderName: character?.name || 'AI',
+            content: savedEnding.content || '',
+            timestamp: savedEnding.created_at || new Date().toISOString(),
+            message_metadata: savedEnding.message_metadata || undefined,
+          } : null,
+        ]);
+
         settingsSyncedRef.current = true;
-        setMessages(prev => prev.map(m => m.id === tempId ? { ...m, pending: false } : m));
+        try { setSseAwaitingFirstDelta(false); } catch (_) {}
+        try { clearTypingPersist(roomIdForSend); } catch (_) {}
 
         // ✅ 일반챗 진행률 갱신(서버 SSOT): 유저 메시지 1회 성공 후 turn_count가 증가했을 수 있다.
         try { await refreshGeneralChatProgress(roomIdForSend); } catch (_) {}
 
+        // ✅ 응답 메타 반영(선택지/경고)
+        try { setPendingChoices(Array.isArray(meta?.choices) ? meta.choices : []); } catch (_) {}
+        try { setRangeWarning(typeof meta?.warning === 'string' ? meta.warning : ''); } catch (_) {}
+
         // ✅ 최근대화/대화내역 갱신(룸의 last_chat_time/snippet이 바뀜)
         try { window.dispatchEvent(new Event('chat:roomsChanged')); } catch (_) {}
       } catch (err) {
-        console.error('소켓 전송 실패', err);
+        console.error('SSE 전송 실패', err);
+        try { setSseAwaitingFirstDelta(false); } catch (_) {}
         try { clearTypingPersist(roomIdForSend); } catch (_) {}
-        setMessages(prev => prev.filter(m => m.id !== tempId));
-        showToastOnce({ key: `socket-send-fail:${roomIdForSend}`, type: 'error', message: '전송에 실패했습니다. 다시 시도해주세요.' });
+        try { clearSseDeltaPipeline(streamAiId, { flush: false }); } catch (_) {}
+        setMessages(prev => prev.filter(m => String(m?.id || '') !== String(tempId) && String(m?.id || '') !== String(streamAiId)));
+        showToastOnce({
+          key: `sse-send-fail:${roomIdForSend}`,
+          type: 'error',
+          message: resolveChatStreamErrorMessage(err, '전송에 실패했습니다. 다시 시도해주세요.'),
+        });
       }
     }
   };
@@ -4016,6 +4298,7 @@ const ChatPage = () => {
       setRangeWarning(typeof warn === 'string' ? warn : '');
     } catch (e) {
       console.error('선택 처리 실패', e);
+      try { setSseAwaitingFirstDelta(false); } catch (_) {}
       try { clearTypingPersist(chatRoomId); } catch (_) {}
       if (handleOrigchatDeleted(e)) return;
       if (handleAccessDenied(e)) return;
@@ -4081,6 +4364,7 @@ const ChatPage = () => {
       } catch (_) {}
     } catch (e) {
       console.error('선택지 요청 실패', e);
+      try { setSseAwaitingFirstDelta(false); } catch (_) {}
       try { clearTypingPersist(chatRoomId); } catch (_) {}
       if (handleOrigchatDeleted(e)) return;
       if (handleAccessDenied(e)) return;
@@ -4134,6 +4418,7 @@ const ChatPage = () => {
       } catch (_) {}
     } catch (e) {
       console.error('자동 진행 실패', e);
+      try { setSseAwaitingFirstDelta(false); } catch (_) {}
       try { clearTypingPersist(chatRoomId); } catch (_) {}
       if (handleOrigchatDeleted(e)) return;
       if (handleAccessDenied(e)) return;
@@ -4319,7 +4604,7 @@ const ChatPage = () => {
         if (qRoom && qRoom !== rid) return false;
       } catch (_) {}
     }
-    return isOrigChat ? true : connected;
+    return true;
   })();
   // ✅ 원작챗 생성 중에는 입력/전송을 UI에서도 잠가, "눌렀는데 왜 안 보내져?" 혼란을 방지한다.
   const isOrigBusy = Boolean(isOrigChat && origTurnLoading);
@@ -4384,6 +4669,22 @@ const ChatPage = () => {
   // ✅ UI 가짜 스트리밍 중(입력 잠금/요술봉 생성 지연)
   const uiStreamingActive = Boolean(uiStream?.id && uiStream?.full && uiStream?.shown !== uiStream?.full);
   const uiIntroStreamingActive = Boolean(uiIntroStream?.id && uiIntroStream?.full && uiIntroStream?.shown !== uiIntroStream?.full);
+  // 스트리밍 말풍선이 보이는 동안에는 점(대기) 말풍선을 숨긴다.
+  const hasVisibleStreamingAssistantBubble = (() => {
+    try {
+      if (uiStreamingActive || uiIntroStreamingActive) return true;
+      const arr = Array.isArray(messages) ? messages : [];
+      for (let i = arr.length - 1; i >= 0; i -= 1) {
+        const m = arr[i];
+        const t = String(m?.senderType || m?.sender_type || '').toLowerCase();
+        if (t !== 'assistant' && t !== 'ai' && t !== 'character') continue;
+        if (Boolean(m?.isStreaming)) return true;
+      }
+      return false;
+    } catch (_) {
+      return false;
+    }
+  })();
   // ✅ 입력 잠금 최종값: "응답 대기" + "가짜 스트리밍"(AI) + "오프닝 스트리밍"(intro)
   const aiTypingEffective = Boolean(aiWaitingServer || uiStreamingActive || uiIntroStreamingActive);
   /**
@@ -4396,6 +4697,7 @@ const ChatPage = () => {
   const shouldShowWaitingBubble = (() => {
     try {
       if (!aiWaitingServer) return false;
+      if (hasVisibleStreamingAssistantBubble) return false;
       const arr = Array.isArray(messages) ? messages : [];
       if (!arr.length) return true; // 메시지 자체가 없으면 대기 표시 허용
       let last = null;
@@ -5089,12 +5391,23 @@ const ChatPage = () => {
         narration = String(res?.data?.narration || '').trim();
       } catch (e) {
         console.error('[ChatPage] next action api failed:', e);
+        try { setSseAwaitingFirstDelta(false); } catch (_) {}
         try { clearTypingPersist(chatRoomId); } catch (_) {}
+        try {
+          if (nextActionFailSafeTimerRef.current) clearTimeout(nextActionFailSafeTimerRef.current);
+        } catch (_) {}
+        nextActionFailSafeTimerRef.current = null;
+        try { nextActionSeenAiTypingRef.current = false; } catch (_) {}
         try { setNextActionBusy(false); } catch (_) {}
         showToastOnce({ key: `next-action-api-fail:${chatRoomId}`, type: 'error', message: '다음행동 생성에 실패했습니다. 잠시 후 다시 시도해주세요.' });
         return;
       }
       if (!narration) {
+        try {
+          if (nextActionFailSafeTimerRef.current) clearTimeout(nextActionFailSafeTimerRef.current);
+        } catch (_) {}
+        nextActionFailSafeTimerRef.current = null;
+        try { nextActionSeenAiTypingRef.current = false; } catch (_) {}
         try { setNextActionBusy(false); } catch (_) {}
         showToastOnce({ key: `next-action-empty:${chatRoomId}`, type: 'error', message: '다음행동 생성 결과가 비어 있습니다.' });
         return;
@@ -5103,6 +5416,7 @@ const ChatPage = () => {
       // 2) 유저 메시지로 소켓 전송(서버/DB에 kind 저장) + 낙관적 UI
       const contentToSend = `* ${narration}`; // UI/모델 모두에 "지문"임을 명확히
       const tempId = `temp-user-nextaction-${Date.now()}`;
+      const streamAiId = `temp-ai-nextaction-stream-${Date.now()}`;
       const tempUserMessage = {
         id: tempId,
         roomId: chatRoomId,
@@ -5124,33 +5438,291 @@ const ChatPage = () => {
         try { scrollToBottom(); } catch (_) {}
       }
 
+      try { setSseAwaitingFirstDelta(true); } catch (_) {}
       try { markTypingPersist(chatRoomId, 'chat'); } catch (_) {}
       try {
-        await sendSocketMessage(
-          chatRoomId,
-          contentToSend,
-          'text',
+        const emitRelayMessages = (items = []) => {
+          try {
+            if (!socket) return;
+            const list = Array.isArray(items) ? items.filter(Boolean) : [];
+            if (!list.length) return;
+            try {
+              if (!socket.connected && typeof socket.connect === 'function') socket.connect();
+            } catch (_) {}
+            socket.emit('relay_messages', { roomId: chatRoomId, messages: list }, (resp) => {
+              try {
+                if (resp && resp.ok === false) console.warn('[ChatPage] relay_messages failed:', resp);
+              } catch (_) {}
+            });
+          } catch (_) {}
+        };
+
+        const streamResult = await chatAPI.sendMessageStream(
           {
-            settingsPatch: (settingsSyncedRef.current ? null : chatSettings),
-            clientMessageKind: 'next_action',
+            room_id: chatRoomId,
+            character_id: characterId,
+            content: contentToSend,
+            settings_patch: (settingsSyncedRef.current ? null : chatSettings),
+            client_message_kind: 'next_action',
+          },
+          {
+            onDelta: (delta) => {
+              const chunk = String(delta || '');
+              if (!chunk) return;
+              try { setSseAwaitingFirstDelta(false); } catch (_) {}
+              pushSseDeltaChunk(streamAiId, chatRoomId, chunk);
+            },
           }
         );
+        if (!streamResult?.ok || !streamResult?.data) {
+          throw streamResult?.error || new Error('next_action stream send failed');
+        }
+        clearSseDeltaPipeline(streamAiId, { flush: true });
+        const payload = streamResult.data || {};
+        const savedUser = payload?.user_message || null;
+        const savedAi = payload?.ai_message || null;
+        const savedEnding = payload?.ending_message || null;
+        const meta = payload?.meta || {};
+
+        setMessages((prev) => {
+          let next = Array.isArray(prev) ? [...prev] : [];
+
+          if (savedUser && savedUser.id) {
+            next = next.map((m) => (
+              (String(m?.id || '') === String(tempId) || String(m?.id || '') === String(savedUser.id))
+                ? { ...m, ...savedUser, senderType: savedUser.sender_type || 'user', pending: false }
+                : m
+            ));
+          } else {
+            next = next.map((m) => (
+              String(m?.id || '') === String(tempId)
+                ? { ...m, pending: false }
+                : m
+            ));
+          }
+
+          if (savedAi && savedAi.id) {
+            const aiMapped = {
+              ...savedAi,
+              senderType: savedAi.sender_type || 'assistant',
+              pending: false,
+              isStreaming: false,
+            };
+            const aiIdx = next.findIndex((m) => String(m?.id || '') === String(streamAiId));
+            if (aiIdx >= 0) next[aiIdx] = { ...next[aiIdx], ...aiMapped };
+            else if (!next.some((m) => String(m?.id || '') === String(savedAi.id))) next.push(aiMapped);
+          } else {
+            next = next.map((m) => (
+              String(m?.id || '') === String(streamAiId)
+                ? { ...m, pending: false, isStreaming: false }
+                : m
+            ));
+          }
+
+          if (savedEnding && savedEnding.id && !next.some((m) => String(m?.id || '') === String(savedEnding.id))) {
+            next.push({ ...savedEnding, senderType: savedEnding.sender_type || 'assistant' });
+          }
+
+          return dedupeMessagesById(next);
+        });
+
+        // ✅ SSE 스트리밍 완료 → savedAi.id를 done 처리하여 가짜 UI 스트리밍 재실행 방지
+        if (savedAi?.id) {
+          try { uiStreamDoneByIdRef.current[String(savedAi.id)] = true; } catch (_) {}
+        }
+
+        emitRelayMessages([
+          savedUser && savedUser.id ? {
+            id: savedUser.id,
+            senderType: 'user',
+            senderId: savedUser.sender_id || user?.id,
+            senderName: user?.username || user?.nickname || 'user',
+            content: savedUser.content || contentToSend,
+            messageType: 'text',
+            timestamp: savedUser.created_at || new Date().toISOString(),
+            message_metadata: savedUser.message_metadata || undefined,
+          } : null,
+          savedAi && savedAi.id ? {
+            id: savedAi.id,
+            senderType: 'character',
+            senderId: savedAi.sender_id || characterId,
+            senderName: character?.name || 'AI',
+            content: savedAi.content || '',
+            timestamp: savedAi.created_at || new Date().toISOString(),
+            message_metadata: savedAi.message_metadata || undefined,
+          } : null,
+          savedEnding && savedEnding.id ? {
+            id: savedEnding.id,
+            senderType: 'character',
+            senderId: savedEnding.sender_id || characterId,
+            senderName: character?.name || 'AI',
+            content: savedEnding.content || '',
+            timestamp: savedEnding.created_at || new Date().toISOString(),
+            message_metadata: savedEnding.message_metadata || undefined,
+          } : null,
+        ]);
+
         settingsSyncedRef.current = true;
-        setMessages(prev => prev.map(m => m.id === tempId ? { ...m, pending: false } : m));
-        try { window.dispatchEvent(new Event('chat:roomsChanged')); } catch (_) {}
-      } catch (err) {
-        console.error('[ChatPage] next action send failed:', err);
+        try { setSseAwaitingFirstDelta(false); } catch (_) {}
         try { clearTypingPersist(chatRoomId); } catch (_) {}
-        setMessages(prev => prev.filter(m => m.id !== tempId));
+        try { await refreshGeneralChatProgress(chatRoomId); } catch (_) {}
+        try { setPendingChoices(Array.isArray(meta?.choices) ? meta.choices : []); } catch (_) {}
+        try { setRangeWarning(typeof meta?.warning === 'string' ? meta.warning : ''); } catch (_) {}
+        try { window.dispatchEvent(new Event('chat:roomsChanged')); } catch (_) {}
+        try {
+          if (nextActionFailSafeTimerRef.current) clearTimeout(nextActionFailSafeTimerRef.current);
+        } catch (_) {}
+        nextActionFailSafeTimerRef.current = null;
+        try { nextActionSeenAiTypingRef.current = false; } catch (_) {}
         try { setNextActionBusy(false); } catch (_) {}
-        showToastOnce({ key: `next-action-send-fail:${chatRoomId}`, type: 'error', message: '다음행동 전송에 실패했습니다. 다시 시도해주세요.' });
+      } catch (err) {
+        console.error('[ChatPage] next action SSE send failed:', err);
+        try { setSseAwaitingFirstDelta(false); } catch (_) {}
+        try { clearTypingPersist(chatRoomId); } catch (_) {}
+        try { clearSseDeltaPipeline(streamAiId, { flush: false }); } catch (_) {}
+        setMessages(prev => prev.filter(m => String(m?.id || '') !== String(tempId) && String(m?.id || '') !== String(streamAiId)));
+        try {
+          if (nextActionFailSafeTimerRef.current) clearTimeout(nextActionFailSafeTimerRef.current);
+        } catch (_) {}
+        nextActionFailSafeTimerRef.current = null;
+        try { nextActionSeenAiTypingRef.current = false; } catch (_) {}
+        try { setNextActionBusy(false); } catch (_) {}
+        showToastOnce({
+          key: `next-action-send-fail:${chatRoomId}`,
+          type: 'error',
+          message: resolveChatStreamErrorMessage(err, '다음행동 전송에 실패했습니다. 다시 시도해주세요.'),
+        });
         return;
       }
     } catch (e) {
       console.error('[ChatPage] handleTriggerNextAction failed:', e);
+      try {
+        if (nextActionFailSafeTimerRef.current) clearTimeout(nextActionFailSafeTimerRef.current);
+      } catch (_) {}
+      nextActionFailSafeTimerRef.current = null;
+      try { nextActionSeenAiTypingRef.current = false; } catch (_) {}
       try { setNextActionBusy(false); } catch (_) {}
     }
-  }, [isOrigChat, nextActionBusy, chatRoomId, isAuthenticated, openLoginModal, location.pathname, location.search, aiTypingEffective, messages, sendSocketMessage, user, chatSettings]);
+  }, [isOrigChat, nextActionBusy, chatRoomId, isAuthenticated, openLoginModal, location.pathname, location.search, aiTypingEffective, messages, socket, user, chatSettings, characterId, character?.name, refreshGeneralChatProgress, pushSseDeltaChunk, clearSseDeltaPipeline]);
+
+  const handleContinueAction = useCallback(async () => {
+    if (isOrigChat) {
+      requestNextEvent();
+      return;
+    }
+    if (!chatRoomId) return;
+    if (aiTypingEffective) return;
+    let streamAiId = '';
+    try {
+      try { setSseAwaitingFirstDelta(true); } catch (_) {}
+      try { markTypingPersist(chatRoomId, 'chat'); } catch (_) {}
+      streamAiId = `temp-ai-continue-stream-${Date.now()}`;
+      const streamResult = await chatAPI.sendMessageStream(
+        {
+          room_id: chatRoomId,
+          character_id: characterId,
+          content: '',
+          settings_patch: (settingsSyncedRef.current ? null : chatSettings),
+        },
+        {
+          onDelta: (delta) => {
+            const chunk = String(delta || '');
+            if (!chunk) return;
+            try { setSseAwaitingFirstDelta(false); } catch (_) {}
+            pushSseDeltaChunk(streamAiId, chatRoomId, chunk);
+          },
+        }
+      );
+      if (!streamResult?.ok || !streamResult?.data) {
+        throw streamResult?.error || new Error('continue stream send failed');
+      }
+      clearSseDeltaPipeline(streamAiId, { flush: true });
+      const payload = streamResult.data || {};
+      const savedAi = payload?.ai_message || null;
+      const savedEnding = payload?.ending_message || null;
+
+      setMessages((prev) => {
+        let next = Array.isArray(prev) ? [...prev] : [];
+        if (savedAi && savedAi.id) {
+          const aiMapped = {
+            ...savedAi,
+            senderType: savedAi.sender_type || 'assistant',
+            pending: false,
+            isStreaming: false,
+          };
+          const aiIdx = next.findIndex((m) => String(m?.id || '') === String(streamAiId));
+          if (aiIdx >= 0) next[aiIdx] = { ...next[aiIdx], ...aiMapped };
+          else if (!next.some((m) => String(m?.id || '') === String(savedAi.id))) next.push(aiMapped);
+        } else {
+          next = next.map((m) => (
+            String(m?.id || '') === String(streamAiId)
+              ? { ...m, pending: false, isStreaming: false }
+              : m
+          ));
+        }
+        if (savedEnding && savedEnding.id && !next.some((m) => String(m?.id || '') === String(savedEnding.id))) {
+          next.push({ ...savedEnding, senderType: savedEnding.sender_type || 'assistant' });
+        }
+        return dedupeMessagesById(next);
+      });
+
+      // ✅ SSE 스트리밍 완료 → savedAi.id를 done 처리하여 가짜 UI 스트리밍 재실행 방지
+      if (savedAi?.id) {
+        try { uiStreamDoneByIdRef.current[String(savedAi.id)] = true; } catch (_) {}
+      }
+
+      try {
+        if (socket) {
+          const relayList = [
+            savedAi && savedAi.id ? {
+              id: savedAi.id,
+              senderType: 'character',
+              senderId: savedAi.sender_id || characterId,
+              senderName: character?.name || 'AI',
+              content: savedAi.content || '',
+              timestamp: savedAi.created_at || new Date().toISOString(),
+              message_metadata: savedAi.message_metadata || undefined,
+            } : null,
+            savedEnding && savedEnding.id ? {
+              id: savedEnding.id,
+              senderType: 'character',
+              senderId: savedEnding.sender_id || characterId,
+              senderName: character?.name || 'AI',
+              content: savedEnding.content || '',
+              timestamp: savedEnding.created_at || new Date().toISOString(),
+              message_metadata: savedEnding.message_metadata || undefined,
+            } : null,
+          ].filter(Boolean);
+          if (relayList.length) {
+            try {
+              if (!socket.connected && typeof socket.connect === 'function') socket.connect();
+            } catch (_) {}
+            socket.emit('relay_messages', { roomId: chatRoomId, messages: relayList }, (resp) => {
+              try {
+                if (resp && resp.ok === false) console.warn('[ChatPage] relay_messages failed:', resp);
+              } catch (_) {}
+            });
+          }
+        }
+      } catch (_) {}
+
+      settingsSyncedRef.current = true;
+      try { setSseAwaitingFirstDelta(false); } catch (_) {}
+      try { clearTypingPersist(chatRoomId); } catch (_) {}
+      try { window.dispatchEvent(new Event('chat:roomsChanged')); } catch (_) {}
+    } catch (err) {
+      console.error('[ChatPage] continue SSE send failed:', err);
+      try { setSseAwaitingFirstDelta(false); } catch (_) {}
+      try { clearTypingPersist(chatRoomId); } catch (_) {}
+      try { clearSseDeltaPipeline(streamAiId, { flush: false }); } catch (_) {}
+      setMessages(prev => prev.filter(m => String(m?.id || '') !== String(streamAiId)));
+      showToastOnce({
+        key: `continue-sse-send-fail:${chatRoomId}`,
+        type: 'error',
+        message: resolveChatStreamErrorMessage(err, '계속 진행에 실패했습니다. 다시 시도해주세요.'),
+      });
+    }
+  }, [isOrigChat, requestNextEvent, chatRoomId, aiTypingEffective, chatSettings, characterId, character?.name, socket, markTypingPersist, clearTypingPersist, pushSseDeltaChunk, clearSseDeltaPipeline]);
 
   /**
    * 모바일/모달에서 사용할 "오너 등록 이미지" 리스트를 정규화한다.
@@ -5352,19 +5924,19 @@ const ChatPage = () => {
         try {
           const spec = String(rawSpec ?? '').trim();
           if (!spec) return '';
-          // 1) 숫자(구버전): characterImages(1-based)
+          // 1) 숫자(구버전): codeResolvableImages(1-based, avatar 제외)
           if (/^\d+$/.test(spec)) {
             const n = Number(spec);
             if (!Number.isFinite(n)) return '';
             const idx = Math.max(0, Math.floor(n) - 1);
-            const url = (Array.isArray(characterImages) && idx >= 0 && idx < characterImages.length)
-              ? characterImages[idx]
+            const url = (Array.isArray(codeResolvableImages) && idx >= 0 && idx < codeResolvableImages.length)
+              ? codeResolvableImages[idx]
               : '';
             return url ? resolveImageUrl(url) : '';
           }
-          // 2) 고유 id: 캐릭터 이미지 목록에서 URL→id로 역매핑
+          // 2) 고유 id: 상황별 이미지 목록에서 URL→id로 역매핑(avatar 제외)
           const want = spec.toLowerCase();
-          for (const u of (Array.isArray(characterImages) ? characterImages : [])) {
+          for (const u of (Array.isArray(codeResolvableImages) ? codeResolvableImages : [])) {
             const id = imageCodeIdFromUrl(u);
             if (id && id.toLowerCase() === want) {
               const resolved = resolveImageUrl(u);
@@ -5629,7 +6201,7 @@ const ChatPage = () => {
           try {
             const want = String(resolveImageUrl(triggerImageUrl) || triggerImageUrl).trim();
             if (!want) return -1;
-            const arr = Array.isArray(characterImages) ? characterImages : [];
+            const arr = Array.isArray(codeResolvableImages) ? codeResolvableImages : [];
             for (let i = 0; i < arr.length; i += 1) {
               const u = arr[i];
               const resolved = String(resolveImageUrl(u) || u || '').trim();
@@ -5736,19 +6308,19 @@ const ChatPage = () => {
         try {
           const spec = String(rawSpec ?? '').trim();
           if (!spec) return '';
-          // 1) 숫자(구버전): characterImages(1-based)
+          // 1) 숫자(구버전): codeResolvableImages(1-based, avatar 제외)
           if (/^\d+$/.test(spec)) {
             const n = Number(spec);
             if (!Number.isFinite(n)) return '';
             const idx = Math.max(0, Math.floor(n) - 1);
-            const url = (Array.isArray(characterImages) && idx >= 0 && idx < characterImages.length)
-              ? characterImages[idx]
+            const url = (Array.isArray(codeResolvableImages) && idx >= 0 && idx < codeResolvableImages.length)
+              ? codeResolvableImages[idx]
               : '';
             return url ? resolveImageUrl(url) : '';
           }
-          // 2) 고유 id: 캐릭터 이미지 목록에서 URL→id로 역매핑
+          // 2) 고유 id: 상황별 이미지 목록에서 URL→id로 역매핑(avatar 제외)
           const want = spec.toLowerCase();
-          for (const u of (Array.isArray(characterImages) ? characterImages : [])) {
+          for (const u of (Array.isArray(codeResolvableImages) ? codeResolvableImages : [])) {
             const id = imageCodeIdFromUrl(u);
             if (id && id.toLowerCase() === want) {
               const resolved = resolveImageUrl(u);
@@ -6150,11 +6722,7 @@ const ChatPage = () => {
                   </TooltipTrigger><TooltipContent>재생성</TooltipContent></Tooltip>
                   <Tooltip><TooltipTrigger asChild>
                     <button
-                      onClick={() => {
-                        // ✅ 원작챗은 소켓 continue가 아니라 HTTP next_event가 맞다.
-                        if (isOrigChat) requestNextEvent();
-                        else sendSocketMessage(chatRoomId, '', 'continue', { settingsPatch: (settingsSyncedRef.current ? null : chatSettings) });
-                      }}
+                      onClick={handleContinueAction}
                       disabled={Boolean(inputUiLocked || (isOrigChat && origTurnLoading))}
                       className={`p-1.5 rounded text-[var(--app-fg)] ${
                         (inputUiLocked || (isOrigChat && origTurnLoading)) ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[var(--hover-bg)]'

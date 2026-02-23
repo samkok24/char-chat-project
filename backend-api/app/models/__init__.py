@@ -16,7 +16,8 @@ from .payment import (
     PaymentProduct, 
     Payment, 
     PointTransaction, 
-    UserPoint
+    UserPoint,
+    UserRefillState,
 )
 from .like import CharacterLike, StoryLike
 from .comment import CharacterComment, StoryComment
@@ -43,6 +44,7 @@ __all__ = [
     "Payment",
     "PointTransaction",
     "UserPoint",
+    "UserRefillState",
     "CharacterLike",
     "StoryLike",
     "CharacterComment",

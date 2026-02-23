@@ -3,9 +3,10 @@ AI 모델과의 상호작용을 담당하는 서비스
 - 현재는 Gemini, Claude, OpenAI 모델을 지원 (향후 확장 가능)
 - 각 모델의 응답을 일관된 형식으로 반환하는 것을 목표로 함
 """
-import google.generativeai as genai
+from google import genai
+from google.genai import types as genai_types
 import anthropic  # Claude API 라이브러리
-from typing import Literal, Optional, AsyncGenerator
+from typing import Literal, Optional, AsyncGenerator, Callable, Awaitable
 from app.core.config import settings
 from .vision_service import stage1_keywords_from_image_url, stage1_keywords_from_image_url as _stage1, _http_get_bytes
 import mimetypes
@@ -136,8 +137,35 @@ def _format_history_block(history: object, *, max_items: int = 20, max_chars: in
         return ""
 
  # --- Gemini AI 설정 ---
-genai.configure(api_key=settings.GEMINI_API_KEY)
+_gemini_client = genai.Client(api_key=settings.GEMINI_API_KEY)
 claude_client = anthropic.AsyncAnthropic(api_key=settings.CLAUDE_API_KEY)
+
+def _make_thinking_config(budget: int = 1024):
+    """SDK 버전에 관계없이 ThinkingConfig 생성 (필드명 호환).
+    thinkingBudget 미지원 SDK에서는 None 반환 → thinking 설정 안 함(모델 기본값 사용)."""
+    try:
+        tc = genai_types.ThinkingConfig(thinking_budget=budget)
+        return tc
+    except Exception:
+        pass
+    try:
+        tc = genai_types.ThinkingConfig(thinkingBudget=budget)
+        return tc
+    except Exception:
+        pass
+    # thinkingBudget 미지원 → None (includeThoughts=True는 응답에 thinking 누출 유발)
+    return None
+
+def _is_gemini_thinking_model(model_name: str) -> bool:
+    """Gemini thinking 모델 여부 판별 (2.5/3 계열)"""
+    m = (model_name or "").strip().lower()
+    return any(k in m for k in ("2.5-pro", "2.5-flash", "3-pro", "3-flash"))
+
+# AFC(Automatic Function Calling) 비활성화: 채팅 응답을 가로채는 문제 방지
+try:
+    _AFC_DISABLED = genai_types.AutomaticFunctionCallingConfig(disable=True)
+except Exception:
+    _AFC_DISABLED = None
 # --- OCR 제거: 기존 PaddleOCR 경량 사용 구간을 완전 비활성화 ---
 def _extract_numeric_phrases_ocr_bytes(img_bytes: bytes) -> list[str]:
     # PaddleOCR 제거로 더 이상 실행하지 않음
@@ -631,6 +659,8 @@ async def analyze_image_tags_and_context(image_url: str, model: str = 'claude') 
                 from PIL import Image
                 from io import BytesIO
                 import google.generativeai as genai
+                import os
+                genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
 
                 img = Image.open(BytesIO(img_bytes))
                 # 모델 힌트가 들어와도 안전하게 기본값 사용
@@ -1384,34 +1414,33 @@ async def get_gemini_completion(
             model_norm = (model or "").strip()
         except Exception:
             model_norm = "gemini-2.5-pro"
-        # 경험적으로 1600 이상부터 텍스트 파트가 안정적으로 반환됨(환경/프롬프트에 따라 여유를 둔다).
-        if "gemini-2.5-pro" in model_norm:
-            try:
-                mt = int(max_tokens or 0)
-            except Exception:
-                mt = 0
-            if mt and mt < 1600:
-                max_tokens = 1600
-
-        # ✅ 실제 호출(시도) 로그: Gemini는 SDK가 내부적으로 HTTP를 수행하므로, 여기서는 모델/파라미터만 남긴다.
-        # - 프롬프트/대사 내용은 절대 로그에 남기지 않는다.
+        # ✅ 실제 호출(시도) 로그
         try:
             if getattr(settings, "DEBUG", False) or getattr(settings, "ENVIRONMENT", "") != "production":
                 logger.info(f"[ai] http_call provider=gemini sdk=google-genai model={model_norm} max_tokens={max_tokens} temp={temperature}")
         except Exception:
             pass
 
-        gemini_model = genai.GenerativeModel(model)
-
-        generation_config = genai.types.GenerationConfig(
+        # ✅ 신 SDK(google-genai): thinking 모델은 thinkingBudget으로 thinking 토큰 제한
+        _is_thinking = _is_gemini_thinking_model(model_norm)
+        _gc_kwargs = dict(
             temperature=temperature,
-            max_output_tokens=max_tokens
-            # response_mime_type="application/json" # Gemini 1.5 Pro의 JSON 모드
+            maxOutputTokens=max_tokens,
         )
+        if _is_thinking:
+            _tc = _make_thinking_config(128)
+            if _tc:
+                _gc_kwargs["thinkingConfig"] = _tc
+        if _AFC_DISABLED:
+            _gc_kwargs["automaticFunctionCalling"] = _AFC_DISABLED
+        generation_config = genai_types.GenerateContentConfig(**_gc_kwargs)
+        if _is_thinking:
+            logger.info(f"[ai] gemini thinkingConfig={_tc} maxOutputTokens={max_tokens}")
 
-        response = await gemini_model.generate_content_async(
-            prompt,
-            generation_config=generation_config,
+        response = await _gemini_client.aio.models.generate_content(
+            model=model,
+            contents=prompt,
+            config=generation_config,
         )
 
         # 안전한 텍스트 추출:
@@ -1433,7 +1462,8 @@ async def get_gemini_completion(
                 if not content:
                     continue
                 parts = getattr(content, "parts", []) or []
-                text_parts = [getattr(p, "text", "") for p in parts if getattr(p, "text", "")]
+                # ✅ thinking 파트 제외: thought=True인 파트는 내부 사고이므로 출력에서 제거
+                text_parts = [getattr(p, "text", "") for p in parts if getattr(p, "text", "") and not getattr(p, "thought", False)]
                 joined = "".join(text_parts).strip()
                 if joined:
                     break
@@ -1463,8 +1493,6 @@ async def get_gemini_completion(
             # - Gemini가 candidates는 있으나 content.parts가 비어 "빈 응답"이 되었을 때,
             #   왜 GPT/Claude로 폴백되는지 현장에서 바로 원인을 추적할 수 있도록 핵심 지표만 남긴다.
             try:
-                import logging
-                logger = logging.getLogger(__name__)
                 c0 = (getattr(response, "candidates", []) or [None])[0]
                 fr = getattr(c0, "finish_reason", None)
                 um = getattr(response, "usage_metadata", None)
@@ -1535,13 +1563,14 @@ async def get_gemini_completion(
                         except Exception:
                             pass
                         try:
-                            generation_config_retry = genai.types.GenerationConfig(
+                            generation_config_retry = genai_types.GenerateContentConfig(
                                 temperature=temperature,
-                                max_output_tokens=retry_max_tokens,
+                                maxOutputTokens=retry_max_tokens,
                             )
-                            response_retry = await gemini_model.generate_content_async(
-                                prompt,
-                                generation_config=generation_config_retry,
+                            response_retry = await _gemini_client.aio.models.generate_content(
+                                model=model,
+                                contents=prompt,
+                                config=generation_config_retry,
                             )
                             try:
                                 if hasattr(response_retry, "text") and response_retry.text:
@@ -1572,9 +1601,10 @@ async def get_gemini_completion(
             soft_prompt = (
                 "아래 지시를 더 온건한 어휘로 부드럽게 수행해 주세요. 안전 정책을 침해하지 않는 범위에서 창작하세요.\n\n" + prompt
             )
-            response2 = await gemini_model.generate_content_async(
-                soft_prompt,
-                generation_config=generation_config,
+            response2 = await _gemini_client.aio.models.generate_content(
+                model=model,
+                contents=soft_prompt,
+                config=generation_config,
             )
             if hasattr(response2, 'text') and response2.text:
                 return response2.text
@@ -1594,13 +1624,8 @@ async def get_gemini_completion(
             pass
         return "안전 정책에 의해 이 요청의 응답이 제한되었습니다. 표현을 조금 바꿔 다시 시도해 주세요."
     except Exception as e:
-        # 실제 운영 환경에서는 더 상세한 로깅 및 예외 처리가 필요
-        import logging
-        logger = logging.getLogger(__name__)
         logger.error(f"Gemini API 호출 중 오류 발생: {e}")
         logger.error(f"프롬프트 길이: {len(prompt)} 문자")
-        print(f"Gemini API 호출 중 오류 발생: {e}")
-        print(f"프롬프트 길이: {len(prompt)} 문자")
         # 프론트엔드에 전달할 수 있는 일반적인 오류 메시지를 반환하거나,
         # 별도의 예외를 발생시켜 API 레벨에서 처리하도록 할 수 있습니다.
         raise ValueError(f"AI 모델 호출에 실패했습니다: {str(e)}")
@@ -1624,24 +1649,19 @@ async def get_gemini_completion_json(
       그 경우에는 일반 GenerationConfig로 호출한다(호출 자체는 유지). 파싱/정제는 호출부에서 계속 방어한다.
     """
     try:
-        gemini_model = genai.GenerativeModel(model)
+        _json_kwargs = dict(
+            temperature=temperature,
+            maxOutputTokens=max_tokens,
+            responseMimeType="application/json",
+        )
+        if _AFC_DISABLED:
+            _json_kwargs["automaticFunctionCalling"] = _AFC_DISABLED
+        config = genai_types.GenerateContentConfig(**_json_kwargs)
 
-        # ✅ JSON 모드: 지원되는 환경에서만 활성화
-        try:
-            generation_config = genai.types.GenerationConfig(
-                temperature=temperature,
-                max_output_tokens=max_tokens,
-                response_mime_type="application/json",
-            )
-        except TypeError:
-            generation_config = genai.types.GenerationConfig(
-                temperature=temperature,
-                max_output_tokens=max_tokens,
-            )
-
-        response = await gemini_model.generate_content_async(
-            prompt,
-            generation_config=generation_config,
+        response = await _gemini_client.aio.models.generate_content(
+            model=model,
+            contents=prompt,
+            config=config,
         )
 
         # 안전한 텍스트 추출 (get_gemini_completion과 동일한 방어 로직)
@@ -1658,7 +1678,8 @@ async def get_gemini_completion_json(
                 if not content:
                     continue
                 parts = getattr(content, "parts", []) or []
-                text_parts = [getattr(p, "text", "") for p in parts if getattr(p, "text", "")]
+                # ✅ thinking 파트 제외
+                text_parts = [getattr(p, "text", "") for p in parts if getattr(p, "text", "") and not getattr(p, "thought", False)]
                 joined = "".join(text_parts).strip()
                 if joined:
                     return joined
@@ -1677,22 +1698,52 @@ async def get_gemini_completion_json(
 async def get_gemini_completion_stream(prompt: str, temperature: float = 0.7, max_tokens: int = 1024, model: str = 'gemini-1.5-pro'):
     """Gemini 모델의 스트리밍 응답을 비동기 제너레이터로 반환합니다."""
     try:
-        gemini_model = genai.GenerativeModel(model)
-        generation_config = genai.types.GenerationConfig(
+        try:
+            model_norm = (model or "").strip()
+        except Exception:
+            model_norm = ""
+        # ✅ 신 SDK(google-genai): thinking 모델은 thinkingBudget으로 thinking 토큰 제한
+        _is_thinking = _is_gemini_thinking_model(model_norm)
+        _gc_kwargs = dict(
             temperature=temperature,
-            max_output_tokens=max_tokens
+            maxOutputTokens=max_tokens,
         )
-        response_stream = await gemini_model.generate_content_async(
-            prompt,
-            generation_config=generation_config,
-            stream=True
+        if _is_thinking:
+            _tc = _make_thinking_config(128)
+            if _tc:
+                _gc_kwargs["thinkingConfig"] = _tc
+        if _AFC_DISABLED:
+            _gc_kwargs["automaticFunctionCalling"] = _AFC_DISABLED
+        config = genai_types.GenerateContentConfig(**_gc_kwargs)
+        if _is_thinking:
+            logger.info(f"[ai] gemini_stream thinkingConfig={_tc} maxOutputTokens={max_tokens}")
+        response_stream = await _gemini_client.aio.models.generate_content_stream(
+            model=model,
+            contents=prompt,
+            config=config,
         )
         async for chunk in response_stream:
-            if chunk.text:
-                yield chunk.text
+            # ✅ 신 SDK: part.thought 가 정확하게 표시됨 → thinking 누출 방지
+            try:
+                if not chunk.candidates or not chunk.candidates[0].content:
+                    continue
+                parts = chunk.candidates[0].content.parts
+                if not parts:
+                    continue
+                for part in parts:
+                    if not part.text:
+                        continue
+                    if getattr(part, 'thought', False):
+                        continue
+                    yield part.text
+            except (IndexError, AttributeError, TypeError):
+                continue
     except Exception as e:
-        print(f"Gemini Stream API 호출 중 오류 발생: {e}")
-        yield f"오류: Gemini 모델 호출에 실패했습니다 - {str(e)}"
+        try:
+            logger.error(f"Gemini Stream API 호출 중 오류 발생: {e}")
+        except Exception:
+            pass
+        raise ValueError(f"Gemini Stream API 호출에 실패했습니다: {e}")
 
 async def get_claude_completion(
     prompt: str,
@@ -1857,8 +1908,11 @@ async def get_claude_completion_stream(
             async for text in stream.text_stream:
                 yield text
     except Exception as e:
-        print(f"Claude Stream API 호출 중 오류 발생: {e}")
-        yield f"오류: Claude 모델 호출에 실패했습니다 - {str(e)}"
+        try:
+            logger.error(f"Claude Stream API 호출 중 오류 발생: {e}")
+        except Exception:
+            pass
+        raise ValueError(f"Claude Stream API 호출에 실패했습니다: {e}")
 
 async def get_openai_completion(
     prompt: str,
@@ -1895,13 +1949,13 @@ async def get_openai_completion(
                 return False
 
         def _reasoning_effort_for_model(model_name: str) -> str | None:
-            """GPT-5.1/5.2는 reasoning effort를 'medium'으로 강제한다."""
+            """GPT-5 계열은 reasoning effort를 'low'로 강제한다 (TTFB 최적화, 빈 응답 방지)."""
             try:
                 m = (model_name or "").strip().lower()
             except Exception:
                 m = ""
-            if m.startswith("gpt-5.1") or m.startswith("gpt-5.2"):
-                return "medium"
+            if m.startswith("gpt-5"):
+                return "low"
             return None
 
         def _style_instruction_for_temperature(temp_value: float) -> str | None:
@@ -2136,6 +2190,8 @@ async def get_openai_completion(
         # GPT-5 계열: Responses API 사용 (권장)
         if _use_responses_api(model):
             effort = _reasoning_effort_for_model(model)
+            # reasoning 모델은 출력 예산에서 reasoning 토큰을 소비하므로 최소 4096 보장
+            _resp_max_tokens = max(max_tokens, 4096) if effort else max_tokens
             if _supports_responses_api(client):
                 try:
                     if getattr(settings, "DEBUG", False) or getattr(settings, "ENVIRONMENT", "") != "production":
@@ -2153,7 +2209,7 @@ async def get_openai_completion(
                         style_instruction=_style_instruction_for_temperature(temperature),
                         system_prompt=sp or None,
                     ),
-                    "max_output_tokens": max_tokens,
+                    "max_output_tokens": _resp_max_tokens,
                 }
                 if effort:
                     kwargs["reasoning"] = {"effort": effort}
@@ -2177,7 +2233,7 @@ async def get_openai_completion(
                 model_name=model,
                 user_prompt=prompt,
                 temp=temperature,
-                max_out_tokens=max_tokens,
+                max_out_tokens=_resp_max_tokens,
                 reasoning_effort=effort,
                 system_prompt=sp or None,
             )
@@ -2236,13 +2292,13 @@ async def get_openai_completion_stream(
                 return False
 
         def _reasoning_effort_for_model(model_name: str) -> str | None:
-            """GPT-5.1/5.2는 reasoning effort를 'medium'으로 강제한다."""
+            """GPT-5 계열은 reasoning effort를 'low'로 강제한다 (TTFB 최적화, 빈 응답 방지)."""
             try:
                 m = (model_name or "").strip().lower()
             except Exception:
                 m = ""
-            if m.startswith("gpt-5.1") or m.startswith("gpt-5.2"):
-                return "medium"
+            if m.startswith("gpt-5"):
+                return "low"
             return None
 
         def _style_instruction_for_temperature(temp_value: float) -> str | None:
@@ -2328,8 +2384,7 @@ async def get_openai_completion_stream(
 
             api_key = settings.OPENAI_API_KEY or os.getenv("OPENAI_API_KEY")
             if not api_key:
-                yield "오류: OpenAI 모델 호출에 실패했습니다 - OPENAI_API_KEY가 설정되어 있지 않습니다."
-                return
+                raise ValueError("OpenAI 모델 호출에 실패했습니다: OPENAI_API_KEY가 설정되어 있지 않습니다.")
 
             base = (os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
             url = f"{base}/responses"
@@ -2364,8 +2419,7 @@ async def get_openai_completion_stream(
                             logger.error(f"OpenAI Responses REST stream error {resp.status}: {txt[:800]}")
                         except Exception:
                             pass
-                        yield f"오류: OpenAI 모델 호출에 실패했습니다 - HTTP {resp.status}"
-                        return
+                        raise ValueError(f"OpenAI 모델 호출에 실패했습니다: HTTP {resp.status}")
 
                     buf = b""
                     async for chunk in resp.content.iter_chunked(1024):
@@ -2393,8 +2447,7 @@ async def get_openai_completion_stream(
                                     yield delta
                             elif et == "response.error":
                                 err = evt.get("error")
-                                yield f"오류: OpenAI 모델 호출에 실패했습니다 - {err}"
-                                return
+                                raise ValueError(f"OpenAI 모델 호출에 실패했습니다: {err}")
 
         def _use_responses_api(model_name: str) -> bool:
             """GPT-5/o-series 등 최신 모델은 Responses API 스트리밍 이벤트를 사용한다."""
@@ -2407,6 +2460,8 @@ async def get_openai_completion_stream(
         # GPT-5 계열: Responses API 스트리밍
         if _use_responses_api(model):
             effort = _reasoning_effort_for_model(model)
+            # reasoning 모델은 출력 예산에서 reasoning 토큰을 소비하므로 최소 4096 보장
+            _resp_max_tokens = max(max_tokens, 4096) if effort else max_tokens
             if _supports_responses_api(client):
                 try:
                     sp = (system_prompt or "").strip()
@@ -2419,7 +2474,7 @@ async def get_openai_completion_stream(
                         style_instruction=_style_instruction_for_temperature(temperature),
                         system_prompt=sp or None,
                     ),
-                    "max_output_tokens": max_tokens,
+                    "max_output_tokens": _resp_max_tokens,
                     "stream": True,
                 }
                 if effort:
@@ -2435,8 +2490,7 @@ async def get_openai_completion_stream(
                         elif et == "response.error":
                             err = getattr(event, "error", None) if not isinstance(event, dict) else event.get("error")
                             if err:
-                                yield f"오류: OpenAI 모델 호출에 실패했습니다 - {err}"
-                                return
+                                raise ValueError(f"OpenAI 모델 호출에 실패했습니다: {err}")
                     except Exception:
                         # 이벤트 파싱 실패는 조용히 무시(스트림 유지)
                         continue
@@ -2451,7 +2505,7 @@ async def get_openai_completion_stream(
                 model_name=model,
                 user_prompt=prompt,
                 temp=temperature,
-                max_out_tokens=max_tokens,
+                max_out_tokens=_resp_max_tokens,
                 reasoning_effort=effort,
                 system_prompt=sp or None,
             ):
@@ -2481,8 +2535,7 @@ async def get_openai_completion_stream(
             logger.error(f"OpenAI Stream API 호출 중 오류 발생: {e} (model={model}, prompt_len={len(prompt) if isinstance(prompt, str) else 'n/a'})")
         except Exception:
             pass
-        print(f"OpenAI Stream API 호출 중 오류 발생: {e}")
-        yield f"오류: OpenAI 모델 호출에 실패했습니다 - {str(e)}"
+        raise ValueError(f"OpenAI Stream API 호출에 실패했습니다: {e}")
 
 # --- 통합 AI 응답 함수 ---
 AIModel = Literal["gemini", "claude", "gpt"]
@@ -2549,7 +2602,9 @@ async def get_ai_chat_response(
     preferred_sub_model: str = 'claude-haiku-4-5-20251001',
     # ✅ 기본값(요구사항): short(짧게)
     response_length_pref: str = 'short',
-    temperature: float = 0.7
+    temperature: float = 0.7,
+    stream: bool = False,
+    on_chunk: Optional[Callable[[str], Awaitable[None]]] = None,
 ) -> str:
     """사용자가 선택한 모델로 AI 응답 생성"""
     # temperature 방어적 정규화: 0~1
@@ -2591,7 +2646,7 @@ async def get_ai_chat_response(
     # - 원작챗/일반챗 등에서 history를 넘겨도 무시되면 '망각/설정 붕괴'가 발생한다.
     # ✅ history 최대 개수는 100까지 허용하되, max_chars(12000)로 토큰 폭주를 1차 방어한다.
     # - 원작챗은 최신 맥락이 중요해 히스토리 fetch limit를 80으로 올려둔 상태라, max_items도 80으로 정합을 맞춘다.
-    history_block = _format_history_block(history, max_items=100, max_chars=12000)
+    history_block = _format_history_block(history, max_items=100, max_chars=6000)
 
     # ✅ 응답 길이 선호도 프롬프트 지침(체감 강화)
     # - 기존에는 max_tokens(상한)만 조정되어 "길게" 체감이 약할 수 있다.
@@ -2641,17 +2696,46 @@ async def get_ai_chat_response(
     # 참고: 실제 출력 길이(1~2문장/3~6문장/6~12문장)는 위 length_block 지침으로 제어하며,
     #       여기 max_tokens는 '상한(ceiling)'이므로 값을 키워도 무조건 길어지지는 않는다.
     base_max_tokens = 1800
-    try:
-        is_gemini = (preferred_model == 'gemini')
-    except Exception:
-        is_gemini = False
-
     if rlp == 'short':
-        max_tokens = base_max_tokens if is_gemini else int(base_max_tokens * 0.5)
+        max_tokens = 700
     elif rlp == 'long':
         max_tokens = int(base_max_tokens * 1.5)
     else:
-        max_tokens = base_max_tokens
+        max_tokens = 1000
+
+    # ✅ Gemini thinking 모델: thinking 토큰이 maxOutputTokens에 포함될 수 있어 최소값 보장
+    # - ThinkingConfig(thinkingBudget)를 지원하지 않는 SDK에서는 thinking과 output이 분리 안 됨
+    # - 실제 출력 길이는 위 length_block 프롬프트 지침으로 제어
+    _gemini_thinking = False
+    try:
+        _sub = (preferred_sub_model or "").strip()
+        _gemini_thinking = preferred_model == "gemini" and (
+            "2.5-pro" in _sub or "2.5-flash" in _sub
+            or "3-pro" in _sub or "3-flash" in _sub
+            or _sub in ("", "gemini-2.5-pro")
+        )
+    except Exception:
+        pass
+    if _gemini_thinking and max_tokens < 4096:
+        max_tokens = 4096
+
+    stream_chunk_count = 0
+
+    async def _collect_stream_response(gen: AsyncGenerator[str, None]) -> str:
+        nonlocal stream_chunk_count
+        chunks: list[str] = []
+        async for chunk in gen:
+            if not isinstance(chunk, str) or not chunk:
+                continue
+            chunks.append(chunk)
+            stream_chunk_count += 1
+            if on_chunk is not None:
+                try:
+                    await on_chunk(chunk)
+                except Exception:
+                    # Streaming callback failure must not break generation.
+                    pass
+        return "".join(chunks)
     
     # 모델별 처리
     if preferred_model == 'gemini':
@@ -2688,6 +2772,40 @@ async def get_ai_chat_response(
                 logger.info(f"[ai] http_call provider=gemini sdk=google-generativeai call=generate_content_async model={model_name} max_tokens={max_tokens} temp={t}")
         except Exception:
             pass
+        if stream:
+            try:
+                streamed_text = await _collect_stream_response(
+                    get_gemini_completion_stream(
+                        full_prompt,
+                        temperature=t,
+                        max_tokens=max_tokens,
+                        model=model_name,
+                    )
+                )
+                if streamed_text:
+                    return streamed_text
+                # Empty stream output: fallback to non-stream call.
+                raise ValueError("empty_stream_response")
+            except Exception as stream_err:
+                try:
+                    logger.warning(
+                        f"[ai] gemini stream fallback -> nonstream model={model_name} err={stream_err}"
+                    )
+                except Exception:
+                    pass
+                fallback_text = await get_gemini_completion(
+                    full_prompt,
+                    temperature=t,
+                    model=model_name,
+                    max_tokens=max_tokens,
+                )
+                # If stream produced nothing, mirror fallback text to SSE as one chunk.
+                if (not stream_chunk_count) and on_chunk is not None and isinstance(fallback_text, str) and fallback_text:
+                    try:
+                        await on_chunk(fallback_text)
+                    except Exception:
+                        pass
+                return fallback_text
         return await get_gemini_completion(full_prompt, temperature=t, model=model_name, max_tokens=max_tokens)
         
     elif preferred_model == 'claude':
@@ -2729,6 +2847,16 @@ async def get_ai_chat_response(
                 logger.info(f"[ai] model_selected provider=claude sub_model={model_name} (raw={preferred_sub_model}) max_tokens={max_tokens} temp={t}")
         except Exception:
             pass
+        if stream:
+            return await _collect_stream_response(
+                get_claude_completion_stream(
+                    user_prompt,
+                    temperature=t,
+                    model=model_name,
+                    max_tokens=max_tokens,
+                    system_prompt=character_prompt,
+                )
+            )
         return await get_claude_completion(
             user_prompt,
             temperature=t,
@@ -2759,6 +2887,16 @@ async def get_ai_chat_response(
                 logger.info(f"[ai] model_selected provider=gpt sub_model={model_name} (raw={preferred_sub_model}) max_tokens={max_tokens} temp={t}")
         except Exception:
             pass
+        if stream:
+            return await _collect_stream_response(
+                get_openai_completion_stream(
+                    user_prompt,
+                    temperature=t,
+                    model=model_name,
+                    max_tokens=max_tokens,
+                    system_prompt=character_prompt,
+                )
+            )
         return await get_openai_completion(
             user_prompt,
             temperature=t,
@@ -2769,6 +2907,15 @@ async def get_ai_chat_response(
         
     else:  # argo (기본값)
         # ARGO 모델은 향후 커스텀 API 구현 예정, 현재는 Gemini로 대체
+        if stream:
+            return await _collect_stream_response(
+                get_gemini_completion_stream(
+                    full_prompt,
+                    temperature=t,
+                    max_tokens=max_tokens,
+                    model='gemini-2.5-pro',
+                )
+            )
         return await get_gemini_completion(full_prompt, temperature=t, model='gemini-2.5-pro', max_tokens=max_tokens)
 
 

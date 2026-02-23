@@ -3,7 +3,9 @@
 CAVEDUCK 스타일: 채팅 중심 최적화
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status, Request, Response
+from fastapi.responses import StreamingResponse
+from fastapi.encoders import jsonable_encoder
 try:
     from app.core.logger import logger
 except Exception:
@@ -16,7 +18,10 @@ import uuid
 import json
 import time
 import re
+import asyncio
+from contextlib import suppress
 from datetime import datetime
+from contextvars import ContextVar
 from types import SimpleNamespace
 from fastapi import BackgroundTasks
 from app.core.database import get_db, AsyncSessionLocal
@@ -56,7 +61,27 @@ try:
     from app.core.logger import logger
 except Exception:
     import logging
-    logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
+
+# Global user rules applied to chat generation prompts.
+# Keep this block short and explicit to reduce instruction leakage in outputs.
+GLOBAL_USER_RULES_BLOCK = (
+    "\n\n[Global User Rules - Must Follow]"
+    "\n- Never print internal instruction labels or meta text."
+    "\n- Forbidden label-style outputs: '[상황/심리 묘사]', '지문:', '대사:', '규칙:', 'Output rules', 'User:', 'Assistant:', 'Character:'."
+    "\n- Do not expose checklists, templates, policy text, or prompt fragments."
+    "\n- Output only in-world narration/dialogue content."
+)
+
+
+# Optional per-request stream emitter for /chat/messages/stream.
+# - Default None keeps the legacy non-stream flow unchanged.
+_chat_stream_emitter_var: ContextVar[Optional[Any]] = ContextVar("chat_stream_emitter", default=None)
+_chat_stream_event_emitter_var: ContextVar[Optional[Any]] = ContextVar("chat_stream_event_emitter", default=None)
+
+# Room-level send guard / AI timeout (operational safety)
+_CHAT_SEND_LOCK_TTL_SEC = 120
+_CHAT_AI_TIMEOUT_SEC = 90
 
 
 def _safe_exc(e: Exception) -> str:
@@ -97,6 +122,59 @@ def _safe_str(v: Any, max_len: int = 240) -> str:
     if n > 0 and len(s) > n:
         s = s[:n].rstrip()
     return s
+
+
+def _build_room_send_lock_key(
+    *,
+    user_id: uuid.UUID | str | None,
+    character_id: uuid.UUID | str | None,
+    room_id: uuid.UUID | str | None,
+) -> str:
+    """
+    일반 캐릭터챗 전송 중복 방지용 lock key를 만든다.
+    - room_id가 있으면 room 단위로 고정
+    - room_id가 없으면 user+character 조합으로 폴백
+    """
+    rid = _safe_str(room_id, max_len=80)
+    if rid:
+        return f"chat:room:{rid}:send_lock"
+    uid = _safe_str(user_id, max_len=80) or "unknown"
+    cid = _safe_str(character_id, max_len=80) or "unknown"
+    return f"chat:user:{uid}:char:{cid}:send_lock"
+
+
+async def _acquire_room_send_lock(lock_key: str, ttl_sec: int = _CHAT_SEND_LOCK_TTL_SEC) -> tuple[bool, str]:
+    """Redis NX lock 획득. 반환: (acquired, token)"""
+    token = str(uuid.uuid4())
+    try:
+        if not lock_key:
+            return True, ""
+        from app.core.database import redis_client
+        ok = await redis_client.set(lock_key, token, ex=int(ttl_sec), nx=True)
+        return bool(ok), token
+    except Exception as e:
+        # 운영 안전: Redis 장애 시 전체 채팅 차단을 피하기 위해 fail-open.
+        try:
+            logger.warning(f"[send_lock] redis unavailable, fail-open: {_safe_exc(e)}")
+        except Exception:
+            pass
+        return True, ""
+
+
+async def _release_room_send_lock(lock_key: str, token: str) -> None:
+    """
+    best-effort unlock:
+    - 현재 값이 token과 일치할 때만 삭제해 중간 만료/재획득 경합을 방어한다.
+    """
+    try:
+        if not lock_key:
+            return
+        from app.core.database import redis_client
+        cur = await redis_client.get(lock_key)
+        if cur and str(cur) == str(token):
+            await redis_client.delete(lock_key)
+    except Exception:
+        pass
 
 CUSTOM_CONTROL_LAW = (
     "【커스텀 프롬프트 절대 준수 규칙(중요)】\n"
@@ -1739,6 +1817,9 @@ _ALWAYS_REMOVE_RX_LIST = [
 # - 원인: 일부 모델이 "규칙 준수 선언(I will...)"이나 형식 지시문을 그대로 출력하는 경우가 있다.
 # - UX: 유저에게는 내부 규칙이 보이면 안 되므로, 해당 라인은 줄 단위로 제거한다.
 _ALWAYS_DROP_LINE_RX_LIST = [
+    # 내부 프롬프트 형식 태그 누출 (Gemini 2.5 Pro 등에서 빈번)
+    re.compile(r"^\s*\[?\s*(?:상황\s*/?\s*심리\s*묘사|지문|대사|나레이션|독백|내면|심리|행동)\s*\]?\s*$", re.IGNORECASE),
+    re.compile(r"^\s*\[?\s*(?:Narration|Dialogue|Action|Inner\s*thought|Monologue|Description)\s*\]?\s*$", re.IGNORECASE),
     # 모델의 실행 선언/자기설명(영문)
     re.compile(r"^\s*(?:i will|i'll)\b[^\n\r]*", re.IGNORECASE),
     re.compile(r"within\s+the\s+.+\s+constraints\b[^\n\r]*", re.IGNORECASE),
@@ -2170,6 +2251,164 @@ async def _set_room_meta(room_id: uuid.UUID | str, data: Dict[str, Any], ttl: in
         await redis_client.setex(f"chat:room:{room_id}:meta", ttl, json.dumps(meta))
     except Exception:
         pass
+
+
+async def _update_room_summary_incremental_with_db(
+    db: AsyncSession,
+    *,
+    room_id: uuid.UUID,
+    existing_summary: str,
+    character_name: str,
+    preferred_model: str,
+    preferred_sub_model: str,
+    recent_limit: int = 50,
+    min_delta_if_existing: int = 5,
+) -> str | None:
+    """
+    최근 recent_limit 바깥(overflow) 구간만 증분 요약하여 room.summary를 갱신한다.
+    - 반환값: 새 summary(갱신 시) / None(변경 없음)
+    """
+    total_count = await chat_service.get_message_count_by_room_id(db, room_id)
+    overflow_count = max(0, int(total_count or 0) - int(recent_limit or 50))
+    if overflow_count <= 0:
+        return None
+
+    meta_for_summary = await _get_room_meta(room_id)
+    meta_for_summary = meta_for_summary if isinstance(meta_for_summary, dict) else {}
+    try:
+        summary_cursor = int(meta_for_summary.get("summary_cursor_count") or 0)
+    except Exception:
+        summary_cursor = 0
+    summary_cursor = max(0, summary_cursor)
+    if overflow_count <= summary_cursor:
+        return None
+
+    delta_count = int(overflow_count - summary_cursor)
+    if existing_summary and delta_count < int(min_delta_if_existing or 5):
+        return None
+
+    delta_msgs = await chat_service.get_messages_by_room_id(
+        db,
+        room_id,
+        skip=summary_cursor,
+        limit=delta_count,
+    )
+    delta_msgs = _filter_safety_blocked_turns(delta_msgs)
+
+    past_texts: List[str] = []
+    for msg in (delta_msgs or []):
+        role = "사용자" if getattr(msg, "sender_type", "") == "user" else (character_name or "캐릭터")
+        past_texts.append(f"{role}: {getattr(msg, 'content', '')}")
+    past_chunk = "\n".join(past_texts[-500:])  # 안전 길이 제한
+    if not past_chunk:
+        return None
+
+    if existing_summary:
+        summary_prompt = (
+            "다음은 기존 대화 요약과 새로 추가된 오래된 대화 조각이다.\n"
+            "기존 요약의 핵심을 유지하면서, 새로운 사실(관계 변화/사건/합의/금기)을 반영해 "
+            "중복 없이 7줄 이내 한국어 요약으로 갱신해라.\n\n"
+            f"[기존 요약]\n{existing_summary}\n\n"
+            f"[새 대화 조각]\n{past_chunk}"
+        )
+    else:
+        summary_prompt = (
+            "다음 대화의 핵심 사건과 관계, 맥락을 "
+            "중복 없이 7줄 이내 한국어 요약:\n" + past_chunk
+        )
+
+    summary_text = await ai_service.get_ai_chat_response(
+        character_prompt="",
+        user_message=summary_prompt,
+        history=[],
+        preferred_model=preferred_model,
+        preferred_sub_model=preferred_sub_model,
+    )
+    summary_text = str(summary_text or "").strip()
+    if not summary_text:
+        return None
+
+    await db.execute(
+        update(ChatRoom).where(ChatRoom.id == room_id).values({"summary": summary_text[:4000]})
+    )
+    await db.commit()
+    await _set_room_meta(room_id, {"summary_cursor_count": int(overflow_count)})
+    return summary_text[:4000]
+
+
+async def _acquire_room_summary_lock(room_id: uuid.UUID | str, ttl_sec: int = 90) -> tuple[bool, str, str]:
+    """
+    룸 단위 요약 백그라운드 중복 실행 방지용 Redis NX lock.
+    반환: (acquired, lock_key, token)
+    """
+    lock_key = f"chat:room:{room_id}:summary_lock"
+    token = str(uuid.uuid4())
+    try:
+        from app.core.database import redis_client
+        ok = await redis_client.set(lock_key, token, ex=int(ttl_sec), nx=True)
+        return bool(ok), lock_key, token
+    except Exception:
+        return False, lock_key, token
+
+
+async def _release_room_summary_lock(lock_key: str, token: str) -> None:
+    """
+    best-effort unlock:
+    - 토큰이 현재 값과 일치할 때만 삭제 시도
+    - 중간 만료/재획득 경쟁 상황에서는 삭제를 생략한다.
+    """
+    try:
+        if not lock_key:
+            return
+        from app.core.database import redis_client
+        cur = await redis_client.get(lock_key)
+        if cur and str(cur) == str(token):
+            await redis_client.delete(lock_key)
+    except Exception:
+        pass
+
+
+async def _update_room_summary_incremental_background(
+    *,
+    room_id: uuid.UUID,
+    character_name: str,
+    preferred_model: str,
+    preferred_sub_model: str,
+    recent_limit: int = 50,
+    min_delta_if_existing: int = 5,
+) -> None:
+    """SSE 응답 지연 방지를 위한 요약 비동기 작업."""
+    acquired = False
+    lock_key = ""
+    lock_token = ""
+    try:
+        acquired, lock_key, lock_token = await _acquire_room_summary_lock(room_id, ttl_sec=90)
+        if not acquired:
+            return
+        async with AsyncSessionLocal() as _db:
+            room = await chat_service.get_chat_room_by_id(_db, room_id)
+            if not room:
+                return
+            existing_summary = str(getattr(room, "summary", "") or "").strip()
+            _char_name = character_name or str(getattr(getattr(room, "character", None), "name", "") or "") or "캐릭터"
+            await _update_room_summary_incremental_with_db(
+                _db,
+                room_id=room_id,
+                existing_summary=existing_summary,
+                character_name=_char_name,
+                preferred_model=preferred_model,
+                preferred_sub_model=preferred_sub_model,
+                recent_limit=recent_limit,
+                min_delta_if_existing=min_delta_if_existing,
+            )
+    except Exception as e:
+        try:
+            logger.warning(f"[summary_bg] failed room={room_id}: {e}")
+        except Exception:
+            pass
+    finally:
+        if acquired:
+            await _release_room_summary_lock(lock_key, lock_token)
 
 
 class _SnapshotOverlayView:
@@ -4094,6 +4333,14 @@ async def send_message(
         except Exception:
             return -1
 
+    # Stream request 여부(후처리 분기용)
+    # - SSE에서는 delta가 먼저 UI에 노출되므로, 강한 텍스트 변형을 뒤에서 적용하면
+    #   stream 본문과 final 저장본이 어긋난다.
+    try:
+        is_stream_request = callable(_chat_stream_emitter_var.get())
+    except Exception:
+        is_stream_request = False
+
     # 1. 채팅방 및 캐릭터 정보 조회 (room_id 우선)
     if getattr(request, "room_id", None):
         room = await chat_service.get_chat_room_by_id(db, request.room_id)
@@ -4259,12 +4506,28 @@ async def send_message(
                 pass
             user_message_metadata = {}
 
-        user_message = await chat_service.save_message(db, room.id, "user", request.content, user_message_metadata or None)
+        user_message = await chat_service.save_message(
+            db,
+            room.id,
+            "user",
+            request.content,
+            user_message_metadata or None,
+            auto_commit=False,
+        )
     else:
         user_message = None
 
     await db.flush()  # ← 즉시 커밋
     _mark("user_saved_flush")
+    try:
+        _stream_event_emitter = _chat_stream_event_emitter_var.get()
+        if callable(_stream_event_emitter) and user_message is not None:
+            await _stream_event_emitter(
+                "user",
+                {"user_message": jsonable_encoder(ChatMessageResponse.model_validate(user_message))},
+            )
+    except Exception:
+        pass
 
     # =========================================================
     # ✅ 턴수별 사건(오프닝 내) 강제 주입 (최소 수정·운영 안전)
@@ -5369,16 +5632,102 @@ async def send_message(
         temperature = 0.7
 
     try:
-        ai_response_text = await ai_service.get_ai_chat_response(
-            character_prompt=character_prompt,
-            user_message=effective_user_message,
-            history=history_for_ai,
-            preferred_model=current_user.preferred_model,
-            preferred_sub_model=current_user.preferred_sub_model,
-            response_length_pref=response_length,
-            temperature=temperature
-        )
+        _stream_emitter = _chat_stream_emitter_var.get()
+        _use_stream = callable(_stream_emitter)
+
+        # ✅ 스트리밍 초반 내부 포맷 누출 방어(버퍼링 + sanitize)
+        # - Gemini 2.5 Pro 등이 첫 청크에 [상황/심리 묘사] 같은 내부 프롬프트 형식을 에코하는 현상 방지
+        # - 첫 80자+개행 또는 300자까지 버퍼링 → sanitize 적용 후 릴리즈 → 이후 직접 스트리밍
+        _stream_buf = ""
+        _stream_phase = "buffer"  # "buffer" → "stream"
+
+        async def _emit_chunk(chunk: str):
+            nonlocal _stream_buf, _stream_phase
+            try:
+                if not callable(_stream_emitter):
+                    return
+                if _stream_phase == "buffer":
+                    _stream_buf += str(chunk or "")
+                    has_newline = "\n" in _stream_buf
+                    if (has_newline and len(_stream_buf) >= 5) or len(_stream_buf) >= 5:
+                        cleaned = _sanitize_breakdown_phrases(_stream_buf, user_text=request.content)
+                        _stream_phase = "stream"
+                        if cleaned.strip():
+                            await _stream_emitter(cleaned)
+                else:
+                    c = str(chunk or "")
+                    if c:
+                        await _stream_emitter(c)
+            except Exception:
+                # Stream emission must never break chat generation itself.
+                pass
+
+        # ── 루비 차감 (선차감 후환불 방식) ──
+        from app.services.point_service import PointService, MODEL_RUBY_COST
+        from app.core.database import redis_client as _rc
+
+        _sub_model = str(getattr(current_user, "preferred_sub_model", "") or "").strip()
+        _ruby_cost = MODEL_RUBY_COST.get(_sub_model, 0)
+        _deducted_tx_id = None
+
+        if _ruby_cost > 0:
+            _point_svc = PointService(_rc, db)
+            _ok, _bal, _tx = await _point_svc.deduct_chat_turn(
+                str(current_user.id), _sub_model
+            )
+            if not _ok:
+                raise HTTPException(status_code=402, detail="InsufficientRuby")
+            _deducted_tx_id = _tx
+
+        try:
+            ai_response_text = await asyncio.wait_for(
+                ai_service.get_ai_chat_response(
+                    character_prompt=character_prompt,
+                    user_message=effective_user_message,
+                    history=history_for_ai,
+                    preferred_model=current_user.preferred_model,
+                    preferred_sub_model=current_user.preferred_sub_model,
+                    response_length_pref=response_length,
+                    temperature=temperature,
+                    stream=_use_stream,
+                    on_chunk=_emit_chunk if _use_stream else None,
+                ),
+                timeout=float(_CHAT_AI_TIMEOUT_SEC),
+            )
+        except asyncio.TimeoutError:
+            if _deducted_tx_id:
+                try:
+                    await PointService(_rc, db).refund_chat_turn(
+                        str(current_user.id), _sub_model, _deducted_tx_id
+                    )
+                except Exception:
+                    logger.error(f"[send_message] refund failed tx={_deducted_tx_id}")
+            try:
+                logger.warning(
+                    f"[send_message] ai timeout room={room.id} user={current_user.id} timeout={_CHAT_AI_TIMEOUT_SEC}s"
+                )
+            except Exception:
+                pass
+            raise HTTPException(status_code=504, detail="AiTimeout")
+        except Exception:
+            if _deducted_tx_id:
+                try:
+                    await PointService(_rc, db).refund_chat_turn(
+                        str(current_user.id), _sub_model, _deducted_tx_id
+                    )
+                except Exception:
+                    logger.error(f"[send_message] refund failed tx={_deducted_tx_id}")
+            raise
         _mark("ai_done")
+
+        # ✅ 스트리밍 버퍼 잔여분 flush (짧은 응답이 버퍼 임계치 미달 시)
+        if _stream_phase == "buffer" and _stream_buf.strip() and callable(_stream_emitter):
+            try:
+                _remaining = _sanitize_breakdown_phrases(_stream_buf, user_text=request.content)
+                if _remaining.strip():
+                    await _stream_emitter(_remaining)
+            except Exception:
+                pass
 
         # ✅ 붕괴/메타/내부 규칙 누출 방어(저장 직전 1회 필터링)
         # - 프롬프트 금지에도 간헐적으로 출력될 수 있어 UX를 보호한다.
@@ -5459,7 +5808,15 @@ async def send_message(
                         add_lines.append(f"\"{required_dialogue}\"")
                 if add_lines:
                     sep = "\n" if txt.endswith("\n") or not txt else "\n\n"
-                    ai_response_text = (txt + sep + "\n".join(add_lines)).strip()
+                    appended_text = sep + "\n".join(add_lines)
+                    ai_response_text = (txt + appended_text).strip()
+                    # ✅ 스트리밍 중이면 추가된 턴이벤트를 delta로 전송
+                    # (final 교체 시 갑작스러운 내용 추가를 방지 — 스트리밍 말풍선에 먼저 반영)
+                    if _use_stream and callable(_stream_emitter):
+                        try:
+                            await _stream_emitter(appended_text)
+                        except Exception:
+                            pass
                     try:
                         logger.warning(f"[send_message] turn_event appended(room={room.id}, turn={current_turn_no}, event={active_turn_event_id})")
                     except Exception:
@@ -5641,8 +5998,9 @@ async def send_message(
 
             return "\n".join(out_lines).strip()
 
-        # If gemini flash output looks cut, do a fast repair (no retry; latency-first).
-        if (not is_continue) and pref_model == "gemini" and ("flash" in pref_sub) and _looks_cut_like_partial_narration(ai_response_text):
+        # If gemini output looks cut, do a fast repair (no retry; latency-first).
+        # - 2.5-pro/flash 모두에서 간헐적 절단 케이스가 발생하므로 sub_model에 의존하지 않는다.
+        if (not is_continue) and pref_model == "gemini" and _looks_cut_like_partial_narration(ai_response_text):
             try:
                 before = str(ai_response_text or "")
                 before_len = len(before)
@@ -6201,7 +6559,12 @@ async def send_message(
             except Exception:
                 pass
         ai_message = await chat_service.save_message(
-            db, room.id, "assistant", ai_response_text, message_metadata=ai_md
+            db,
+            room.id,
+            "assistant",
+            ai_response_text,
+            message_metadata=ai_md,
+            auto_commit=False,
         )
 
         # ✅ 엔딩 메시지(별도) 저장
@@ -6256,6 +6619,7 @@ async def send_message(
                         **({"opening_id": str(ending_triggered_payload.get("opening_id") or "").strip()} if str(ending_triggered_payload.get("opening_id") or "").strip() else {}),
                         **({"reason": str(ending_triggered_payload.get("reason") or "").strip()} if str(ending_triggered_payload.get("reason") or "").strip() else {}),
                     },
+                    auto_commit=False,
                 )
         except Exception as e:
             ending_message = None
@@ -6285,6 +6649,16 @@ async def send_message(
                 await redis_client.delete(turn_calc_lock_key)
         except Exception:
             pass
+    except HTTPException:
+        # ✅ 턴 계산 락 해제(실패/롤백 케이스)
+        try:
+            if turn_calc_lock_key and turn_calc_lock_acquired:
+                from app.core.database import redis_client
+                await redis_client.delete(turn_calc_lock_key)
+        except Exception:
+            pass
+        await db.rollback()
+        raise
     except Exception:
         # ✅ 턴 계산 락 해제(실패/롤백 케이스)
         try:
@@ -6329,33 +6703,51 @@ async def send_message(
     # await character_service.increment_character_chat_count(db, room.character_id)
     await character_service.sync_character_chat_count(db, room.character_id)
 
-    # 6. 필요 시 요약 생성/갱신: 메시지 총 수가 51 이상이 되는 최초 시점에 요약 저장
+    # 6. 요약 생성/갱신
+    # - 레거시 /messages: 기존처럼 동기 갱신
+    # - SSE /messages/stream: 응답 지연 방지를 위해 백그라운드 갱신
     try:
-        new_count = (room.message_count or 0) + 1  # 이번 사용자 메시지 카운트 반영 가정
-        if new_count >= 51 and not getattr(room, 'summary', None):
-            # 최근 50개 이전의 히스토리를 요약(간단 요약)
-            past_texts = []
-            summary_source = _filter_safety_blocked_turns(history[:-recent_limit])
-            for msg in summary_source:
-                role = '사용자' if msg.sender_type == 'user' else character.name
-                past_texts.append(f"{role}: {msg.content}")
-            past_chunk = "\n".join(past_texts[-500:])  # 안전 길이 제한
-            if past_chunk:
-                summary_prompt = "다음 대화의 핵심 사건과 관계, 맥락을 5줄 이내로 한국어 요약:\n" + past_chunk
-                summary_text = await ai_service.get_ai_chat_response(
-                    character_prompt="",
-                    user_message=summary_prompt,
-                    history=[],
-                    preferred_model=current_user.preferred_model,
-                    preferred_sub_model=current_user.preferred_sub_model
+        is_stream_request = False
+        try:
+            is_stream_request = callable(_chat_stream_emitter_var.get())
+        except Exception:
+            is_stream_request = False
+
+        existing_summary = str(getattr(room, "summary", "") or "").strip()
+        character_name_for_summary = str(getattr(character, "name", "") or "").strip() or "캐릭터"
+        pref_model = str(getattr(current_user, "preferred_model", "") or "")
+        pref_sub_model = str(getattr(current_user, "preferred_sub_model", "") or "")
+
+        if is_stream_request:
+            try:
+                asyncio.create_task(
+                    _update_room_summary_incremental_background(
+                        room_id=room.id,
+                        character_name=character_name_for_summary,
+                        preferred_model=pref_model,
+                        preferred_sub_model=pref_sub_model,
+                        recent_limit=recent_limit,
+                        min_delta_if_existing=5,
+                    )
                 )
-                # DB 저장
-                from sqlalchemy import update
-                from app.models.chat import ChatRoom as _ChatRoom
-                await db.execute(
-                    update(_ChatRoom).where(_ChatRoom.id == room.id).set({"summary": summary_text[:4000]})
-                )
-                await db.commit()
+            except Exception:
+                pass
+        else:
+            new_summary = await _update_room_summary_incremental_with_db(
+                db,
+                room_id=room.id,
+                existing_summary=existing_summary,
+                character_name=character_name_for_summary,
+                preferred_model=pref_model,
+                preferred_sub_model=pref_sub_model,
+                recent_limit=recent_limit,
+                min_delta_if_existing=5,
+            )
+            if new_summary:
+                try:
+                    room.summary = new_summary
+                except Exception:
+                    pass
     except Exception:
         # 요약 실패는 치명적이지 않으므로 무시
         pass
@@ -7266,7 +7658,203 @@ async def send_message_and_get_response_legacy(
     db: AsyncSession = Depends(get_db),
 ):
     """메시지 전송 및 AI 응답 생성 (레거시 호환성)"""
-    return await send_message(request, current_user, db)
+    send_lock_key = _build_room_send_lock_key(
+        user_id=getattr(current_user, "id", None),
+        character_id=getattr(request, "character_id", None),
+        room_id=getattr(request, "room_id", None),
+    )
+    acquired, lock_token = await _acquire_room_send_lock(send_lock_key, ttl_sec=_CHAT_SEND_LOCK_TTL_SEC)
+    if not acquired:
+        raise HTTPException(status_code=409, detail="Another request is already in progress for this room.")
+    try:
+        return await send_message(request, current_user, db)
+    finally:
+        await _release_room_send_lock(send_lock_key, lock_token)
+
+
+@router.options("/messages/stream")
+async def send_message_stream_options():
+    # Preflight is usually handled by CORSMiddleware, but define this explicitly
+    # to avoid edge cases where route matching returns non-CORS 404/405.
+    return Response(status_code=204)
+
+
+@router.post("/messages/stream")
+async def send_message_stream(
+    request: SendMessageRequest,
+    http_request: Request,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    SSE streaming endpoint for general character chat.
+
+    Events:
+    - start: {"room_id","character_id"}
+    - delta: {"delta"}
+    - final: SendMessageResponse(json)
+    - error: {"code","detail"}
+    - done: {}
+    """
+    # Streaming burst 구간에서 producer가 queue full로 block되어
+    # "초반 몇 청크 후 지연"처럼 보이는 현상을 줄이기 위해 여유 버퍼를 둔다.
+    q: asyncio.Queue = asyncio.Queue(maxsize=2048)
+    done = asyncio.Event()
+    client_gone = asyncio.Event()
+    send_lock_key = _build_room_send_lock_key(
+        user_id=getattr(current_user, "id", None),
+        character_id=getattr(request, "character_id", None),
+        room_id=getattr(request, "room_id", None),
+    )
+    send_lock_acquired = False
+    send_lock_token = ""
+
+    async def _queue_event(item: Dict[str, Any]) -> None:
+        # bounded queue + disconnect-aware producer guard
+        while True:
+            if client_gone.is_set():
+                raise asyncio.CancelledError("sse client disconnected")
+            try:
+                await asyncio.wait_for(q.put(item), timeout=1.0)
+                return
+            except asyncio.TimeoutError:
+                continue
+
+    async def _emit_delta(chunk: str):
+        if not chunk:
+            return
+        text = str(chunk)
+        # Large provider chunks make UI look like "pause then burst".
+        # Keep SSE protocol intact, but split oversized deltas into smaller frames.
+        max_len = 64
+        if len(text) <= max_len:
+            await _queue_event({"event": "delta", "data": {"delta": text}})
+            return
+        for i in range(0, len(text), max_len):
+            part = text[i:i + max_len]
+            if not part:
+                continue
+            await _queue_event({"event": "delta", "data": {"delta": part}})
+
+    async def _emit_event(event_name: str, payload: Dict[str, Any]):
+        name = str(event_name or "").strip() or "message"
+        data = payload if isinstance(payload, dict) else {}
+        await _queue_event({"event": name, "data": data})
+
+    async def _worker():
+        nonlocal send_lock_acquired, send_lock_token
+        token = _chat_stream_emitter_var.set(_emit_delta)
+        evt_token = _chat_stream_event_emitter_var.set(_emit_event)
+        try:
+            send_lock_acquired, send_lock_token = await _acquire_room_send_lock(
+                send_lock_key,
+                ttl_sec=_CHAT_SEND_LOCK_TTL_SEC,
+            )
+            if not send_lock_acquired:
+                await _queue_event(
+                    {
+                        "event": "error",
+                        "data": {"code": 409, "detail": "Another request is already in progress for this room."},
+                    }
+                )
+                return
+            await _queue_event(
+                {
+                    "event": "start",
+                    "data": {
+                        "room_id": str(getattr(request, "room_id", "") or ""),
+                        "character_id": str(getattr(request, "character_id", "") or ""),
+                    },
+                }
+            )
+            # Use an isolated DB session for the stream worker.
+            # Request-scoped dependency sessions can be finalized while
+            # StreamingResponse is still running, causing session state errors.
+            async with AsyncSessionLocal() as stream_db:
+                result = await send_message(request, current_user, stream_db)
+            await _queue_event({"event": "final", "data": jsonable_encoder(result)})
+        except asyncio.CancelledError:
+            try:
+                logger.info("[send_message_stream] worker cancelled (client disconnected)")
+            except Exception:
+                pass
+            raise
+        except HTTPException as e:
+            if not client_gone.is_set():
+                with suppress(Exception):
+                    await _queue_event(
+                        {
+                            "event": "error",
+                            "data": {
+                                "code": int(getattr(e, "status_code", 500) or 500),
+                                "detail": str(getattr(e, "detail", "chat stream failed") or "chat stream failed"),
+                            },
+                        }
+                    )
+        except Exception as e:
+            try:
+                logger.exception(f"[send_message_stream] failed: {e}")
+            except Exception:
+                pass
+            if not client_gone.is_set():
+                with suppress(Exception):
+                    await _queue_event({"event": "error", "data": {"code": 500, "detail": "chat stream failed"}})
+        finally:
+            try:
+                _chat_stream_emitter_var.reset(token)
+            except Exception:
+                pass
+            try:
+                _chat_stream_event_emitter_var.reset(evt_token)
+            except Exception:
+                pass
+            if send_lock_acquired:
+                await _release_room_send_lock(send_lock_key, send_lock_token)
+            done.set()
+
+    worker_task = asyncio.create_task(_worker())
+
+    async def _event_gen():
+        try:
+            while True:
+                if done.is_set() and q.empty():
+                    break
+                try:
+                    if await http_request.is_disconnected():
+                        client_gone.set()
+                        break
+                except Exception:
+                    pass
+                try:
+                    item = await asyncio.wait_for(q.get(), timeout=10.0)
+                except asyncio.TimeoutError:
+                    if client_gone.is_set():
+                        break
+                    yield ": keep-alive\n\n"
+                    continue
+
+                event_name = str(item.get("event") or "message")
+                payload = item.get("data")
+                yield f"event: {event_name}\n"
+                yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        finally:
+            client_gone.set()
+            if not worker_task.done():
+                worker_task.cancel()
+                with suppress(BaseException):
+                    await worker_task
+            # 정상 연결일 때만 done 이벤트를 보낸다.
+            try:
+                if not await http_request.is_disconnected():
+                    yield "event: done\n"
+                    yield "data: {}\n\n"
+            except Exception:
+                pass
+
+    return StreamingResponse(
+        _event_gen(),
+        media_type="text/event-stream; charset=utf-8",
+        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
+    )
 
 
 # ----- 원작챗 전용 엔드포인트 (경량 래퍼) -----

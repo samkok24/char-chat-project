@@ -3,7 +3,7 @@ AI 캐릭터 챗 플랫폼 - FastAPI 메인 애플리케이션
 CAVEDUCK 스타일: "Chat First, Story Later"
 """
 
-from fastapi import FastAPI, HTTPException, APIRouter
+from fastapi import FastAPI, HTTPException, APIRouter, Response
 from fastapi.exceptions import ResponseValidationError
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -131,6 +131,14 @@ async def lifespan(app: FastAPI):
             logger.info("💗 story_likes 테이블 확인/생성 완료")
         except Exception as e:
             logger.warning(f"[warn] story_likes 테이블 생성 실패(계속 진행): {e}")
+
+        # ✅ 무료 리필 버킷 상태 테이블(2시간당 +1, cap 15) 멱등 생성
+        try:
+            from app.models.payment import UserRefillState  # 로컬 import(순환 방지)
+            await conn.run_sync(lambda c: UserRefillState.__table__.create(c, checkfirst=True))
+            logger.info("⏱️ user_refill_states 테이블 확인/생성 완료")
+        except Exception as e:
+            logger.warning(f"[warn] user_refill_states 테이블 생성 실패(계속 진행): {e}")
 
         # SQLite 사용 시 누락 컬럼 자동 보정 (idempotent)
         try:
@@ -268,9 +276,16 @@ app.mount("/static", StaticFiles(directory=UPLOAD_DIR), name="static")
 DEV_ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
+    "http://localhost:13000",
+    "http://127.0.0.1:13000",
 ]
-ALLOWED_ORIGINS = DEV_ALLOWED_ORIGINS if settings.ENVIRONMENT == "development" else []
-ALLOWED_ORIGIN_REGEX = None if settings.ENVIRONMENT == "development" else r"https?://(localhost|127\.0\.0\.1)(:\\d+)?"
+if settings.ENVIRONMENT == "development":
+    ALLOWED_ORIGINS = DEV_ALLOWED_ORIGINS
+    # 개발에서는 localhost/127.0.0.1 의 임의 포트를 모두 허용해 포트 충돌 회피 테스트를 안정화한다.
+    ALLOWED_ORIGIN_REGEX = r"https?://(localhost|127\.0\.0\.1)(:\\d+)?"
+else:
+    ALLOWED_ORIGINS = []
+    ALLOWED_ORIGIN_REGEX = None
 # 프로덕션 배포 시 프론트엔드 공개 도메인을 명시적으로 허용 (환경변수 또는 설정)
 FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL") or settings.FRONTEND_BASE_URL
 if settings.ENVIRONMENT != "development" and FRONTEND_BASE_URL:
@@ -292,6 +307,54 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Dev-only CORS safety net:
+# - Some local setups still fail preflight when origin/port changes.
+# - In non-production only, force-pass localhost/127.0.0.1 OPTIONS requests.
+# - Also ensure unexpected 500 responses still include CORS headers, so browser
+#   shows the real API error instead of masking it as a CORS failure.
+if settings.ENVIRONMENT != "production":
+    @app.middleware("http")
+    async def _dev_localhost_cors_fallback(request, call_next):
+        origin = str(request.headers.get("origin") or "").strip()
+        is_local_origin = (
+            origin.startswith("http://localhost:")
+            or origin.startswith("https://localhost:")
+            or origin.startswith("http://127.0.0.1:")
+            or origin.startswith("https://127.0.0.1:")
+        )
+
+        def _attach_local_cors(resp: Response) -> Response:
+            if is_local_origin:
+                resp.headers.setdefault("Access-Control-Allow-Origin", origin)
+                resp.headers.setdefault("Vary", "Origin")
+                resp.headers.setdefault("Access-Control-Allow-Credentials", "true")
+            return resp
+
+        if is_local_origin and request.method.upper() == "OPTIONS":
+            req_headers = str(request.headers.get("access-control-request-headers") or "*")
+            resp = Response(status_code=204)
+            resp.headers["Access-Control-Allow-Origin"] = origin
+            resp.headers["Vary"] = "Origin"
+            resp.headers["Access-Control-Allow-Credentials"] = "true"
+            resp.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,PATCH,DELETE,OPTIONS"
+            resp.headers["Access-Control-Allow-Headers"] = req_headers
+            return resp
+
+        try:
+            resp = await call_next(request)
+            return _attach_local_cors(resp)
+        except Exception as e:
+            logger.exception(f"[dev_cors_fallback] unhandled request error: {e}")
+            return _attach_local_cors(
+                JSONResponse(
+                    status_code=500,
+                    content={
+                        "detail": "internal_server_error",
+                        "error": str(e),
+                    },
+                )
+            )
 
 # 신뢰할 수 있는 호스트 설정 (선택사항)
 # - Render 전용 하드코딩(*.onrender.com)만 허용하면 VPS/Lightsail 배포에서 도메인 Host 헤더가 400으로 막힐 수 있음

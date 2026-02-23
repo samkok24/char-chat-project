@@ -12,7 +12,7 @@ from app.core.security import get_current_user
 from app.models import User, UserPoint, PointTransaction
 from app.schemas.payment import (
     UserPointResponse, PointUseRequest, PointUseResponse,
-    PointTransactionResponse
+    PointTransactionResponse, TimerStatusResponse
 )
 from app.services.point_service import PointService
 
@@ -57,6 +57,21 @@ async def get_point_balance(
     )
 
 
+@router.get("/timer-status", response_model=TimerStatusResponse)
+async def get_timer_status(
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    2시간마다 1개(최대 15) 무료 리필 버킷 상태 조회/갱신.
+    배치 없이 요청 시점에 지연 계산한다.
+    """
+    point_service = PointService(redis, db)
+    data = await point_service.get_timer_status(str(current_user.id))
+    return TimerStatusResponse(**data)
+
+
 @router.post("/use", response_model=PointUseResponse)
 async def use_points(
     request: PointUseRequest,
@@ -97,6 +112,31 @@ async def use_points(
         
     except Exception as e:
         raise HTTPException(status_code=500, detail="포인트 사용 중 오류가 발생했습니다")
+
+
+@router.post("/check-in")
+async def daily_check_in(
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+    current_user: User = Depends(get_current_user)
+):
+    """일일 출석체크 (KST 00:00~23:59, 하루 1회, +10 루비)"""
+    point_service = PointService(redis, db)
+    result = await point_service.daily_check_in(str(current_user.id))
+    if not result["success"]:
+        raise HTTPException(status_code=409, detail=result["message"])
+    return result
+
+
+@router.get("/check-in/status")
+async def check_in_status(
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+    current_user: User = Depends(get_current_user)
+):
+    """오늘 출석 여부 확인"""
+    point_service = PointService(redis, db)
+    return await point_service.get_check_in_status(str(current_user.id))
 
 
 @router.get("/transactions", response_model=List[PointTransactionResponse])

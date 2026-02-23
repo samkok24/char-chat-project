@@ -72,6 +72,10 @@ class Settings(BaseSettings):
     # - 배포에서 안 깨지는 경로를 쓰기 위해, "이미지 모달" 업로드(`/media/upload`)로 생성된 URL을 그대로 넣는 것을 권장한다.
     #   (스토리지/R2/정적서빙 설정에 맞춰 저장되므로 운영환경에서 가장 안전함)
     ORIGCHAT_DEFAULT_AVATAR_URL: str | None = None
+    # 결제 웹훅 서명 검증용 시크릿(미설정 시 dev에서만 완화)
+    PAYMENT_WEBHOOK_SECRET: str | None = None
+    # Paddle 전환 대비(추후 사용)
+    PADDLE_WEBHOOK_SECRET: str | None = None
 
     class Config:
         env_file = ".env"

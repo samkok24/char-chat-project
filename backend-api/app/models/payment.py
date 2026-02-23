@@ -90,3 +90,20 @@ class UserPoint(Base):
     
     # Relationships
     user = relationship("User", back_populates="user_point", uselist=False) 
+
+
+class UserRefillState(Base):
+    """사용자 무료 리필 버킷 상태"""
+    __tablename__ = "user_refill_states"
+
+    user_id = Column(UUID(), ForeignKey("users.id"), primary_key=True)
+    timer_bucket = Column(Integer, nullable=False, default=0)
+    # 마지막으로 "정수 스텝(2시간 단위)"까지 반영한 시각
+    timer_last_refill_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    __table_args__ = (
+        CheckConstraint("timer_bucket >= 0", name="check_timer_bucket_non_negative"),
+        CheckConstraint("timer_bucket <= 15", name="check_timer_bucket_max_15"),
+    )

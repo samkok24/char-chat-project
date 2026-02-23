@@ -8,7 +8,58 @@
       "Bash(npx vite build)",
       "Bash(python:*)",
       "Bash(python3:*)",
-      "Bash(/c/Users/Hongsan/AppData/Local/Programs/Python/Python312/python:*)"
+      "Bash(/c/Users/Hongsan/AppData/Local/Programs/Python/Python312/python:*)",
+      "WebFetch(domain:discuss.ai.google.dev)",
+      "WebFetch(domain:docs.sillytavern.app)",
+      "Bash(docker exec char_chat_backend python:*)",
+      "mcp__chrome-devtools__take_screenshot",
+      "mcp__chrome-devtools__take_snapshot",
+      "mcp__chrome-devtools__click",
+      "mcp__chrome-devtools__wait_for",
+      "mcp__chrome-devtools__fill",
+      "mcp__chrome-devtools__evaluate_script",
+      "Bash(docker ps:*)",
+      "mcp__chrome-devtools__list_console_messages",
+      "mcp__chrome-devtools__get_console_message",
+      "mcp__chrome-devtools__list_network_requests",
+      "mcp__chrome-devtools__get_network_request",
+      "mcp__chrome-devtools__navigate_page",
+      "mcp__chrome-devtools__list_pages",
+      "mcp__chrome-devtools__select_page",
+      "Bash(docker cp:*)",
+      "Bash(docker exec:*)",
+      "mcp__chrome-devtools__new_page",
+      "WebFetch(domain:namu.wiki)",
+      "WebFetch(domain:help.crack.wrtn.ai)",
+      "Bash(curl:*)",
+      "WebFetch(domain:platform.openai.com)",
+      "WebFetch(domain:openai.com)",
+      "WebFetch(domain:pricepertoken.com)",
+      "Bash(docker restart:*)",
+      "Bash(docker compose:*)",
+      "WebFetch(domain:www.babechat.ai)",
+      "WebFetch(domain:m.dcinside.com)",
+      "WebFetch(domain:gall.dcinside.com)",
+      "WebFetch(domain:zzalmunga.com)",
+      "WebFetch(domain:crack.wrtn.ai)",
+      "WebFetch(domain:developer.paddle.com)",
+      "Bash(ls -d /home/hongsan/work/char_chat_project_v2/frontend/char-chat-frontend/node_modules/.pnpm/@rollup+rollup* 2>&1)",
+      "Bash(cd /home/hongsan/work/char_chat_project_v2 && git switch dev 2>&1)",
+      "Bash(git add -A && git status -sb 2>&1 | head -30)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/validate.sh\"",
+            "timeout": 120
+          }
+        ]
+      }
     ]
   }
 }

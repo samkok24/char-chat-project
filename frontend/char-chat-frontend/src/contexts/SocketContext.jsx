@@ -443,7 +443,73 @@ export const SocketProvider = ({ children }) => {
             if (mid && prevArr.some(m => String(m?.id || m?._id || '').trim() === mid)) {
               return prevArr;
             }
-            const next = [...prevArr, message];
+            // ✅ SSE 스트리밍 중 릴레이 중복 방지:
+            // temp-* 메시지가 남아있으면 SSE final 핸들러가 곧 saved 메시지로 교체할 예정이므로,
+            // 같은 메시지가 new_message로 도착해도 skip한다.
+            // (temp ID ≠ saved ID라 위 dedup을 통과하지만, 실제로는 같은 메시지)
+            if (prevArr.some(m => {
+              const eid = String(m?.id || '').trim();
+              return eid.startsWith('temp-user-') || eid.startsWith('temp-ai-stream-');
+            })) {
+              return prevArr;
+            }
+            let next = [...prevArr];
+            let replaced = false;
+            try {
+              const incomingRoomId = getRoomIdFromMessage(message);
+              const incomingSender = String(message?.senderType || message?.sender_type || '').trim().toLowerCase();
+              const incomingContent = String(message?.content || '').trim();
+              if (incomingContent) {
+                const replaceIdx = next.findIndex((m) => {
+                  const existingId = String(m?.id || m?._id || '').trim();
+                  if (existingId) return false;
+                  const isPendingLike = Boolean(m?.pending) || Boolean(m?.isStreaming);
+                  if (!isPendingLike) return false;
+
+                  const mrid = getRoomIdFromMessage(m);
+                  if (incomingRoomId && mrid && incomingRoomId !== mrid) return false;
+
+                  const existingSender = String(m?.senderType || m?.sender_type || '').trim().toLowerCase();
+                  const userCompat = incomingSender === 'user' && existingSender === 'user';
+                  const assistantCompat =
+                    (incomingSender === 'assistant' || incomingSender === 'character' || incomingSender === 'ai') &&
+                    (existingSender === 'assistant' || existingSender === 'character' || existingSender === 'ai');
+                  if (!userCompat && !assistantCompat) return false;
+
+                  const existingContent = String(m?.content || '').trim();
+                  if (!existingContent) return false;
+                  return (
+                    incomingContent === existingContent ||
+                    incomingContent.startsWith(existingContent) ||
+                    existingContent.startsWith(incomingContent)
+                  );
+                });
+                if (replaceIdx >= 0) {
+                  next[replaceIdx] = {
+                    ...next[replaceIdx],
+                    ...message,
+                    pending: false,
+                    isStreaming: false,
+                  };
+                  replaced = true;
+                }
+              }
+            } catch (_) {}
+
+            if (!replaced) {
+              next.push(message);
+            }
+
+            if (mid) {
+              const seenIds = new Set();
+              next = next.filter((m) => {
+                const id = String(m?.id || m?._id || '').trim();
+                if (!id) return true;
+                if (seenIds.has(id)) return false;
+                seenIds.add(id);
+                return true;
+              });
+            }
             try {
               const rid = getRoomIdFromMessage(message);
               if (rid) writeRoomMessageCache(rid, next);

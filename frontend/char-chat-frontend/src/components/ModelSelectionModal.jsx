@@ -13,10 +13,11 @@ import { Textarea } from './ui/textarea';
 import { Switch } from './ui/switch';
 import { Slider } from './ui/slider';
 import { 
-  ChevronDown, 
-  Check, 
-  X, 
+  ChevronDown,
+  Check,
+  X,
   Menu,
+  Gem,
 } from 'lucide-react';
 import {
   Collapsible,
@@ -93,9 +94,9 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
 
   const SPEED_SUB_MODELS = [
     // ✅ 요구사항 우선순위: Haiku 4.5 -> Gemini 2.5 Flash -> Gemini 3 Flash (Preview)
-    { id: 'speed:claude-haiku-4-5-20251001', targetModel: 'claude', targetSubModel: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', description: '초고속 응답에 강한 Haiku 라인', cost: 4 },
-    { id: 'speed:gemini-2.5-flash', targetModel: 'gemini', targetSubModel: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', description: '빠른 응답에 최적화된 Flash 라인', cost: 2 },
-    { id: 'speed:gemini-3-flash-preview', targetModel: 'gemini', targetSubModel: 'gemini-3-flash-preview', name: 'Gemini 3 Flash (Preview)', description: '최신 Flash 프리뷰(변동 가능)', cost: 2 },
+    { id: 'speed:claude-haiku-4-5-20251001', targetModel: 'claude', targetSubModel: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', description: '초고속 응답에 강한 Haiku 라인', cost: 3 },
+    { id: 'speed:gemini-2.5-flash', targetModel: 'gemini', targetSubModel: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', description: '빠른 응답에 최적화된 Flash 라인', cost: 0 },
+    { id: 'speed:gemini-3-flash-preview', targetModel: 'gemini', targetSubModel: 'gemini-3-flash-preview', name: 'Gemini 3 Flash (Preview)', description: '최신 Flash 프리뷰(변동 가능)', cost: 5 },
   ];
 
   /**
@@ -132,43 +133,30 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
     // - 방어: 여기의 id는 UI용 그룹키이며, 실제 API 호출/저장에는 subModel의 targetModel/targetSubModel을 사용한다.
     speed: {
       name: '속도최적화 모델',
-      cost: 0,
       subModels: SPEED_SUB_MODELS,
     },
     gemini: {
       name: 'Gemini 모델',
-      cost: 8,
       subModels: [
-        // ✅ speed에서 선택해도 "모달 재오픈 시 폴백"되지 않도록, provider 리스트에도 포함한다.
-        { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', description: '빠른 응답에 최적화된 Flash 라인', cost: 2 },
-        { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash (Preview)', description: '최신 Flash 프리뷰(변동 가능)', cost: 2 },
-        // ✅ SSOT: Gemini 3 Pro 정식 모델명은 gemini-3-pro-preview
-        { id: 'gemini-3-pro-preview', name: 'Gemini 3 Pro (Preview)', description: '상황 묘사와 플롯테이킹이 강한 최고 성능의 AI', cost: 8 },
-        // ✅ 기존 기본값(gemini-2.5-pro) 유지: 백엔드 호환 + 기본 선택값 유지
-        { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro Standard', description: '비판적 사고, 냉철한 판단과 직설적 어조의 응답', cost: 8 },
+        { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', description: '빠른 응답에 최적화된 Flash 라인', cost: 0 },
+        { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash (Preview)', description: '최신 Flash 프리뷰(변동 가능)', cost: 5 },
+        { id: 'gemini-3-pro-preview', name: 'Gemini 3 Pro (Preview)', description: '상황 묘사와 플롯테이킹이 강한 최고 성능의 AI', cost: 7 },
+        { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro Standard', description: '비판적 사고, 냉철한 판단과 직설적 어조의 응답', cost: 5 },
       ]
     },
     claude: {
       name: 'Claude 모델',
-      cost: 10,
       subModels: [
-        // ✅ speed에서 선택해도 "모달 재오픈 시 폴백"되지 않도록, provider 리스트에도 포함한다.
-        { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', description: '초고속 응답에 강한 Haiku 라인', cost: 4 },
-        // ✅ 최신 Claude(4.0+) 모델명 기준으로 정리 (백엔드에서도 동일 문자열로 호출)
-        { id: 'claude-sonnet-4-20250514', name: 'Claude Sonnet 4', description: '빠르고 안정적인 올라운더', cost: 10, badge: '기본', badgeClass: 'bg-pink-600 text-white hover:bg-pink-600' },
-        { id: 'claude-opus-4-1-20250805', name: 'Claude Opus 4.1', description: '더 깊은 추론/품질을 지향하는 플래그십', cost: 20, badge: '신규', badgeClass: 'bg-pink-600 text-white hover:bg-pink-600' },
-        { id: 'claude-sonnet-4-5-20250929', name: 'Claude Sonnet 4.5', description: '더 향상된 성능의 Sonnet 라인', cost: 12, badge: '인기', badgeClass: 'bg-pink-600 text-white hover:bg-pink-600' },
-        { id: 'claude-opus-4-5-20251101', name: 'Claude Opus 4.5', description: '최상위 품질의 Opus 라인', cost: 25, badge: '최고', badgeClass: 'bg-pink-600 text-white hover:bg-pink-600' },
+        { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', description: '초고속 응답에 강한 Haiku 라인', cost: 3 },
+        { id: 'claude-sonnet-4-20250514', name: 'Claude Sonnet 4', description: '빠르고 안정적인 올라운더', cost: 5 },
+        { id: 'claude-sonnet-4-5-20250929', name: 'Claude Sonnet 4.5', description: '최고 안정성의 프리미엄 Sonnet', cost: 7, badge: '인기', badgeClass: 'bg-pink-600 text-white hover:bg-pink-600' },
       ]
     },
     gpt: {
       name: 'GPT 모델',
-      cost: 10,
       subModels: [
-        // ✅ 기존 설정/테스트용으로는 유지(속도최적화 섹션에서는 "내림" 요구로 비노출)
-        { id: 'gpt-5-mini', name: 'GPT 5 mini', description: '속도/비용 최적화', cost: 3 },
-        { id: 'gpt-5.1', name: 'GPT-5.1', description: '깊은 이해와 유연한 대화를 겸비한 GPT의 최상위 모델', cost: 10, badge: '신규', badgeClass: 'bg-pink-600 text-white hover:bg-pink-600' },
-        { id: 'gpt-5.2', name: 'GPT-5.2', description: '차세대 추론/지식 강화 모델 (연동 준비 중)', cost: 10, badge: '신규', badgeClass: 'bg-pink-600 text-white hover:bg-pink-600' },
+        { id: 'gpt-5.1', name: 'GPT-5.1', description: '깊은 이해와 유연한 대화를 겸비한 GPT의 최상위 모델', cost: 5 },
+        { id: 'gpt-5.2', name: 'GPT-5.2', description: '차세대 추론/지식 강화 모델 (연동 준비 중)', cost: 7, badge: '준비중', badgeClass: 'bg-gray-700 text-gray-200 hover:bg-gray-700' },
       ]
     },
     // ✅ 경쟁사 UI 구성 맞춤(프론트만): 아직 연동 전이라도 섹션은 유지
@@ -674,6 +662,16 @@ const ModelSelectionModal = ({ isOpen, onClose, currentModel, currentSubModel, o
                         <div>
                           <div className="flex items-center space-x-2">
                             <span className="font-medium">{subModel.name}</span>
+                            {subModel.cost > 0 ? (
+                              <span className="inline-flex items-center gap-0.5 text-xs text-pink-500 font-semibold">
+                                <Gem className="w-3 h-3" />{subModel.cost}
+                              </span>
+                            ) : (
+                              <span className="text-xs text-emerald-500 font-semibold">무료</span>
+                            )}
+                            {subModel.badge && (
+                              <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${subModel.badgeClass || 'bg-pink-600 text-white'}`}>{subModel.badge}</span>
+                            )}
                             {selected && (
                               <Check className="w-4 h-4 text-purple-600" />
                             )}

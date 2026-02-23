@@ -91,6 +91,13 @@ class UserPointResponse(BaseModel):
         from_attributes = True
 
 
+class TimerStatusResponse(BaseModel):
+    current: int
+    max: int
+    earned: int = 0
+    next_refill_seconds: int
+
+
 # 포인트 사용 스키마
 class PointUseRequest(BaseModel):
     amount: int = Field(..., gt=0, description="사용할 포인트")

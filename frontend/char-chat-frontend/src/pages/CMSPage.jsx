@@ -1225,15 +1225,19 @@ const CMSPage = () => {
 
       return arr.map((s) => {
         if (String(s?.id) !== String(id)) return s;
+        try {
+          const merged = { ...(s || {}), ...safePatch, id: s?.id };
+          const normalized = sanitizeHomeSlot(merged);
 
-        const merged = { ...(s || {}), ...safePatch, id: s?.id };
-        const normalized = sanitizeHomeSlot(merged);
-
-        // ✅ 입력 UX: 띄어쓰기(특히 트레일링 스페이스)를 유지한다.
-        if (hasTitlePatch) {
-          normalized.title = (typeof rawTitle === 'string') ? rawTitle : String(rawTitle ?? '');
+          // ✅ 입력 UX: 띄어쓰기(특히 트레일링 스페이스)를 유지한다.
+          if (hasTitlePatch) {
+            normalized.title = (typeof rawTitle === 'string') ? rawTitle : String(rawTitle ?? '');
+          }
+          return normalized;
+        } catch (e) {
+          console.error('[CMSPage] sanitizeHomeSlot failed in updateSlot:', e);
+          return { ...(s || {}), ...safePatch, id: s?.id };
         }
-        return normalized;
       });
     });
   };
@@ -4010,9 +4014,11 @@ const CMSPage = () => {
                             <Switch
                               checked={s.enabled !== false}
                               onCheckedChange={(v) => {
-                                updateSlot(s.id, { enabled: !!v });
-                                // 토글 후 반대 탭으로 자동전환 (슬롯이 "사라진" 것처럼 보이는 혼동 방지)
-                                setSlotListTab(v ? 'enabled' : 'disabled');
+                                try {
+                                  updateSlot(s.id, { enabled: !!v });
+                                } catch (e) {
+                                  console.error('[CMSPage] updateSlot failed:', e);
+                                }
                               }}
                             />
                           </div>
