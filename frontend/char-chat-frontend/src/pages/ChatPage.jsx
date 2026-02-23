@@ -4614,7 +4614,19 @@ const ChatPage = () => {
   const canSend = Boolean(newMessage.trim()) && (() => {
     if (!isAuthenticated) return true;
     // 일반 캐릭터챗만 loading 전송 차단(원작챗은 기존 동작 유지)
-    if (!isOrigChat && loading) return false;
+    // 단, new=1에서 "새 room이 이미 확정"된 경우에는 불필요한 지연 잠금을 풀어
+    // 오프닝 표시 후 전송 버튼이 늦게 활성화되는 UX를 줄인다.
+    if (!isOrigChat && loading) {
+      const ridDuringLoad = String(chatRoomId || '').trim();
+      const isNewChatBootstrap = (() => {
+        try {
+          return String(new URLSearchParams(location.search || '').get('new') || '').trim() === '1';
+        } catch (_) {
+          return false;
+        }
+      })();
+      if (!(isNewChatBootstrap && ridDuringLoad)) return false;
+    }
     const rid = String(chatRoomId || '').trim();
     if (!rid) return false;
     // 일반 캐릭터챗만 URL room 불일치 차단(원작챗은 기존 동작 유지)
