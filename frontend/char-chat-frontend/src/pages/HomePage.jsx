@@ -2506,6 +2506,15 @@ const HomePage = () => {
             )}
             <button
               type="button"
+              onClick={() => navigate('/ruby/charge')}
+              className={`${headerIconButtonBaseClass} h-9 w-9`}
+              aria-label="루비 충전"
+              title="루비 충전"
+            >
+              <Gem className="w-4 h-4 text-pink-500" />
+            </button>
+            <button
+              type="button"
               onClick={() => navigate('/notices')}
               className={`${headerIconButtonBaseClass} h-9 w-9`}
               aria-label="공지사항"
