@@ -829,6 +829,19 @@ const HomePage = () => {
             const c = res?.data || {};
             const chatCount = Number(c?.chat_count ?? c?.chatCount ?? 0) || 0;
             const likeCount = Number(c?.like_count ?? c?.likeCount ?? 0) || 0;
+            const ss = (c?.start_sets && typeof c.start_sets === 'object') ? c.start_sets : null;
+            const sim = (ss && typeof ss === 'object') ? (ss?.sim_options || ss?.simOptions || null) : null;
+            const maxTurnsRaw = Number(
+              c?.max_turns
+              ?? c?.maxTurns
+              ?? sim?.max_turns
+              ?? sim?.maxTurns
+              ?? ss?.sim_options?.max_turns
+              ?? ss?.sim_options?.maxTurns
+              ?? ss?.simOptions?.max_turns
+              ?? ss?.simOptions?.maxTurns
+            );
+            const maxTurns = (Number.isFinite(maxTurnsRaw) && maxTurnsRaw > 0) ? Math.floor(maxTurnsRaw) : null;
             // ✅ NEW 배지(48h)도 커스텀 구좌에서 항상 뜨게: created_at/updated_at까지 같이 보강한다.
             const createdAt = c?.created_at ?? c?.createdAt ?? null;
             const updatedAt = c?.updated_at ?? c?.updatedAt ?? null;
@@ -848,6 +861,7 @@ const HomePage = () => {
               ...(updatedAt ? { updated_at: updatedAt } : {}),
               ...(tags.length > 0 ? { tags } : {}),
               ...(characterType ? { character_type: characterType } : {}),
+              ...(maxTurns ? { max_turns: maxTurns } : {}),
               __meta_hydrated: true,
             };
           } catch (e) {
@@ -1971,6 +1985,15 @@ const HomePage = () => {
         const characterType = String(c?.character_type || c?.characterType || '').trim();
         const chatCount = Number(c?.chat_count ?? c?.chatCount);
         const likeCount = Number(c?.like_count ?? c?.likeCount);
+        const maxTurnsRaw = Number(
+          c?.max_turns
+          ?? c?.maxTurns
+          ?? c?.start_sets?.sim_options?.max_turns
+          ?? c?.start_sets?.sim_options?.maxTurns
+          ?? c?.start_sets?.simOptions?.max_turns
+          ?? c?.start_sets?.simOptions?.maxTurns
+        );
+        const maxTurns = (Number.isFinite(maxTurnsRaw) && maxTurnsRaw > 0) ? Math.floor(maxTurnsRaw) : null;
         const createdAt = c?.created_at ?? c?.createdAt ?? null;
         const updatedAt = c?.updated_at ?? c?.updatedAt ?? null;
 
@@ -1978,6 +2001,7 @@ const HomePage = () => {
         if (characterType) next.character_type = characterType;
         if (Number.isFinite(chatCount)) next.chat_count = chatCount;
         if (Number.isFinite(likeCount)) next.like_count = likeCount;
+        if (Number.isFinite(maxTurns)) next.max_turns = maxTurns;
         if (createdAt) next.created_at = createdAt;
         if (updatedAt) next.updated_at = updatedAt;
 
@@ -2312,6 +2336,10 @@ const HomePage = () => {
                     .map((v) => String(v || '').trim())
                     .find(Boolean);
                   if (mergedType) merged.character_type = mergedType;
+                  const mergedMaxTurns = [live?.max_turns, fromList?.max_turns, baseItem?.max_turns, baseItem?.maxTurns]
+                    .map((v) => Number(v))
+                    .find((n) => Number.isFinite(n) && n > 0);
+                  if (Number.isFinite(mergedMaxTurns)) merged.max_turns = Math.floor(mergedMaxTurns);
                   // ✅ CMS 커스텀 구좌는 "탐색 카드"가 아니라 홈 구좌(격자) 스타일로 노출해야 한다.
                   return (
                     <CharacterCard

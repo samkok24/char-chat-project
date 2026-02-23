@@ -16,7 +16,10 @@ import copy
 
 logger = logging.getLogger(__name__)
 
-from app.services.start_sets_utils import extract_max_turns_from_start_sets
+from app.services.start_sets_utils import (
+    extract_max_turns_from_start_sets,
+    coerce_start_sets_dict,
+)
 
 def _extract_max_turns_from_start_sets(start_sets: Any) -> Optional[int]:
     """
@@ -211,18 +214,15 @@ def _has_any_ending_trace(endings: Any) -> bool:
 
 
 def _coerce_start_sets_dict(raw: Any) -> dict:
-    if isinstance(raw, dict):
+    ss = coerce_start_sets_dict(raw)
+    if isinstance(ss, dict):
         try:
-            return copy.deepcopy(raw)
+            return copy.deepcopy(ss)
         except Exception:
-            return dict(raw)
-    if isinstance(raw, str):
-        try:
-            obj = json.loads(raw)
-            if isinstance(obj, dict):
-                return obj
-        except Exception:
-            return {}
+            try:
+                return dict(ss)
+            except Exception:
+                return {}
     return {}
 
 
@@ -1680,19 +1680,22 @@ async def convert_character_to_detail_response(character: Character, db: AsyncSe
     if settings.ENVIRONMENT == "production":
         # JSON/기본값 보정 (마이그레이션 데이터 대비)
         def _parse_json(v):
-            if isinstance(v, str):
+            cur = v
+            for _ in range(3):
+                if not isinstance(cur, str):
+                    break
                 try:
-                    return json.loads(v)
+                    cur = json.loads(cur)
                 except Exception:
                     return None
-            return v
+            return cur
 
         imgs = _parse_json(getattr(character, 'image_descriptions', None)) or []
         if isinstance(imgs, list):
             imgs = [img for img in imgs if not (isinstance(img, dict) and str(img.get('url','')).startswith('cover:'))]
         intro = _parse_json(getattr(character, 'introduction_scenes', None)) or []
         voice = _parse_json(getattr(character, 'voice_settings', None)) or None
-        start_sets = _parse_json(getattr(character, 'start_sets', None)) or None
+        start_sets = _coerce_start_sets_dict(getattr(character, 'start_sets', None)) or None
 
         return CharacterDetailResponse(
             id=character.id,

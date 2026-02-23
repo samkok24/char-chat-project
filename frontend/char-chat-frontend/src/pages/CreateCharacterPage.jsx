@@ -4126,6 +4126,12 @@ const CreateCharacterPage = () => {
   const previewCharacter = useMemo(() => {
     const firstImage = formData.media_settings.image_descriptions?.[0]?.url || '';
     const avatar = formData.media_settings.avatar_url || firstImage;
+    const ss = (formData?.basic_info?.start_sets && typeof formData.basic_info.start_sets === 'object')
+      ? formData.basic_info.start_sets
+      : null;
+    const sim = (ss && typeof ss.sim_options === 'object' && ss.sim_options) ? ss.sim_options : {};
+    const maxTurnsRaw = Number(sim?.max_turns ?? sim?.maxTurns ?? 0);
+    const maxTurns = Number.isFinite(maxTurnsRaw) && maxTurnsRaw >= 50 ? Math.floor(maxTurnsRaw) : null;
     const replaceTokens = (text) => (text || '')
       // 레거시/신규 토큰 모두 동일하게 처리
       .replaceAll(TOKEN_ASSISTANT, formData.basic_info.name || '캐릭터')
@@ -4140,6 +4146,8 @@ const CreateCharacterPage = () => {
       thumbnail_url: avatar,
       chat_count: 0,
       like_count: 0,
+      max_turns: maxTurns,
+      start_sets: ss || undefined,
     };
   }, [formData]);
 
@@ -6213,6 +6221,17 @@ const CreateCharacterPage = () => {
         const es = (active?.ending_settings && typeof active.ending_settings === 'object') ? active.ending_settings : {};
         const minTurnsRaw = Number(es?.min_turns ?? 30);
         const minTurns = Number.isFinite(minTurnsRaw) ? Math.max(10, Math.floor(minTurnsRaw)) : 30;
+        const defaultTurnForGen = (() => {
+          try {
+            const maxT = Math.max(1, Math.floor(Number(maxTurns || 200)));
+            const minT = Math.max(10, Math.floor(Number(minTurns || 10)));
+            const byRatio = Math.floor(maxT * 0.9);
+            const seed = byRatio > 0 ? byRatio : maxT;
+            return Math.max(minT, Math.min(maxT, seed));
+          } catch (_) {
+            return Math.max(10, Math.floor(Number(minTurns || 10)));
+          }
+        })();
 
         // ✅ 요구사항: "위저드만" 하이쿠4.5(claude) 고정(다른 화면/로직에는 영향 주지 않음)
         const aiModel = useNormalCreateWizard
@@ -6246,10 +6265,10 @@ const CreateCharacterPage = () => {
           try {
             const v = Number(t);
             const n = Number.isFinite(v) ? Math.floor(v) : 0;
-            if (!n) return Math.max(minTurns, Math.min(maxTurns, minTurns));
+            if (!n) return defaultTurnForGen;
             return Math.max(minTurns, Math.min(maxTurns, n));
           } catch (_) {
-            return Math.max(minTurns, Math.min(maxTurns, minTurns));
+            return defaultTurnForGen;
           }
         };
         const genEndingId = () => {
@@ -6343,7 +6362,7 @@ const CreateCharacterPage = () => {
             }
           }
 
-          const turnRaw = (base?.turn != null && base?.turn !== '') ? Number(base.turn) : (suggestedTurn || minTurns);
+          const turnRaw = (base?.turn != null && base?.turn !== '') ? Number(base.turn) : (suggestedTurn || defaultTurnForGen);
           const turn = clampTurn(turnRaw);
           built.push({
             id: baseId,
@@ -9755,14 +9774,35 @@ const CreateCharacterPage = () => {
       });
     };
 
+    const getDefaultEndingTurn = () => {
+      try {
+        const minT = Math.max(10, Number(endingMinTurns || 10));
+        if (simMaxTurns == null) return minT;
+        const maxT = Math.max(1, Math.floor(Number(simMaxTurns)));
+        const byRatio = Math.floor(maxT * 0.9);
+        const seed = byRatio > 0 ? byRatio : maxT;
+        return Math.max(minT, Math.min(maxT, seed));
+      } catch (_) {
+        return Math.max(10, Number(endingMinTurns || 10));
+      }
+    };
+
+    const getEndingKey = (ending, idx) => {
+      try {
+        return String(ending?.id || '').trim() || `ending_${idx + 1}`;
+      } catch (_) {
+        return `ending_${idx + 1}`;
+      }
+    };
+
     const updateEndingAt = (endingIdLike, patch) => {
       const endingId = String(endingIdLike || '').trim();
       if (!endingId) return;
       updateActiveEndingSettings({
-        endings: endings.map((e) => {
-          const id = String(e?.id || '').trim();
+        endings: endings.map((e, idx) => {
+          const id = getEndingKey(e, idx);
           if (id !== endingId) return e;
-          return { ...(e || {}), ...(patch || {}) };
+          return { id, ...(e || {}), ...(patch || {}) };
         }),
       });
     };
@@ -9770,15 +9810,7 @@ const CreateCharacterPage = () => {
     const addEnding = () => {
       if (endings.length >= 10) return;
       const id = genEndingId();
-      const defaultTurn = (() => {
-        try {
-          const base = Number(endingMinTurns || 10);
-          if (simMaxTurns == null) return base;
-          return Math.min(Number(simMaxTurns), base);
-        } catch (_) {
-          return Number(endingMinTurns || 10);
-        }
-      })();
+      const defaultTurn = getDefaultEndingTurn();
       const next = [
         ...endings,
         // ✅ 신규 필드(요구사항): 엔딩 턴수(turn)
@@ -9795,14 +9827,14 @@ const CreateCharacterPage = () => {
     const removeEnding = (endingIdLike) => {
       const endingId = String(endingIdLike || '').trim();
       if (!endingId) return;
-      const next = endings.filter((e) => String(e?.id || '').trim() !== endingId);
+      const next = endings.filter((e, idx) => getEndingKey(e, idx) !== endingId);
       updateActiveEndingSettings({ endings: next });
     };
 
     const addExtraCondition = (endingIdLike) => {
       const endingId = String(endingIdLike || '').trim();
       if (!endingId) return;
-      const target = endings.find((e) => String(e?.id || '').trim() === endingId) || {};
+      const target = endings.find((e, idx) => getEndingKey(e, idx) === endingId) || {};
       const list = Array.isArray(target?.extra_conditions) ? target.extra_conditions : [];
       if (list.length >= 7) return;
       // ✅ 경쟁사 UX: 기본은 스탯 조건으로 추가(스탯이 없으면 text 조건으로 폴백)
@@ -9823,7 +9855,7 @@ const CreateCharacterPage = () => {
       const endingId = String(endingIdLike || '').trim();
       const condId = String(condIdLike || '').trim();
       if (!endingId || !condId) return;
-      const target = endings.find((e) => String(e?.id || '').trim() === endingId) || {};
+      const target = endings.find((e, idx) => getEndingKey(e, idx) === endingId) || {};
       const list = Array.isArray(target?.extra_conditions) ? target.extra_conditions : [];
       updateEndingAt(endingId, { extra_conditions: list.filter((c) => String(c?.id || '').trim() !== condId) });
     };
@@ -9921,6 +9953,17 @@ const CreateCharacterPage = () => {
           }
         })();
         const minTurnsForGen = Math.max(10, Number(endingMinTurns || 30));
+        const defaultTurnForGen = (() => {
+          try {
+            const maxT = Math.max(1, Math.floor(Number(maxTurnsForGen || 200)));
+            const minT = Math.max(10, Math.floor(Number(minTurnsForGen || 10)));
+            const byRatio = Math.floor(maxT * 0.9);
+            const seed = byRatio > 0 ? byRatio : maxT;
+            return Math.max(minT, Math.min(maxT, seed));
+          } catch (_) {
+            return Math.max(10, Math.floor(Number(minTurnsForGen || 10)));
+          }
+        })();
 
         // ✅ 요구사항: "위저드만" 제미니 고정(다른 화면/로직에는 영향 주지 않음)
         const aiModel = useNormalCreateWizard
@@ -9932,10 +9975,10 @@ const CreateCharacterPage = () => {
           try {
             const v = Number(t);
             const n = Number.isFinite(v) ? Math.floor(v) : 0;
-            if (!n) return Math.max(minTurnsForGen, Math.min(maxTurnsForGen, minTurnsForGen));
+            if (!n) return defaultTurnForGen;
             return Math.max(minTurnsForGen, Math.min(maxTurnsForGen, n));
           } catch (_) {
-            return Math.max(minTurnsForGen, Math.min(maxTurnsForGen, minTurnsForGen));
+            return defaultTurnForGen;
           }
         };
 
@@ -10013,7 +10056,7 @@ const CreateCharacterPage = () => {
             epilogue = String(epRes?.data?.epilogue || '').trim();
           }
 
-          const turnRaw = (forceOverwrite ? (suggestedTurn || minTurnsForGen) : ((base?.turn != null && base?.turn !== '') ? Number(base.turn) : (suggestedTurn || minTurnsForGen)));
+          const turnRaw = (forceOverwrite ? (suggestedTurn || defaultTurnForGen) : ((base?.turn != null && base?.turn !== '') ? Number(base.turn) : (suggestedTurn || defaultTurnForGen)));
           const turn = clampTurn(turnRaw);
 
           built.push({
@@ -10350,7 +10393,7 @@ const CreateCharacterPage = () => {
                           try {
                             const v = String(e?.target?.value ?? '').trim();
                             if (!v) {
-                              updateEndingAt(eid, { turn: endingMinTurns });
+                              updateEndingAt(eid, { turn: getDefaultEndingTurn() });
                               return;
                             }
                             const n = Number(v);

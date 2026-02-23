@@ -57,7 +57,14 @@ export default function CharacterMobileDetailModal({
    */
   const turnBadgeText = (() => {
     try {
-      const ss = character?.start_sets;
+      let ss = character?.start_sets ?? character?.basic_info?.start_sets ?? null;
+      for (let i = 0; i < 3; i += 1) {
+        if (typeof ss !== 'string') break;
+        try { ss = JSON.parse(ss); } catch (_) { ss = null; break; }
+      }
+      if (ss && typeof ss === 'object' && ss.start_sets && typeof ss.start_sets === 'object') {
+        ss = ss.start_sets;
+      }
       const sim = (ss && typeof ss === 'object')
         ? (ss?.sim_options || ss?.simOptions || null)
         : null;

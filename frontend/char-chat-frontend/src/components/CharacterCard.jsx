@@ -209,10 +209,29 @@ export const CharacterCard = ({
    */
   const turnBadgeText = (() => {
     try {
+      let ss =
+        character?.start_sets
+        ?? character?.basic_info?.start_sets
+        ?? null;
+      for (let i = 0; i < 3; i += 1) {
+        if (typeof ss !== 'string') break;
+        try { ss = JSON.parse(ss); } catch (_) { ss = null; break; }
+      }
+      if (ss && typeof ss === 'object' && ss.start_sets && typeof ss.start_sets === 'object') {
+        ss = ss.start_sets;
+      }
+      const sim =
+        ss?.sim_options
+        ?? ss?.simOptions
+        ?? null;
       const raw =
         character?.max_turns
-        ?? character?.start_sets?.sim_options?.max_turns
-        ?? character?.start_sets?.sim_options?.maxTurns;
+        ?? sim?.max_turns
+        ?? sim?.maxTurns
+        ?? ss?.sim_options?.max_turns
+        ?? ss?.sim_options?.maxTurns
+        ?? ss?.simOptions?.max_turns
+        ?? ss?.simOptions?.maxTurns;
       const n = Number(raw);
       const turns = Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
       if (turns != null) return `${turns}턴`;
