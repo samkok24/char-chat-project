@@ -1888,7 +1888,7 @@ const ChatPage = () => {
         // 2. 🔥 채팅방 정보 가져오기 또는 생성
         const params = new URLSearchParams(location.search || '');
         const explicitRoom = params.get('room');
-        const forceNew = params.get('new') === '1';
+        const forceNew = (params.get('new') === '1') && !explicitRoom;
         const source = params.get('source');
         const anchorParam = params.get('anchor');
         const storyIdParam = params.get('storyId');
@@ -2995,6 +2995,26 @@ const ChatPage = () => {
       clearTimeout(forceTimer);
     };
   }, [isOrigChat, chatRoomId, connected, messages, location.search]);
+
+  // ✅ 일반 캐릭터챗: 대화가 이미 진행된 방에서는 URL의 new=1을 정리한다.
+  // - 모바일 앱 전환/탭 복귀 후 재마운트 시 new=1이 남아 있으면
+  //   initialize 단계가 "새 대화" 분기를 다시 타며 메시지 깜빡임(초기화→오프닝→히스토리 복구)이 발생할 수 있다.
+  // - 사용자 메시지가 1개라도 존재하면 "새 대화 시작 단계"를 지난 것으로 보고 new 플래그를 제거한다.
+  useEffect(() => {
+    if (isOrigChat) return;
+    const p = new URLSearchParams(location.search || '');
+    if (p.get('new') !== '1') return;
+    if (!chatRoomId) return;
+    const arr = Array.isArray(messages) ? messages : [];
+    if (!arr.length) return;
+    const hasUserTurn = arr.some((m) => String(m?.senderType || m?.sender_type || '').toLowerCase() === 'user');
+    if (!hasUserTurn) return;
+    try {
+      const usp = new URLSearchParams(location.search || '');
+      usp.delete('new');
+      navigate(`${location.pathname}?${usp.toString()}`, { replace: true });
+    } catch (_) {}
+  }, [isOrigChat, chatRoomId, messages, location.pathname, location.search, navigate]);
 
   // ✅ 탭 전환/복귀 이벤트는 원작챗 동기화에만 사용한다.
   // - 일반챗에서 visibilitychange로 히스토리를 재요청하면 오프닝 연출이 재트리거될 수 있다.
@@ -4627,7 +4647,8 @@ const ChatPage = () => {
       const lastType = String(last?.senderType || last?.sender_type || '').toLowerCase();
       if (lastType !== 'user') return false;
       const ts = Date.parse(last?.created_at || last?.timestamp || '');
-      if (!Number.isFinite(ts)) return true;
+      // timestamp 누락/깨짐 데이터는 "대기 중"으로 고정하지 않는다(잠금 오탐 방지).
+      if (!Number.isFinite(ts)) return false;
       return (Date.now() - ts) <= TYPING_PERSIST_TTL_MS;
     } catch (_) {
       return false;
@@ -5045,19 +5066,24 @@ const ChatPage = () => {
 
     const startIntroStream = (id, full) => {
       try {
+        const fullRaw = String(full || '');
+        // HTML/태그가 많은 intro는 "보이는 텍스트 길이" 기준으로 스트리밍해야
+        // 화면상 완료 후 입력 잠금이 늦게 풀리는 현상을 줄일 수 있다.
+        const visibleFull = String(normalizeIntroStreamText(fullRaw) || fullRaw);
+
         uiIntroCancelSeqRef.current += 1;
         const token = uiIntroCancelSeqRef.current;
         if (uiIntroTimerRef.current) {
           clearInterval(uiIntroTimerRef.current);
           uiIntroTimerRef.current = null;
         }
-        setUiIntroStream({ id, full, shown: '' });
+        setUiIntroStream({ id, full: fullRaw, shown: '' });
 
         const intervalMs = 33;
         // 오프닝 지문은 "스트리밍이 보이도록" 최소 시간을 높여 체감을 확보한다.
-        const totalMs = Math.max(1200, Math.min(4500, Math.round(full.length * 20)));
+        const totalMs = Math.max(1200, Math.min(4500, Math.round(visibleFull.length * 20)));
         const steps = Math.max(1, Math.ceil(totalMs / intervalMs));
-        const chunk = Math.max(1, Math.ceil(full.length / steps));
+        const chunk = Math.max(1, Math.ceil(visibleFull.length / steps));
         let idx = 0;
         let tick = 0;
 
@@ -5067,17 +5093,17 @@ const ChatPage = () => {
             uiIntroTimerRef.current = null;
             return;
           }
-          idx = Math.min(full.length, idx + chunk);
-          const nextShown = full.slice(0, idx);
+          idx = Math.min(visibleFull.length, idx + chunk);
+          const nextShown = visibleFull.slice(0, idx);
           setUiIntroStream((prev) => {
             if (!prev || String(prev.id || '') !== String(id)) return prev;
             return { ...prev, shown: nextShown };
           });
           tick += 1;
-          if (autoScrollRef.current && (tick % 3 === 0 || idx >= full.length)) {
+          if (autoScrollRef.current && (tick % 3 === 0 || idx >= visibleFull.length)) {
             try { window.requestAnimationFrame(() => { try { scrollToBottom(); } catch (_) {} }); } catch (_) {}
           }
-          if (idx >= full.length) {
+          if (idx >= visibleFull.length) {
             try { clearInterval(uiIntroTimerRef.current); } catch (_) {}
             uiIntroTimerRef.current = null;
             try { uiIntroDoneByIdRef.current[id] = true; } catch (_) {}
@@ -5093,6 +5119,10 @@ const ChatPage = () => {
 
     const startGreetingStream = (id, fullForDisplay) => {
       try {
+        const fullRaw = String(fullForDisplay || '');
+        // greeting도 동일하게 "보이는 길이" 기준으로 스트리밍 시간을 맞춘다.
+        const visibleFull = String(normalizeIntroStreamText(fullRaw) || fullRaw);
+
         uiStreamCancelSeqRef.current += 1;
         const token = uiStreamCancelSeqRef.current;
         if (uiStreamTimerRef.current) {
@@ -5102,13 +5132,12 @@ const ChatPage = () => {
         // auto-stream effect의 초기 가드와 충돌하지 않게 "초기화 완료"로 간주
         uiStreamHydratedRef.current = true;
         uiStreamPrevLastIdRef.current = id;
-        setUiStream({ id, full: fullForDisplay, shown: '' });
+        setUiStream({ id, full: fullRaw, shown: '' });
 
-        const full = String(fullForDisplay);
         const intervalMs = 33;
-        const totalMs = Math.max(650, Math.min(2400, Math.round(full.length * 18)));
+        const totalMs = Math.max(650, Math.min(2400, Math.round(visibleFull.length * 18)));
         const steps = Math.max(1, Math.ceil(totalMs / intervalMs));
-        const chunk = Math.max(1, Math.ceil(full.length / steps));
+        const chunk = Math.max(1, Math.ceil(visibleFull.length / steps));
         let idx = 0;
         let tick = 0;
 
@@ -5118,17 +5147,17 @@ const ChatPage = () => {
             uiStreamTimerRef.current = null;
             return;
           }
-          idx = Math.min(full.length, idx + chunk);
-          const nextShown = full.slice(0, idx);
+          idx = Math.min(visibleFull.length, idx + chunk);
+          const nextShown = visibleFull.slice(0, idx);
           setUiStream((prev) => {
             if (!prev || String(prev.id || '') !== String(id)) return prev;
             return { ...prev, shown: nextShown };
           });
           tick += 1;
-          if (autoScrollRef.current && (tick % 3 === 0 || idx >= full.length)) {
+          if (autoScrollRef.current && (tick % 3 === 0 || idx >= visibleFull.length)) {
             try { window.requestAnimationFrame(() => { try { scrollToBottom(); } catch (_) {} }); } catch (_) {}
           }
-          if (idx >= full.length) {
+          if (idx >= visibleFull.length) {
             try { clearInterval(uiStreamTimerRef.current); } catch (_) {}
             uiStreamTimerRef.current = null;
             try { uiStreamDoneByIdRef.current[id] = true; } catch (_) {}
@@ -5179,6 +5208,7 @@ const ChatPage = () => {
     isAssistantMessage,
     sanitizeAiText,
     formatSafetyRefusalForDisplay,
+    normalizeIntroStreamText,
   ]);
 
   /**

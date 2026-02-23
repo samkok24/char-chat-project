@@ -13,6 +13,63 @@ from typing import Any, Optional
 import json
 
 
+def _loads_maybe_json(raw: Any, *, max_depth: int = 3) -> Any:
+    """
+    문자열 JSON이 여러 번 중첩된 레거시 데이터를 방어적으로 해제한다.
+    - 예: '"{\"sim_options\": {\"max_turns\": 200}}"' 같은 이중 인코딩 케이스
+    """
+    cur = raw
+    for _ in range(max_depth):
+        if not isinstance(cur, str):
+            break
+        s = cur.strip()
+        if not s:
+            return None
+        try:
+            cur = json.loads(s)
+        except Exception:
+            return None
+    return cur
+
+
+def coerce_start_sets_dict(start_sets: Any) -> Optional[dict]:
+    """
+    다양한 레거시 형태에서 start_sets dict를 최대한 복구한다.
+
+    지원:
+    - dict
+    - JSON 문자열(단일/중첩 인코딩)
+    - 래퍼 구조: {"basic_info":{"start_sets":...}} / {"start_sets": {...}}
+    """
+    try:
+        ss = _loads_maybe_json(start_sets)
+        if not isinstance(ss, dict):
+            return None
+
+        # 래퍼 구조 방어: {"basic_info":{"start_sets": ...}}
+        basic_info = _loads_maybe_json(ss.get("basic_info"))
+        if isinstance(basic_info, dict):
+            nested = _loads_maybe_json(basic_info.get("start_sets"))
+            if isinstance(nested, dict):
+                ss = nested
+
+        # 래퍼 구조 방어: {"start_sets": {...}}
+        nested_root = _loads_maybe_json(ss.get("start_sets"))
+        if isinstance(nested_root, dict):
+            # sim_options/max_turns 힌트가 있으면 내부를 SSOT로 채택
+            if (
+                ("sim_options" in nested_root)
+                or ("simOptions" in nested_root)
+                or ("max_turns" in nested_root)
+                or ("maxTurns" in nested_root)
+            ):
+                ss = nested_root
+
+        return ss
+    except Exception:
+        return None
+
+
 def extract_max_turns_from_start_sets(start_sets: Any) -> Optional[int]:
     """
     start_sets에서 sim_options.max_turns를 방어적으로 추출한다.
@@ -27,37 +84,27 @@ def extract_max_turns_from_start_sets(start_sets: Any) -> Optional[int]:
     - 추출/파싱 실패 또는 값이 비정상(<=0)이면 None
     """
     try:
-        ss = start_sets
-        if not ss:
+        if not start_sets:
             return None
 
-        # legacy: JSON 문자열로 저장된 경우 방어
-        if isinstance(ss, str):
-            try:
-                ss = json.loads(ss)
-            except Exception:
-                return None
-
+        ss = coerce_start_sets_dict(start_sets)
         if not isinstance(ss, dict):
             return None
 
-        sim = ss.get("sim_options")
+        sim = _loads_maybe_json(ss.get("sim_options"))
         if sim is None:
-            sim = ss.get("simOptions")
+            sim = _loads_maybe_json(ss.get("simOptions"))
 
-        # (방어) sim_options도 문자열 JSON로 저장된 케이스가 있을 수 있다.
-        if isinstance(sim, str):
-            try:
-                sim = json.loads(sim)
-            except Exception:
-                sim = None
-
-        if not isinstance(sim, dict):
-            return None
-
-        raw = sim.get("max_turns", None)
+        raw = None
+        if isinstance(sim, dict):
+            raw = sim.get("max_turns", None)
+            if raw is None:
+                raw = sim.get("maxTurns", None)
+        # 레거시/오염 방어: 루트에 max_turns가 있는 케이스도 허용
         if raw is None:
-            raw = sim.get("maxTurns", None)
+            raw = ss.get("max_turns", None)
+        if raw is None:
+            raw = ss.get("maxTurns", None)
         if raw is None:
             return None
 
