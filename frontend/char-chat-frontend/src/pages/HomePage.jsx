@@ -3399,6 +3399,19 @@ const HomePage = () => {
       </Dialog>
 
       </main>
+
+      {/* 푸터 - 법적 링크 */}
+      <footer className="border-t border-gray-800 py-6 px-4 text-center text-xs text-gray-500">
+        <div className="flex items-center justify-center gap-3">
+          <Link to="/legal/terms" className="hover:text-gray-300 transition-colors">이용약관</Link>
+          <span>|</span>
+          <Link to="/legal/privacy" className="hover:text-gray-300 transition-colors">개인정보처리방침</Link>
+          <span>|</span>
+          <Link to="/legal/refund" className="hover:text-gray-300 transition-colors">환불정책</Link>
+        </div>
+        <p className="mt-2 text-gray-600">&copy; 2026 StoryDive. All rights reserved.</p>
+      </footer>
+
       </div>
       {/* 로그인 유도 모달 */}
     </AppLayout>

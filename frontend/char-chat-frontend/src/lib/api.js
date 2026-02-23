@@ -789,6 +789,128 @@ export const chatAPI = {
   
   sendMessageLegacy: (data) =>
     api.post('/chat/messages', data),
+  sendMessageStream: async (
+    data,
+    {
+      onStart,
+      onEvent,
+      onDelta,
+      onFinal,
+      onError,
+      onDone,
+    } = {}
+  ) => {
+    const endpoint = '/chat/messages/stream';
+    const makeHeaders = (token) => {
+      const headers = { 'Content-Type': 'application/json' };
+      if (token) headers.Authorization = `Bearer ${token}`;
+      return headers;
+    };
+    const readErrorDetail = async (res) => {
+      try {
+        const ct = String(res?.headers?.get?.('content-type') || '').toLowerCase();
+        if (ct.includes('application/json')) {
+          const j = await res.clone().json();
+          return String(j?.detail || j?.message || j?.error || '').trim();
+        }
+        return String(await res.clone().text() || '').trim();
+      } catch (_) {
+        return '';
+      }
+    };
+    const fetchWithToken = async (token) => fetch(`${API_BASE_URL}${endpoint}`, {
+      method: 'POST',
+      headers: makeHeaders(token),
+      body: JSON.stringify(data),
+      signal: controller.signal,
+    });
+
+    const controller = new AbortController();
+    try { if (onStart) onStart({ controller, abort: () => controller.abort() }); } catch (_) {}
+
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+    let finalPayload = null;
+
+    try {
+      let token = safeStorageGet('access_token');
+      let res = await fetchWithToken(token);
+      if (!res.ok) {
+        const detail = await readErrorDetail(res);
+        const isNotAuthenticated = (res.status === 403) && isNotAuthenticatedDetail(detail);
+        const shouldRefresh = (res.status === 401) || isNotAuthenticated;
+        if (shouldRefresh) {
+          try {
+            const newAccess = await runTokenRefresh(API_BASE_URL);
+            token = newAccess || safeStorageGet('access_token');
+            res = await fetchWithToken(token);
+          } catch (_) {
+            try {
+              clearStoredTokens();
+              notifyAuthRequired({
+                reason: res.status === 401 ? 'unauthorized' : 'not_authenticated',
+                path: endpoint,
+              });
+            } catch (_) {}
+            throw new Error(`stream auth failed ${res.status}`);
+          }
+        }
+      }
+      if (!res.ok || !res.body) {
+        const detail = await readErrorDetail(res);
+        throw new Error(detail || `stream error ${res.status}`);
+      }
+
+      const reader = res.body.getReader();
+      let done, value;
+      while (({ done, value } = await reader.read()) && !done) {
+        buffer += decoder.decode(value, { stream: true });
+        let idx;
+        while ((idx = buffer.indexOf('\n\n')) !== -1) {
+          const frame = buffer.slice(0, idx).trimEnd();
+          buffer = buffer.slice(idx + 2);
+          if (!frame || frame.startsWith(':')) continue;
+
+          let event = null;
+          let dataJson = null;
+          const lines = frame.split('\n');
+          for (const line of lines) {
+            if (line.startsWith('event:')) event = line.slice(6).trim();
+            else if (line.startsWith('data:')) dataJson = line.slice(5).trim();
+          }
+          if (!event || dataJson == null) continue;
+
+          let payload = null;
+          try { payload = JSON.parse(dataJson); } catch (_) { payload = null; }
+          try { if (onEvent) onEvent({ event, payload }); } catch (_) {}
+
+          if (event === 'delta') {
+            try { if (onDelta) onDelta(String(payload?.delta || '')); } catch (_) {}
+          } else if (event === 'final') {
+            finalPayload = payload || null;
+            try { if (onFinal) onFinal(finalPayload); } catch (_) {}
+          } else if (event === 'error') {
+            try { if (onError) onError(payload); } catch (_) {}
+            throw new Error(String(payload?.detail || 'stream error'));
+          } else if (event === 'done') {
+            try { if (onDone) onDone(); } catch (_) {}
+          }
+        }
+      }
+
+      return {
+        ok: !!finalPayload,
+        data: finalPayload,
+        controller,
+        abort: () => controller.abort(),
+      };
+    } catch (e) {
+      const msg = (e && e.message) ? String(e.message) : '';
+      const aborted = (e && e.name === 'AbortError') || msg.toLowerCase().includes('aborted');
+      try { controller.abort(); } catch (_) {}
+      return { ok: false, error: e, aborted, controller, abort: () => controller.abort() };
+    }
+  },
     
   // 채팅 삭제 관련 API
   clearChatMessages: (roomId) =>
@@ -1075,6 +1197,9 @@ export const pointAPI = {
   getBalance: () =>
     api.get('/point/balance'),
   
+  getTimerStatus: () =>
+    api.get('/point/timer-status'),
+  
   usePoints: (data) =>
     api.post('/point/use', data),
   
@@ -1083,6 +1208,12 @@ export const pointAPI = {
   
   getTransactionsSummary: () =>
     api.get('/point/transactions/summary'),
+
+  checkIn: () =>
+    api.post('/point/check-in'),
+
+  getCheckInStatus: () =>
+    api.get('/point/check-in/status'),
 };
 
 // 💳 결제 관련 API

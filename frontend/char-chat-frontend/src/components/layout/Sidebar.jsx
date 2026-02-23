@@ -1,12 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { Link, NavLink, useNavigate, useLocation } from 'react-router-dom';
-import { chatAPI, charactersAPI, storiesAPI } from '../../lib/api';
+import { chatAPI, charactersAPI, storiesAPI, pointAPI } from '../../lib/api';
 import { useAuth } from '../../contexts/AuthContext';
 import { Avatar, AvatarFallback, AvatarImage } from '../ui/avatar';
 import { resolveImageUrl, getCharacterPrimaryImage } from '../../lib/images';
 import { getReadingProgress, getReadingProgressAt } from '../../lib/reading';
 import { Button } from '../ui/button';
-import { MessageSquare, Plus, Home, Star, Heart, User, History, Sparkles, UserCog, LogOut, BookOpen, LogIn, HelpCircle, Bell, Settings, Loader2, ChevronLeft, ChevronRight } from 'lucide-react';
+import { MessageSquare, Plus, Home, Star, Heart, User, History, Sparkles, UserCog, LogOut, BookOpen, LogIn, HelpCircle, Bell, Settings, Loader2, ChevronLeft, ChevronRight, Gem, Timer } from 'lucide-react';
 import { Skeleton } from '../ui/skeleton';
 import { Badge } from '../ui/badge';
 import {
@@ -37,6 +37,48 @@ const Sidebar = ({ collapsed = false, onToggleCollapsed }) => {
   const requireAuth = useRequireAuth();
   const { openLoginModal } = useLoginModal();
   const [draftPromptOpen, setDraftPromptOpen] = useState(false);
+  const [rubyBalance, setRubyBalance] = useState(null);
+  const [timerCurrent, setTimerCurrent] = useState(0);
+  const [timerMax, setTimerMax] = useState(15);
+
+  // 루비 잔액 조회
+  const loadRubyRef = React.useRef(null);
+  useEffect(() => {
+    if (!isAuthenticated) {
+      setRubyBalance(null);
+      setTimerCurrent(0);
+      setTimerMax(15);
+      return;
+    }
+    let mounted = true;
+    const load = async () => {
+      try {
+        const [balRes, timerRes] = await Promise.all([
+          pointAPI.getBalance(),
+          pointAPI.getTimerStatus(),
+        ]);
+        if (mounted) {
+          setRubyBalance(balRes.data?.balance ?? 0);
+          setTimerCurrent(Number(timerRes?.data?.current ?? 0));
+          setTimerMax(Number(timerRes?.data?.max ?? 15));
+        }
+      } catch { /* best-effort */ }
+    };
+    loadRubyRef.current = load;
+    load();
+    const intervalId = setInterval(load, 60 * 1000);
+    return () => {
+      mounted = false;
+      clearInterval(intervalId);
+    };
+  }, [isAuthenticated]);
+
+  // 출석체크 등으로 잔액 변경 시 즉시 동기화
+  useEffect(() => {
+    const handler = () => { try { loadRubyRef.current?.(); } catch {} };
+    window.addEventListener('ruby:balanceChanged', handler);
+    return () => window.removeEventListener('ruby:balanceChanged', handler);
+  }, []);
 
   const handleDraftStartFresh = React.useCallback(() => {
     /**
@@ -445,6 +487,46 @@ const Sidebar = ({ collapsed = false, onToggleCollapsed }) => {
             <NavItem to="/history" icon={History}>대화내역</NavItem>
             {/* ✅ 요구사항: 스토리 에이전트는 사이드바 '대화내역' 바로 아래 버튼으로 이동 */}
             <NavItem to="/agent" icon={Sparkles}>스토리 에이전트</NavItem>
+
+            {/* 루비 충전 카드 */}
+            <NavLink
+              to="/ruby/charge"
+              className={({ isActive }) =>
+                `block ${collapsed ? 'px-1' : 'px-3'} mt-2`
+              }
+              aria-label="루비 충전"
+              title="루비 충전"
+            >
+              {collapsed ? (
+                <div className="flex flex-col items-center gap-0.5 py-2 rounded-lg bg-gray-700/50 hover:bg-gray-700 transition-colors">
+                  <Gem className="w-5 h-5 text-pink-400" />
+                  <span className="text-[10px] text-pink-400 font-bold">{rubyBalance !== null ? rubyBalance.toLocaleString() : '...'}</span>
+                </div>
+              ) : (
+                <div className="rounded-xl bg-gradient-to-r from-purple-900/40 to-pink-900/30 border border-purple-500/30 p-3 hover:border-purple-500/50 transition-colors">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <div className="flex items-center gap-1.5">
+                      <Gem className="w-4 h-4 text-pink-400" />
+                      <span className="text-sm font-semibold text-white">루비</span>
+                    </div>
+                    <span className="text-sm font-bold text-pink-400">{rubyBalance !== null ? rubyBalance.toLocaleString() : '...'}</span>
+                  </div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <div className="flex items-center gap-1 text-[11px] text-gray-400">
+                      <Timer className="w-3 h-3 text-purple-400" />
+                      <span>{timerCurrent}/{timerMax}</span>
+                    </div>
+                    <span className="text-[11px] text-purple-400 font-medium">충전하기 &rarr;</span>
+                  </div>
+                  <div className="w-full h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-gradient-to-r from-purple-500 to-blue-500 rounded-full transition-all"
+                      style={{ width: `${timerMax > 0 ? (timerCurrent / timerMax) * 100 : 0}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+            </NavLink>
           </>
         )}
         

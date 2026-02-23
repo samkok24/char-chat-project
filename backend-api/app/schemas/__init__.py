@@ -74,6 +74,7 @@ from .payment import (
     PointTransactionResponse,
     PointUseRequest,
     PointUseResponse,
+    TimerStatusResponse,
 )
 
 from .stats import (

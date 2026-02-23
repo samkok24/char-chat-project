@@ -2,8 +2,9 @@
  * 공통 헤더 컴포넌트
  */
 
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { resolveImageUrl } from '../lib/images';
+import { pointAPI } from '../lib/api';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { clearCreateCharacterDraft, hasCreateCharacterDraft } from '../lib/createCharacterDraft';
@@ -35,6 +36,20 @@ const Header = () => {
   const { user, isAuthenticated, logout } = useAuth();
   const navigate = useNavigate();
   const [draftPromptOpen, setDraftPromptOpen] = React.useState(false);
+  const [rubyBalance, setRubyBalance] = useState(null);
+
+  // 루비 잔액 조회
+  useEffect(() => {
+    if (!isAuthenticated) { setRubyBalance(null); return; }
+    let mounted = true;
+    (async () => {
+      try {
+        const res = await pointAPI.getBalance();
+        if (mounted) setRubyBalance(res.data?.balance ?? 0);
+      } catch { /* best-effort */ }
+    })();
+    return () => { mounted = false; };
+  }, [isAuthenticated]);
 
   const handleLogout = () => {
     logout();
@@ -97,7 +112,13 @@ const Header = () => {
                   <BookOpen className="w-4 h-4 mr-2" />
                   스토리
                 </Button>
-                
+
+                {/* 루비 잔액 */}
+                <Button variant="outline" onClick={() => navigate('/ruby/charge')} className="gap-1.5">
+                  <Gem className="w-4 h-4 text-pink-500" />
+                  <span className="font-semibold">{rubyBalance !== null ? rubyBalance.toLocaleString() : '...'}</span>
+                </Button>
+
                 {/* 프로필 드롭다운 메뉴 */}
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
@@ -128,7 +149,7 @@ const Header = () => {
                       <Gem className="mr-2 h-4 w-4 text-pink-500" />
                       <span>루비 충전</span>
                       <Badge className="ml-auto bg-pink-100 text-pink-800" variant="secondary">
-                        {user?.ruby_balance || 0}
+                        {rubyBalance !== null ? rubyBalance.toLocaleString() : '...'}
                       </Badge>
                     </DropdownMenuItem>
                     <DropdownMenuItem onClick={() => navigate('/settings')}>

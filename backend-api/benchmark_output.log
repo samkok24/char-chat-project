@@ -1,0 +1,147 @@
+[04:02:02] 벤치마크 시작
+모델 8개 x 10회 = 총 80회 테스트
+
+로그인 중...
+토큰 획득 완료: eyJhbGciOiJIUzI1NiIs...
+
+
+============================================================
+  Claude Haiku 4.5 (claude/claude-haiku-4-5-20251001)
+============================================================
+  Model set OK
+  Run 1/10: "루나, 나야. 지금 통화 가능해?..." OK ttfb=1.73s total=5.55s chars=406 narr=4 dial=7 cut=False kr=0.815
+  Run 2/10: "지금 당장 갈게. 무슨 거래인데?..." OK ttfb=0.99s total=3.28s chars=186 narr=2 dial=2 cut=False kr=0.991
+  Run 3/10: "그 녹음 파일은 어디서 구한 거야?..." OK ttfb=0.72s total=3.76s chars=321 narr=4 dial=6 cut=False kr=0.762
+  Run 4/10: "위험하지 않아? 혼자 가면 안 될 것..." OK ttfb=0.87s total=5.12s chars=463 narr=5 dial=7 cut=False kr=0.837
+  Run 5/10: "좋아, 같이 가자. 근데 준비물이 필..." OK ttfb=0.77s total=5.0s chars=431 narr=5 dial=7 cut=False kr=0.827
+  Run 6/10: "솔직히 말해봐. 나한테 숨기는 거 있..." OK ttfb=0.88s total=4.68s chars=382 narr=4 dial=7 cut=False kr=0.803
+  Run 7/10: "그 남자를 믿어도 되는 건가?..." OK ttfb=0.83s total=4.95s chars=442 narr=4 dial=7 cut=False kr=0.832
+  Run 8/10: "여기서 기다릴게. 조심해...." OK ttfb=0.85s total=5.57s chars=479 narr=4 dial=8 cut=False kr=0.846
+  Run 9/10: "계획이 바뀌었어. 다른 방법을 찾아보..." OK ttfb=0.91s total=3.97s chars=316 narr=4 dial=3 cut=False kr=0.825
+  Run 10/10: "이제 돌아갈 시간이야. 마무리하자...." OK ttfb=0.8s total=4.25s chars=348 narr=4 dial=6 cut=False kr=0.784
+
+  [중간 저장 완료: 1/8 모델]
+
+============================================================
+  Claude Sonnet 4 (claude/claude-sonnet-4-20250514)
+============================================================
+  Model set OK
+  Run 1/10: "루나, 나야. 지금 통화 가능해?..." OK ttfb=1.74s total=9.3s chars=295 narr=2 dial=2 cut=False kr=1.0
+  Run 2/10: "지금 당장 갈게. 무슨 거래인데?..." OK ttfb=1.78s total=10.44s chars=425 narr=4 dial=7 cut=False kr=0.825
+  Run 3/10: "그 녹음 파일은 어디서 구한 거야?..." OK ttfb=1.77s total=8.5s chars=343 narr=3 dial=6 cut=False kr=0.784
+  Run 4/10: "위험하지 않아? 혼자 가면 안 될 것..." OK ttfb=1.64s total=10.25s chars=408 narr=4 dial=5 cut=False kr=0.858
+  Run 5/10: "좋아, 같이 가자. 근데 준비물이 필..." OK ttfb=1.6s total=10.71s chars=429 narr=3 dial=7 cut=False kr=0.828
+  Run 6/10: "솔직히 말해봐. 나한테 숨기는 거 있..." OK ttfb=2.72s total=11.96s chars=484 narr=3 dial=12 cut=False kr=0.766
+  Run 7/10: "그 남자를 믿어도 되는 건가?..." OK ttfb=1.4s total=8.46s chars=345 narr=3 dial=4 cut=False kr=0.839
+  Run 8/10: "여기서 기다릴게. 조심해...." OK ttfb=1.76s total=9.41s chars=314 narr=2 dial=2 cut=False kr=1.0
+  Run 9/10: "계획이 바뀌었어. 다른 방법을 찾아보..." OK ttfb=1.83s total=10.68s chars=423 narr=4 dial=6 cut=False kr=0.83
+  Run 10/10: "이제 돌아갈 시간이야. 마무리하자...." OK ttfb=1.69s total=8.58s chars=390 narr=3 dial=6 cut=False kr=0.811
+
+  [중간 저장 완료: 2/8 모델]
+
+============================================================
+  Claude Sonnet 4.5 (claude/claude-sonnet-4-5-20250929)
+============================================================
+  Model set OK
+  Run 1/10: "루나, 나야. 지금 통화 가능해?..." OK ttfb=1.64s total=10.31s chars=370 narr=3 dial=6 cut=False kr=0.791
+  Run 2/10: "지금 당장 갈게. 무슨 거래인데?..." OK ttfb=2.02s total=11.97s chars=451 narr=4 dial=7 cut=False kr=0.832
+  Run 3/10: "그 녹음 파일은 어디서 구한 거야?..." OK ttfb=1.43s total=11.79s chars=432 narr=3 dial=6 cut=False kr=0.816
+  Run 4/10: "위험하지 않아? 혼자 가면 안 될 것..." OK ttfb=1.72s total=11.06s chars=447 narr=4 dial=7 cut=False kr=0.834
+  Run 5/10: "좋아, 같이 가자. 근데 준비물이 필..." OK ttfb=1.56s total=10.86s chars=440 narr=4 dial=8 cut=False kr=0.828
+  Run 6/10: "솔직히 말해봐. 나한테 숨기는 거 있..." OK ttfb=1.69s total=10.56s chars=469 narr=4 dial=9 cut=False kr=0.797
+  Run 7/10: "그 남자를 믿어도 되는 건가?..." OK ttfb=1.64s total=10.34s chars=461 narr=4 dial=7 cut=False kr=0.842
+  Run 8/10: "여기서 기다릴게. 조심해...." OK ttfb=1.63s total=11.42s chars=460 narr=4 dial=6 cut=False kr=0.839
+  Run 9/10: "계획이 바뀌었어. 다른 방법을 찾아보..." OK ttfb=1.21s total=10.26s chars=427 narr=4 dial=7 cut=False kr=0.83
+  Run 10/10: "이제 돌아갈 시간이야. 마무리하자...." OK ttfb=1.86s total=9.37s chars=384 narr=4 dial=7 cut=False kr=0.803
+
+  [중간 저장 완료: 3/8 모델]
+
+============================================================
+  Claude Opus 4.1 (claude/claude-opus-4-1-20250805)
+============================================================
+  Model set OK
+  Run 1/10: "루나, 나야. 지금 통화 가능해?..." OK ttfb=3.09s total=13.08s chars=383 narr=4 dial=7 cut=False kr=0.8
+  Run 2/10: "지금 당장 갈게. 무슨 거래인데?..." OK ttfb=2.76s total=14.86s chars=455 narr=4 dial=8 cut=False kr=0.836
+  Run 3/10: "그 녹음 파일은 어디서 구한 거야?..." OK ttfb=3.28s total=13.15s chars=380 narr=3 dial=10 cut=False kr=0.743
+  Run 4/10: "위험하지 않아? 혼자 가면 안 될 것..." OK ttfb=3.07s total=14.71s chars=412 narr=3 dial=7 cut=False kr=0.812
+  Run 5/10: "좋아, 같이 가자. 근데 준비물이 필..." OK ttfb=3.08s total=20.67s chars=518 narr=4 dial=7 cut=False kr=0.849
+  Run 6/10: "솔직히 말해봐. 나한테 숨기는 거 있..." OK ttfb=2.57s total=15.34s chars=481 narr=3 dial=10 cut=False kr=0.797
+  Run 7/10: "그 남자를 믿어도 되는 건가?..." OK ttfb=3.01s total=12.55s chars=427 narr=4 dial=11 cut=False kr=0.777
+  Run 8/10: "여기서 기다릴게. 조심해...." OK ttfb=3.44s total=13.58s chars=374 narr=3 dial=6 cut=False kr=0.797
+  Run 9/10: "계획이 바뀌었어. 다른 방법을 찾아보..." OK ttfb=2.88s total=12.94s chars=368 narr=3 dial=7 cut=False kr=0.795
+  Run 10/10: "이제 돌아갈 시간이야. 마무리하자...." OK ttfb=3.1s total=11.48s chars=333 narr=3 dial=7 cut=False kr=0.769
+
+  [중간 저장 완료: 4/8 모델]
+
+============================================================
+  Claude Opus 4.5 (claude/claude-opus-4-5-20251101)
+============================================================
+  Model set OK
+  Run 1/10: "루나, 나야. 지금 통화 가능해?..." OK ttfb=1.75s total=10.18s chars=413 narr=4 dial=4 cut=False kr=0.861
+  Run 2/10: "지금 당장 갈게. 무슨 거래인데?..." OK ttfb=1.59s total=9.24s chars=376 narr=4 dial=4 cut=False kr=0.852
+  Run 3/10: "그 녹음 파일은 어디서 구한 거야?..." OK ttfb=1.57s total=7.57s chars=297 narr=4 dial=3 cut=False kr=0.812
+  Run 4/10: "위험하지 않아? 혼자 가면 안 될 것..." OK ttfb=1.47s total=9.75s chars=442 narr=5 dial=8 cut=False kr=0.829
+  Run 5/10: "좋아, 같이 가자. 근데 준비물이 필..." OK ttfb=1.6s total=11.41s chars=452 narr=5 dial=8 cut=False kr=0.83
+  Run 6/10: "솔직히 말해봐. 나한테 숨기는 거 있..." OK ttfb=1.61s total=12.51s chars=524 narr=5 dial=12 cut=False kr=0.818
+  Run 7/10: "그 남자를 믿어도 되는 건가?..." OK ttfb=1.24s total=8.01s chars=299 narr=4 dial=3 cut=False kr=0.814
+  Run 8/10: "여기서 기다릴게. 조심해...." OK ttfb=1.46s total=9.55s chars=421 narr=5 dial=7 cut=False kr=0.821
+  Run 9/10: "계획이 바뀌었어. 다른 방법을 찾아보..." OK ttfb=1.64s total=11.21s chars=433 narr=4 dial=6 cut=False kr=0.869
+  Run 10/10: "이제 돌아갈 시간이야. 마무리하자...." OK ttfb=1.29s total=8.71s chars=362 narr=4 dial=4 cut=False kr=0.844
+
+  [중간 저장 완료: 5/8 모델]
+
+============================================================
+  Gemini 2.5 Pro (gemini/gemini-2.5-pro)
+============================================================
+  Model set OK
+  Run 1/10: "루나, 나야. 지금 통화 가능해?..." OK ttfb=15.28s total=17.22s chars=456 narr=3 dial=7 cut=False kr=0.841
+  Run 2/10: "지금 당장 갈게. 무슨 거래인데?..." OK ttfb=15.48s total=17.88s chars=615 narr=4 dial=11 cut=False kr=0.855
+  Run 3/10: "그 녹음 파일은 어디서 구한 거야?..." OK ttfb=16.36s total=17.78s chars=373 narr=2 dial=3 cut=False kr=0.858
+  Run 4/10: "위험하지 않아? 혼자 가면 안 될 것..." OK ttfb=19.08s total=20.32s chars=435 narr=2 dial=9 cut=False kr=0.834
+  Run 5/10: "좋아, 같이 가자. 근데 준비물이 필..." OK ttfb=14.56s total=15.55s chars=369 narr=3 dial=6 cut=False kr=0.799
+  Run 6/10: "솔직히 말해봐. 나한테 숨기는 거 있..." OK ttfb=15.73s total=17.03s chars=439 narr=4 dial=6 cut=False kr=0.876
+  Run 7/10: "그 남자를 믿어도 되는 건가?..." OK ttfb=17.75s total=18.66s chars=327 narr=3 dial=3 cut=False kr=0.836
+  Run 8/10: "여기서 기다릴게. 조심해...." OK ttfb=18.65s total=20.14s chars=458 narr=2 dial=10 cut=False kr=0.802
+  Run 9/10: "계획이 바뀌었어. 다른 방법을 찾아보..." OK ttfb=18.7s total=19.6s chars=379 narr=2 dial=9 cut=False kr=0.748
+  Run 10/10: "이제 돌아갈 시간이야. 마무리하자...." OK ttfb=20.16s total=20.97s chars=289 narr=3 dial=4 cut=False kr=0.81
+
+  [중간 저장 완료: 6/8 모델]
+
+============================================================
+  Gemini 2.5 Flash (gemini/gemini-2.5-flash)
+============================================================
+  Model set OK
+  Run 1/10: "루나, 나야. 지금 통화 가능해?..." OK ttfb=6.7s total=7.16s chars=267 narr=1 dial=4 cut=True kr=0.917
+  Run 2/10: "지금 당장 갈게. 무슨 거래인데?..." OK ttfb=8.52s total=9.16s chars=450 narr=2 dial=4 cut=False kr=0.877
+  Run 3/10: "그 녹음 파일은 어디서 구한 거야?..." OK ttfb=9.32s total=9.66s chars=256 narr=2 dial=2 cut=False kr=0.787
+  Run 4/10: "위험하지 않아? 혼자 가면 안 될 것..." OK ttfb=8.14s total=8.86s chars=392 narr=2 dial=5 cut=False kr=0.863
+  Run 5/10: "좋아, 같이 가자. 근데 준비물이 필..." OK ttfb=7.8s total=8.39s chars=447 narr=2 dial=5 cut=False kr=0.883
+  Run 6/10: "솔직히 말해봐. 나한테 숨기는 거 있..." OK ttfb=11.02s total=11.41s chars=386 narr=2 dial=5 cut=False kr=0.861
+  Run 7/10: "그 남자를 믿어도 되는 건가?..." OK ttfb=12.04s total=12.42s chars=300 narr=2 dial=5 cut=False kr=0.821
+  Run 8/10: "여기서 기다릴게. 조심해...." OK ttfb=15.29s total=15.61s chars=297 narr=2 dial=6 cut=False kr=0.809
+  Run 9/10: "계획이 바뀌었어. 다른 방법을 찾아보..." OK ttfb=7.9s total=8.17s chars=225 narr=2 dial=2 cut=False kr=0.755
+  Run 10/10: "이제 돌아갈 시간이야. 마무리하자...." OK ttfb=8.64s total=9.26s chars=431 narr=5 dial=5 cut=False kr=0.871
+
+  [중간 저장 완료: 7/8 모델]
+
+============================================================
+  Gemini 3 Pro Preview (gemini/gemini-3-pro-preview)
+============================================================
+  Model set OK
+  Run 1/10: "루나, 나야. 지금 통화 가능해?..." OK ttfb=12.55s total=12.64s chars=65 narr=1 dial=1 cut=True kr=1.0
+  Run 2/10: "지금 당장 갈게. 무슨 거래인데?..." OK ttfb=11.91s total=12.0s chars=53 narr=1 dial=0 cut=True kr=1.0
+  Run 3/10: "그 녹음 파일은 어디서 구한 거야?..." OK ttfb=11.78s total=11.87s chars=65 narr=1 dial=0 cut=False kr=1.0
+  Run 4/10: "위험하지 않아? 혼자 가면 안 될 것..." OK ttfb=12.28s total=12.36s chars=49 narr=1 dial=0 cut=True kr=1.0
+  Run 5/10: "좋아, 같이 가자. 근데 준비물이 필..." OK ttfb=12.42s total=12.48s chars=66 narr=2 dial=0 cut=True kr=0.8
+  Run 6/10: "솔직히 말해봐. 나한테 숨기는 거 있..." OK ttfb=12.12s total=12.18s chars=59 narr=1 dial=1 cut=True kr=1.0
+  Run 7/10: "그 남자를 믿어도 되는 건가?..." OK ttfb=12.07s total=12.13s chars=55 narr=1 dial=0 cut=True kr=1.0
+  Run 8/10: "여기서 기다릴게. 조심해...." OK ttfb=12.17s total=12.26s chars=65 narr=1 dial=1 cut=True kr=1.0
+  Run 9/10: "계획이 바뀌었어. 다른 방법을 찾아보..." OK ttfb=12.47s total=12.57s chars=51 narr=1 dial=0 cut=True kr=1.0
+  Run 10/10: "이제 돌아갈 시간이야. 마무리하자...." OK ttfb=16.39s total=16.46s chars=57 narr=1 dial=0 cut=True kr=1.0
+
+  [중간 저장 완료: 8/8 모델]
+
+
+============================================================
+  벤치마크 완료! 결과: /app/MODEL_BENCHMARK_RESULTS.md
+============================================================

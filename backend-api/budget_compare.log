@@ -1,0 +1,131 @@
+[06:05:53] thinkingBudget 비교 벤치마크 시작
+토큰 획득
+
+>>> thinkingBudget=0 로 설정 중...
+
+============================================================
+  gemini-2.5-pro — budget=0
+============================================================
+  Run 1/10: "루나, 나야. 지금 통화 가능해?..." TTFB=0s total=1.06s chars=0 dial=0 cut=False
+  Run 2/10: "지금 당장 갈게. 무슨 거래인데?..." TTFB=0s total=0.54s chars=0 dial=0 cut=False
+  Run 3/10: "그 녹음 파일은 어디서 구한 거야?..." TTFB=0s total=0.47s chars=0 dial=0 cut=False
+  Run 4/10: "위험하지 않아? 혼자 가면 안 될 것..." TTFB=0s total=0.48s chars=0 dial=0 cut=False
+  Run 5/10: "좋아, 같이 가자. 근데 준비물이 필..." TTFB=0s total=0.52s chars=0 dial=0 cut=False
+  Run 6/10: "솔직히 말해봐. 나한테 숨기는 거 있..." TTFB=0s total=0.52s chars=0 dial=0 cut=False
+  Run 7/10: "그 남자를 믿어도 되는 건가?..." TTFB=0s total=0.51s chars=0 dial=0 cut=False
+  Run 8/10: "여기서 기다릴게. 조심해...." TTFB=0s total=0.56s chars=0 dial=0 cut=False
+  Run 9/10: "계획이 바뀌었어. 다른 방법을 찾아보..." TTFB=0s total=0.49s chars=0 dial=0 cut=False
+  Run 10/10: "이제 돌아갈 시간이야. 마무리하자...." TTFB=0s total=0.55s chars=0 dial=0 cut=False
+
+============================================================
+  gemini-2.5-flash — budget=0
+============================================================
+  Run 1/10: "루나, 나야. 지금 통화 가능해?..." TTFB=1.23s total=2.19s chars=276 dial=2 cut=False
+  Run 2/10: "지금 당장 갈게. 무슨 거래인데?..." TTFB=1.13s total=2.11s chars=344 dial=3 cut=True
+  Run 3/10: "그 녹음 파일은 어디서 구한 거야?..." TTFB=1.11s total=2.15s chars=348 dial=2 cut=False
+  Run 4/10: "위험하지 않아? 혼자 가면 안 될 것..." TTFB=0.75s total=1.55s chars=250 dial=2 cut=False
+  Run 5/10: "좋아, 같이 가자. 근데 준비물이 필..." TTFB=1.19s total=2.39s chars=396 dial=2 cut=False
+  Run 6/10: "솔직히 말해봐. 나한테 숨기는 거 있..." TTFB=1.05s total=2.04s chars=320 dial=2 cut=False
+  Run 7/10: "그 남자를 믿어도 되는 건가?..." TTFB=1.11s total=1.85s chars=234 dial=1 cut=False
+  Run 8/10: "여기서 기다릴게. 조심해...." TTFB=0.76s total=1.84s chars=380 dial=6 cut=False
+  Run 9/10: "계획이 바뀌었어. 다른 방법을 찾아보..." TTFB=1.15s total=1.88s chars=224 dial=2 cut=False
+  Run 10/10: "이제 돌아갈 시간이야. 마무리하자...." TTFB=0.84s total=1.86s chars=326 dial=3 cut=True
+
+============================================================
+  gemini-3-pro-preview — budget=0
+============================================================
+  Run 1/10: "루나, 나야. 지금 통화 가능해?..." TTFB=0s total=0.8s chars=0 dial=0 cut=False
+  Run 2/10: "지금 당장 갈게. 무슨 거래인데?..." TTFB=0s total=0.66s chars=0 dial=0 cut=False
+  Run 3/10: "그 녹음 파일은 어디서 구한 거야?..." TTFB=0s total=0.9s chars=0 dial=0 cut=False
+  Run 4/10: "위험하지 않아? 혼자 가면 안 될 것..." TTFB=0s total=0.68s chars=0 dial=0 cut=False
+  Run 5/10: "좋아, 같이 가자. 근데 준비물이 필..." TTFB=0s total=0.73s chars=0 dial=0 cut=False
+  Run 6/10: "솔직히 말해봐. 나한테 숨기는 거 있..." TTFB=0s total=0.69s chars=0 dial=0 cut=False
+  Run 7/10: "그 남자를 믿어도 되는 건가?..." TTFB=0s total=0.69s chars=0 dial=0 cut=False
+  Run 8/10: "여기서 기다릴게. 조심해...." TTFB=0s total=0.71s chars=0 dial=0 cut=False
+  Run 9/10: "계획이 바뀌었어. 다른 방법을 찾아보..." TTFB=0s total=0.66s chars=0 dial=0 cut=False
+  Run 10/10: "이제 돌아갈 시간이야. 마무리하자...." TTFB=0s total=0.75s chars=0 dial=0 cut=False
+
+>>> thinkingBudget=128 로 설정 중...
+
+============================================================
+  gemini-2.5-pro — budget=128
+============================================================
+  Run 1/10: "루나, 나야. 지금 통화 가능해?..." TTFB=4.06s total=6.8s chars=397 dial=2 cut=False
+  Run 2/10: "지금 당장 갈게. 무슨 거래인데?..." TTFB=2.55s total=5.83s chars=649 dial=10 cut=False
+  Run 3/10: "그 녹음 파일은 어디서 구한 거야?..." TTFB=3.53s total=5.65s chars=361 dial=5 cut=True
+  Run 4/10: "위험하지 않아? 혼자 가면 안 될 것..." TTFB=3.66s total=6.96s chars=598 dial=6 cut=False
+  Run 5/10: "좋아, 같이 가자. 근데 준비물이 필..." TTFB=2.47s total=5.8s chars=637 dial=9 cut=False
+  Run 6/10: "솔직히 말해봐. 나한테 숨기는 거 있..." TTFB=2.83s total=6.16s chars=580 dial=12 cut=False
+  Run 7/10: "그 남자를 믿어도 되는 건가?..." TTFB=3.46s total=5.65s chars=440 dial=6 cut=False
+  Run 8/10: "여기서 기다릴게. 조심해...." TTFB=2.5s total=4.93s chars=449 dial=6 cut=False
+  Run 9/10: "계획이 바뀌었어. 다른 방법을 찾아보..." TTFB=3.02s total=5.78s chars=526 dial=9 cut=False
+  Run 10/10: "이제 돌아갈 시간이야. 마무리하자...." TTFB=2.2s total=4.4s chars=459 dial=8 cut=False
+
+============================================================
+  gemini-2.5-flash — budget=128
+============================================================
+  Run 1/10: "루나, 나야. 지금 통화 가능해?..." TTFB=2.66s total=3.74s chars=393 dial=5 cut=False
+  Run 2/10: "지금 당장 갈게. 무슨 거래인데?..." TTFB=1.45s total=2.72s chars=453 dial=4 cut=False
+  Run 3/10: "그 녹음 파일은 어디서 구한 거야?..." TTFB=1.71s total=2.24s chars=204 dial=2 cut=False
+  Run 4/10: "위험하지 않아? 혼자 가면 안 될 것..." TTFB=1.68s total=2.33s chars=324 dial=3 cut=False
+  Run 5/10: "좋아, 같이 가자. 근데 준비물이 필..." TTFB=1.69s total=2.67s chars=305 dial=2 cut=True
+  Run 6/10: "솔직히 말해봐. 나한테 숨기는 거 있..." TTFB=2.2s total=3.57s chars=502 dial=4 cut=False
+  Run 7/10: "그 남자를 믿어도 되는 건가?..." TTFB=1.76s total=2.53s chars=365 dial=2 cut=True
+  Run 8/10: "여기서 기다릴게. 조심해...." TTFB=1.66s total=2.22s chars=264 dial=2 cut=True
+  Run 9/10: "계획이 바뀌었어. 다른 방법을 찾아보..." TTFB=1.89s total=2.52s chars=295 dial=3 cut=False
+  Run 10/10: "이제 돌아갈 시간이야. 마무리하자...." TTFB=2.11s total=3.46s chars=513 dial=7 cut=False
+
+============================================================
+  gemini-3-pro-preview — budget=128
+============================================================
+  Run 1/10: "루나, 나야. 지금 통화 가능해?..." TTFB=3.24s total=7.15s chars=630 dial=4 cut=False
+  Run 2/10: "지금 당장 갈게. 무슨 거래인데?..." TTFB=3.45s total=8.0s chars=730 dial=4 cut=False
+  Run 3/10: "그 녹음 파일은 어디서 구한 거야?..." TTFB=3.49s total=7.03s chars=557 dial=4 cut=False
+  Run 4/10: "위험하지 않아? 혼자 가면 안 될 것..." TTFB=3.54s total=6.64s chars=519 dial=6 cut=False
+  Run 5/10: "좋아, 같이 가자. 근데 준비물이 필..." TTFB=3.89s total=8.61s chars=737 dial=7 cut=False
+  Run 6/10: "솔직히 말해봐. 나한테 숨기는 거 있..." TTFB=3.9s total=7.92s chars=659 dial=9 cut=False
+  Run 7/10: "그 남자를 믿어도 되는 건가?..." TTFB=3.54s total=7.3s chars=584 dial=4 cut=False
+  Run 8/10: "여기서 기다릴게. 조심해...." TTFB=3.89s total=7.52s chars=547 dial=4 cut=False
+  Run 9/10: "계획이 바뀌었어. 다른 방법을 찾아보..." TTFB=18.67s total=22.6s chars=740 dial=7 cut=False
+  Run 10/10: "이제 돌아갈 시간이야. 마무리하자...." TTFB=3.83s total=7.28s chars=568 dial=9 cut=False
+
+
+======================================================================
+종합 비교: thinkingBudget 0 vs 128
+======================================================================
+
+--- gemini-2.5-pro ---
+  budget=0: ALL FAILED
+  budget=128:
+    TTFB:  3.0s ± 0.6
+    Total: 5.8s ± 0.8
+    Chars: 510 ± 102
+    Dial:  7.3
+    Cut:   1/10  NoDial: 1/10
+    KR:    86.3%
+
+--- gemini-2.5-flash ---
+  budget=0:
+    TTFB:  1.0s ± 0.2
+    Total: 2.0s ± 0.2
+    Chars: 310 ± 61
+    Dial:  2.5
+    Cut:   2/10  NoDial: 0/10
+    KR:    95.8%
+  budget=128:
+    TTFB:  1.9s ± 0.4
+    Total: 2.8s ± 0.6
+    Chars: 362 ± 103
+    Dial:  3.4
+    Cut:   3/10  NoDial: 0/10
+    KR:    91.0%
+
+--- gemini-3-pro-preview ---
+  budget=0: ALL FAILED
+  budget=128:
+    TTFB:  5.1s ± 4.8
+    Total: 9.0s ± 4.8
+    Chars: 627 ± 85
+    Dial:  5.8
+    Cut:   0/10  NoDial: 0/10
+    KR:    89.1%

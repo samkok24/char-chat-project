@@ -1951,6 +1951,242 @@ def _prepend_prompt_meta_header(
     return (header + "\n\n" + body.lstrip()).strip()
 
 
+def _contains_any_regex(text: str, patterns: List[str]) -> bool:
+    """여러 정규식 패턴 중 하나라도 일치하면 True."""
+    s = _safe_text(text)
+    if not s:
+        return False
+    for p in patterns or []:
+        try:
+            if re.search(p, s, flags=re.IGNORECASE | re.MULTILINE):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _looks_like_truncated_tail(text: str, *, min_len: int = 1000) -> bool:
+    """
+    텍스트 말미가 잘린 흔적을 방어적으로 감지한다.
+
+    - 완전일치 템플릿보다 "꼬리 문장 완결성"을 우선 본다.
+    - false positive를 줄이기 위해 길이가 충분히 긴 경우에만 엄격 체크한다.
+    """
+    s = _safe_text(text).rstrip()
+    if not s:
+        return True
+
+    # 코드펜스 짝이 안 맞으면 거의 확실히 절단/깨짐이다.
+    try:
+        if s.count("```") % 2 == 1:
+            return True
+    except Exception:
+        pass
+
+    # 마지막 실질 라인 기준으로 말미 품질 확인
+    try:
+        tail_line = ""
+        for ln in reversed(s.splitlines()):
+            t = ln.strip()
+            if t:
+                tail_line = t
+                break
+    except Exception:
+        tail_line = s[-80:].strip()
+
+    if not tail_line:
+        return True
+    if re.match(r"^#{1,6}\s*$", tail_line):
+        return True
+    if tail_line.endswith(("-", ":", "(", "[", "{", "·", ",", "，")):
+        return True
+
+    # 일반 종료 문자면 정상 종료로 간주한다.
+    terminal_chars = ("\n", ".", "!", "?", "…", "”", "’", ")", "]", "}")
+    if s.endswith(terminal_chars):
+        return False
+
+    # 한국어 문장 종결어미 허용(마침표 없는 서술체)
+    if re.search(r"(다|요|함|됨|임|죠|네|까)\s*$", s):
+        return False
+
+    # 충분히 긴 본문에서 말미가 단어 단위로 끊기면 절단으로 본다.
+    if len(s) >= min_len and re.search(r"[가-힣A-Za-z0-9]$", s):
+        return True
+    return False
+
+
+def _close_tail_if_needed(text: str) -> str:
+    """
+    말미가 애매하게 끝나는 경우 최소한의 마침 처리만 수행한다.
+    - 의미를 바꾸는 재작성은 하지 않는다.
+    """
+    s = _safe_text(text).rstrip()
+    if not s:
+        return s
+    if not _looks_like_truncated_tail(s, min_len=900):
+        return s
+    # 불필요한 변형을 피하고, 단어로 끝난 경우만 마침표를 보강한다.
+    if re.search(r"[가-힣A-Za-z0-9]$", s):
+        return s + "."
+    return s
+
+
+def _extract_tail_anchor_terms(text: str, *, limit: int = 12) -> List[str]:
+    """tail 문맥 고정용 앵커 토큰을 추출한다."""
+    s = _safe_text(text)
+    if not s:
+        return []
+    out: List[str] = []
+    seen = set()
+    stop = {
+        "그리고", "하지만", "또한", "그러나", "따라서", "즉시", "반드시",
+        "사용자", "캐릭터", "시뮬레이션", "프롬프트", "규칙", "설정",
+    }
+    for tok in re.findall(r"[가-힣A-Za-z]{2,}", s):
+        t = tok.strip()
+        if not t:
+            continue
+        if t in stop:
+            continue
+        k = t.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(t)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _split_for_tail_repair(text: str) -> Tuple[str, str]:
+    """
+    말미 리페어용으로 본문을 (확정 prefix, tail_context)로 분리한다.
+    - prefix: 마지막 안전 경계(문장부호/개행)까지
+    - tail_context: 리페어 모델이 참고할 직전 문맥
+    """
+    s = _safe_text(text).rstrip()
+    if not s:
+        return "", ""
+    if len(s) < 260:
+        return s, s
+
+    start = max(80, len(s) - 900)
+    cut_idx = -1
+    for i in range(len(s) - 1, start - 1, -1):
+        ch = s[i]
+        if ch in (".", "!", "?", "…", "\n"):
+            cut_idx = i
+            break
+
+    if cut_idx < int(len(s) * 0.55):
+        # 안전 경계를 못 찾으면 끝부분만 최소 절단
+        cut_idx = max(0, len(s) - 120)
+
+    prefix = s[: cut_idx + 1].rstrip()
+    tail_ctx = s[max(0, cut_idx - 260):].strip()
+    return prefix, tail_ctx
+
+
+def _drop_leading_overlap(base_tail: str, addition: str, *, max_scan: int = 240) -> str:
+    """추가 텍스트 앞부분의 중복을 제거한다."""
+    b = _safe_text(base_tail)
+    a = _safe_text(addition)
+    if not a:
+        return ""
+    m = min(len(b), len(a), max_scan)
+    for n in range(m, 20, -1):
+        if b[-n:] == a[:n]:
+            return a[n:].lstrip()
+    return a
+
+
+def _is_context_aligned_repair(repair_text: str, tail_context: str) -> bool:
+    """
+    리페어 결과가 기존 tail 문맥을 유지하는지 간단히 검증한다.
+    앵커 토큰 중 일부가 유지되지 않으면 엉뚱한 리페어로 보고 폐기한다.
+    """
+    r = _safe_text(repair_text).strip()
+    t = _safe_text(tail_context)
+    if not r:
+        return False
+    if _contains_any_regex(r, [r"^\s*\[(고정|기존)\s*본문", r"^\s*작업:"]):
+        return False
+
+    anchors = _extract_tail_anchor_terms(t, limit=10)
+    if not anchors:
+        return len(r) >= 24
+    hits = sum(1 for tok in anchors if tok in r)
+    need = 2 if len(anchors) >= 5 else 1
+    return hits >= need
+
+
+async def _repair_simulator_tail_with_context(
+    *,
+    text: str,
+    model: AIModel,
+    max_chars: int,
+) -> str:
+    """
+    시뮬 프롬프트 말미 절단을 "기존 tail 문맥" 기준으로 1회 보완한다.
+    - 전체 재작성 대신, 마지막 미완성 구간만 이어서 복구한다.
+    - 문맥 불일치 시 즉시 원문을 반환한다.
+    """
+    src = _safe_text(text).strip()
+    if not src:
+        return src
+    prefix, tail_ctx = _split_for_tail_repair(src)
+    if not prefix:
+        return src
+
+    header_lines = "\n".join(prefix.splitlines()[:4]).strip()
+    tail_excerpt = prefix[-1800:].strip()
+    repair_prompt = f"""
+[고정 메타]
+{header_lines}
+
+[기존 본문 꼬리(유지)]
+{tail_excerpt}
+
+[잘린 직전 맥락]
+{tail_ctx}
+
+[작업]
+- 기존 내용/주제/명칭/규칙/숫자를 바꾸지 말고, 마지막 미완성 문장/항목만 자연스럽게 이어서 마무리하라.
+- 새 인물/새 세계관/새 목표를 추가하지 마라.
+- 출력은 "이어붙일 본문"만 작성하라. (헤더/설명/코드블록 금지)
+- 길이는 120~380자.
+""".strip()
+
+    try:
+        raw = await get_ai_completion(
+            prompt=repair_prompt,
+            model=model,
+            temperature=0.2,
+            max_tokens=600,
+        )
+    except Exception:
+        return src
+
+    add = _safe_text(raw).strip()
+    if not add:
+        return src
+    add = re.sub(r"^```[A-Za-z]*\s*", "", add).strip()
+    add = re.sub(r"\s*```$", "", add).strip()
+    add = _drop_leading_overlap(src[-320:], add)
+    if not _is_context_aligned_repair(add, tail_ctx):
+        return src
+
+    joiner = "" if prefix.endswith(("\n", " ", "\t")) or add.startswith(("\n", ".", ",", ")", "]", "}")) else " "
+    merged = (prefix + joiner + add).strip()
+    if len(merged) > max_chars:
+        merged = _ensure_char_len_range(merged, min_chars=0, max_chars=max_chars)
+    # 리페어가 과하게 잘라먹은 경우 원문 유지
+    if len(merged) < max(200, len(src) - 300):
+        return src
+    return merged
+
+
 def _is_incomplete_roleplay_prompt_output(text: str) -> bool:
     """
     롤플레잉 프롬프트가 '부실/미완성'으로 잘려 내려오는 케이스를 방어적으로 감지한다.
@@ -1963,26 +2199,46 @@ def _is_incomplete_roleplay_prompt_output(text: str) -> bool:
     s = _safe_text(text).strip()
     if not s:
         return True
-    # 필수 섹션 누락(후반부가 잘린 케이스가 가장 치명적)
-    required = (
-        "## 1.",
-        "## 2.",
-        "## 3.",
-        "## 5. 사용자와의 상호작용 규칙",
-        "## 6. 제약 및 경계",
-    )
-    for r in required:
-        if r not in s:
-            return True
+    # 필수 섹션은 "완전일치 제목" 대신 의미 기반으로 확인해 오탐을 줄인다.
+    has_identity = _contains_any_regex(s, [
+        r"^\s*#{1,4}\s*1[\.\)]?\s*.*(핵심\s*정체성|core\s*identity)?",
+        r"핵심\s*정체성",
+        r"core\s*identity",
+    ])
+    has_personality = _contains_any_regex(s, [
+        r"^\s*#{1,4}\s*2[\.\)]?\s*.*(성격|말투|personality|tone)?",
+        r"성격\s*및\s*말투",
+        r"personality\s*&?\s*tone",
+    ])
+    has_motivation_or_background = _contains_any_regex(s, [
+        r"핵심\s*동기",
+        r"core\s*motivation",
+        r"배경\s*이야기",
+        r"backstory",
+        r"시작상황\s*앵커",
+    ])
+    has_interaction = _contains_any_regex(s, [
+        r"^\s*#{1,4}\s*5[\.\)]?\s*.*(상호작용|interaction)?",
+        r"사용자와의\s*상호작용\s*규칙",
+        r"rules?\s*of\s*interaction",
+        r"사용자\s*역할",
+        r"대화\s*방식",
+    ])
+    has_constraints = _contains_any_regex(s, [
+        r"^\s*#{1,4}\s*6[\.\)]?\s*.*(제약|경계|constraint|boundar)",
+        r"제약\s*및\s*경계",
+        r"constraints?\s*&?\s*boundaries",
+        r"절대\s*하지\s*않는\s*행동",
+        r"금지/회피\s*주제",
+    ])
+    core_ok = sum(1 for v in (has_identity, has_personality, has_motivation_or_background) if v) >= 2
+    if not (core_ok and has_interaction and has_constraints):
+        return True
     # 중복 블록(품질 저하/버그 체감)
     if s.count("## 추가 디테일(보강)") >= 2:
         return True
-    # 문장 중간 절단 흔적(아주 단순한 끝맺음 체크)
-    tail = s[-1:]
-    if tail and tail not in ("\n", ".", "!", "?", "…", "”", "’", ")", "]", "}"):
-        # 한국어는 마침표 없이 끝날 수 있지만, "상대"처럼 단어에서 끊기는 케이스를 막기 위한 최소 방어
-        if len(s) > 1200 and not s.endswith(("다", "다.", "요", "요.", "함", "함.", "됨", "됨.")):
-            return True
+    if _looks_like_truncated_tail(s, min_len=1200):
+        return True
     return False
 
 
@@ -1995,6 +2251,7 @@ async def generate_quick_simulator_prompt(
     ai_model: str,
     sim_variant: Optional[str] = None,
     sim_dating_elements: Optional[bool] = None,
+    quick_30s_mode: bool = False,
 ) -> str:
     """
     위저드 '프롬프트' 단계(시뮬레이터) 자동 생성.
@@ -2025,6 +2282,12 @@ async def generate_quick_simulator_prompt(
     if model_norm not in ("gemini", "claude", "gpt"):
         model_norm = "gemini"
     model: AIModel = model_norm  # type: ignore[assignment]
+    target_min_chars = 2200 if quick_30s_mode else 3000
+    target_max_chars = 6000
+    allow_second_retry = not quick_30s_mode
+    sim_max_tokens_initial = 6000
+    sim_max_tokens_retry1 = 5200
+    sim_max_tokens_retry2 = 6000
 
     # ✅ 시뮬 유형/미연시 요소(옵션) 블록
     sim_flavor_block = ""
@@ -2057,9 +2320,9 @@ async def generate_quick_simulator_prompt(
 [출력 요구사항]
 - 위 SYSTEM 가이드/템플릿을 따라 '시뮬레이션 캐릭터 시트'를 작성하라.
 - 반드시 한국어로 작성하라.
-- 출력은 JSON 금지. 순수 텍스트(마크다운 섹션/불릿 허용).
-  - 코드블록은 원칙적으로 금지하되, **'HUD/상태창(권장, 선택)' 섹션에서만** `NOTE` 코드블록 1개까지 허용한다(남발 금지).
-    - 3000~6000자(공백 포함) 사이로 작성하라. 너무 짧으면 서사/능력/플롯/관계/타임라인을 더 확장하라.
+    - 출력은 JSON 금지. 순수 텍스트(마크다운 섹션/불릿 허용).
+      - 코드블록은 원칙적으로 금지하되, **'HUD/상태창(권장, 선택)' 섹션에서만** `NOTE` 코드블록 1개까지 허용한다(남발 금지).
+        - {target_min_chars}~{target_max_chars}자(공백 포함) 사이로 작성하라. 너무 짧으면 서사/능력/플롯/관계/타임라인을 더 확장하라.
 - **문체/스토리 스타일**: 국내 실사용 시뮬 톤에 맞춰 자연스러운 한국어로 쓴다(번역투/과도한 포멀 금지, 사건/진행 중심).
 - 이름은 입력된 이름을 그대로 사용하라(형식 유지).
 - ✅ 추가 필수 지시(게임 설계):
@@ -2077,9 +2340,13 @@ async def generate_quick_simulator_prompt(
     prompt = f"{SIMULATOR_PROMPT_SYSTEM}\n\n{user_prompt}"
 
     # 1차 생성
-    # ✅ 성능 최적화: 처음부터 충분한 토큰을 주어 재시도 확률을 최소화한다.
-    # - 3000~6000자 목표, 한국어 1자 ≈ 1~2토큰 → max_tokens=4500이면 대부분 1회 성공
-    out = await get_ai_completion(prompt=prompt, model=model, temperature=0.4, max_tokens=4500)
+    # ✅ 토큰 상향: tail 절단 빈도를 줄이기 위해 1차/재시도 토큰 예산을 높인다.
+    out = await get_ai_completion(
+        prompt=prompt,
+        model=model,
+        temperature=0.4,
+        max_tokens=sim_max_tokens_initial,
+    )
     out = _prepend_prompt_meta_header(
         out,
         title=base_name,
@@ -2087,20 +2354,33 @@ async def generate_quick_simulator_prompt(
         tags=tags or [],
         mode_label_ko="시뮬레이터",
     )
-    out = _ensure_char_len_range(out, min_chars=3000, max_chars=6000)
+    out = _ensure_char_len_range(out, min_chars=target_min_chars, max_chars=target_max_chars)
 
     # 2차 보정(너무 짧은 경우만 1회 재시도)
     # ✅ 중요: "보강 블록 덧붙이기"가 아니라, 기존 섹션을 확장해서 길이를 맞춘다.
-    if len(out) < 3000 or out.count("## 추가 디테일(보강)") >= 2:
+    sim_too_short = len(out) < target_min_chars
+    sim_dup_block = out.count("## 추가 디테일(보강)") >= 2
+    if sim_too_short or sim_dup_block:
+        try:
+            logger.info(
+                f"[quick_character][sim_prompt] retry1 reason short={sim_too_short} dup_block={sim_dup_block} len={len(out)}"
+            )
+        except Exception:
+            pass
         retry = (
             f"{SIMULATOR_PROMPT_SYSTEM}\n\n"
             f"{user_prompt}\n\n"
             "[추가 지시]\n"
-            "- 직전 결과가 3000자 미만이다. **기존 섹션을 확장**해서 3500~4500자 사이로 다시 작성하라.\n"
+            f"- 직전 결과가 {target_min_chars}자 미만이다. **기존 섹션을 확장**해서 다시 작성하라.\n"
             "- 금지: 같은 섹션/블록을 복붙해 반복하지 말 것(특히 '추가 디테일(보강)' 같은 동일 블록 반복 금지).\n"
             "- 사건 트리거/타임라인/보상/제약/관계 변화를 구체적으로 늘려라."
         )
-        out2 = await get_ai_completion(prompt=retry, model=model, temperature=0.4, max_tokens=3600)
+        out2 = await get_ai_completion(
+            prompt=retry,
+            model=model,
+            temperature=0.4,
+            max_tokens=sim_max_tokens_retry1,
+        )
         out2 = _prepend_prompt_meta_header(
             out2,
             title=base_name,
@@ -2108,17 +2388,30 @@ async def generate_quick_simulator_prompt(
             tags=tags or [],
             mode_label_ko="시뮬레이터",
         )
-        out = _ensure_char_len_range(out2, min_chars=3000, max_chars=6000)
-        # ✅ 최종 방어: 그래도 짧으면 "덧붙이기"가 아니라 1회 더 재생성으로 확장
-        if len(out) < 3000 or out.count("## 추가 디테일(보강)") >= 2:
+        out = _ensure_char_len_range(out2, min_chars=target_min_chars, max_chars=target_max_chars)
+        # ✅ 위저드(기본) 경로만 최종 1회 추가 재생성을 허용한다.
+        sim_too_short = len(out) < target_min_chars
+        sim_dup_block = out.count("## 추가 디테일(보강)") >= 2
+        if allow_second_retry and (sim_too_short or sim_dup_block):
+            try:
+                logger.info(
+                    f"[quick_character][sim_prompt] retry2 reason short={sim_too_short} dup_block={sim_dup_block} len={len(out)}"
+                )
+            except Exception:
+                pass
             retry2 = (
                 f"{SIMULATOR_PROMPT_SYSTEM}\n\n"
                 f"{user_prompt}\n\n"
                 "[추가 지시]\n"
-                "- 직전 결과가 여전히 3000자 미만이다. 섹션을 삭제/축약하지 말고, 각 섹션에 구체 사례/갈등/보상/규칙을 더 추가해 반드시 3200~4800자 사이로 다시 작성하라.\n"
+                f"- 직전 결과가 여전히 {target_min_chars}자 미만이다. 섹션을 삭제/축약하지 말고, 각 섹션에 구체 사례/갈등/보상/규칙을 더 추가해 다시 작성하라.\n"
                 "- 금지: 동일 문장/섹션을 복사해 반복하지 말라. (중복 금지)"
             )
-            out3 = await get_ai_completion(prompt=retry2, model=model, temperature=0.4, max_tokens=4200)
+            out3 = await get_ai_completion(
+                prompt=retry2,
+                model=model,
+                temperature=0.4,
+                max_tokens=sim_max_tokens_retry2,
+            )
             out3 = _prepend_prompt_meta_header(
                 out3,
                 title=base_name,
@@ -2126,8 +2419,46 @@ async def generate_quick_simulator_prompt(
                 tags=tags or [],
                 mode_label_ko="시뮬레이터",
             )
-            out = _ensure_char_len_range(out3, min_chars=3000, max_chars=6000)
+            out = _ensure_char_len_range(out3, min_chars=target_min_chars, max_chars=target_max_chars)
 
+    # 말미 절단은 전체 재생성 대신 "tail 문맥 앵커" 기반으로 1회 보완한다.
+    if _looks_like_truncated_tail(out, min_len=max(900, target_min_chars - 600)):
+        before_len = len(out)
+        repaired = await _repair_simulator_tail_with_context(
+            text=out,
+            model=model,
+            max_chars=target_max_chars,
+        )
+        if repaired and repaired != out:
+            out = repaired
+            try:
+                logger.info(
+                    f"[quick_character][sim_prompt] tail_repair_applied before={before_len} after={len(out)}"
+                )
+            except Exception:
+                pass
+        else:
+            try:
+                logger.info(
+                    f"[quick_character][sim_prompt] tail_repair_skipped len={before_len}"
+                )
+            except Exception:
+                pass
+
+    # 리페어/생성이 실패해도 말미가 절단되어 있으면 마지막 안전 경계까지 로컬 trim한다.
+    if _looks_like_truncated_tail(out, min_len=max(900, target_min_chars - 600)):
+        safe_prefix, _ = _split_for_tail_repair(out)
+        if safe_prefix and len(safe_prefix) >= max(240, int(len(out) * 0.75)):
+            before_trim = len(out)
+            out = safe_prefix.rstrip()
+            try:
+                logger.info(
+                    f"[quick_character][sim_prompt] tail_trim_fallback before={before_trim} after={len(out)}"
+                )
+            except Exception:
+                pass
+
+    out = _close_tail_if_needed(out)
     return out
 
 
@@ -2138,6 +2469,7 @@ async def generate_quick_roleplay_prompt(
     allow_infinite_mode: bool,
     tags: List[str],
     ai_model: str,
+    quick_30s_mode: bool = False,
 ) -> str:
     """
     위저드 '프롬프트' 단계(롤플레잉) 자동 생성.
@@ -2165,6 +2497,12 @@ async def generate_quick_roleplay_prompt(
     if model_norm not in ("gemini", "claude", "gpt"):
         model_norm = "gemini"
     model: AIModel = model_norm  # type: ignore[assignment]
+    target_min_chars = 2200 if quick_30s_mode else 3000
+    target_max_chars = 6000
+    allow_second_retry = not quick_30s_mode
+    rp_max_tokens_initial = 6000
+    rp_max_tokens_retry1 = 5200
+    rp_max_tokens_retry2 = 6000
 
     user_prompt = f"""
 [프로필 입력(근거)]
@@ -2176,9 +2514,9 @@ async def generate_quick_roleplay_prompt(
 [출력 요구사항]
 - 위 SYSTEM 가이드/템플릿을 따라 '1:1 롤플레잉 캐릭터 시트'를 작성하라. (시뮬/턴/보상/진행률 설계 금지)
 - 반드시 한국어로 작성하라.
-- 출력은 JSON 금지. 순수 텍스트(마크다운 섹션/불릿 허용).
-  - 코드블록은 원칙적으로 금지하되, **'상태창(선택)' 섹션에서만** 간단 표기 목적의 `INFO` 코드블록을 1개까지 허용한다(남발 금지).
-    - 3000~6000자(공백 포함) 사이로 작성하라. 너무 짧으면 성격/말투 규칙/관계 훅/상호작용 규칙/경계 항목을 더 확장하라.
+    - 출력은 JSON 금지. 순수 텍스트(마크다운 섹션/불릿 허용).
+      - 코드블록은 원칙적으로 금지하되, **'상태창(선택)' 섹션에서만** 간단 표기 목적의 `INFO` 코드블록을 1개까지 허용한다(남발 금지).
+        - {target_min_chars}~{target_max_chars}자(공백 포함) 사이로 작성하라. 너무 짧으면 성격/말투 규칙/관계 훅/상호작용 규칙/경계 항목을 더 확장하라.
 - 이름은 입력된 이름을 그대로 사용하라(형식 유지).
 - ✅ 추가 필수 지시(실사용 안정성):
   - 캐릭터는 항상 캐릭터로 말하라. AI/시스템/프롬프트/규칙을 메타로 설명하지 말라.
@@ -2191,10 +2529,13 @@ async def generate_quick_roleplay_prompt(
 
     prompt = f"{ROLEPLAY_PROMPT_SYSTEM}\n\n{user_prompt}"
 
-    # ✅ 성능 최적화: 처음부터 충분한 토큰을 주어 재시도 확률을 최소화한다.
-    # - 3000~6000자 목표, 롤플은 후반 섹션(상호작용/경계/상태창)까지 완성 필요
-    # - max_tokens=4500이면 대부분 1회 성공, 재시도 불필요
-    out = await get_ai_completion(prompt=prompt, model=model, temperature=0.4, max_tokens=4500)
+    # ✅ 토큰 상향: 후반 섹션 누락/절단을 줄이기 위해 토큰 예산을 확대한다.
+    out = await get_ai_completion(
+        prompt=prompt,
+        model=model,
+        temperature=0.4,
+        max_tokens=rp_max_tokens_initial,
+    )
     out = _prepend_prompt_meta_header(
         out,
         title=base_name,
@@ -2202,21 +2543,39 @@ async def generate_quick_roleplay_prompt(
         tags=tags or [],
         mode_label_ko="롤플레잉",
     )
-    out = _ensure_char_len_range(out, min_chars=3000, max_chars=6000, filler=ROLEPLAY_CHARLEN_FILLER)
+    out = _ensure_char_len_range(
+        out,
+        min_chars=target_min_chars,
+        max_chars=target_max_chars,
+        filler=ROLEPLAY_CHARLEN_FILLER,
+    )
 
     # 2차 보정(너무 짧은 경우만 1회 재시도)
     # ✅ 중요: "보강 블록 덧붙이기"가 아니라, 기존 섹션을 확장해서 길이를 맞춘다.
-    if len(out) < 3000 or _is_incomplete_roleplay_prompt_output(out):
+    rp_too_short = len(out) < target_min_chars
+    rp_incomplete = _is_incomplete_roleplay_prompt_output(out)
+    if rp_too_short or rp_incomplete:
+        try:
+            logger.info(
+                f"[quick_character][roleplay_prompt] retry1 reason short={rp_too_short} incomplete={rp_incomplete} len={len(out)}"
+            )
+        except Exception:
+            pass
         retry = (
             f"{ROLEPLAY_PROMPT_SYSTEM}\n\n"
             f"{user_prompt}\n\n"
             "[추가 지시]\n"
-            "- 직전 결과가 3000자 미만이다. **기존 섹션을 확장**해서 3500~4500자 사이로 다시 작성하라.\n"
+            f"- 직전 결과가 {target_min_chars}자 미만이다. **기존 섹션을 확장**해서 다시 작성하라.\n"
             "- 금지: 같은 섹션/블록을 복붙해 반복하지 말 것(특히 '추가 디테일(보강)' 같은 동일 블록 반복 금지).\n"
             "- 훅/관계 변화 조건/말투 규칙/경계 항목을 더 촘촘히 구체화하라.\n"
             "- 반드시 후반 섹션(상호작용 규칙/제약 및 경계/상태창(선택))까지 모두 포함하고, 문장 중간에서 끊기지 말라."
         )
-        out2 = await get_ai_completion(prompt=retry, model=model, temperature=0.4, max_tokens=3600)
+        out2 = await get_ai_completion(
+            prompt=retry,
+            model=model,
+            temperature=0.4,
+            max_tokens=rp_max_tokens_retry1,
+        )
         out2 = _prepend_prompt_meta_header(
             out2,
             title=base_name,
@@ -2224,19 +2583,37 @@ async def generate_quick_roleplay_prompt(
             tags=tags or [],
             mode_label_ko="롤플레잉",
         )
-        out = _ensure_char_len_range(out2, min_chars=3000, max_chars=6000, filler=ROLEPLAY_CHARLEN_FILLER)
-        # ✅ 최종 방어: 그래도 짧으면 "덧붙이기"가 아니라 1회 더 재생성으로 확장
-        if len(out) < 3000 or _is_incomplete_roleplay_prompt_output(out):
+        out = _ensure_char_len_range(
+            out2,
+            min_chars=target_min_chars,
+            max_chars=target_max_chars,
+            filler=ROLEPLAY_CHARLEN_FILLER,
+        )
+        # ✅ 위저드(기본) 경로만 최종 1회 추가 재생성을 허용한다.
+        rp_too_short = len(out) < target_min_chars
+        rp_incomplete = _is_incomplete_roleplay_prompt_output(out)
+        if allow_second_retry and (rp_too_short or rp_incomplete):
+            try:
+                logger.info(
+                    f"[quick_character][roleplay_prompt] retry2 reason short={rp_too_short} incomplete={rp_incomplete} len={len(out)}"
+                )
+            except Exception:
+                pass
             retry2 = (
                 f"{ROLEPLAY_PROMPT_SYSTEM}\n\n"
                 f"{user_prompt}\n\n"
                 "[추가 지시]\n"
-                "- 직전 결과가 여전히 3000자 미만이다. 섹션을 삭제/축약하지 말고, 말투 규칙/관계 훅/상호작용 규칙/경계 항목을 더 구체적으로 추가해 반드시 3200~4800자 사이로 다시 작성하라.\n"
+                f"- 직전 결과가 여전히 {target_min_chars}자 미만이다. 섹션을 삭제/축약하지 말고, 말투 규칙/관계 훅/상호작용 규칙/경계 항목을 더 구체적으로 추가해 다시 작성하라.\n"
                 "- 금지: 동일 문장/섹션을 복사해 반복하지 말라. (중복 금지)\n"
                 "- 시뮬/턴/보상/진행률 설계는 금지(롤플 유지).\n"
                 "- 반드시 섹션 1~7을 모두 채우고, 마지막은 완전한 문장으로 끝내라."
             )
-            out3 = await get_ai_completion(prompt=retry2, model=model, temperature=0.4, max_tokens=4200)
+            out3 = await get_ai_completion(
+                prompt=retry2,
+                model=model,
+                temperature=0.4,
+                max_tokens=rp_max_tokens_retry2,
+            )
             out3 = _prepend_prompt_meta_header(
                 out3,
                 title=base_name,
@@ -2244,7 +2621,12 @@ async def generate_quick_roleplay_prompt(
                 tags=tags or [],
                 mode_label_ko="롤플레잉",
             )
-            out = _ensure_char_len_range(out3, min_chars=3000, max_chars=6000, filler=ROLEPLAY_CHARLEN_FILLER)
+            out = _ensure_char_len_range(
+                out3,
+                min_chars=target_min_chars,
+                max_chars=target_max_chars,
+                filler=ROLEPLAY_CHARLEN_FILLER,
+            )
 
     return out
 
@@ -2571,13 +2953,8 @@ FIRST_START_GENERATOR_SYSTEM_SIMULATOR = """# [FIRST_MESSAGE_GENERATOR_LOGIC - S
 """
 
 
-def _extract_json_object(text: str) -> str:
-    """
-    LLM 응답에서 JSON 객체({ ... })만 추출한다.
-
-    의도:
-    - 모델이 앞뒤에 설명을 붙여도 파싱이 깨지지 않도록 방어한다.
-    """
+def _strip_code_fence_json(text: str) -> str:
+    """```json ...``` 또는 ```...``` 래핑 제거."""
     s = _safe_text(text)
     if not s:
         return ""
@@ -2588,14 +2965,170 @@ def _extract_json_object(text: str) -> str:
             s = s.split("```", 1)[1].split("```", 1)[0].strip()
     except Exception:
         pass
-    try:
-        i = s.find("{")
-        j = s.rfind("}")
-        if i >= 0 and j > i:
-            return s[i : j + 1]
-    except Exception:
-        pass
-    return ""
+    return s
+
+
+def _extract_json_fragment_with_repair(text: str, start_char: str) -> Tuple[str, bool, int]:
+    """
+    JSON 조각(객체/배열)을 추출하고, 끝이 잘린 경우 가능한 범위에서 닫아서 복구한다.
+
+    Returns:
+    - fragment: 추출/복구된 JSON 텍스트(실패 시 "")
+    - repaired: 복구 경로를 탔는지 여부
+    - cut_at: 원문 기준 잘린 지점 추정 인덱스(알 수 없으면 -1)
+    """
+    s = _strip_code_fence_json(text)
+    if not s:
+        return "", False, -1
+
+    if start_char == "{":
+        close_char = "}"
+    elif start_char == "[":
+        close_char = "]"
+    else:
+        return "", False, -1
+
+    start_idx = s.find(start_char)
+    if start_idx < 0:
+        return "", False, -1
+
+    src = s[start_idx:]
+    if not src:
+        return "", False, -1
+
+    stack: List[str] = [close_char]
+    in_string = False
+    escaped = False
+    string_start = -1
+    end_idx = -1
+    stop_idx = len(src)
+
+    # 첫 글자(start_char)는 이미 stack에 반영했으므로 2번째 문자부터 스캔
+    idx = 1
+    while idx < len(src):
+        ch = src[idx]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+                string_start = -1
+            idx += 1
+            continue
+
+        if ch == '"':
+            in_string = True
+            string_start = idx
+            idx += 1
+            continue
+        if ch == "{":
+            stack.append("}")
+            idx += 1
+            continue
+        if ch == "[":
+            stack.append("]")
+            idx += 1
+            continue
+        if ch in ("}", "]"):
+            if (not stack) or (ch != stack[-1]):
+                # 비정상 닫힘 기호가 나온 시점까지만 사용
+                stop_idx = idx
+                break
+            stack.pop()
+            if not stack:
+                end_idx = idx
+                break
+        idx += 1
+
+    if end_idx >= 0:
+        return src[: end_idx + 1], False, start_idx + end_idx
+
+    # 끝까지 못 닫은 경우: 안전한 지점까지만 남기고 누락 닫힘 기호 보정
+    trunk = src[:stop_idx]
+    if in_string and string_start >= 0 and string_start < len(trunk):
+        trunk = trunk[:string_start]
+    trunk = trunk.rstrip()
+
+    while trunk:
+        tail = trunk[-1]
+        if tail in ",:":
+            trunk = trunk[:-1].rstrip()
+            continue
+        if tail == "{":
+            if stack and stack[-1] == "}":
+                stack.pop()
+                trunk = trunk[:-1].rstrip()
+                continue
+        if tail == "[":
+            if stack and stack[-1] == "]":
+                stack.pop()
+                trunk = trunk[:-1].rstrip()
+                continue
+        break
+
+    if not trunk:
+        return "", True, -1
+
+    def _compose(base: str) -> str:
+        return base + "".join(reversed(stack))
+
+    def _is_valid(candidate: str) -> bool:
+        try:
+            json.loads(candidate)
+            return True
+        except Exception:
+            return False
+
+    repaired = _compose(trunk)
+    if repaired.startswith(start_char) and _is_valid(repaired):
+        return repaired, True, start_idx + max(0, len(trunk) - 1)
+
+    # 추가 복구: 문자열 중간 절단/미완성 key 꼬리는 마지막 ',' 단위로 걷어낸다.
+    # 예) {"a":"x","b":  -> {"a":"x"}
+    # 예) [{"k":1,"v":" -> [{"k":1}]
+    base = trunk
+    while True:
+        comma_idx = base.rfind(",")
+        if comma_idx < 0:
+            break
+        base = base[:comma_idx].rstrip()
+        while base:
+            tail = base[-1]
+            if tail in ",:":
+                base = base[:-1].rstrip()
+                continue
+            break
+        if not base:
+            break
+        cand = _compose(base)
+        if cand.startswith(start_char) and _is_valid(cand):
+            return cand, True, start_idx + max(0, len(base) - 1)
+
+    # 여기까지 오면 구조 복구를 못한 것. 그래도 가능한 문자열을 반환(상위 파서에서 최종 방어).
+    if repaired.startswith(start_char):
+        return repaired, True, start_idx + max(0, len(trunk) - 1)
+    return "", True, -1
+
+
+def _extract_json_object(text: str) -> str:
+    """
+    LLM 응답에서 JSON 객체({ ... })만 추출한다.
+
+    - 앞뒤 설명/코드펜스 제거
+    - 출력 절단으로 닫힘이 누락된 경우(] / }) 가능한 범위에서 자동 복구
+    """
+    out, repaired, cut_at = _extract_json_fragment_with_repair(text, "{")
+    if repaired and out:
+        try:
+            logger.info(
+                f"[_extract_json_object] truncated output repaired: "
+                f"original_len={len(_safe_text(text))} cut_at={cut_at}"
+            )
+        except Exception:
+            pass
+    return out
 
 
 def _fix_trailing_commas(text: str) -> str:
@@ -2932,8 +3465,9 @@ async def generate_quick_first_start(
     raw = await get_ai_completion(prompt=prompt, model=model, temperature=0.6, max_tokens=1600)
     intro, first_line = _parse_first_start(raw)
 
-    # 2차 보정: 길이 조건이 크게 어긋나면 1회 재생성(문장 중간 절단 최소화 목적)
-    if not _is_first_start_in_range(intro, first_line):
+    # 2차 보정: JSON 파싱 실패/필수 필드 누락 시에만 1회 재생성한다.
+    # 길이 미달은 최종 _ensure_first_start_len에서 강제 보정하므로, 여기서 재시도하지 않는다.
+    if (not intro) or (not first_line):
         retry = (
             f"{prompt}\n\n"
             "[추가 지시]\n"
@@ -3649,25 +4183,21 @@ def _build_early_dense_turn_plan(total_turns: int, count: int) -> List[int]:
 
 
 def _extract_json_array(text: str) -> str:
-    """LLM 응답에서 JSON 배열([ ... ])만 추출한다(방어)."""
-    s = _safe_text(text)
-    if not s:
-        return ""
-    try:
-        if "```json" in s:
-            s = s.split("```json", 1)[1].split("```", 1)[0].strip()
-        elif "```" in s:
-            s = s.split("```", 1)[1].split("```", 1)[0].strip()
-    except Exception:
-        pass
-    try:
-        i = s.find("[")
-        j = s.rfind("]")
-        if i >= 0 and j > i:
-            return s[i : j + 1]
-    except Exception:
-        pass
-    return ""
+    """LLM 응답에서 JSON 배열([ ... ])만 추출한다(방어).
+
+    출력이 max_tokens에 의해 중간에 잘려 ']'가 없는 경우,
+    마지막 완성된 '}' 위치까지 잘라서 ']'를 붙여 부분 복구한다.
+    """
+    out, repaired, cut_at = _extract_json_fragment_with_repair(text, "[")
+    if repaired and out:
+        try:
+            logger.info(
+                f"[_extract_json_array] truncated output repaired: "
+                f"original_len={len(_safe_text(text))} cut_at={cut_at}"
+            )
+        except Exception:
+            pass
+    return out
 
 
 async def generate_quick_turn_events(
@@ -3777,9 +4307,11 @@ planned_turns: {planned_turns}
 ]
 """.strip()
 
-    # turn_events는 사건 카드 N개를 한 번에 JSON 배열로 생성하므로 출력 토큰 여유를 크게 둔다.
-    # (출력이 중간에서 잘리면 ']'가 없어 파싱 실패 → 전체 폴백으로 떨어짐)
-    raw = await get_ai_completion(prompt=prompt, model=model, temperature=0.6, max_tokens=6000)
+    # turn_events는 사건 카드 N개를 한 번에 JSON 배열로 생성하므로 출력 토큰을 cap에 비례해 확보한다.
+    # 이벤트 1개당 ~350-400 토큰 필요 (title+summary+narration+dialogue).
+    _tokens_per_event = 450
+    _base_tokens = max(6000, cap * _tokens_per_event)
+    raw = await get_ai_completion(prompt=prompt, model=model, temperature=0.6, max_tokens=_base_tokens)
     arr_txt = _extract_json_array(raw)
     arr_txt = _fix_trailing_commas(arr_txt)
 
@@ -3790,10 +4322,36 @@ planned_turns: {planned_turns}
             parsed = [x for x in data if isinstance(x, dict)]
     except Exception as e:
         try:
-            logger.warning(f"[quick_turn_events] json parse failed, fallback: {e}")
+            logger.warning(f"[quick_turn_events] json parse failed (attempt 1), raw_len={len(raw)}: {e}")
         except Exception:
             pass
         parsed = []
+
+    # 파싱 실패 or 이벤트 수 부족(cap의 절반 미만) → cap 절반으로 줄여 1회 재시도
+    if len(parsed) < max(1, cap // 2):
+        retry_cap = max(3, cap // 2)
+        retry_planned = planned_turns[:retry_cap]
+        retry_prompt = prompt.replace(
+            f"planned_turns: {planned_turns}",
+            f"planned_turns: {retry_planned}",
+        )
+        try:
+            logger.info(f"[quick_turn_events] retry with reduced cap: {cap}->{retry_cap} parsed={len(parsed)}")
+            raw2 = await get_ai_completion(prompt=retry_prompt, model=model, temperature=0.5, max_tokens=6000)
+            arr2 = _extract_json_array(raw2)
+            arr2 = _fix_trailing_commas(arr2)
+            data2 = json.loads(arr2) if arr2 else []
+            if isinstance(data2, list):
+                retry_parsed = [x for x in data2 if isinstance(x, dict)]
+                if len(retry_parsed) > len(parsed):
+                    parsed = retry_parsed
+                    planned_turns = retry_planned
+                    cap = retry_cap
+        except Exception as e2:
+            try:
+                logger.warning(f"[quick_turn_events] retry also failed: {e2}")
+            except Exception:
+                pass
 
     # 내용 매핑 + 방어적 폴백(길이/타입/누락)
     def _clean_text(v: Any, mx: int) -> str:
@@ -4855,14 +5413,7 @@ async def generate_quick_character_draft(req: QuickCharacterGenerateRequest) -> 
         raw = ""
 
     stage = "parse"
-    cleaned = raw or ""
-    try:
-        if "```json" in cleaned:
-            cleaned = cleaned.split("```json", 1)[1].split("```", 1)[0].strip()
-        elif "```" in cleaned:
-            cleaned = cleaned.split("```", 1)[1].split("```", 1)[0].strip()
-    except Exception:
-        pass
+    cleaned = _strip_code_fence_json(raw or "")
 
     data: Dict[str, Any] = {}
     parsed_ok = False
@@ -4877,52 +5428,62 @@ async def generate_quick_character_draft(req: QuickCharacterGenerateRequest) -> 
     except Exception:
         disable_fallback = False
 
-    try:
-        raw_json = cleaned or ""
+    def _parse_profile_json_payload(raw_text: str) -> Tuple[Dict[str, Any], str, str]:
+        """
+        프로필 JSON(name/description) 파싱 공통 경로.
+
+        - 공통 복구 유틸(_extract_json_object) 기반으로 잘린 JSON을 먼저 복구
+        - trailing comma 제거 후 json.loads
+        - 최후 방어로 ast.literal_eval(dict 형태만 허용)
+        """
         try:
-            if raw_json:
-                s = raw_json.find("{")
-                e = raw_json.rfind("}")
-                if s >= 0 and e > s:
-                    raw_json = raw_json[s:e + 1]
+            extracted = _extract_json_object(raw_text or "")
+            blob = _fix_trailing_commas(extracted)
+        except Exception:
+            blob = ""
+
+        if not blob:
+            return {}, "", "empty_after_extract"
+
+        try:
+            d = json.loads(blob)
+            if isinstance(d, dict):
+                return d, blob, ""
+            return {}, blob, "parsed_not_dict"
+        except Exception as e:
+            primary_err = f"{type(e).__name__}:{str(e)[:160]}"
+
+        try:
+            import ast
+            d2 = ast.literal_eval(blob)
+            if isinstance(d2, dict):
+                return d2, blob, ""
+        except Exception:
+            pass
+        return {}, blob, primary_err
+
+    parsed_data, parsed_blob, parsed_err = _parse_profile_json_payload(cleaned or "")
+    if isinstance(parsed_data, dict) and parsed_data:
+        data = parsed_data
+        parsed_ok = True
+    else:
+        try:
+            logger.warning(
+                f"[quick_character] json parse failed, fallback minimal: "
+                f"{parsed_err or 'unknown'}"
+            )
         except Exception:
             pass
         try:
-            import re
-            raw_json = re.sub(r",\s*([}\]])", r"\1", raw_json)
-        except Exception:
-            pass
-        data = json.loads(raw_json) if raw_json else {}
-        if isinstance(data, dict):
-            parsed_ok = True
-        else:
-            data = {}
-    except Exception as e:
-        try:
-            logger.warning(f"[quick_character] json parse failed, fallback minimal: {e}")
-        except Exception:
-            pass
-        try:
-            parse_fail_reason = f"json_parse_failed:{type(e).__name__}:{str(e)[:160]}"
+            parse_fail_reason = f"json_parse_failed:{parsed_err}" if parsed_err else "json_parse_failed"
         except Exception:
             parse_fail_reason = "json_parse_failed"
         # ✅ 원인 추적: 응답 일부를 남긴다(프롬프트는 절대 로그 금지)
         try:
-            snippet = str(raw_json or "")[:220].replace("\n", "\\n")
+            snippet = str(parsed_blob or cleaned or "")[:220].replace("\n", "\\n")
             logger.warning(f"[quick_character][profile] ai_raw_snippet_for_debug {snippet}")
         except Exception:
             pass
-        # ✅ 방어: JSON이 아니라도 Python dict 형태로 나오는 케이스를 흡수(패키지 추가 없이)
-        try:
-            import ast
-            obj = ast.literal_eval(raw_json) if raw_json else None
-            if isinstance(obj, dict):
-                data = obj
-                parsed_ok = True
-            else:
-                data = {}
-        except Exception:
-            data = {}
 
     def _salvage_profile_from_loose_text(text: str) -> Dict[str, Any]:
         """
@@ -5084,30 +5645,7 @@ async def generate_quick_character_draft(req: QuickCharacterGenerateRequest) -> 
                     temperature=0.2,
                     max_tokens=900,
                 )
-            cleaned_r = str(raw_repair or "").strip()
-            # ```json 제거
-            try:
-                if "```json" in cleaned_r:
-                    cleaned_r = cleaned_r.split("```json", 1)[1].split("```", 1)[0].strip()
-                elif "```" in cleaned_r:
-                    cleaned_r = cleaned_r.split("```", 1)[1].split("```", 1)[0].strip()
-            except Exception:
-                pass
-            # {..} 구간만
-            try:
-                s3 = cleaned_r.find("{")
-                e3 = cleaned_r.rfind("}")
-                if s3 >= 0 and e3 > s3:
-                    cleaned_r = cleaned_r[s3:e3 + 1]
-            except Exception:
-                pass
-            # trailing comma 제거
-            try:
-                import re
-                cleaned_r = re.sub(r",\s*([}\]])", r"\1", cleaned_r)
-            except Exception:
-                pass
-            d3 = json.loads(cleaned_r) if cleaned_r else {}
+            d3, _, _ = _parse_profile_json_payload(str(raw_repair or ""))
             if isinstance(d3, dict) and (_safe_text(d3.get("name")).strip() or _safe_text(d3.get("description")).strip()):
                 data = d3
                 parsed_ok = True
@@ -5620,30 +6158,8 @@ async def generate_quick_character_draft(req: QuickCharacterGenerateRequest) -> 
                     temperature=0.5,
                     max_tokens=1400,
                 )
-            cleaned2 = raw2 or ""
             try:
-                if "```json" in cleaned2:
-                    cleaned2 = cleaned2.split("```json", 1)[1].split("```", 1)[0].strip()
-                elif "```" in cleaned2:
-                    cleaned2 = cleaned2.split("```", 1)[1].split("```", 1)[0].strip()
-            except Exception:
-                pass
-            try:
-                raw_json2 = cleaned2 or ""
-                try:
-                    if raw_json2:
-                        s2 = raw_json2.find("{")
-                        e2 = raw_json2.rfind("}")
-                        if s2 >= 0 and e2 > s2:
-                            raw_json2 = raw_json2[s2:e2 + 1]
-                except Exception:
-                    pass
-                try:
-                    import re
-                    raw_json2 = re.sub(r",\s*([}\]])", r"\1", raw_json2)
-                except Exception:
-                    pass
-                data2 = json.loads(raw_json2) if raw_json2 else {}
+                data2, _, _ = _parse_profile_json_payload(str(raw2 or ""))
                 if isinstance(data2, dict):
                     name2 = _safe_text(_clip(data2.get("name"), 100)).strip()
                     desc2 = _safe_text(_clip(data2.get("description"), 3000)).replace("\n", " ").strip()

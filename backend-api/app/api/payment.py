@@ -6,6 +6,9 @@ from typing import List
 from datetime import datetime
 import uuid
 import json
+import hashlib
+import hmac
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, func
@@ -21,8 +24,58 @@ from app.schemas.payment import (
 from app.services.point_service import PointService
 from app.core.config import settings
 
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _is_production_env() -> bool:
+    try:
+        return str(getattr(settings, "ENVIRONMENT", "") or "").strip().lower() == "production"
+    except Exception:
+        return False
+
+
+def _normalize_signature(raw: str) -> str:
+    s = str(raw or "").strip()
+    if not s:
+        return ""
+    # Allow "sha256=<hex>" and plain "<hex>"
+    if "=" in s:
+        k, v = s.split("=", 1)
+        if k.strip().lower() in {"sha256", "h1"}:
+            return v.strip()
+    return s
+
+
+async def _verify_webhook_signature_or_raise(request: Request) -> None:
+    """
+    Generic webhook signature verification (HMAC-SHA256).
+    - Signature header: X-Webhook-Signature (or X-Signature)
+    - Body: raw request bytes
+    - Format: "sha256=<hex>" or "<hex>"
+    """
+    secret = str(getattr(settings, "PAYMENT_WEBHOOK_SECRET", "") or "").strip()
+    if not secret:
+        if _is_production_env():
+            raise HTTPException(status_code=500, detail="PAYMENT_WEBHOOK_SECRET is not configured")
+        # dev/local: allow for manual testing
+        logger.warning("[payment_webhook] PAYMENT_WEBHOOK_SECRET not set; signature check skipped in non-production")
+        return
+
+    sig_header = (
+        request.headers.get("X-Webhook-Signature")
+        or request.headers.get("X-Signature")
+        or ""
+    )
+    signature = _normalize_signature(sig_header)
+    if not signature:
+        raise HTTPException(status_code=401, detail="Missing webhook signature")
+
+    raw_body = await request.body()
+    expected = hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        raise HTTPException(status_code=401, detail="Invalid webhook signature")
 
 
 @router.get("/products", response_model=List[PaymentProductResponse])
@@ -53,6 +106,9 @@ async def create_payment_product(
     
     TODO: 관리자 권한 체크 미들웨어 추가
     """
+    if not bool(getattr(current_user, "is_admin", False)):
+        raise HTTPException(status_code=403, detail="관리자 권한이 필요합니다")
+
     db_product = PaymentProduct(**product.dict())
     db.add(db_product)
     await db.commit()
@@ -123,8 +179,17 @@ async def payment_webhook(
     
     PG사에서 결제 완료 시 호출하는 웹훅 엔드포인트입니다.
     """
-    # TODO: 웹훅 서명 검증
-    # TODO: IP 화이트리스트 검증
+    # 서명 검증 (운영 필수)
+    await _verify_webhook_signature_or_raise(request)
+
+    # 멱등성 키 선점 (중복 웹훅 처리 방지)
+    idem_key = f"payment:webhook:{webhook_data.payment_key}:{webhook_data.status}"
+    try:
+        claimed = await redis.set(idem_key, "1", ex=86400, nx=True)
+    except Exception:
+        claimed = True
+    if not claimed:
+        return {"message": "Already processed"}
     
     # 결제 정보 조회
     result = await db.execute(
@@ -144,27 +209,34 @@ async def payment_webhook(
     payment.payment_key = webhook_data.payment_key
     payment.transaction_data = json.dumps(webhook_data.transaction_data)
     
-    if webhook_data.status == "success":
-        payment.paid_at = datetime.utcnow()
-        
-        # 포인트 충전
-        point_service = PointService(redis, db)
-        success, balance = await point_service.charge_points(
-            user_id=payment.user_id,
-            amount=payment.point_amount,
-            description=f"결제 충전 - 주문번호: {payment.order_id}",
-            reference_type="payment",
-            reference_id=str(payment.id)
-        )
-        
-        # TODO: 결제 완료 알림 발송
-        
-    else:
-        payment.failed_reason = webhook_data.transaction_data.get("message", "Unknown error")
-    
-    await db.commit()
-    
-    return {"message": "OK"}
+    try:
+        if webhook_data.status == "success":
+            payment.paid_at = datetime.utcnow()
+
+            # 포인트 충전
+            point_service = PointService(redis, db)
+            success, balance = await point_service.charge_points(
+                user_id=payment.user_id,
+                amount=payment.point_amount,
+                description=f"결제 충전 - 주문번호: {payment.order_id}",
+                reference_type="payment",
+                reference_id=str(payment.id)
+            )
+
+            # TODO: 결제 완료 알림 발송
+
+        else:
+            payment.failed_reason = webhook_data.transaction_data.get("message", "Unknown error")
+
+        await db.commit()
+        return {"message": "OK"}
+    except Exception:
+        # 처리 실패 시 멱등 키 제거(재시도 허용)
+        try:
+            await redis.delete(idem_key)
+        except Exception:
+            pass
+        raise
 
 
 @router.get("/history", response_model=PaymentHistoryResponse)

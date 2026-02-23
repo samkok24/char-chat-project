@@ -190,6 +190,8 @@ class SocketController {
 
     // 메시지 전송
     socket.on('send_message', (data, ack) => this.handleSendMessage(socket, io, data, ack));
+    // SSE 경로에서 생성된 메시지를 다른 디바이스로 즉시 동기화(릴레이 전용)
+    socket.on('relay_messages', (data, ack) => this.handleRelayMessages(socket, io, data, ack));
     // 계속 진행하기
     socket.on('continue', (data, ack) => this.handleContinue(socket, io, data, ack));
 
@@ -204,6 +206,68 @@ class SocketController {
     socket.on('error', (error) => {
       logger.error(`소켓 오류 (${socket.userId}):`, error);
     });
+  }
+
+  /**
+   * 릴레이 전용 메시지 동기화
+   * - 목적: 프론트가 SSE로 직접 전송한 경우에도 다른 디바이스에 즉시 new_message를 브로드캐스트한다.
+   * - 제약: 이 핸들러는 "중계"만 수행하며, DB 저장/AI 생성은 하지 않는다.
+   */
+  async handleRelayMessages(socket, io, data, ack) {
+    const safeAck = (payload) => { try { if (typeof ack === 'function') ack(payload); } catch (_) {} };
+    try {
+      const { roomId, messages } = data || {};
+      const userId = socket.userId;
+      const userInfo = socket.userInfo || {};
+
+      if (!roomId) {
+        safeAck({ ok: false, error: 'missing_roomId' });
+        return;
+      }
+      if (!Array.isArray(messages) || messages.length === 0) {
+        safeAck({ ok: false, error: 'missing_messages' });
+        return;
+      }
+
+      let room = null;
+      try {
+        room = await this._ensureActiveRoomEntry(socket, roomId);
+      } catch (e) {
+        const code = e?._code || e?.message || 'forbidden_room';
+        safeAck({ ok: false, error: code });
+        return;
+      }
+
+      const allowedSenderTypes = new Set(['user', 'assistant', 'character', 'ai']);
+      const out = [];
+      for (const raw of messages.slice(0, 8)) {
+        const id = String(raw?.id || raw?._id || '').trim();
+        const content = String(raw?.content || '').trim();
+        const senderTypeRaw = String(raw?.senderType || raw?.sender_type || '').toLowerCase();
+        const senderType = allowedSenderTypes.has(senderTypeRaw) ? senderTypeRaw : 'user';
+        if (!id || !content) continue;
+
+        out.push({
+          id,
+          roomId,
+          senderType,
+          senderId: raw?.senderId || raw?.sender_id || (senderType === 'user' ? userId : room?.characterId),
+          senderName: raw?.senderName || (senderType === 'user' ? (userInfo.username || 'user') : (room?.characterName || 'AI')),
+          content,
+          messageType: raw?.messageType || raw?.message_type || undefined,
+          timestamp: raw?.timestamp || raw?.created_at || new Date().toISOString(),
+          message_metadata: raw?.message_metadata || undefined,
+        });
+      }
+
+      for (const m of out) {
+        socket.to(roomId).emit('new_message', m);
+      }
+      safeAck({ ok: true, relayed: out.length });
+    } catch (e) {
+      logger.error('relay_messages error:', e);
+      safeAck({ ok: false, error: 'relay_failed' });
+    }
   }
 
   /**

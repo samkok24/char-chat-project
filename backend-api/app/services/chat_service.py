@@ -131,9 +131,17 @@ async def save_message(
     chat_room_id: uuid.UUID,
     sender_type: str,
     content: str,
-    message_metadata: Optional[dict] = None
+    message_metadata: Optional[dict] = None,
+    *,
+    auto_commit: bool = True,
 ) -> ChatMessage:
-    """채팅 메시지를 데이터베이스에 저장"""
+    """
+    채팅 메시지를 데이터베이스에 저장.
+
+    auto_commit:
+    - True(기본): 기존 동작 유지(함수 내부 commit/refresh)
+    - False: 호출자가 트랜잭션 경계를 관리(함수 내부 flush만 수행)
+    """
     chat_message = ChatMessage(
         chat_room_id=chat_room_id,
         sender_type=sender_type,
@@ -146,7 +154,10 @@ async def save_message(
         .where(ChatRoom.id == chat_room_id)
         .values(updated_at=func.now())
     )
-    await db.commit()
+    if auto_commit:
+        await db.commit()
+    else:
+        await db.flush()
     await db.refresh(chat_message)
     return chat_message
 

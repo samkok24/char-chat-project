@@ -925,6 +925,7 @@ async def quick_create_character_30s(
                 ai_model=ai_model,
                 sim_variant=None,
                 sim_dating_elements=sim_dating_elements,
+                quick_30s_mode=True,
             )
             stats = await generate_quick_stat_draft(
                 name=name,
@@ -955,6 +956,7 @@ async def quick_create_character_30s(
                 allow_infinite_mode=False,
                 tags=tag_slugs,
                 ai_model=ai_model,
+                quick_30s_mode=True,
             )
             # ✅ 요구사항: RP도 최소 1개(호감도) 스탯은 포함한다.
             # - 런타임 stat_state 주입/델타 반영을 위해 id 포함 포맷이 필요(SSOT: quick_character_service.generate_quick_stat_draft).
