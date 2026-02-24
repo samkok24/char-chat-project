@@ -5,6 +5,7 @@ import { Plus, Save, Trash2, ArrowUp, ArrowDown, ExternalLink, Image as ImageIco
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 
 import AppLayout from '../components/layout/AppLayout';
+import ErrorBoundary from '../components/ErrorBoundary';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Input } from '../components/ui/input';
