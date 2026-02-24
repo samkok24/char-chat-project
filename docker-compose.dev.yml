@@ -65,6 +65,9 @@ services:
       VITE_SOCKET_URL: http://localhost:13001
     ports:
       - "5173:5173"
+    volumes:
+      - ./frontend/char-chat-frontend:/app
+      - /app/node_modules
     depends_on:
       - backend
       - chat-server

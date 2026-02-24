@@ -5,6 +5,7 @@ import { Plus, Save, Trash2, ArrowUp, ArrowDown, ExternalLink, Image as ImageIco
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 
 import AppLayout from '../components/layout/AppLayout';
+import ErrorBoundary from '../components/ErrorBoundary';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Input } from '../components/ui/input';
@@ -213,6 +214,7 @@ const CMSPage = () => {
   const [slots, setSlotsState] = React.useState(() => getHomeSlots());
   // ✅ 구좌 목록 보기 탭(요구사항): 활성/비활성 분리하여 복잡도 감소
   const [slotListTab, setSlotListTab] = React.useState('enabled'); // enabled | disabled
+  const slotsAnchorRef = React.useRef(null);
   const [tagDisplay, setTagDisplayState] = React.useState(() => getCharacterTagDisplay());
   const [saving, setSaving] = React.useState(false);
 
@@ -1792,7 +1794,7 @@ const CMSPage = () => {
       return sanitizeCharacterTagDisplay({ ...cur, prioritySlugs: slugs, hiddenSlugs: nextHidden });
     });
 
-    toast.success('순서가 적용되었습니다. 상단 “저장”을 누르면 전 유저에게 반영됩니다.');
+    toast.success('순서가 적용되었습니다. 상단 "저장"을 누르면 전 유저에게 반영됩니다.');
     setTagOrderModalOpen(false);
   };
 
@@ -2210,7 +2212,7 @@ const CMSPage = () => {
               <CardHeader>
                 <CardTitle className="text-white">회원 목록</CardTitle>
                 <CardDescription className="text-gray-400">
-                  100명 단위 페이지네이션. 관리자 계정은 ADMIN으로 표시됩니다. (최근 로그인 날짜는 현재 “최근 채팅 활동 시간”으로 대체됩니다.)
+                  100명 단위 페이지네이션. 관리자 계정은 ADMIN으로 표시됩니다. (최근 로그인 날짜는 현재 "최근 채팅 활동 시간"으로 대체됩니다.)
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
@@ -2251,7 +2253,7 @@ const CMSPage = () => {
                     </div>
                   )}
                   <div className="mt-2 text-xs text-gray-500">
-                    주의: 현재 DAU/WAU/MAU는 “유저 발화(sender_type=user)” 기준입니다. 스토리 열람 DAU는 per-user 로그가 없어 추후 이벤트 로그가 필요합니다.
+                    주의: 현재 DAU/WAU/MAU는 "유저 발화(sender_type=user)" 기준입니다. 스토리 열람 DAU는 per-user 로그가 없어 추후 이벤트 로그가 필요합니다.
                   </div>
                 </div>
 
@@ -3081,7 +3083,7 @@ const CMSPage = () => {
                   </div>
                 ) : (
                   <div className="text-sm text-gray-400">
-                    “생성”을 누르면 테스트 계정을 만들고 이메일/비밀번호를 보여줍니다.
+                    "생성"을 누르면 테스트 계정을 만들고 이메일/비밀번호를 보여줍니다.
                   </div>
                 )}
               </div>
@@ -3127,7 +3129,7 @@ const CMSPage = () => {
             </CardHeader>
             <CardContent className="space-y-4">
               {(banners || []).length === 0 ? (
-                <div className="text-gray-400 text-sm">배너가 없습니다. “배너 추가”를 눌러 등록하세요.</div>
+                <div className="text-gray-400 text-sm">배너가 없습니다. "배너 추가"를 눌러 등록하세요.</div>
               ) : (
                 (banners || []).map((b, idx) => {
                   const status = computeStatus(b);
@@ -3477,7 +3479,7 @@ const CMSPage = () => {
                 <div>
                   <CardTitle className="text-white">홈 팝업</CardTitle>
                   <CardDescription className="text-gray-400">
-                    팝업 노출 개수/이미지/링크/“N일간 안보기”/노출 기간을 설정할 수 있습니다. (서버 저장, 전 유저 반영)
+                    팝업 노출 개수/이미지/링크/"N일간 안보기"/노출 기간을 설정할 수 있습니다. (서버 저장, 전 유저 반영)
                   </CardDescription>
                 </div>
                 <Button
@@ -3509,7 +3511,7 @@ const CMSPage = () => {
                 </div>
 
                 {(Array.isArray(popupsConfig?.items) ? popupsConfig.items : []).length === 0 ? (
-                  <div className="text-gray-400 text-sm">팝업이 없습니다. “팝업 추가”를 눌러 등록하세요.</div>
+                  <div className="text-gray-400 text-sm">팝업이 없습니다. "팝업 추가"를 눌러 등록하세요.</div>
                 ) : (
                   (popupsConfig.items || []).map((p, idx) => {
                     const displayOn = String(p.displayOn || 'all').trim().toLowerCase() || 'all';
@@ -3608,7 +3610,7 @@ const CMSPage = () => {
                                   className="bg-gray-900 border-gray-700 text-white"
                                   placeholder="예: 1"
                                 />
-                                <div className="text-xs text-gray-500">0이면 “이번 세션만 닫기”로 동작합니다.</div>
+                                <div className="text-xs text-gray-500">0이면 "이번 세션만 닫기"로 동작합니다.</div>
                               </div>
                             </div>
 
@@ -3767,54 +3769,45 @@ const CMSPage = () => {
           )}
 
           {isSlotsTab && (
-            <Card className="bg-gray-800 border-gray-700">
-              <CardHeader className="flex flex-row items-start justify-between gap-3">
+            <div ref={slotsAnchorRef}>
+              {/* 헤더 */}
+              <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
                 <div>
-                  <CardTitle className="text-white">홈 구좌</CardTitle>
-                  <CardDescription className="text-gray-400">
-                    구좌 순서/숨김/노출 시간을 설정할 수 있습니다. (기본: 상시, 현재는 로컬 저장소 기반)
-                  </CardDescription>
+                  <h2 className="text-lg font-semibold text-white">홈 구좌</h2>
+                  <p className="text-sm text-gray-400">구좌 순서/숨김/노출 시간을 설정합니다. 저장을 눌러야 메인에 반영됩니다.</p>
                 </div>
-                <Button
-                  onClick={addSlot}
-                  className="bg-pink-600 hover:bg-pink-700 text-white"
-                >
+                <Button onClick={addSlot} className="bg-pink-600 hover:bg-pink-700 text-white">
                   <Plus className="w-4 h-4 mr-2" />
                   구좌 추가
                 </Button>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                {/* ✅ 보기 탭: 활성/비활성 분리 */}
-                <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-gray-800 bg-gray-900/30 px-4 py-3">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      className={`h-9 px-3 ${slotListTab === 'enabled' ? 'bg-purple-600 border-purple-500 text-white hover:bg-purple-700' : 'bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700'}`}
-                      onClick={() => setSlotListTab('enabled')}
-                      title="활성화된 구좌만 보기"
-                    >
-                      활성화({enabledSlotsCount})
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      className={`h-9 px-3 ${slotListTab === 'disabled' ? 'bg-purple-600 border-purple-500 text-white hover:bg-purple-700' : 'bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700'}`}
-                      onClick={() => setSlotListTab('disabled')}
-                      title="비활성화된 구좌만 보기"
-                    >
-                      비활성화({disabledSlotsCount})
-                    </Button>
-                  </div>
-                  <div className="text-xs text-gray-500">
-                    스위치 토글 시 해당 탭으로 자동 전환됩니다. 저장을 눌러야 메인에 반영됩니다.
-                  </div>
-                </div>
+              </div>
 
+              {/* 활성/비활성 서브탭 */}
+              <div className="flex items-center gap-2 mb-4">
+                <Button
+                  type="button"
+                  variant="outline"
+                  className={`h-9 px-4 ${slotListTab === 'enabled' ? 'bg-purple-600 border-purple-500 text-white hover:bg-purple-700' : 'bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700'}`}
+                  onClick={() => { setSlotListTab('enabled'); setTimeout(() => slotsAnchorRef.current?.scrollIntoView({ behavior: 'instant', block: 'start' }), 0); }}
+                >
+                  활성화({enabledSlotsCount})
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className={`h-9 px-4 ${slotListTab === 'disabled' ? 'bg-purple-600 border-purple-500 text-white hover:bg-purple-700' : 'bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700'}`}
+                  onClick={() => { setSlotListTab('disabled'); setTimeout(() => slotsAnchorRef.current?.scrollIntoView({ behavior: 'instant', block: 'start' }), 0); }}
+                >
+                  비활성화({disabledSlotsCount})
+                </Button>
+              </div>
+
+              {/* 구좌 목록 */}
+              <div className="space-y-4">
                 {(slots || []).length === 0 ? (
-                  <div className="text-gray-400 text-sm">구좌가 없습니다. “구좌 추가”를 눌러 등록하세요.</div>
+                  <div className="text-gray-400 text-sm py-8 text-center">구좌가 없습니다. "구좌 추가"를 눌러 등록하세요.</div>
                 ) : (visibleSlotsForTab || []).length === 0 ? (
-                  <div className="text-gray-400 text-sm">
+                  <div className="text-gray-400 text-sm py-8 text-center">
                     {slotListTab === 'disabled' ? '비활성화된 구좌가 없습니다.' : '활성화된 구좌가 없습니다.'}
                   </div>
                 ) : (
@@ -3827,227 +3820,140 @@ const CMSPage = () => {
                     return (
                       <ErrorBoundary
                         key={String(s?.id || `slot-${idx}`)}
-                        fallback={(
-                          <div className="rounded-xl border border-red-700 bg-red-900/20 p-4 text-sm text-red-200">
-                            구좌 렌더링 중 오류가 발생했습니다. 다른 구좌는 계속 편집할 수 있습니다.
-                          </div>
-                        )}
+                        fallback={<div className="rounded-xl border border-red-700 bg-red-900/20 p-4 text-sm text-red-200">구좌 렌더링 중 오류가 발생했습니다.</div>}
                       >
-                      <div className="rounded-xl border border-gray-700 bg-gray-900/30 p-4">
+                      <div className="rounded-xl border border-gray-700 bg-gray-800/60 p-4 space-y-4">
+                        {/* 구좌 헤더: 제목 + 순서 버튼 */}
                         <div className="flex items-start justify-between gap-3">
                           <div className="min-w-0">
                             <div className="flex items-center gap-2 flex-wrap">
-                              <div className="text-sm font-semibold text-white truncate">
-                                #{idx + 1} {s.title || '구좌'}
-                              </div>
+                              <span className="text-sm font-semibold text-white truncate">#{idx + 1} {s.title || '구좌'}</span>
                               <Badge className={status.className}>{status.label}</Badge>
                             </div>
                             <div className="text-xs text-gray-500 mt-1">
-                              {s.startAt ? new Date(s.startAt).toLocaleString('ko-KR') : '상시'}
-                              {' '}~{' '}
-                              {s.endAt ? new Date(s.endAt).toLocaleString('ko-KR') : '상시'}
+                              {s.startAt ? new Date(s.startAt).toLocaleString('ko-KR') : '상시'} ~ {s.endAt ? new Date(s.endAt).toLocaleString('ko-KR') : '상시'}
                             </div>
                           </div>
                           <div className="flex items-center gap-2 flex-shrink-0">
-                            <Button
-                              variant="outline"
-                              className="h-9 px-3 bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
-                              onClick={() => moveSlot(s.id, 'up')}
-                              disabled={idx === 0}
-                              title="위로"
-                            >
+                            <Button variant="outline" className="h-9 px-3 bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700" onClick={() => moveSlot(s.id, 'up')} disabled={idx === 0} title="위로">
                               <ArrowUp className="w-4 h-4" />
                             </Button>
-                            <Button
-                              variant="outline"
-                              className="h-9 px-3 bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
-                              onClick={() => moveSlot(s.id, 'down')}
-                              disabled={idx === ((visibleSlotsForTab || []).length - 1)}
-                              title="아래로"
-                            >
+                            <Button variant="outline" className="h-9 px-3 bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700" onClick={() => moveSlot(s.id, 'down')} disabled={idx === ((visibleSlotsForTab || []).length - 1)} title="아래로">
                               <ArrowDown className="w-4 h-4" />
                             </Button>
                           </div>
                         </div>
 
-                        <div className="mt-4 space-y-4">
-                          {isCustomSlot && (
-                            <div className="rounded-lg border border-gray-800 bg-gray-900/30 p-4">
-                              <div className="flex items-start justify-between gap-3">
-                                <div className="min-w-0">
-                                  <div className="flex items-center gap-2 flex-wrap">
-                                    <div className="text-sm font-semibold text-white">구좌 콘텐츠</div>
-                                    <Badge className="bg-gray-700 text-gray-100 hover:bg-gray-700">
-                                      {customPicks.length}개
-                                    </Badge>
-                                    <Badge className="bg-gray-700 text-gray-100 hover:bg-gray-700">
-                                      {customSortMode === 'random' ? '랜덤' : '대화/조회순'}
-                                    </Badge>
-                                  </div>
-                                  <div className="text-xs text-gray-400 mt-1">
-                                    캐릭터/원작챗/웹소설을 다중 선택하고, 정렬 방식을 설정하세요.
-                                  </div>
+                        {/* 커스텀 구좌: 콘텐츠 피커 */}
+                        {isCustomSlot && (
+                          <div className="rounded-lg border border-gray-700 bg-gray-900/30 p-4">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="text-sm font-semibold text-white">구좌 콘텐츠</span>
+                                  <Badge className="bg-gray-700 text-gray-100 hover:bg-gray-700">{customPicks.length}개</Badge>
+                                  <Badge className="bg-gray-700 text-gray-100 hover:bg-gray-700">{customSortMode === 'random' ? '랜덤' : '대화/조회순'}</Badge>
                                 </div>
-                                <Button
-                                  type="button"
-                                  variant="outline"
-                                  className="h-9 px-3 bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
-                                  onClick={() => openContentPickerForSlot(s)}
-                                >
-                                  선택/편집
-                                </Button>
+                                <div className="text-xs text-gray-400 mt-1">캐릭터/원작챗/웹소설을 다중 선택하고, 정렬 방식을 설정하세요.</div>
                               </div>
-
-                              <div className="mt-3 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4">
-                                <label className="inline-flex items-center gap-2 cursor-pointer text-sm text-gray-200">
-                                  <input
-                                    type="radio"
-                                    name={`customSort-${s.id}`}
-                                    className="accent-purple-600"
-                                    checked={customSortMode === 'metric'}
-                                    onChange={() => updateSlot(s.id, { contentSortMode: 'metric' })}
-                                  />
-                                  <span className="text-sm">대화수(조회수) 순</span>
-                                </label>
-                                <label className="inline-flex items-center gap-2 cursor-pointer text-sm text-gray-200">
-                                  <input
-                                    type="radio"
-                                    name={`customSort-${s.id}`}
-                                    className="accent-purple-600"
-                                    checked={customSortMode === 'random'}
-                                    onChange={() => updateSlot(s.id, { contentSortMode: 'random' })}
-                                  />
-                                  <span className="text-sm">랜덤 정렬(새로고침마다 변경)</span>
-                                </label>
-                              </div>
-
-                              {customPicks.length === 0 ? (
-                                <div className="mt-3 text-sm text-gray-300">
-                                  아직 선택된 콘텐츠가 없습니다. “선택/편집”에서 추가하세요.
-                                </div>
-                              ) : (
-                                <div className="mt-3 flex flex-wrap gap-2">
-                                  {customPicks.map((p) => {
-                                    const type = String(p?.type || '').trim().toLowerCase();
-                                    const pid = String(p?.item?.id || '').trim();
-                                    const label = type === 'story'
-                                      ? String(p?.item?.title || '').trim()
-                                      : String(p?.item?.name || '').trim();
-                                    const img = type === 'story'
-                                      ? String(p?.item?.cover_url || '').trim()
-                                      : String(p?.item?.avatar_url || p?.item?.thumbnail_url || '').trim();
-                                    const k = `${type}:${pid}`;
-                                    const badge = type === 'story' ? '웹소설' : (p?.item?.origin_story_id ? '원작챗' : '캐릭터');
-                                    return (
-                                      <div
-                                        key={k}
-                                        className="inline-flex items-center gap-2 rounded-full border border-gray-700 bg-gray-900/40 px-2.5 py-1"
-                                        title={label || k}
-                                      >
-                                        <Avatar className="h-6 w-6">
-                                          <AvatarImage src={img} alt={label || badge} />
-                                          <AvatarFallback className="bg-gray-800 text-gray-200 text-xs">
-                                            {(label || badge || 'C').charAt(0)}
-                                          </AvatarFallback>
-                                        </Avatar>
-                                        <Badge className="bg-gray-700 text-gray-100 hover:bg-gray-700 text-[10px] px-2 py-0.5">
-                                          {badge}
-                                        </Badge>
-                                        <span className="text-xs text-gray-200 max-w-[220px] truncate">{label || k}</span>
-                                        <button
-                                          type="button"
-                                          className="ml-1 inline-flex h-6 w-6 items-center justify-center rounded-full text-gray-300 hover:bg-gray-800 hover:text-white transition-colors"
-                                          onClick={() => {
-                                            const next = (customPicks || []).filter((x) => {
-                                              const t2 = String(x?.type || '').trim().toLowerCase();
-                                              const id2 = String(x?.item?.id || '').trim();
-                                              return `${t2}:${id2}` !== k;
-                                            });
-                                            updateSlot(s.id, { contentPicks: next });
-                                          }}
-                                          aria-label="콘텐츠 제거"
-                                          title="제거"
-                                        >
-                                          <X className="h-4 w-4" />
-                                        </button>
-                                      </div>
-                                    );
-                                  })}
-                                </div>
-                              )}
-                            </div>
-                          )}
-
-                          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                            <div className="space-y-2">
-                              <Label className="text-gray-300">구좌 제목(관리용)</Label>
-                              <Input
-                                value={s.title || ''}
-                                onChange={(e) => updateSlot(s.id, { title: e.target.value })}
-                                className="bg-gray-900 border-gray-700 text-white"
-                                placeholder="예: 추천 캐릭터 섹션"
-                              />
-                            </div>
-                            <div className="space-y-2">
-                              <Label className="text-gray-300">상시 노출</Label>
-                              <Button
-                                variant="outline"
-                                className="w-full bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
-                                onClick={() => updateSlot(s.id, { startAt: null, endAt: null })}
-                                title="노출 시간을 비워 상시로 설정"
-                              >
-                                상시로 설정(시간 비우기)
+                              <Button type="button" variant="outline" className="h-9 px-3 bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700" onClick={() => openContentPickerForSlot(s)}>
+                                선택/편집
                               </Button>
                             </div>
+                            <div className="mt-3 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4">
+                              <label className="inline-flex items-center gap-2 cursor-pointer text-sm text-gray-200">
+                                <input type="radio" name={`customSort-${s.id}`} className="accent-purple-600" checked={customSortMode === 'metric'} onChange={() => updateSlot(s.id, { contentSortMode: 'metric' })} />
+                                <span className="text-sm">대화수(조회수) 순</span>
+                              </label>
+                              <label className="inline-flex items-center gap-2 cursor-pointer text-sm text-gray-200">
+                                <input type="radio" name={`customSort-${s.id}`} className="accent-purple-600" checked={customSortMode === 'random'} onChange={() => updateSlot(s.id, { contentSortMode: 'random' })} />
+                                <span className="text-sm">랜덤 정렬(새로고침마다 변경)</span>
+                              </label>
+                            </div>
+                            {customPicks.length === 0 ? (
+                              <div className="mt-3 text-sm text-gray-300">아직 선택된 콘텐츠가 없습니다. "선택/편집"에서 추가하세요.</div>
+                            ) : (
+                              <div className="mt-3 flex flex-wrap gap-2">
+                                {customPicks.map((p) => {
+                                  const type = String(p?.type || '').trim().toLowerCase();
+                                  const pid = String(p?.item?.id || '').trim();
+                                  const label = type === 'story' ? String(p?.item?.title || '').trim() : String(p?.item?.name || '').trim();
+                                  const img = type === 'story' ? String(p?.item?.cover_url || '').trim() : String(p?.item?.avatar_url || p?.item?.thumbnail_url || '').trim();
+                                  const k = `${type}:${pid}`;
+                                  const badge = type === 'story' ? '웹소설' : (p?.item?.origin_story_id ? '원작챗' : '캐릭터');
+                                  return (
+                                    <div key={k} className="inline-flex items-center gap-2 rounded-full border border-gray-700 bg-gray-900/40 px-2.5 py-1" title={label || k}>
+                                      <Avatar className="h-6 w-6">
+                                        <AvatarImage src={img} alt={label || badge} />
+                                        <AvatarFallback className="bg-gray-800 text-gray-200 text-xs">{(label || badge || 'C').charAt(0)}</AvatarFallback>
+                                      </Avatar>
+                                      <Badge className="bg-gray-700 text-gray-100 hover:bg-gray-700 text-[10px] px-2 py-0.5">{badge}</Badge>
+                                      <span className="text-xs text-gray-200 max-w-[220px] truncate">{label || k}</span>
+                                      <button
+                                        type="button"
+                                        className="ml-1 inline-flex h-6 w-6 items-center justify-center rounded-full text-gray-300 hover:bg-gray-800 hover:text-white transition-colors"
+                                        onClick={() => { updateSlot(s.id, { contentPicks: (customPicks || []).filter((x) => `${String(x?.type || '').trim().toLowerCase()}:${String(x?.item?.id || '').trim()}` !== k) }); }}
+                                        aria-label="콘텐츠 제거" title="제거"
+                                      >
+                                        <X className="h-4 w-4" />
+                                      </button>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
                           </div>
+                        )}
 
-                          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                            <div className="space-y-2">
-                              <Label className="text-gray-300">노출 시작(연월일시)</Label>
-                              <Input
-                                type="datetime-local"
-                                value={toDatetimeLocal(s.startAt)}
-                                onChange={(e) => updateSlot(s.id, { startAt: fromDatetimeLocal(e.target.value) })}
-                                className="bg-gray-900 border-gray-700 text-white"
-                              />
-                              <div className="text-xs text-gray-500">비워두면 “상시”로 처리됩니다.</div>
-                            </div>
-                            <div className="space-y-2">
-                              <Label className="text-gray-300">노출 종료(연월일시)</Label>
-                              <Input
-                                type="datetime-local"
-                                value={toDatetimeLocal(s.endAt)}
-                                onChange={(e) => updateSlot(s.id, { endAt: fromDatetimeLocal(e.target.value) })}
-                                className="bg-gray-900 border-gray-700 text-white"
-                              />
-                              <div className="text-xs text-gray-500">비워두면 “상시”로 처리됩니다.</div>
-                            </div>
+                        {/* 제목 + 상시 노출 */}
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                          <div className="space-y-2">
+                            <Label className="text-gray-300">구좌 제목(관리용)</Label>
+                            <Input value={s.title || ''} onChange={(e) => updateSlot(s.id, { title: e.target.value })} className="bg-gray-900 border-gray-700 text-white" placeholder="예: 추천 캐릭터 섹션" />
                           </div>
+                          <div className="space-y-2">
+                            <Label className="text-gray-300">상시 노출</Label>
+                            <Button variant="outline" className="w-full bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700" onClick={() => updateSlot(s.id, { startAt: null, endAt: null })} title="노출 시간을 비워 상시로 설정">
+                              상시로 설정(시간 비우기)
+                            </Button>
+                          </div>
+                        </div>
 
-                          <div className="flex items-center justify-between gap-3 rounded-lg border border-gray-800 bg-gray-900/30 px-4 py-3">
-                            <div className="min-w-0">
-                              <div className="text-sm font-semibold text-white">구좌 활성화</div>
-                              <div className="text-xs text-gray-500">끄면 기간과 상관없이 숨김 처리됩니다.</div>
-                            </div>
-                            <Switch
-                              checked={s.enabled !== false}
-                              onCheckedChange={(v) => {
-                                try {
-                                  updateSlot(s.id, { enabled: !!v });
-                                } catch (e) {
-                                  console.error('[CMSPage] updateSlot failed:', e);
-                                }
-                              }}
-                            />
+                        {/* 노출 기간 */}
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                          <div className="space-y-2">
+                            <Label className="text-gray-300">노출 시작(연월일시)</Label>
+                            <Input type="datetime-local" value={toDatetimeLocal(s.startAt)} onChange={(e) => updateSlot(s.id, { startAt: fromDatetimeLocal(e.target.value) })} className="bg-gray-900 border-gray-700 text-white" />
+                            <div className="text-xs text-gray-500">비워두면 "상시"로 처리됩니다.</div>
                           </div>
+                          <div className="space-y-2">
+                            <Label className="text-gray-300">노출 종료(연월일시)</Label>
+                            <Input type="datetime-local" value={toDatetimeLocal(s.endAt)} onChange={(e) => updateSlot(s.id, { endAt: fromDatetimeLocal(e.target.value) })} className="bg-gray-900 border-gray-700 text-white" />
+                            <div className="text-xs text-gray-500">비워두면 "상시"로 처리됩니다.</div>
+                          </div>
+                        </div>
+
+                        {/* 활성화 토글 */}
+                        <div className="flex items-center justify-between gap-3 rounded-lg border border-gray-700 bg-gray-900/30 px-4 py-3">
+                          <div className="min-w-0">
+                            <div className="text-sm font-semibold text-white">구좌 활성화</div>
+                            <div className="text-xs text-gray-500">끄면 기간과 상관없이 숨김 처리됩니다.</div>
+                          </div>
+                          <Switch
+                            checked={s.enabled !== false}
+                            onCheckedChange={(v) => {
+                              updateSlot(s.id, { enabled: !!v });
+                              setTimeout(() => slotsAnchorRef.current?.scrollIntoView({ behavior: 'instant', block: 'start' }), 0);
+                            }}
+                          />
                         </div>
                       </div>
                       </ErrorBoundary>
                     );
                   })
                 )}
-              </CardContent>
-            </Card>
+              </div>
+            </div>
           )}
 
           {isTagsTab && (
@@ -4125,7 +4031,7 @@ const CMSPage = () => {
                     <div className="mt-3 space-y-2">
                       {effectivePrioritySlugsForDisplay.length === 0 ? (
                         <div className="text-xs text-gray-500">
-                          현재는 기본 우선순위(예: 판타지/SF/던전)가 적용됩니다. “순서 편집”에서 원하는 순서로 직접 지정하세요.
+                          현재는 기본 우선순위(예: 판타지/SF/던전)가 적용됩니다. "순서 편집"에서 원하는 순서로 직접 지정하세요.
                         </div>
                       ) : (
                         (effectivePrioritySlugsForDisplay || []).map((slug, idx) => {
@@ -4175,7 +4081,7 @@ const CMSPage = () => {
                       )}
                     </div>
                     <div className="mt-3 text-xs text-gray-500">
-                      팁: 아래 “전체 태그”에서 태그를 선택해 우선 노출 목록에 추가할 수 있습니다.
+                      팁: 아래 "전체 태그"에서 태그를 선택해 우선 노출 목록에 추가할 수 있습니다.
                     </div>
                   </div>
 
@@ -4215,7 +4121,7 @@ const CMSPage = () => {
                       )}
                     </div>
                     <div className="mt-3 text-xs text-gray-500">
-                      숨김은 “삭제”가 아닙니다. 캐릭터 탭/선택 모달에서만 안 보이게 합니다.
+                      숨김은 "삭제"가 아닙니다. 캐릭터 탭/선택 모달에서만 안 보이게 합니다.
                     </div>
                   </div>
                 </div>
@@ -4296,7 +4202,7 @@ const CMSPage = () => {
                   </div>
 
                   <div className="text-xs text-gray-500">
-                    노출 순서/숨김 변경은 상단 “저장” 버튼을 눌러야 전 유저에게 반영됩니다.
+                    노출 순서/숨김 변경은 상단 "저장" 버튼을 눌러야 전 유저에게 반영됩니다.
                   </div>
                 </div>
 
@@ -4488,7 +4394,7 @@ const CMSPage = () => {
               <DialogHeader>
                 <DialogTitle className="text-white">구좌 콘텐츠 선택</DialogTitle>
                 <DialogDescription className="text-gray-400">
-                  캐릭터/원작챗/웹소설을 다중 선택하고 “적용”을 누르세요.
+                  캐릭터/원작챗/웹소설을 다중 선택하고 "적용"을 누르세요.
                 </DialogDescription>
               </DialogHeader>
 
@@ -4731,7 +4637,7 @@ const CMSPage = () => {
 
                   {(contentResults || []).length === 0 ? (
                     <div className="mt-2 text-sm text-gray-400">
-                      검색어/태그를 입력하고 “검색”을 눌러주세요.
+                      검색어/태그를 입력하고 "검색"을 눌러주세요.
                     </div>
                   ) : (
                     <div className="mt-3 max-h-[360px] overflow-auto divide-y divide-gray-900">
