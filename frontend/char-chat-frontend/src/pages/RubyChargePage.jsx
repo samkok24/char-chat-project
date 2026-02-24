@@ -159,14 +159,14 @@ const RubyChargePage = () => {
     };
   }, []);
 
-  /* ── 결제 (Paddle 연동 전 placeholder) ── */
+  /* ── 결제 (PortOne 연동 전 placeholder) ── */
   const handlePurchase = useCallback(() => {
     const product = RUBY_PRODUCTS.find(p => p.id === selectedProduct);
     if (!product) return;
     setIsProcessing(true);
-    // TODO: Paddle.Checkout.open()
+    // TODO: PortOne 결제창 연동
     setTimeout(() => {
-      alert(`[준비 중] ${product.name} (💎${(product.ruby + product.bonus).toLocaleString()}) - ${product.price.toLocaleString()}원\n\nPaddle 결제 연동 후 활성화됩니다.`);
+      alert(`[준비 중] ${product.name} (💎${(product.ruby + product.bonus).toLocaleString()}) - ${product.price.toLocaleString()}원\n\nPortOne 결제 연동 후 활성화됩니다.`);
       setIsProcessing(false);
     }, 500);
   }, [selectedProduct]);
