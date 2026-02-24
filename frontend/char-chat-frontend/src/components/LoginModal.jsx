@@ -378,7 +378,7 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
               <CardContent className="pt-4">
                   <div className="text-center mb-4">
                     <CardDescription className="text-gray-600 dark:text-gray-300">
-                      계정에 로그인하여 AI 캐릭터들과 대화를 시작하세요
+                      웹소설 원작을 마음대로 읽고 등장캐와 대화하세요
                     </CardDescription>
                   </div>
                   <form onSubmit={handleLoginSubmit} className="space-y-4">
@@ -449,7 +449,7 @@ const LoginModal = ({ isOpen, onClose, initialTab = 'login' }) => {
               <CardContent className="pt-4">
                   <div className="text-center mb-4">
                     <CardDescription className="text-gray-600 dark:text-gray-300">
-                      새 계정을 만들어 AI 캐릭터들과 대화를 시작하세요
+                      새 계정을 만들어 웹소설 원작과 등장캐를 즐기세요
                     </CardDescription>
                   </div>
                   <form onSubmit={handleRegisterSubmit} className="space-y-4">

@@ -390,7 +390,7 @@ const LoginPage = () => {
               <TabsContent value="register" className="space-y-4 mt-0">
                 <div className="text-center mb-4">
                   <CardDescription className="text-gray-300">
-                    새 계정을 만들어 AI 캐릭터들과 대화를 시작하세요
+                    새 계정을 만들어 웹소설 원작과 등장캐를 즐기세요
                   </CardDescription>
                 </div>
 

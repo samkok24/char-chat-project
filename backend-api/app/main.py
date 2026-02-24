@@ -79,9 +79,14 @@ async def lifespan(app: FastAPI):
             # 이벤트 루프 블로킹 방지
             await asyncio.to_thread(run_precise_migration)
             logger.info("🛠️ SQLite precise_migration 완료(start_sets 포함)")
+        else:
+            # PostgreSQL: postgres_migration.py로 누락 테이블/컬럼 자동 보정
+            from postgres_migration import run_migrations as run_pg_migrations
+            await run_pg_migrations()
+            logger.info("🛠️ PostgreSQL postgres_migration 완료")
     except Exception as e:
         # 치명적: 마이그레이션 실패면 계속 진행해도 500 연쇄 발생
-        logger.exception(f"[fatal] SQLite precise_migration 실패: {e}")
+        logger.exception(f"[fatal] 마이그레이션 실패: {e}")
         raise
     
     # 데이터베이스 테이블 생성 (개발용)
