@@ -46,6 +46,7 @@ import {
   Settings,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
 } from 'lucide-react';
 import {
   DropdownMenu,
@@ -93,6 +94,7 @@ import { resolveHomeAbVariant } from '../lib/homeAb';
 
 const CHARACTER_PAGE_SIZE = 40;
 const QuickMeetCharacterModal = React.lazy(() => import('../components/QuickMeetCharacterModal'));
+const BUSINESS_INFO_TEXT = '라이크노벨 | 327-24-00954 | 17084 경기 용인시 기흥구 공세로 150-29, B01-J207호(공세동, 테라스가든) | 제 2020-성남분당C-0039호';
 
 // ✅ 캐릭터 탭 고정 태그칩(요구사항): "모두" 옆에 롤플/시뮬/커스텀을 항상 노출
 // - 실제 필터는 서버에서 character_type으로 해석(태그 매핑이 없는 기존 데이터도 동작하도록)
@@ -901,6 +903,7 @@ const HomePage = () => {
   const [quickMeetOpen, setQuickMeetOpen] = useState(false);
   const [quickMeetInitialName, setQuickMeetInitialName] = useState('');
   const [quickMeetInitialSeedText, setQuickMeetInitialSeedText] = useState('');
+  const [bizInfoOpen, setBizInfoOpen] = useState(false);
 
   useEffect(() => {
     // 디바운스: 과도한 API 호출 방지(배포 안정)
@@ -3486,7 +3489,22 @@ const HomePage = () => {
           <span>|</span>
           <Link to="/legal/refund" className="hover:text-gray-300 transition-colors">환불정책</Link>
         </div>
-        <p className="mt-2 text-gray-600">&copy; 2026 챕터8. All rights reserved.</p>
+        <button
+          type="button"
+          onClick={() => setBizInfoOpen((v) => !v)}
+          className="mt-2 inline-flex items-center gap-1 text-gray-400 hover:text-gray-200 transition-colors"
+          aria-expanded={bizInfoOpen}
+          aria-controls="footer-business-info"
+        >
+          <span>사업자정보확인</span>
+          <ChevronDown className={`w-3.5 h-3.5 transition-transform ${bizInfoOpen ? 'rotate-180' : ''}`} />
+        </button>
+        {bizInfoOpen && (
+          <p id="footer-business-info" className="mt-2 text-gray-500 break-words">
+            {BUSINESS_INFO_TEXT}
+          </p>
+        )}
+        <p className="mt-1 text-gray-600">&copy; 2026 챕터8. All rights reserved.</p>
       </footer>
 
       </div>
