@@ -149,7 +149,7 @@ const PublicRoute = ({ children }) => {
           <Route path="/agent/drawer" element={<AgentDrawerPage />} />
           <Route path="/agent/feed" element={<AgentFeedPage />} />
           {/* 대시보드 별도 경로 */}
-          <Route path="/dashboard" element={<HomePage />} />
+          <Route path="/dashboard" element={<ErrorBoundary><HomePage /></ErrorBoundary>} />
 
           <Route
             path="/login"
