@@ -505,16 +505,40 @@ def _normalize_slots(items: List[HomeSlot]) -> List[dict]:
     """
     now = _now_iso()
     out: List[dict] = []
+    seen_ids: set[str] = set()
+
+    # 1) 입력 payload 정규화(중복 id 방어 포함)
     for s in (items or []):
         d = s.model_dump()
         if not d.get("id"):
             d["id"] = f"slot_{uuid.uuid4().hex[:12]}"
+        sid = str(d.get("id") or "").strip()
+        if not sid or sid in seen_ids:
+            continue
+        seen_ids.add(sid)
         if not d.get("createdAt"):
             d["createdAt"] = now
         d["updatedAt"] = now
         out.append(d)
+
+    # 2) 시스템 기본 구좌 누락 보강(부분 저장/레이스 상황 방어)
+    # - 기존 항목은 그대로 유지하고, "없는 기본 구좌"만 뒤에 추가한다.
+    # - 운영 중 구좌 payload가 부분 목록으로 저장되어 홈이 텅 비는 리스크를 줄인다.
+    defaults = _default_home_slots()
+    for d in defaults:
+        sid = str(d.get("id") or "").strip()
+        if not sid or sid in seen_ids:
+            continue
+        nd = dict(d)
+        if not nd.get("createdAt"):
+            nd["createdAt"] = now
+        nd["updatedAt"] = now
+        out.append(nd)
+        seen_ids.add(sid)
+
     if len(out) == 0:
-        return _default_home_slots()
+        return defaults
+
     return out
 
 

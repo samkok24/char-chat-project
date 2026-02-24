@@ -6,7 +6,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { subscriptionAPI } from '../lib/api';
 import AppLayout from '../components/layout/AppLayout';
@@ -235,10 +235,19 @@ const SubscribePage = () => {
             {/* 안내 문구 */}
             <div className="mt-6 text-xs text-gray-500 space-y-1">
               <p className="font-semibold text-gray-400 mb-2">구독 안내</p>
-              <p>• 구독은 결제일로부터 30일간 유지됩니다.</p>
-              <p>• 월 루비는 구독 시작 시 즉시 지급됩니다.</p>
-              <p>• 플랜 변경 시 즉시 적용되며, 기존 플랜은 자동 해지됩니다.</p>
-              <p>• 구독 해지 후에도 만료일까지 혜택이 유지됩니다.</p>
+              <p>• 구독 혜택은 구독 적용 시점부터 즉시 반영됩니다.</p>
+              <p>• 플랜 변경 시 새 플랜 혜택이 즉시 적용됩니다.</p>
+              <p>• 해지/환불 처리 기준은 환불정책 및 결제대행사 정책을 따릅니다.</p>
+              <p>• 구독/환불 문의: cha8.team@gmail.com</p>
+              <p className="pt-1">
+                진행 시{' '}
+                <Link to="/legal/terms" className="text-gray-300 hover:text-white underline underline-offset-2">이용약관</Link>
+                {' '}및{' '}
+                <Link to="/legal/privacy" className="text-gray-300 hover:text-white underline underline-offset-2">개인정보처리방침</Link>
+                ,{' '}
+                <Link to="/legal/refund" className="text-gray-300 hover:text-white underline underline-offset-2">환불정책</Link>
+                에 동의한 것으로 봅니다.
+              </p>
             </div>
           </>
         )}

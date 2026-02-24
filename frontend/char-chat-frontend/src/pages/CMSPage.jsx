@@ -1977,30 +1977,40 @@ const CMSPage = () => {
   const isUsersTab = activeTab === 'users';
   const isUserLogsTab = activeTab === 'userLogs';
 
-  const enabledSlotsCount = React.useMemo(() => {
+  const normalizedSlots = React.useMemo(() => {
     try {
       const arr = Array.isArray(slots) ? slots : [];
-      return arr.filter((s) => s?.enabled !== false).length;
+      return arr
+        .map((s) => {
+          try { return sanitizeHomeSlot(s); } catch (_) { return null; }
+        })
+        .filter((s) => !!String(s?.id || '').trim());
+    } catch (_) {
+      return [];
+    }
+  }, [slots]);
+
+  const enabledSlotsCount = React.useMemo(() => {
+    try {
+      return normalizedSlots.filter((s) => s?.enabled !== false).length;
     } catch (_) {
       return 0;
     }
-  }, [slots]);
+  }, [normalizedSlots]);
 
   const disabledSlotsCount = React.useMemo(() => {
     try {
-      const arr = Array.isArray(slots) ? slots : [];
-      return arr.filter((s) => s?.enabled === false).length;
+      return normalizedSlots.filter((s) => s?.enabled === false).length;
     } catch (_) {
       return 0;
     }
-  }, [slots]);
+  }, [normalizedSlots]);
 
   const visibleSlotsForTab = React.useMemo(() => {
-    const arr = Array.isArray(slots) ? slots : [];
     const tab = String(slotListTab || 'enabled').trim().toLowerCase();
-    if (tab === 'disabled') return arr.filter((s) => s?.enabled === false);
-    return arr.filter((s) => s?.enabled !== false);
-  }, [slots, slotListTab]);
+    if (tab === 'disabled') return normalizedSlots.filter((s) => s?.enabled === false);
+    return normalizedSlots.filter((s) => s?.enabled !== false);
+  }, [normalizedSlots, slotListTab]);
 
   const filteredTagsForManage = React.useMemo(() => {
     const q = String(tagListQuery || '').trim().toLowerCase();
@@ -3815,7 +3825,15 @@ const CMSPage = () => {
                     const customPicks = Array.isArray(s?.contentPicks) ? s.contentPicks : [];
                     const customSortMode = String(s?.contentSortMode || 'metric') === 'random' ? 'random' : 'metric';
                     return (
-                      <div key={s.id} className="rounded-xl border border-gray-700 bg-gray-900/30 p-4">
+                      <ErrorBoundary
+                        key={String(s?.id || `slot-${idx}`)}
+                        fallback={(
+                          <div className="rounded-xl border border-red-700 bg-red-900/20 p-4 text-sm text-red-200">
+                            구좌 렌더링 중 오류가 발생했습니다. 다른 구좌는 계속 편집할 수 있습니다.
+                          </div>
+                        )}
+                      >
+                      <div className="rounded-xl border border-gray-700 bg-gray-900/30 p-4">
                         <div className="flex items-start justify-between gap-3">
                           <div className="min-w-0">
                             <div className="flex items-center gap-2 flex-wrap">
@@ -4024,6 +4042,7 @@ const CMSPage = () => {
                           </div>
                         </div>
                       </div>
+                      </ErrorBoundary>
                     );
                   })
                 )}

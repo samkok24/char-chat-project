@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { pointAPI, subscriptionAPI } from '../lib/api';
 import AppLayout from '../components/layout/AppLayout';
@@ -546,14 +546,25 @@ const RubyChargePage = () => {
               )}
             </Button>
 
+            <p className="mt-3 text-[11px] text-gray-500 text-center">
+              결제 진행 시{' '}
+              <Link to="/legal/terms" className="text-gray-300 hover:text-white underline underline-offset-2">이용약관</Link>
+              {' '}및{' '}
+              <Link to="/legal/privacy" className="text-gray-300 hover:text-white underline underline-offset-2">개인정보처리방침</Link>
+              ,{' '}
+              <Link to="/legal/refund" className="text-gray-300 hover:text-white underline underline-offset-2">환불정책</Link>
+              에 동의한 것으로 봅니다.
+            </p>
+
             {/* 환불 정책 */}
             <div className="mt-6 text-xs text-gray-500 space-y-1">
               <p className="font-semibold text-gray-400 mb-2">환불 정책 및 루비 이용 안내</p>
-              <p>• 모든 결제 상품은 결제일로부터 7일 이내 환불을 요청할 수 있습니다.</p>
-              <p>• 구매한 루비를 사용한 이력이 있다면 환불이 불가능합니다.</p>
+              <p>• 결제일로부터 7일 이내, 미사용 유상 루비에 대해 환불을 요청할 수 있습니다.</p>
+              <p>• 일부 사용 시 사용분을 제외한 미사용 유상 루비를 기준으로 환불됩니다.</p>
+              <p>• 이벤트/보너스 등 무상 지급 루비는 환불 대상에서 제외됩니다.</p>
               <p>• 주관적인 답변 생성의 불만족으로 인한 환불은 불가능합니다.</p>
               <p>• 루비는 획득 시점으로부터 1년 이내에 사용할 수 있습니다.</p>
-              <p>• 환불 요청 및 문의는 고객센터로 문의주세요.</p>
+              <p>• 환불 요청 및 문의: cha8.team@gmail.com</p>
             </div>
           </div>
         )}
