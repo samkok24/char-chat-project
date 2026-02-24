@@ -18,7 +18,7 @@ import asyncio
 from app.core.config import settings
 from app.core.database import engine, Base
 from app.core.paths import get_upload_dir
-from sqlalchemy import text
+from sqlalchemy import text, select
 
 # API 라우터 임포트 (우선순위 순서)
 from app.api.chat import router as chat_router          # 🔥 최우선: 채팅 API
@@ -55,6 +55,7 @@ from app.api.faqs import router as faqs_router  # ❓ FAQ
 from app.api.faq_categories import router as faq_categories_router  # ❓ FAQ 카테고리
 from app.api.cms import router as cms_router  # 🧩 CMS(홈 배너/구좌 설정)
 from app.api.seo import router as seo_router  # 🔎 SEO (robots/sitemap)
+from app.api.subscription import router as subscription_router  # 💳 구독
 from app.models.tag import Tag
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
@@ -139,6 +140,23 @@ async def lifespan(app: FastAPI):
             logger.info("⏱️ user_refill_states 테이블 확인/생성 완료")
         except Exception as e:
             logger.warning(f"[warn] user_refill_states 테이블 생성 실패(계속 진행): {e}")
+
+        # ✅ 회차 구매 기록 테이블(유료 회차 영구 소유) 멱등 생성
+        try:
+            from app.models.chapter_purchase import ChapterPurchase  # 로컬 import(순환 방지)
+            await conn.run_sync(lambda c: ChapterPurchase.__table__.create(c, checkfirst=True))
+            logger.info("💎 chapter_purchases 테이블 확인/생성 완료")
+        except Exception as e:
+            logger.warning(f"[warn] chapter_purchases 테이블 생성 실패(계속 진행): {e}")
+
+        # ✅ 구독 플랜 테이블(PG 심사용 구독 상품) 멱등 생성
+        try:
+            from app.models.subscription import SubscriptionPlan, UserSubscription
+            await conn.run_sync(lambda c: SubscriptionPlan.__table__.create(c, checkfirst=True))
+            await conn.run_sync(lambda c: UserSubscription.__table__.create(c, checkfirst=True))
+            logger.info("💳 subscription 테이블 확인/생성 완료")
+        except Exception as e:
+            logger.warning(f"[warn] subscription 테이블 생성 실패(계속 진행): {e}")
 
         # SQLite 사용 시 누락 컬럼 자동 보정 (idempotent)
         try:
@@ -253,6 +271,22 @@ async def lifespan(app: FastAPI):
             logger.info(f"❓ FAQ 기본 데이터 시드 완료: {inserted}건")
     except Exception as e:
         logger.warning(f"[warn] FAQ 시드 실패(계속 진행): {e}")
+
+    # ✅ 구독 플랜 시드 데이터 (3개 플랜, conflict 시 skip)
+    try:
+        from app.models.subscription import SubscriptionPlan
+        async with AsyncSessionLocal() as _db:
+            existing = (await _db.execute(select(SubscriptionPlan))).scalars().all()
+            if not existing:
+                _db.add_all([
+                    SubscriptionPlan(id="free", name="무료", price=0, monthly_ruby=0, refill_speed_multiplier=1, free_chapters=False, model_discount_pct=0, sort_order=0),
+                    SubscriptionPlan(id="basic", name="베이직", price=9900, monthly_ruby=150, refill_speed_multiplier=2, free_chapters=True, model_discount_pct=10, sort_order=1),
+                    SubscriptionPlan(id="premium", name="프리미엄", price=29900, monthly_ruby=500, refill_speed_multiplier=4, free_chapters=True, model_discount_pct=30, sort_order=2),
+                ])
+                await _db.commit()
+                logger.info("💳 구독 플랜 시드 데이터 완료 (free/basic/premium)")
+    except Exception as e:
+        logger.warning(f"[warn] 구독 플랜 시드 실패(계속 진행): {e}")
 
     yield
     
@@ -447,6 +481,7 @@ async def _snapshot_daily_ranking_job():
         await persist_daily_ranking(db, today_kst(), data)
 app.include_router(payment_router, prefix="/payment", tags=["⏳ 결제 (단순화 예정)"])
 app.include_router(point_router, prefix="/point", tags=["⏳ 포인트 (단순화 예정)"])
+app.include_router(subscription_router, prefix="/subscription", tags=["💳 구독"])
 
 # ============================================================
 # ✅ Compatibility alias: also accept /api/* routes (운영 방어)
@@ -488,6 +523,7 @@ api_alias_router.include_router(story_chapters_router, prefix="/chapters", tags=
 api_alias_router.include_router(rankings_router, prefix="/rankings", tags=["🏆 랭킹"])
 api_alias_router.include_router(payment_router, prefix="/payment", tags=["⏳ 결제 (단순화 예정)"])
 api_alias_router.include_router(point_router, prefix="/point", tags=["⏳ 포인트 (단순화 예정)"])
+api_alias_router.include_router(subscription_router, prefix="/subscription", tags=["💳 구독"])
 app.include_router(api_alias_router)
 
 

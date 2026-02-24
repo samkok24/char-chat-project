@@ -1877,16 +1877,17 @@ const HomePage = () => {
       <button
         type="button"
         onClick={() => navigate('/ruby/charge')}
-        className={`${headerIconButtonBaseClass} h-10 w-10`}
+        className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors font-medium text-xs whitespace-nowrap flex-shrink-0"
         aria-label="루비 충전"
         title="루비 충전"
       >
-        <Gem className="w-5 h-5 text-pink-500" />
+        <Gem className="w-3.5 h-3.5" />
+        <span>충전</span>
       </button>
       <button
         type="button"
         onClick={() => navigate('/notices')}
-        className={`${headerIconButtonBaseClass} h-10 w-10`}
+        className={`${headerIconButtonBaseClass} h-10 w-10 flex-shrink-0`}
         aria-label="공지사항"
         title="공지사항"
       >
@@ -2539,11 +2540,12 @@ const HomePage = () => {
             <button
               type="button"
               onClick={() => navigate('/ruby/charge')}
-              className={`${headerIconButtonBaseClass} h-9 w-9`}
+              className="inline-flex items-center gap-1 px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors font-medium text-xs whitespace-nowrap"
               aria-label="루비 충전"
               title="루비 충전"
             >
-              <Gem className="w-4 h-4 text-pink-500" />
+              <Gem className="w-3.5 h-3.5" />
+              <span>충전</span>
             </button>
             <button
               type="button"
@@ -2562,8 +2564,8 @@ const HomePage = () => {
           {/* ✅ 캐러셀 배너(상단 탭 ↔ 필터 탭 사이) */}
           <HomeBannerCarousel className="mb-5 sm:mb-6" />
 
-          {/* ===== 온보딩(메인 탭): 검색 + 30초 생성 ===== */}
-          {!isCharacterTab && !isOrigSerialTab && (
+          {/* ===== 온보딩(메인 탭): PG 심사 시 비노출 ===== */}
+          {false && !isCharacterTab && !isOrigSerialTab && (
             <section className="mb-6">
               <div className="rounded-2xl border border-gray-800/80 bg-gradient-to-b from-gray-900/70 to-gray-900/30 p-5 sm:p-6 shadow-lg shadow-black/20">
                 <div className="text-xl sm:text-2xl font-semibold text-white">
@@ -2684,7 +2686,7 @@ const HomePage = () => {
                     >
                       <span className="text-lg sm:text-2xl font-bold leading-none">간단 캐릭터 생성</span>
                       <span className="text-[11px] sm:text-sm text-purple-100/90 leading-tight">
-                        초심자도 쉽고 빠르게 만들어서 채팅할 수 있어요
+                        90초면 나만의 캐릭터와 엔딩을 볼 수 있어요
                       </span>
                     </Button>
                   </div>
@@ -2723,20 +2725,6 @@ const HomePage = () => {
                   aria-current={sourceFilter === null ? 'page' : undefined}
                 >
                   추천
-                </button>
-                <button
-                  type="button"
-                  onClick={() => updateTab('ORIGINAL', 'character')}
-                  className={[
-                    'relative -mb-px px-1 py-2 text-base sm:text-lg font-semibold transition-colors',
-                    'border-b-2',
-                    sourceFilter === 'ORIGINAL'
-                      ? 'text-white border-purple-500'
-                      : 'text-gray-400 border-transparent hover:text-gray-200'
-                  ].join(' ')}
-                  aria-current={sourceFilter === 'ORIGINAL' ? 'page' : undefined}
-                >
-                  캐릭터
                 </button>
                 <button
                   type="button"
@@ -2802,6 +2790,31 @@ const HomePage = () => {
                       작품 등록시 5000원
                     </span>
                   </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => updateTab('ORIGINAL', 'character')}
+                  className={[
+                    'relative -mb-px px-1 py-2 text-base sm:text-lg font-semibold transition-colors',
+                    'border-b-2',
+                    sourceFilter === 'ORIGINAL'
+                      ? 'text-white border-purple-500'
+                      : 'text-gray-400 border-transparent hover:text-gray-200'
+                  ].join(' ')}
+                  aria-current={sourceFilter === 'ORIGINAL' ? 'page' : undefined}
+                >
+                  캐릭터
+                </button>
+                <button
+                  type="button"
+                  onClick={() => navigate('/agent')}
+                  className={[
+                    'relative -mb-px px-1 py-2 text-base sm:text-lg font-semibold transition-colors',
+                    'border-b-2',
+                    'text-gray-400 border-transparent hover:text-gray-200'
+                  ].join(' ')}
+                >
+                  스토리에이전트
                 </button>
 
                 {/* ✅ 검색 UI 비노출(요구사항): 전 탭에서 숨김 */}
@@ -2878,7 +2891,7 @@ const HomePage = () => {
                   }}
                   className="flex w-full items-center justify-center px-4 py-2.5 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors font-medium text-sm"
                 >
-                  원작 쓰기
+                  웹소설 원작 쓰기
                 </Link>
                     </div>
               

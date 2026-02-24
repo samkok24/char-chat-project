@@ -1140,6 +1140,8 @@ export const chaptersAPI = {
   getOne: (chapterId) => api.get(`/chapters/${chapterId}`),
   update: (chapterId, data) => api.put(`/chapters/${chapterId}`, data),
   delete: (chapterId) => api.delete(`/chapters/${chapterId}`),
+  purchase: (storyId, chapterNo) => api.post('/chapters/purchase', { story_id: storyId, chapter_no: chapterNo }),
+  getPurchased: (storyId) => api.get(`/chapters/purchased/${storyId}`),
 };
 
 // 📚 웹소설 원작(MVP 더미용)
@@ -1214,6 +1216,13 @@ export const pointAPI = {
 
   getCheckInStatus: () =>
     api.get('/point/check-in/status'),
+};
+
+// 💳 구독 관련 API
+export const subscriptionAPI = {
+  getPlans: () => api.get('/subscription/plans'),
+  getMySubscription: () => api.get('/subscription/me'),
+  subscribe: (planId) => api.post('/subscription/subscribe', { plan_id: planId }),
 };
 
 // 💳 결제 관련 API

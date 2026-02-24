@@ -6,17 +6,28 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status, Background
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete, update
 from typing import List, Optional
+from pydantic import BaseModel
+from redis.asyncio import Redis
 import uuid
 import json
+import logging
 
-from app.core.database import get_db
+from app.core.database import get_db, get_redis
 from app.core.security import get_current_user, get_current_user_optional
 from app.models.story import Story
 from sqlalchemy import update as sql_update
 from app.services.origchat_service import upsert_episode_summary_for_chapter, refresh_extracted_characters_for_story
 from app.models.story_chapter import StoryChapter
+from app.models.chapter_purchase import ChapterPurchase
 from app.models.user import User
 from app.schemas.story import ChapterCreate, ChapterUpdate, ChapterResponse
+from app.services.point_service import PointService
+from app.models.subscription import UserSubscription, SubscriptionPlan
+
+logger = logging.getLogger(__name__)
+
+PAID_FROM_CHAPTER = 6
+CHAPTER_RUBY_COST = 10
 
 router = APIRouter()
 
@@ -188,6 +199,112 @@ async def delete_chapter(
     await db.execute(delete(StoryChapter).where(StoryChapter.id == chapter_id))
     await db.commit()
     return None
+
+
+# ──────────────────────────────────────────────
+# 회차 구매 (유료 회차 영구 소유)
+# ──────────────────────────────────────────────
+
+class ChapterPurchaseRequest(BaseModel):
+    story_id: uuid.UUID
+    chapter_no: int
+
+
+@router.post("/purchase")
+async def purchase_chapter(
+    body: ChapterPurchaseRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+):
+    """유료 회차 구매 — 6화 이상만 과금, 1회 구매 시 영구 소유"""
+    # 무료 회차
+    if body.chapter_no < PAID_FROM_CHAPTER:
+        return {"purchased": True, "already_owned": True}
+
+    # 구독자 무료 회차 바이패스
+    sub_row = (await db.execute(
+        select(UserSubscription).where(
+            UserSubscription.user_id == current_user.id,
+            UserSubscription.status == "active",
+        )
+    )).scalar_one_or_none()
+    if sub_row:
+        plan = await db.get(SubscriptionPlan, sub_row.plan_id)
+        if plan and plan.free_chapters:
+            return {"purchased": True, "already_owned": True}
+
+    # 스토리 + 회차 존재 검증
+    chapter_exists = (await db.execute(
+        select(StoryChapter.id).where(
+            StoryChapter.story_id == body.story_id,
+            StoryChapter.no == body.chapter_no,
+        )
+    )).scalar_one_or_none()
+    if chapter_exists is None:
+        raise HTTPException(status_code=404, detail="해당 회차를 찾을 수 없습니다")
+
+    uid = str(current_user.id)
+
+    # 이미 구매 확인
+    existing = (await db.execute(
+        select(ChapterPurchase).where(
+            ChapterPurchase.user_id == current_user.id,
+            ChapterPurchase.story_id == body.story_id,
+            ChapterPurchase.chapter_no == body.chapter_no,
+        )
+    )).scalar_one_or_none()
+    if existing:
+        return {"purchased": True, "already_owned": True}
+
+    # 루비 차감
+    point_service = PointService(redis, db)
+    success, balance, tx_id = await point_service.use_points_atomic(
+        user_id=uid,
+        amount=CHAPTER_RUBY_COST,
+        reason=f"회차 구매 (ch.{body.chapter_no})",
+        reference_type="chapter_purchase",
+        reference_id=f"{body.story_id}:{body.chapter_no}",
+    )
+    if not success:
+        raise HTTPException(
+            status_code=402,
+            detail={"code": "INSUFFICIENT_RUBY", "message": "루비가 부족합니다", "balance": balance},
+        )
+
+    # 구매 기록 저장
+    purchase = ChapterPurchase(
+        user_id=current_user.id,
+        story_id=body.story_id,
+        chapter_no=body.chapter_no,
+    )
+    db.add(purchase)
+    try:
+        await db.commit()
+    except Exception as e:
+        await db.rollback()
+        logger.error(f"chapter_purchase INSERT 실패: {e}")
+        raise HTTPException(status_code=500, detail="구매 기록 저장 실패")
+
+    return {"purchased": True, "ruby_balance": balance}
+
+
+@router.get("/purchased/{story_id}")
+async def get_purchased_chapters(
+    story_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """해당 스토리에서 사용자가 구매한 회차 번호 목록"""
+    rows = (await db.execute(
+        select(ChapterPurchase.chapter_no)
+        .where(
+            ChapterPurchase.user_id == current_user.id,
+            ChapterPurchase.story_id == story_id,
+        )
+        .order_by(ChapterPurchase.chapter_no)
+    )).scalars().all()
+    return {"purchased_nos": list(rows)}
 
 
 

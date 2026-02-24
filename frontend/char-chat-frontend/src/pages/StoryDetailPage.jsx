@@ -4,11 +4,11 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import AppLayout from '../components/layout/AppLayout';
 import { Button } from '../components/ui/button';
 import { Textarea } from '../components/ui/textarea';
-import { storiesAPI, chaptersAPI, origChatAPI, mediaAPI, charactersAPI } from '../lib/api';
+import { storiesAPI, chaptersAPI, origChatAPI, mediaAPI, charactersAPI, pointAPI, subscriptionAPI } from '../lib/api';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
 import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogCancel, AlertDialogAction } from '../components/ui/alert-dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
-import { Heart, ArrowLeft, AlertCircle, MoreVertical, Copy, Trash2, Edit, MessageCircle, Eye, Image as ImageIcon, Check, Lock, Unlock, Pin, Plus, X } from 'lucide-react';
+import { Heart, ArrowLeft, AlertCircle, MoreVertical, Copy, Trash2, Edit, MessageCircle, Eye, Image as ImageIcon, Check, Lock, Unlock, Pin, Plus, X, Gem } from 'lucide-react';
 import { Avatar, AvatarFallback, AvatarImage } from '../components/ui/avatar';
 import { Badge } from '../components/ui/badge';
 import { Alert, AlertDescription } from '../components/ui/alert';
@@ -41,6 +41,14 @@ const StoryDetailPage = () => {
   const [origModalOpen, setOrigModalOpen] = useState(false);
   const [preselectedCharacterId, setPreselectedCharacterId] = useState(null);
   const [editingChapter, setEditingChapter] = useState(null);
+  // 💎 유료 회차 구매
+  const [rubyBalance, setRubyBalance] = useState(null);
+  const [purchasedNos, setPurchasedNos] = useState([]);
+  const [purchaseConfirm, setPurchaseConfirm] = useState({ open: false, targetNo: null });
+  const [purchasing, setPurchasing] = useState(false);
+  const [hasFreeChapters, setHasFreeChapters] = useState(false);
+  const PAID_FROM = 6;
+  const CHAPTER_COST = 10;
 
   const { data, isLoading, isError, error: storyLoadError } = useQuery({
     queryKey: ['story', storyId],
@@ -88,6 +96,16 @@ const StoryDetailPage = () => {
     const msg = storyAccessDeniedMsg || '접근할 수 없습니다.';
     setAccessDeniedModal({ open: true, message: msg });
   }, [isStoryAccessDenied, storyAccessDeniedMsg]);
+
+  // 💎 유료 회차: 루비 잔액 + 구매 내역 + 구독 상태 조회
+  useEffect(() => {
+    if (!isAuthenticated || !storyId) return;
+    pointAPI.getBalance().then(r => setRubyBalance(r.data?.balance ?? 0)).catch(() => {});
+    chaptersAPI.getPurchased(storyId).then(r => setPurchasedNos(r.data?.purchased_nos ?? [])).catch(() => {});
+    subscriptionAPI.getMySubscription().then(r => {
+      if (r.data?.free_chapters) setHasFreeChapters(true);
+    }).catch(() => {});
+  }, [isAuthenticated, storyId]);
 
   useEffect(() => {
     const loadSocial = async () => {
@@ -322,6 +340,45 @@ const StoryDetailPage = () => {
       await storiesAPI.deleteComment(commentId);
       setComments((prev) => prev.filter((c) => c.id !== commentId));
     } catch (_) {}
+  };
+
+  // 💎 유료 회차 게이팅 네비게이션
+  const handleChapterNavigate = (targetNo) => {
+    if (targetNo < PAID_FROM || purchasedNos.includes(targetNo) || hasFreeChapters) {
+      navigate(`/stories/${storyId}/chapters/${targetNo}`);
+      return;
+    }
+    if (!isAuthenticated) { openLoginModal(); return; }
+    if (rubyBalance < CHAPTER_COST) {
+      navigate('/ruby/charge');
+      return;
+    }
+    // 루비 충분 → 구매 확인 모달
+    setPurchaseConfirm({ open: true, targetNo });
+  };
+
+  const executeChapterPurchase = async () => {
+    const { targetNo } = purchaseConfirm;
+    if (!targetNo) return;
+    setPurchasing(true);
+    try {
+      const res = await chaptersAPI.purchase(storyId, targetNo);
+      const d = res.data;
+      if (d.purchased) {
+        setPurchasedNos(prev => [...prev, targetNo]);
+        if (d.ruby_balance != null) setRubyBalance(d.ruby_balance);
+        setPurchaseConfirm({ open: false, targetNo: null });
+        navigate(`/stories/${storyId}/chapters/${targetNo}`);
+      }
+    } catch (err) {
+      setPurchaseConfirm({ open: false, targetNo: null });
+      if (err.response?.status === 402) {
+        setRubyBalance(err.response.data?.detail?.balance ?? 0);
+        navigate('/ruby/charge');
+      }
+    } finally {
+      setPurchasing(false);
+    }
   };
 
   const handleTogglePublic = async () => {
@@ -942,7 +999,7 @@ const StoryDetailPage = () => {
               <section className="space-y-3">
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   <Button
-                    onClick={() => navigate(`/stories/${storyId}/chapters/${targetReadNo}`)}
+                    onClick={() => handleChapterNavigate(targetReadNo)}
                     className={`bg-gray-700 hover:bg-gray-600 w-full text-white font-semibold py-4 sm:py-5 text-sm sm:text-base`}
                   >
                     {showContinue ? `이어보기 (${progressChapterNo}화)` : `첫화보기 (${firstChapterNo}화)`}
@@ -1232,10 +1289,10 @@ const StoryDetailPage = () => {
                       <li
                         key={ch.id ? `id:${ch.id}` : `no:${ch.no ?? 'NA'}|title:${(ch.title || '').slice(0,50)}|i:${idx}`}
                         className={`flex items-center justify-between bg-gray-800/30 px-3 py-2 cursor-pointer hover:bg-gray-700/40 ${isLastRead ? 'ring-1 ring-purple-500/40 bg-gray-800/50' : ''}`}
-                        onClick={() => navigate(`/stories/${storyId}/chapters/${ch.no || (idx + 1)}`)}
+                        onClick={() => handleChapterNavigate(ch.no || (idx + 1))}
                         role="button"
                         tabIndex={0}
-                        onKeyDown={(e) => { if (e.key === 'Enter') navigate(`/stories/${storyId}/chapters/${ch.no || (idx + 1)}`); }}
+                        onKeyDown={(e) => { if (e.key === 'Enter') handleChapterNavigate(ch.no || (idx + 1)); }}
                       >
                         {/* 웹툰 썸네일 (있으면만 표시) */}
                         {hasImage && (
@@ -1291,6 +1348,14 @@ const StoryDetailPage = () => {
                             >
                               <Edit className="w-4 h-4" />
                             </Button>
+                          )}
+                          {Number(ch.no) >= PAID_FROM && (
+                            <span className={`inline-flex items-center gap-0.5 text-xs ${
+                              purchasedNos.includes(Number(ch.no)) || hasFreeChapters ? 'text-gray-500' : 'text-pink-400'
+                            }`}>
+                              <Gem className="w-3 h-3" />
+                              <span>{purchasedNos.includes(Number(ch.no)) ? '구매완료' : hasFreeChapters ? '구독무료' : CHAPTER_COST}</span>
+                            </span>
                           )}
                           <span className="inline-flex items-center gap-1 text-xs text-gray-500">
                             <Eye className="w-3 h-3" />
@@ -1411,6 +1476,33 @@ const StoryDetailPage = () => {
         entityType={'story'}
         entityId={storyId}
       />
+      {/* 💎 유료 회차 구매 확인 */}
+      <AlertDialog open={purchaseConfirm.open} onOpenChange={(v) => { if (!v) setPurchaseConfirm({ open: false, targetNo: null }); }}>
+        <AlertDialogContent className="bg-gray-900 border-gray-700 text-white max-w-xs">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-base">유료 회차 구매</AlertDialogTitle>
+            <AlertDialogDescription className="text-gray-300 text-sm">
+              {purchaseConfirm.targetNo}화를 <Gem className="w-3.5 h-3.5 inline text-pink-400" /> {CHAPTER_COST} 루비로 구매하시겠습니까?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="flex gap-2 justify-end">
+            <AlertDialogCancel
+              className="bg-gray-700 hover:bg-gray-600 text-white text-sm border-0"
+              disabled={purchasing}
+            >
+              취소
+            </AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-pink-600 hover:bg-pink-700 text-white text-sm"
+              disabled={purchasing}
+              onClick={(e) => { e.preventDefault(); executeChapterPurchase(); }}
+            >
+              {purchasing ? '구매 중...' : '구매하기'}
+            </AlertDialogAction>
+          </div>
+        </AlertDialogContent>
+      </AlertDialog>
+
       <OrigChatStartModal
         open={origModalOpen}
         onClose={() => {

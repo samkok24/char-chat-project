@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Link, NavLink, useNavigate, useLocation } from 'react-router-dom';
-import { chatAPI, charactersAPI, storiesAPI, pointAPI } from '../../lib/api';
+import { chatAPI, charactersAPI, storiesAPI, pointAPI, subscriptionAPI } from '../../lib/api';
 import { useAuth } from '../../contexts/AuthContext';
 import { Avatar, AvatarFallback, AvatarImage } from '../ui/avatar';
 import { resolveImageUrl, getCharacterPrimaryImage } from '../../lib/images';
@@ -40,14 +40,16 @@ const Sidebar = ({ collapsed = false, onToggleCollapsed }) => {
   const [rubyBalance, setRubyBalance] = useState(null);
   const [timerCurrent, setTimerCurrent] = useState(0);
   const [timerMax, setTimerMax] = useState(15);
+  const [myPlanName, setMyPlanName] = useState(null);
 
-  // 루비 잔액 조회
+  // 루비 잔액 + 구독 정보 조회
   const loadRubyRef = React.useRef(null);
   useEffect(() => {
     if (!isAuthenticated) {
       setRubyBalance(null);
       setTimerCurrent(0);
       setTimerMax(15);
+      setMyPlanName(null);
       return;
     }
     let mounted = true;
@@ -72,6 +74,13 @@ const Sidebar = ({ collapsed = false, onToggleCollapsed }) => {
     };
     loadRubyRef.current = load;
     load();
+    // 구독 정보는 1회만
+    (async () => {
+      try {
+        const subRes = await subscriptionAPI.getMySubscription();
+        if (mounted) setMyPlanName(subRes.data?.plan_name || '무료');
+      } catch { if (mounted) setMyPlanName('무료'); }
+    })();
     const intervalId = setInterval(load, 60 * 1000);
     return () => {
       mounted = false;
@@ -430,7 +439,7 @@ const Sidebar = ({ collapsed = false, onToggleCollapsed }) => {
               className="flex items-center justify-center w-full px-4 py-2.5 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors font-medium text-sm"
             >
               <BookOpen className="w-5 h-5 mr-2" />
-              원작 쓰기
+              웹소설 원작 쓰기
             </Link>
           </div>
         </>
@@ -464,8 +473,8 @@ const Sidebar = ({ collapsed = false, onToggleCollapsed }) => {
               }
             }}
             className="h-10 w-10 mx-auto flex items-center justify-center rounded-lg bg-gray-700 hover:bg-gray-600 text-white transition-colors"
-            aria-label="원작 쓰기"
-            title="원작 쓰기"
+            aria-label="웹소설 원작 쓰기"
+            title="웹소설 원작 쓰기"
           >
             <BookOpen className="w-5 h-5" />
           </Link>
@@ -475,11 +484,12 @@ const Sidebar = ({ collapsed = false, onToggleCollapsed }) => {
       {/* 메인 네비게이션 */}
       <nav className="flex-1 min-h-0 space-y-1 overflow-y-auto overscroll-contain scrollbar-dark">
         <NavItem to="/dashboard" icon={Home}>홈</NavItem>
-        
+        <NavItem to="/favorites/stories" icon={Heart} requireAuth authReason="선호작">선호작</NavItem>
+        <NavItem to="/agent" icon={Sparkles} requireAuth authReason="스토리 에이전트">스토리 에이전트</NavItem>
+
         {/* 로그인 시에만 표시되는 메뉴들 */}
         {isAuthenticated && (
           <>
-            <NavItem to="/favorites/stories" icon={Heart}>선호작</NavItem>
             <NavItem to="/my-characters" icon={Star}>내 캐릭터</NavItem>
         <button
               onClick={() => setShowPersonaModal(true)}
@@ -491,17 +501,15 @@ const Sidebar = ({ collapsed = false, onToggleCollapsed }) => {
           {!collapsed ? <span>유저 페르소나</span> : null}
         </button>
             <NavItem to="/history" icon={History}>대화내역</NavItem>
-            {/* ✅ 요구사항: 스토리 에이전트는 사이드바 '대화내역' 바로 아래 버튼으로 이동 */}
-            <NavItem to="/agent" icon={Sparkles}>스토리 에이전트</NavItem>
 
-            {/* 루비 충전 카드 */}
+            {/* 구독/루비 카드 */}
             <NavLink
               to="/ruby/charge"
               className={({ isActive }) =>
                 `block ${collapsed ? 'px-1' : 'px-3'} mt-2`
               }
-              aria-label="루비 충전"
-              title="루비 충전"
+              aria-label="구독 플랜"
+              title="구독 플랜"
             >
               {collapsed ? (
                 <div className="flex flex-col items-center gap-0.5 py-2 rounded-lg bg-gray-700/50 hover:bg-gray-700 transition-colors">
@@ -513,16 +521,16 @@ const Sidebar = ({ collapsed = false, onToggleCollapsed }) => {
                   <div className="flex items-center justify-between mb-1.5">
                     <div className="flex items-center gap-1.5">
                       <Gem className="w-4 h-4 text-pink-400" />
-                      <span className="text-sm font-semibold text-white">루비</span>
+                      <span className="text-sm font-semibold text-white">{myPlanName || '무료'}</span>
                     </div>
                     <span className="text-sm font-bold text-pink-400">{rubyBalance !== null ? rubyBalance.toLocaleString() : '...'}</span>
                   </div>
                   <div className="flex items-center justify-between mb-1.5">
                     <div className="flex items-center gap-1 text-[11px] text-gray-400">
                       <Timer className="w-3 h-3 text-purple-400" />
-                      <span>{timerCurrent}/{timerMax}</span>
+                      <span>{timerCurrent}/{timerMax} (+1개/2시간)</span>
                     </div>
-                    <span className="text-[11px] text-purple-400 font-medium">충전하기 &rarr;</span>
+                    <span className="text-[11px] text-purple-400 font-medium">업그레이드</span>
                   </div>
                   <div className="w-full h-1.5 bg-gray-700 rounded-full overflow-hidden">
                     <div

@@ -1,14 +1,12 @@
 /**
- * 루비 충전 페이지 (크랙 스타일, 다크 테마)
- * - 2탭: 루비 충전 / 무료 루비
- * - 5개 충전 상품 (라디오 선택)
- * - 출석 보상 + 타이머 리필
+ * 루비 페이지 (크랙 스타일, 다크 테마)
+ * - 3탭: 구독플랜 / 루비 충전 / 무료 루비
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { pointAPI } from '../lib/api';
+import { pointAPI, subscriptionAPI } from '../lib/api';
 import AppLayout from '../components/layout/AppLayout';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
@@ -18,6 +16,11 @@ import {
   CalendarCheck,
   Timer,
   ArrowLeft,
+  Zap,
+  BookOpen,
+  Sparkles,
+  Check,
+  Crown,
 } from 'lucide-react';
 
 /* ── 충전 상품 정의 (SSOT: PRICING_AND_PAYMENT_PLAN.md) ── */
@@ -29,12 +32,34 @@ const RUBY_PRODUCTS = [
   { id: 'master',  name: '마스터',   ruby: 5000,  bonus: 800, price: 50000, recommended: false },
 ];
 
+/* ── 구독 플랜 메타 ── */
+const PLAN_META = {
+  free:    { icon: Gem,   gradient: 'from-gray-600 to-gray-700',    border: 'border-gray-700',    accent: 'text-gray-400' },
+  basic:   { icon: Zap,   gradient: 'from-blue-600 to-purple-600',  border: 'border-blue-500/50', accent: 'text-blue-400' },
+  premium: { icon: Crown, gradient: 'from-amber-500 to-orange-600', border: 'border-amber-500/50', accent: 'text-amber-400' },
+};
+
+/* 타이머 리필 간격 텍스트 (base=2시간, multiplier로 나눔) */
+const refillIntervalText = (multiplier) => {
+  const mins = 120 / (multiplier || 1);
+  if (mins >= 60) return `매 ${mins / 60}시간마다`;
+  return `매 ${mins}분마다`;
+};
+
+const BENEFIT_ROWS = [
+  { label: '월 기본 루비',      key: 'monthly_ruby',            fmt: (v) => v > 0 ? `${v.toLocaleString()}개` : '-' },
+  { label: '매일 로그인 보상',  key: '_daily_login',            fmt: () => '10개' },
+  { label: '루비 자동 충전',    key: 'refill_speed_multiplier', fmt: (v) => `${refillIntervalText(v)} 1개` },
+  { label: '웹소설 유료회차',   key: 'free_chapters',           fmt: (v) => v ? '무료' : '유료' },
+  { label: '고급모델 할인',     key: 'model_discount_pct',      fmt: (v) => v > 0 ? `${v}%` : '-' },
+];
+
 const RubyChargePage = () => {
   const { user } = useAuth();
   const navigate = useNavigate();
 
   /* ── State ── */
-  const [activeTab, setActiveTab] = useState('charge');
+  const [activeTab, setActiveTab] = useState('subscribe');
   const [selectedProduct, setSelectedProduct] = useState('pro');
   const [isProcessing, setIsProcessing] = useState(false);
   const [balance, setBalance] = useState(0);
@@ -43,14 +68,31 @@ const RubyChargePage = () => {
   const [timerMax, setTimerMax] = useState(15);
   const [timerNextSeconds, setTimerNextSeconds] = useState(0);
 
+  // 구독 정보
+  const [myPlan, setMyPlan] = useState(null);
+  const [plans, setPlans] = useState([]);
+  const [plansLoading, setPlansLoading] = useState(true);
+  const [subscribing, setSubscribing] = useState(false);
+  const [refillMultiplier, setRefillMultiplier] = useState(1);
+
   // 무료 루비
   const [checkedIn, setCheckedIn] = useState(false);
   const [checkingIn, setCheckingIn] = useState(false);
 
-  /* ── 잔액 + 출석 상태 조회 (로그인 시에만) ── */
+  /* ── 초기 데이터 로드 ── */
   useEffect(() => {
-    if (!user) { setBalanceLoading(false); return; }
     let mounted = true;
+
+    // 플랜 목록은 비로그인도 조회 가능
+    (async () => {
+      try {
+        const plansRes = await subscriptionAPI.getPlans();
+        if (mounted) setPlans(plansRes.data || []);
+      } catch { /* noop */ }
+      if (mounted) setPlansLoading(false);
+    })();
+
+    if (!user) { setBalanceLoading(false); return; }
     (async () => {
       try {
         const res = await pointAPI.getBalance();
@@ -66,6 +108,7 @@ const RubyChargePage = () => {
           setTimerCurrent(Number(timerRes?.data?.current ?? 0));
           setTimerMax(Number(timerRes?.data?.max ?? 15));
           setTimerNextSeconds(Number(timerRes?.data?.next_refill_seconds ?? 0));
+          setRefillMultiplier(Number(timerRes?.data?.refill_multiplier ?? 1));
         }
       } catch {
         // fallback
@@ -73,6 +116,12 @@ const RubyChargePage = () => {
       try {
         const ciRes = await pointAPI.getCheckInStatus();
         if (mounted && ciRes.data?.checked_in) setCheckedIn(true);
+      } catch {
+        // fallback
+      }
+      try {
+        const subRes = await subscriptionAPI.getMySubscription();
+        if (mounted && subRes.data) setMyPlan(subRes.data);
       } catch {
         // fallback
       }
@@ -144,8 +193,35 @@ const RubyChargePage = () => {
     }
   }, []);
 
+  /* ── 구독 ── */
+  const handleSubscribe = useCallback(async (planId) => {
+    if (!user) { navigate('/login'); return; }
+    if (planId === myPlan?.plan_id) return;
+
+    setSubscribing(true);
+    try {
+      const res = await subscriptionAPI.subscribe(planId);
+      if (res.data?.success) {
+        setMyPlan(res.data.plan ? { plan_id: res.data.plan.id, plan_name: res.data.plan.name } : null);
+        const ruby = res.data.ruby_granted || 0;
+        if (ruby > 0) setBalance((prev) => prev + ruby);
+        window.dispatchEvent(new CustomEvent('ruby:balanceChanged'));
+        window.dispatchEvent(new CustomEvent('toast', {
+          detail: { type: 'success', message: ruby > 0 ? `구독 완료! +${ruby} 루비 지급` : '구독이 변경되었습니다.' },
+        }));
+      }
+    } catch {
+      window.dispatchEvent(new CustomEvent('toast', {
+        detail: { type: 'error', message: '구독 처리에 실패했습니다.' },
+      }));
+    } finally {
+      setSubscribing(false);
+    }
+  }, [user, myPlan, navigate]);
+
   const selected = RUBY_PRODUCTS.find(p => p.id === selectedProduct);
   const timerNextMinutes = Math.floor(timerNextSeconds / 60);
+  const myPlanId = myPlan?.plan_id || 'free';
 
   return (
     <AppLayout>
@@ -169,6 +245,9 @@ const RubyChargePage = () => {
                   {balanceLoading ? '...' : balance.toLocaleString()}
                 </span>
                 <span className="text-lg text-gray-500">개</span>
+                <span className="bg-purple-500/20 text-purple-400 text-xs font-semibold px-2 py-0.5 rounded ml-1">
+                  {myPlan?.plan_name || '무료'}
+                </span>
               </div>
               <button
                 onClick={() => navigate('/ruby/history')}
@@ -187,6 +266,11 @@ const RubyChargePage = () => {
               <Timer className="w-4 h-4 text-purple-400" />
               <span>타이머 리필</span>
               <span className="font-semibold text-purple-400">{timerCurrent}/{timerMax}</span>
+              {refillMultiplier > 1 && (
+                <span className="bg-yellow-500/20 text-yellow-400 text-[10px] font-bold px-1.5 py-0.5 rounded">
+                  x{refillMultiplier}
+                </span>
+              )}
             </div>
             <span className="text-xs text-gray-500">
               다음 +1💎: {Math.floor(timerNextMinutes / 60)}시간 {timerNextMinutes % 60}분 후
@@ -210,6 +294,7 @@ const RubyChargePage = () => {
         {/* ── 탭 ── */}
         <div className="flex border-b border-gray-700 mb-6">
           {[
+            { key: 'subscribe', label: '구독플랜' },
             { key: 'charge', label: '루비 충전' },
             ...(user ? [{ key: 'free', label: '무료 루비' }] : []),
           ].map(tab => (
@@ -229,6 +314,148 @@ const RubyChargePage = () => {
             </button>
           ))}
         </div>
+
+        {/* ════════════════════════════════════════ */}
+        {/* ── 구독플랜 탭 ── */}
+        {/* ════════════════════════════════════════ */}
+        {activeTab === 'subscribe' && (
+          <div>
+            {plansLoading ? (
+              <div className="text-center py-20 text-gray-500">로딩 중...</div>
+            ) : (
+              <>
+                {/* 플랜 카드 */}
+                <div className="space-y-4 mb-8">
+                  {plans.map((plan) => {
+                    const meta = PLAN_META[plan.id] || PLAN_META.free;
+                    const Icon = meta.icon;
+                    const isCurrent = myPlanId === plan.id;
+
+                    return (
+                      <div
+                        key={plan.id}
+                        className={`relative rounded-xl border-2 p-5 transition-all ${
+                          isCurrent ? `${meta.border} bg-gray-800/80` : 'border-gray-700 bg-gray-800'
+                        }`}
+                      >
+                        {isCurrent && (
+                          <div className="absolute -top-2.5 right-4">
+                            <span className="bg-purple-500 text-white text-[10px] font-bold px-2 py-0.5 rounded">
+                              현재 플랜
+                            </span>
+                          </div>
+                        )}
+
+                        <div className="flex items-center justify-between mb-4">
+                          <div className="flex items-center gap-3">
+                            <div className={`w-10 h-10 rounded-xl bg-gradient-to-br ${meta.gradient} flex items-center justify-center`}>
+                              <Icon className="w-5 h-5 text-white" />
+                            </div>
+                            <div>
+                              <h3 className="text-lg font-bold">{plan.name}</h3>
+                              <p className={`text-sm ${meta.accent}`}>
+                                {plan.price > 0 ? `${plan.price.toLocaleString()}원/월` : '무료'}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="space-y-2 mb-4">
+                          <div className="flex items-center gap-2 text-sm text-gray-300">
+                            <Gem className="w-4 h-4 text-pink-400 flex-shrink-0" />
+                            <span>매월 루비 <strong className="text-white">{plan.monthly_ruby > 0 ? `${plan.monthly_ruby.toLocaleString()}개` : '-'}</strong> 지급</span>
+                          </div>
+                          <div className="flex items-center gap-2 text-sm text-gray-300">
+                            <CalendarCheck className="w-4 h-4 text-purple-400 flex-shrink-0" />
+                            <span>매일 로그인 시 루비 <strong className="text-white">10개</strong></span>
+                          </div>
+                          <div className="flex items-center gap-2 text-sm text-gray-300">
+                            <Zap className="w-4 h-4 text-yellow-400 flex-shrink-0" />
+                            <span><strong className="text-white">{refillIntervalText(plan.refill_speed_multiplier)}</strong> 루비 1개 충전</span>
+                          </div>
+                          <div className="flex items-center gap-2 text-sm text-gray-300">
+                            <BookOpen className="w-4 h-4 text-green-400 flex-shrink-0" />
+                            <span>웹소설 유료회차 <strong className="text-white">{plan.free_chapters ? '무료' : '유료'}</strong></span>
+                          </div>
+                          <div className="flex items-center gap-2 text-sm text-gray-300">
+                            <Sparkles className="w-4 h-4 text-purple-400 flex-shrink-0" />
+                            <span>고급 AI 모델 <strong className="text-white">{plan.model_discount_pct > 0 ? `${plan.model_discount_pct}%` : '-'}</strong> 할인</span>
+                          </div>
+                        </div>
+
+                        {plan.id !== 'free' && (
+                          <Button
+                            onClick={() => handleSubscribe(plan.id)}
+                            disabled={isCurrent || subscribing}
+                            className={`w-full h-11 text-sm font-semibold rounded-xl border-0 ${
+                              isCurrent
+                                ? 'bg-gray-700 text-gray-400 cursor-default'
+                                : 'bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white'
+                            }`}
+                          >
+                            {isCurrent ? (
+                              <span className="flex items-center gap-1.5"><Check className="w-4 h-4" /> 구독 중</span>
+                            ) : subscribing ? '처리 중...' : '구독하기'}
+                          </Button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* 혜택 비교표 */}
+                <div className="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden">
+                  <div className="p-4 border-b border-gray-700">
+                    <h3 className="text-base font-semibold">혜택 비교</h3>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-gray-700">
+                          <th className="text-left px-4 py-3 text-gray-400 font-medium"></th>
+                          {plans.map((p) => (
+                            <th key={p.id} className="text-center px-3 py-3 text-gray-300 font-semibold">
+                              {p.name}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {BENEFIT_ROWS.map((row) => (
+                          <tr key={row.key} className="border-b border-gray-700/50 last:border-0">
+                            <td className="px-4 py-3 text-gray-400 whitespace-nowrap">{row.label}</td>
+                            {plans.map((p) => (
+                              <td key={p.id} className="text-center px-3 py-3 text-gray-200 font-medium">
+                                {row.fmt(p[row.key])}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                        <tr>
+                          <td className="px-4 py-3 text-gray-400">가격</td>
+                          {plans.map((p) => (
+                            <td key={p.id} className="text-center px-3 py-3 text-gray-200 font-semibold">
+                              {p.price > 0 ? `${p.price.toLocaleString()}원` : '무료'}
+                            </td>
+                          ))}
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* 구독 안내 */}
+                <div className="mt-6 text-xs text-gray-500 space-y-1">
+                  <p className="font-semibold text-gray-400 mb-2">구독 안내</p>
+                  <p>• 구독은 결제일로부터 30일간 유지됩니다.</p>
+                  <p>• 월 루비는 구독 시작 시 즉시 지급됩니다.</p>
+                  <p>• 플랜 변경 시 즉시 적용되며, 기존 플랜은 자동 해지됩니다.</p>
+                  <p>• 구독 해지 후에도 만료일까지 혜택이 유지됩니다.</p>
+                </div>
+              </>
+            )}
+          </div>
+        )}
 
         {/* ════════════════════════════════════════ */}
         {/* ── 루비 충전 탭 ── */}
@@ -350,7 +577,7 @@ const RubyChargePage = () => {
 
               {checkedIn ? (
                 <div className="w-full h-11 bg-gray-700 rounded-xl flex items-center justify-center text-sm text-gray-300 font-medium">
-                  ✅ 오늘 출석 완료! (+10💎)
+                  오늘 출석 완료! (+10)
                 </div>
               ) : (
                 <Button
@@ -371,7 +598,7 @@ const RubyChargePage = () => {
               <div className="flex items-center justify-between mb-4">
                 <div>
                   <p className="text-base font-semibold">타이머 리필</p>
-                  <p className="text-sm text-gray-400">2시간마다 💎1 자동 충전</p>
+                  <p className="text-sm text-gray-400">2시간마다 1루비 자동 충전</p>
                 </div>
                 <div className="w-12 h-12 bg-gradient-to-br from-blue-500/20 to-indigo-500/20 rounded-xl flex items-center justify-center">
                   <Clock className="w-6 h-6 text-blue-400" />
@@ -402,7 +629,7 @@ const RubyChargePage = () => {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-base font-semibold">광고 시청</p>
-                  <p className="text-sm text-gray-400">영상 시청하고 💎3 받기</p>
+                  <p className="text-sm text-gray-400">영상 시청하고 3루비 받기</p>
                 </div>
                 <Badge variant="secondary" className="text-xs bg-gray-700 text-gray-400">준비중</Badge>
               </div>

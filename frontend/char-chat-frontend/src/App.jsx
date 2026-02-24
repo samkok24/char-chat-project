@@ -96,7 +96,6 @@ const ChapterReaderPage = React.lazy(() => import('./pages/ChapterReaderPage'));
 const CreatorInfoPage = React.lazy(() => import('./pages/CreatorInfoPage'));
 const MetricsSummaryPage = React.lazy(() => import('./pages/MetricsSummaryPage'));
 const StoryDiveNovelPage = React.lazy(() => import('./pages/StoryDiveNovelPage'));
-
 // 로딩 컴포넌트 (CAVEDUCK 스타일 - 심플)
 const PageLoader = () => (
   // ✅ 다크 테마 앱에서 라우트 전환 시 "하얀 화면" 플래시 방지
@@ -142,6 +141,10 @@ const PublicRoute = ({ children }) => {
           {/* 🔥 CAVEDUCK 핵심 페이지 (우선 로딩) */}
           {/* 초기 진입은 메인 탭(홈)으로 */}
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
+          {/* SEO/인덱싱용 고정 URL 별칭 */}
+          <Route path="/recommend" element={<Navigate to="/dashboard" replace />} />
+          <Route path="/characters" element={<Navigate to="/dashboard?tab=character" replace />} />
+          <Route path="/webnovels" element={<Navigate to="/dashboard?tab=origserial&sub=novel" replace />} />
           <Route path="/agent" element={<AgentPage />} />
           <Route path="/agent/drawer" element={<AgentDrawerPage />} />
           <Route path="/agent/feed" element={<AgentFeedPage />} />
@@ -208,6 +211,10 @@ const PublicRoute = ({ children }) => {
           <Route
             path="/ruby/charge"
             element={<RubyChargePage />}
+          />
+          <Route
+            path="/subscribe"
+            element={<Navigate to="/ruby/charge" replace />}
           />
           <Route
             path="/ruby/history"

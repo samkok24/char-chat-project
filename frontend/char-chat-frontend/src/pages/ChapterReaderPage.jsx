@@ -3,14 +3,17 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import AppLayout from '../components/layout/AppLayout';
 import { Button } from '../components/ui/button';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { chaptersAPI, storiesAPI, mediaAPI, storydiveAPI } from '../lib/api';
+import { chaptersAPI, storiesAPI, mediaAPI, storydiveAPI, pointAPI, subscriptionAPI } from '../lib/api';
 import { setReadingProgress, getReadingProgress } from '../lib/reading';
-import { ArrowLeft, ArrowRight, Home, MessageCircle, Loader2 } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Home, MessageCircle, Loader2, Gem } from 'lucide-react';
+import RubyChargeModal from '../components/RubyChargeModal';
+import { useAuth } from '../contexts/AuthContext';
+import { useLoginModal } from '../contexts/LoginModalContext';
 import { resolveImageUrl } from '../lib/images';
 import ChapterViewer from '../components/ChapterViewer';
 import OrigChatStartModal from '../components/OrigChatStartModal';
 import MiniChatWindow from '../components/MiniChatWindow';
-import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogAction } from '../components/ui/alert-dialog';
+import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogAction, AlertDialogCancel } from '../components/ui/alert-dialog';
 import { toast } from 'sonner';
 
 const ChapterReaderPage = () => {
@@ -20,11 +23,19 @@ const ChapterReaderPage = () => {
   const [sp] = useSearchParams();
   const chatOpen = sp.get('chat') === '1';
   const storyId = storyIdFromPath || sp.get('storyId');
+  const { isAuthenticated } = useAuth();
+  const { openLoginModal } = useLoginModal();
   const [origChatModalOpen, setOrigChatModalOpen] = useState(false);
   const [miniChatOpen, setMiniChatOpen] = useState(false);
   const [storyDivePreparing, setStoryDivePreparing] = useState(false);
   // ✅ 비공개/접근 불가 경고 모달
   const [accessDeniedModal, setAccessDeniedModal] = useState({ open: false, message: '' });
+  // 💎 유료 회차 구매
+  const [chargeModalOpen, setChargeModalOpen] = useState(false);
+  const [rubyBalance, setRubyBalance] = useState(null);
+  const [purchasedNos, setPurchasedNos] = useState([]);
+  const [purchaseConfirm, setPurchaseConfirm] = useState({ open: false, targetNo: null });
+  const [purchasing, setPurchasing] = useState(false);
   // 스토리 상세 (헤더/좌측 표지용)
   const { data: story, error: storyLoadError } = useQuery({
     queryKey: ['story', storyId],
@@ -73,6 +84,65 @@ const ChapterReaderPage = () => {
   const chapter = chapterList[currentIdx] || null;
   const nextNo = useMemo(() => (Number(chapterNumber) + 1), [chapterNumber]);
   const prevNo = useMemo(() => (Math.max(1, Number(chapterNumber) - 1)), [chapterNumber]);
+
+  // 구독 정보 (유료 회차 무료 바이패스용)
+  const [hasFreeChapters, setHasFreeChapters] = useState(false);
+
+  // 💎 유료 회차: 루비 잔액 + 구매 내역 + 구독 상태 조회
+  useEffect(() => {
+    if (!storyId || !isAuthenticated) return;
+    pointAPI.getBalance().then(r => setRubyBalance(r.data?.balance ?? 0)).catch(() => {});
+    chaptersAPI.getPurchased(storyId).then(r => setPurchasedNos(r.data?.purchased_nos ?? [])).catch(() => {});
+    subscriptionAPI.getMySubscription().then(r => {
+      if (r.data?.free_chapters) setHasFreeChapters(true);
+    }).catch(() => {});
+  }, [storyId, isAuthenticated]);
+
+  const PAID_FROM = 6;
+  const CHAPTER_COST = 10;
+
+  const handleNavigateToChapter = (targetNo) => {
+    // 무료 회차, 이미 구매, 또는 구독자 무료 회차
+    if (targetNo < PAID_FROM || purchasedNos.includes(targetNo) || hasFreeChapters) {
+      navigate(`/stories/${storyId}/chapters/${targetNo}`);
+      return;
+    }
+    // 비로그인 → 로그인 유도
+    if (!isAuthenticated) { openLoginModal(); return; }
+    // 루비 부족 → 충전 모달
+    if (rubyBalance < CHAPTER_COST) {
+      setChargeModalOpen(true);
+      return;
+    }
+    // 루비 충분 → 구매 확인 모달
+    setPurchaseConfirm({ open: true, targetNo });
+  };
+
+  const executePurchase = async () => {
+    const { targetNo } = purchaseConfirm;
+    if (!targetNo) return;
+    setPurchasing(true);
+    try {
+      const res = await chaptersAPI.purchase(storyId, targetNo);
+      const data = res.data;
+      if (data.purchased) {
+        setPurchasedNos(prev => [...prev, targetNo]);
+        if (data.ruby_balance != null) setRubyBalance(data.ruby_balance);
+        setPurchaseConfirm({ open: false, targetNo: null });
+        navigate(`/stories/${storyId}/chapters/${targetNo}`);
+      }
+    } catch (err) {
+      setPurchaseConfirm({ open: false, targetNo: null });
+      if (err.response?.status === 402) {
+        setRubyBalance(err.response.data?.detail?.balance ?? 0);
+        setChargeModalOpen(true);
+      } else {
+        toast.error('구매 처리 중 오류가 발생했습니다');
+      }
+    } finally {
+      setPurchasing(false);
+    }
+  };
 
   // 갤러리: media_assets 우선, 없으면 cover_url + keywords의 cover: 항목들
   const galleryImages = useMemo(() => {
@@ -260,18 +330,18 @@ const ChapterReaderPage = () => {
       if (e.key === 'ArrowLeft') {
         if (currentIdx > 0) {
           const prev = chapterList[currentIdx - 1];
-          if (prev) navigate(`/stories/${storyId}/chapters/${prev.no}`);
+          if (prev) handleNavigateToChapter(prev.no);
         }
       } else if (e.key === 'ArrowRight') {
         if (currentIdx >= 0 && currentIdx < chapterList.length - 1) {
           const next = chapterList[currentIdx + 1];
-          if (next) navigate(`/stories/${storyId}/chapters/${next.no}`);
+          if (next) handleNavigateToChapter(next.no);
         }
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [chapterList, currentIdx, navigate, storyId]);
+  }, [chapterList, currentIdx, navigate, storyId, purchasedNos, rubyBalance]);
 
   // 웹툰 모드: AppLayout 없이 순수 이미지만 표시
   if (isWebtoon && hasChapter) {
@@ -332,7 +402,7 @@ const ChapterReaderPage = () => {
                   onClick={() => {
                     if (currentIdx > 0) {
                       const prev = chapterList[currentIdx - 1];
-                      if (prev) navigate(`/stories/${storyId}/chapters/${prev.no}`);
+                      if (prev) handleNavigateToChapter(prev.no);
                     }
                   }}
                 >
@@ -359,10 +429,15 @@ const ChapterReaderPage = () => {
                   onClick={() => {
                     if (currentIdx >= 0 && currentIdx < chapterList.length - 1) {
                       const next = chapterList[currentIdx + 1];
-                      if (next) navigate(`/stories/${storyId}/chapters/${next.no}`);
+                      if (next) handleNavigateToChapter(next.no);
                     }
                   }}
                 >
+                  {(() => {
+                    const nextCh = currentIdx >= 0 && currentIdx < chapterList.length - 1 ? chapterList[currentIdx + 1] : null;
+                    const needsPurchase = nextCh && nextCh.no >= PAID_FROM && !purchasedNos.includes(nextCh.no);
+                    return needsPurchase ? <Gem className="w-4 h-4 mr-1" /> : null;
+                  })()}
                   <span className="sm:hidden">다음</span>
                   <span className="hidden sm:inline">다음화</span>
                   <ArrowRight className="w-5 h-5 ml-2" />
@@ -371,6 +446,35 @@ const ChapterReaderPage = () => {
             </div>
           </div>
         </div>
+
+        <RubyChargeModal open={chargeModalOpen} onOpenChange={(v) => { setChargeModalOpen(v); if (!v) pointAPI.getBalance().then(r => setRubyBalance(r.data?.balance ?? 0)).catch(() => {}); }} />
+
+        {/* 💎 유료 회차 구매 확인 */}
+        <AlertDialog open={purchaseConfirm.open} onOpenChange={(v) => { if (!v) setPurchaseConfirm({ open: false, targetNo: null }); }}>
+          <AlertDialogContent className="bg-gray-900 border-gray-700 text-white max-w-xs">
+            <AlertDialogHeader>
+              <AlertDialogTitle className="text-base">유료 회차 구매</AlertDialogTitle>
+              <AlertDialogDescription className="text-gray-300 text-sm">
+                {purchaseConfirm.targetNo}화를 <Gem className="w-3.5 h-3.5 inline text-pink-400" /> {CHAPTER_COST} 루비로 구매하시겠습니까?
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <div className="flex gap-2 justify-end">
+              <AlertDialogCancel
+                className="bg-gray-700 hover:bg-gray-600 text-white text-sm border-0"
+                disabled={purchasing}
+              >
+                취소
+              </AlertDialogCancel>
+              <AlertDialogAction
+                className="bg-pink-600 hover:bg-pink-700 text-white text-sm"
+                disabled={purchasing}
+                onClick={(e) => { e.preventDefault(); executePurchase(); }}
+              >
+                {purchasing ? '구매 중...' : '구매하기'}
+              </AlertDialogAction>
+            </div>
+          </AlertDialogContent>
+        </AlertDialog>
 
         {/* 원작챗 시작 모달 */}
         {story && (
@@ -482,7 +586,7 @@ const ChapterReaderPage = () => {
                     onClick={() => {
                       if (currentIdx > 0) {
                         const prev = chapterList[currentIdx - 1];
-                        if (prev) navigate(`/stories/${storyId}/chapters/${prev.no}`);
+                        if (prev) handleNavigateToChapter(prev.no);
                       }
                     }}
                   >
@@ -509,10 +613,15 @@ const ChapterReaderPage = () => {
                     onClick={() => {
                       if (currentIdx >= 0 && currentIdx < chapterList.length - 1) {
                         const next = chapterList[currentIdx + 1];
-                        if (next) navigate(`/stories/${storyId}/chapters/${next.no}`);
+                        if (next) handleNavigateToChapter(next.no);
                       }
                     }}
                   >
+                    {(() => {
+                      const nextCh = currentIdx >= 0 && currentIdx < chapterList.length - 1 ? chapterList[currentIdx + 1] : null;
+                      const needsPurchase = nextCh && nextCh.no >= PAID_FROM && !purchasedNos.includes(nextCh.no);
+                      return needsPurchase ? <Gem className="w-4 h-4 mr-1" /> : null;
+                    })()}
                     <span className="sm:hidden">다음</span>
                     <span className="hidden sm:inline">다음화</span>
                     <ArrowRight className="w-5 h-5 ml-2" />
@@ -594,12 +703,41 @@ const ChapterReaderPage = () => {
         )}
 
         {/* 미니 채팅창 */}
-        <MiniChatWindow 
+        <MiniChatWindow
           open={miniChatOpen}
           onClose={() => setMiniChatOpen(false)}
           storyId={storyId}
           currentChapterNo={Number(chapter?.no || chapterNumber) || 1}
         />
+
+        <RubyChargeModal open={chargeModalOpen} onOpenChange={(v) => { setChargeModalOpen(v); if (!v) pointAPI.getBalance().then(r => setRubyBalance(r.data?.balance ?? 0)).catch(() => {}); }} />
+
+        {/* 💎 유료 회차 구매 확인 */}
+        <AlertDialog open={purchaseConfirm.open} onOpenChange={(v) => { if (!v) setPurchaseConfirm({ open: false, targetNo: null }); }}>
+          <AlertDialogContent className="bg-gray-900 border-gray-700 text-white max-w-xs">
+            <AlertDialogHeader>
+              <AlertDialogTitle className="text-base">유료 회차 구매</AlertDialogTitle>
+              <AlertDialogDescription className="text-gray-300 text-sm">
+                {purchaseConfirm.targetNo}화를 <Gem className="w-3.5 h-3.5 inline text-pink-400" /> {CHAPTER_COST} 루비로 구매하시겠습니까?
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <div className="flex gap-2 justify-end">
+              <AlertDialogCancel
+                className="bg-gray-700 hover:bg-gray-600 text-white text-sm border-0"
+                disabled={purchasing}
+              >
+                취소
+              </AlertDialogCancel>
+              <AlertDialogAction
+                className="bg-pink-600 hover:bg-pink-700 text-white text-sm"
+                disabled={purchasing}
+                onClick={(e) => { e.preventDefault(); executePurchase(); }}
+              >
+                {purchasing ? '구매 중...' : '구매하기'}
+              </AlertDialogAction>
+            </div>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
     </AppLayout>
   );

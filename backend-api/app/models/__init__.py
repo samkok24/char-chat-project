@@ -29,6 +29,8 @@ from .agent_content import AgentContent
 from .novel import Novel
 from .storydive_session import StoryDiveSession
 from .user_activity_log import UserActivityLog
+from .chapter_purchase import ChapterPurchase
+from .subscription import SubscriptionPlan, UserSubscription
 
 __all__ = [
     "User",
@@ -58,5 +60,8 @@ __all__ = [
     "Novel",
     "StoryDiveSession",
     "UserActivityLog",
+    "ChapterPurchase",
+    "SubscriptionPlan",
+    "UserSubscription",
 ]
 

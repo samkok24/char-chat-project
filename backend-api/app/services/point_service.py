@@ -11,6 +11,7 @@ from sqlalchemy import select, func
 from sqlalchemy.exc import IntegrityError
 from redis.asyncio import Redis
 from app.models import UserPoint, PointTransaction, User, UserRefillState
+from app.models.subscription import UserSubscription, SubscriptionPlan
 
 
 TIMER_REFILL_INTERVAL_SECONDS = 2 * 60 * 60  # 2시간
@@ -39,6 +40,18 @@ class PointService:
 
     def _utcnow(self) -> datetime:
         return datetime.now(timezone.utc)
+
+    async def _get_user_plan(self, user_id: str) -> Optional[SubscriptionPlan]:
+        """사용자의 활성 구독 플랜 조회 (없으면 None)"""
+        sub = (await self.db.execute(
+            select(UserSubscription).where(
+                UserSubscription.user_id == user_id,
+                UserSubscription.status == "active",
+            )
+        )).scalar_one_or_none()
+        if not sub:
+            return None
+        return await self.db.get(SubscriptionPlan, sub.plan_id)
 
     async def _get_or_create_refill_state(self, user_id: str) -> UserRefillState:
         result = await self.db.execute(
@@ -89,19 +102,24 @@ class PointService:
             state = await self._get_or_create_refill_state(user_id)
             now = self._utcnow()
 
+            # 구독 배율 반영
+            plan = await self._get_user_plan(user_id)
+            refill_multiplier = plan.refill_speed_multiplier if plan else 1
+            effective_interval = TIMER_REFILL_INTERVAL_SECONDS // max(1, refill_multiplier)
+
             current = int(state.timer_bucket or 0)
             last_at = state.timer_last_refill_at or now
             if last_at.tzinfo is None:
                 last_at = last_at.replace(tzinfo=timezone.utc)
 
             elapsed_seconds = max(0, int((now - last_at).total_seconds()))
-            steps = elapsed_seconds // TIMER_REFILL_INTERVAL_SECONDS
+            steps = elapsed_seconds // effective_interval
             capacity = max(0, TIMER_REFILL_BUCKET_MAX - current)
             earned = min(steps, capacity)
 
             if earned > 0 and has_lock:
                 state.timer_bucket = current + int(earned)
-                state.timer_last_refill_at = last_at + timedelta(seconds=int(earned) * TIMER_REFILL_INTERVAL_SECONDS)
+                state.timer_last_refill_at = last_at + timedelta(seconds=int(earned) * effective_interval)
 
                 # 실제 잔액에 반영
                 result = await self.db.execute(
@@ -138,14 +156,15 @@ class PointService:
                 next_refill_seconds = 0
             else:
                 since_last = max(0, int((now - last_at).total_seconds()))
-                remain = TIMER_REFILL_INTERVAL_SECONDS - (since_last % TIMER_REFILL_INTERVAL_SECONDS)
-                next_refill_seconds = int(remain if remain != TIMER_REFILL_INTERVAL_SECONDS else TIMER_REFILL_INTERVAL_SECONDS)
+                remain = effective_interval - (since_last % effective_interval)
+                next_refill_seconds = int(remain if remain != effective_interval else effective_interval)
 
             return {
                 "current": int(current),
                 "max": int(TIMER_REFILL_BUCKET_MAX),
                 "earned": int(earned if has_lock else 0),
                 "next_refill_seconds": int(next_refill_seconds),
+                "refill_multiplier": int(refill_multiplier),
             }
         except Exception:
             await self.db.rollback()
@@ -458,13 +477,23 @@ class PointService:
         checked = await self.redis.get(f"checkin:{user_id}:{today_str}")
         return {"checked_in": bool(checked), "date": today_str}
 
+    async def get_user_model_cost(self, user_id: str, sub_model: str) -> int:
+        """구독 할인 적용된 모델 비용 반환"""
+        base_cost = MODEL_RUBY_COST.get(sub_model, 0)
+        if base_cost <= 0:
+            return 0
+        plan = await self._get_user_plan(user_id)
+        if plan and plan.model_discount_pct > 0:
+            return max(0, round(base_cost * (100 - plan.model_discount_pct) / 100))
+        return base_cost
+
     async def deduct_chat_turn(
         self,
         user_id: str,
         sub_model: str,
     ) -> Tuple[bool, int, Optional[str]]:
         """채팅 턴 루비 차감. 무료 모델이면 즉시 성공 반환."""
-        cost = MODEL_RUBY_COST.get(sub_model, 0)
+        cost = await self.get_user_model_cost(user_id, sub_model)
         if cost <= 0:
             return True, 0, None
         return await self.use_points_atomic(
@@ -481,7 +510,7 @@ class PointService:
         tx_id: str,
     ) -> Tuple[bool, int]:
         """AI 호출 실패 시 채팅 턴 루비 환불."""
-        cost = MODEL_RUBY_COST.get(sub_model, 0)
+        cost = await self.get_user_model_cost(user_id, sub_model)
         if cost <= 0:
             return True, 0
         return await self.refund_points(
