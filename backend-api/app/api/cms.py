@@ -1189,7 +1189,11 @@ async def _query_characters(db, search_term, is_public, offset, limit):
     """캐릭터 목록 조회 (원작챗 파생 제외)"""
     from sqlalchemy import func as sqlfunc
 
-    base = select(Character).where(Character.origin_story_id == None)  # noqa: E711
+    base = (
+        select(Character)
+        .options(selectinload(Character.creator))
+        .where(Character.origin_story_id == None)  # noqa: E711
+    )
     count_q = select(sqlfunc.count()).select_from(Character).where(Character.origin_story_id == None)  # noqa: E711
 
     if search_term:
@@ -1228,7 +1232,11 @@ async def _query_stories(db, search_term, is_public, is_origchat: bool, offset, 
     """스토리(웹소설/원작챗) 목록 조회"""
     from sqlalchemy import func as sqlfunc
 
-    base = select(Story).where(Story.is_origchat == is_origchat)
+    base = (
+        select(Story)
+        .options(selectinload(Story.creator))
+        .where(Story.is_origchat == is_origchat)
+    )
     count_q = select(sqlfunc.count()).select_from(Story).where(Story.is_origchat == is_origchat)
 
     if search_term:
@@ -1381,7 +1389,7 @@ async def _query_contents_all_unified(db: AsyncSession, search_term: str, is_pub
     {cte_sql}
     SELECT id, type, name, creator_name, is_public, created_at
     FROM all_contents
-    ORDER BY created_at DESC
+    ORDER BY created_at DESC, id DESC
     LIMIT :lim OFFSET :off
     """
     rows = (await db.execute(text(data_sql), params)).mappings().all()

@@ -2397,11 +2397,26 @@ const CMSPage = () => {
                                         const nextPublic = !!updated.is_public;
                                         setContentData((prev) => ({
                                           ...prev,
-                                          items: prev.items.map((it) =>
-                                            it.id === item.id && it.type === item.type
-                                              ? { ...it, is_public: nextPublic }
-                                              : it
-                                          ),
+                                          items: (() => {
+                                            const nextItems = (prev.items || []).map((it) =>
+                                              it.id === item.id && it.type === item.type
+                                                ? { ...it, is_public: nextPublic }
+                                                : it
+                                            );
+                                            if (contentPublicFilter === 'true' && !nextPublic) {
+                                              return nextItems.filter((it) => !(it.id === item.id && it.type === item.type));
+                                            }
+                                            if (contentPublicFilter === 'false' && nextPublic) {
+                                              return nextItems.filter((it) => !(it.id === item.id && it.type === item.type));
+                                            }
+                                            return nextItems;
+                                          })(),
+                                          total: (() => {
+                                            const curTotal = Number(prev.total || 0);
+                                            if (contentPublicFilter === 'true' && !nextPublic) return Math.max(0, curTotal - 1);
+                                            if (contentPublicFilter === 'false' && nextPublic) return Math.max(0, curTotal - 1);
+                                            return curTotal;
+                                          })(),
                                         }));
                                         toast.success(`${item.name} → ${nextPublic ? '공개' : '비공개'}`);
                                       }
@@ -2425,7 +2440,6 @@ const CMSPage = () => {
                                         });
                                         try { delete contentUnlockTimersRef.current[rowKey]; } catch (_) {}
                                       }, waitMs);
-                                      setContentReloadKey((k) => k + 1);
                                     }
                                   }}
                                 />
