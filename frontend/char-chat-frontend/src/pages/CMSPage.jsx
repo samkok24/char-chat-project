@@ -244,6 +244,30 @@ const CMSPage = () => {
   const [onlineSummary, setOnlineSummary] = React.useState(null);
   const [onlineReloadKey, setOnlineReloadKey] = React.useState(0);
 
+  // ===== 콘텐츠 관리 탭 (관리자) =====
+  const CONTENT_PAGE_SIZE = 20;
+  const [contentType, setContentType] = React.useState('all');
+  const [contentSearch, setContentSearch] = React.useState('');
+  const [contentPage, setContentPage] = React.useState(1);
+  const [contentData, setContentData] = React.useState({ items: [], total: 0 });
+  const [contentLoading, setContentLoading] = React.useState(false);
+  const [contentPublicFilter, setContentPublicFilter] = React.useState('all');
+  const [contentReloadKey, setContentReloadKey] = React.useState(0);
+  const [contentUpdatingByKey, setContentUpdatingByKey] = React.useState({});
+  const contentUpdatingByKeyRef = React.useRef({});
+  const contentUnlockTimersRef = React.useRef({});
+  const contentSearchTimerRef = React.useRef(null);
+  const [contentSearchDebounced, setContentSearchDebounced] = React.useState('');
+
+  React.useEffect(() => {
+    return () => {
+      const timers = contentUnlockTimersRef.current || {};
+      Object.keys(timers).forEach((k) => {
+        try { clearTimeout(timers[k]); } catch (_) {}
+      });
+    };
+  }, []);
+
   // ===== 유저 로그(이탈 페이지) =====
   const [pageExitDay, setPageExitDay] = React.useState(''); // YYYYMMDD(KST), empty=server default(today)
   const [pageExitLoading, setPageExitLoading] = React.useState(false);
@@ -1978,6 +2002,46 @@ const CMSPage = () => {
   const isAiModelsTab = activeTab === 'aiModels';
   const isUsersTab = activeTab === 'users';
   const isUserLogsTab = activeTab === 'userLogs';
+  const isContentTab = activeTab === 'content';
+
+  // 콘텐츠 검색 debounce (300ms)
+  React.useEffect(() => {
+    if (contentSearchTimerRef.current) clearTimeout(contentSearchTimerRef.current);
+    contentSearchTimerRef.current = setTimeout(() => {
+      setContentSearchDebounced(contentSearch);
+      setContentPage(1);
+    }, 300);
+    return () => { if (contentSearchTimerRef.current) clearTimeout(contentSearchTimerRef.current); };
+  }, [contentSearch]);
+
+  // 콘텐츠 목록 로드
+  React.useEffect(() => {
+    if (!isAdmin || !isContentTab) return;
+    let active = true;
+    const load = async () => {
+      setContentLoading(true);
+      try {
+        const res = await cmsAPI.getCmsContents({
+          type: contentType,
+          search: contentSearchDebounced,
+          page: contentPage,
+          page_size: CONTENT_PAGE_SIZE,
+          is_public: contentPublicFilter,
+        });
+        if (!active) return;
+        const d = res?.data || {};
+        setContentData({ items: Array.isArray(d.items) ? d.items : [], total: Number(d.total || 0) });
+      } catch (e) {
+        console.error('[CMSPage] getCmsContents failed:', e);
+        if (active) setContentData({ items: [], total: 0 });
+        toast.error('콘텐츠 목록을 불러오지 못했습니다.');
+      } finally {
+        if (active) setContentLoading(false);
+      }
+    };
+    load();
+    return () => { active = false; };
+  }, [isAdmin, isContentTab, contentType, contentSearchDebounced, contentPage, contentPublicFilter, contentReloadKey]);
 
   const normalizedSlots = React.useMemo(() => {
     try {
@@ -2094,12 +2158,12 @@ const CMSPage = () => {
               <div>
                   <div className="text-xl font-bold text-white">관리자 페이지</div>
                   <div className="text-sm text-gray-400">
-                    {isUsersTab ? '회원 관리' : isUserLogsTab ? '유저 로그(이탈)' : isBannersTab ? '배너 조작' : isPopupsTab ? '팝업 설정' : isSlotsTab ? '구좌 조작' : isTagsTab ? '태그 관리' : 'AI모델 조작(준비중)'}
+                    {isUsersTab ? '회원 관리' : isUserLogsTab ? '유저 로그(이탈)' : isContentTab ? '콘텐츠 관리' : isBannersTab ? '배너 조작' : isPopupsTab ? '팝업 설정' : isSlotsTab ? '구좌 조작' : isTagsTab ? '태그 관리' : 'AI모델 조작(준비중)'}
                   </div>
                 </div>
               </div>
               <div className="flex items-center gap-2 flex-wrap justify-end w-full sm:w-auto">
-                {(isAiModelsTab || isUsersTab || isUserLogsTab) ? (
+                {(isAiModelsTab || isUsersTab || isUserLogsTab || isContentTab) ? (
                   <>
                     {isUsersTab && (
                       <Button
@@ -2118,6 +2182,7 @@ const CMSPage = () => {
                       onClick={() => {
                         if (isUsersTab) refreshUsers();
                         if (isUserLogsTab) setPageExitReloadKey((k) => (Number(k || 0) + 1));
+                        if (isContentTab) setContentReloadKey((k) => k + 1);
                       }}
                       disabled={isAiModelsTab}
                       title={isAiModelsTab ? '준비중' : '새로고침'}
@@ -2167,6 +2232,14 @@ const CMSPage = () => {
               </Button>
               <Button
                 variant="outline"
+                className={`h-9 px-3 ${isContentTab ? 'bg-purple-600 border-purple-500 text-white hover:bg-purple-700' : 'bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700'}`}
+                onClick={() => { setActiveTab('content'); setContentPage(1); }}
+                title="콘텐츠 관리"
+              >
+                콘텐츠 관리
+              </Button>
+              <Button
+                variant="outline"
                 className={`h-9 px-3 ${isBannersTab ? 'bg-purple-600 border-purple-500 text-white hover:bg-purple-700' : 'bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700'}`}
                 onClick={() => setActiveTab('banners')}
                 title="배너 조작"
@@ -2206,6 +2279,201 @@ const CMSPage = () => {
               AI모델 조작
             </Button>
           </div>
+
+          {/* ========== 콘텐츠 관리 탭 ========== */}
+          {isContentTab && (
+            <Card className="bg-gray-800 border-gray-700">
+              <CardHeader>
+                <CardTitle className="text-white">콘텐츠 관리</CardTitle>
+                <CardDescription className="text-gray-400">
+                  캐릭터·웹소설·원작챗의 공개/비공개 상태를 관리합니다.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {/* 필터 바 */}
+                <div className="flex flex-col sm:flex-row gap-3">
+                  {/* 타입 필터 */}
+                  <div className="flex items-center gap-1.5">
+                    {[
+                      { key: 'all', label: '전체' },
+                      { key: 'character', label: '캐릭터' },
+                      { key: 'webnovel', label: '웹소설' },
+                      { key: 'origchat', label: '원작챗' },
+                    ].map((t) => (
+                      <Button
+                        key={t.key}
+                        variant="outline"
+                        size="sm"
+                        className={`h-8 px-2.5 text-xs ${contentType === t.key ? 'bg-purple-600 border-purple-500 text-white hover:bg-purple-700' : 'bg-gray-900 border-gray-700 text-gray-300 hover:bg-gray-700'}`}
+                        onClick={() => { setContentType(t.key); setContentPage(1); }}
+                      >
+                        {t.label}
+                      </Button>
+                    ))}
+                  </div>
+                  {/* 공개 상태 필터 */}
+                  <div className="flex items-center gap-1.5">
+                    {[
+                      { key: 'all', label: '상태 전체' },
+                      { key: 'true', label: '공개' },
+                      { key: 'false', label: '비공개' },
+                    ].map((f) => (
+                      <Button
+                        key={f.key}
+                        variant="outline"
+                        size="sm"
+                        className={`h-8 px-2.5 text-xs ${contentPublicFilter === f.key ? 'bg-purple-600 border-purple-500 text-white hover:bg-purple-700' : 'bg-gray-900 border-gray-700 text-gray-300 hover:bg-gray-700'}`}
+                        onClick={() => { setContentPublicFilter(f.key); setContentPage(1); }}
+                      >
+                        {f.label}
+                      </Button>
+                    ))}
+                  </div>
+                  {/* 검색 */}
+                  <div className="relative flex-1 min-w-[180px]">
+                    <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
+                    <Input
+                      className="pl-8 h-8 bg-gray-900 border-gray-700 text-gray-200 text-sm"
+                      placeholder="이름 검색..."
+                      value={contentSearch}
+                      onChange={(e) => setContentSearch(e.target.value)}
+                    />
+                  </div>
+                </div>
+
+                {/* 테이블 */}
+                <div className="rounded-lg border border-gray-800 bg-gray-950/30 overflow-hidden">
+                  <Table className="text-gray-200">
+                    <TableHeader>
+                      <TableRow className="border-gray-700">
+                        <TableHead className="text-gray-200">이름</TableHead>
+                        <TableHead className="text-gray-200 w-[80px]">타입</TableHead>
+                        <TableHead className="text-gray-200">크리에이터</TableHead>
+                        <TableHead className="text-gray-200 w-[80px] text-center">공개</TableHead>
+                        <TableHead className="text-gray-200 w-[110px]">생성일</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {contentLoading ? (
+                        <TableRow className="border-gray-800">
+                          <TableCell colSpan={5} className="text-center text-gray-400 py-8">
+                            불러오는 중...
+                          </TableCell>
+                        </TableRow>
+                      ) : (contentData.items || []).length === 0 ? (
+                        <TableRow className="border-gray-800">
+                          <TableCell colSpan={5} className="text-center text-gray-400 py-8">
+                            데이터 없음
+                          </TableCell>
+                        </TableRow>
+                      ) : (
+                        (contentData.items || []).map((item) => {
+                          const typeLabel = item.type === 'character' ? '캐릭터' : item.type === 'webnovel' ? '웹소설' : item.type === 'origchat' ? '원작챗' : item.type;
+                          const typeBadge = item.type === 'character' ? 'bg-blue-700' : item.type === 'webnovel' ? 'bg-green-700' : 'bg-orange-700';
+                          return (
+                            <TableRow key={`${item.type}-${item.id}`} className="border-gray-800">
+                              <TableCell className="text-gray-100 font-medium max-w-[240px] truncate" title={item.name}>
+                                {item.name || '(이름없음)'}
+                              </TableCell>
+                              <TableCell>
+                                <Badge className={`${typeBadge} text-white text-xs`}>{typeLabel}</Badge>
+                              </TableCell>
+                              <TableCell className="text-gray-300 text-sm">{item.creator_name || '-'}</TableCell>
+                              <TableCell className={`text-center ${contentUpdatingByKey[`${item.type}:${item.id}`] ? 'pointer-events-none opacity-60' : ''}`}>
+                                <Switch
+                                  checked={!!item.is_public}
+                                  disabled={!!contentUpdatingByKey[`${item.type}:${item.id}`]}
+                                  onCheckedChange={async (nextChecked) => {
+                                    const cType = item.type === 'character' ? 'character' : 'story';
+                                    const rowKey = `${item.type}:${item.id}`;
+                                    if (contentUpdatingByKeyRef.current[rowKey]) return;
+                                    const startedAt = Date.now();
+                                    contentUpdatingByKeyRef.current[rowKey] = true;
+                                    setContentUpdatingByKey((prev) => ({ ...prev, [rowKey]: true }));
+                                    try {
+                                      const res = await cmsAPI.setContentPublic(cType, item.id, !!nextChecked);
+                                      const updated = res?.data;
+                                      if (updated) {
+                                        const nextPublic = !!updated.is_public;
+                                        setContentData((prev) => ({
+                                          ...prev,
+                                          items: prev.items.map((it) =>
+                                            it.id === item.id && it.type === item.type
+                                              ? { ...it, is_public: nextPublic }
+                                              : it
+                                          ),
+                                        }));
+                                        toast.success(`${item.name} → ${nextPublic ? '공개' : '비공개'}`);
+                                      }
+                                    } catch (e) {
+                                      console.error('[CMSPage] setContentPublic failed:', e);
+                                      toast.error('공개 상태 변경에 실패했습니다.');
+                                    } finally {
+                                      const minLockMs = 300;
+                                      const waitMs = Math.max(0, minLockMs - (Date.now() - startedAt));
+                                      try {
+                                        if (contentUnlockTimersRef.current[rowKey]) {
+                                          clearTimeout(contentUnlockTimersRef.current[rowKey]);
+                                        }
+                                      } catch (_) {}
+                                      contentUnlockTimersRef.current[rowKey] = setTimeout(() => {
+                                        try { delete contentUpdatingByKeyRef.current[rowKey]; } catch (_) {}
+                                        setContentUpdatingByKey((prev) => {
+                                          const next = { ...(prev || {}) };
+                                          delete next[rowKey];
+                                          return next;
+                                        });
+                                        try { delete contentUnlockTimersRef.current[rowKey]; } catch (_) {}
+                                      }, waitMs);
+                                      setContentReloadKey((k) => k + 1);
+                                    }
+                                  }}
+                                />
+                              </TableCell>
+                              <TableCell className="text-gray-400 text-xs">
+                                {item.created_at ? new Date(item.created_at).toLocaleDateString('ko-KR') : '-'}
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })
+                      )}
+                    </TableBody>
+                  </Table>
+                </div>
+
+                {/* 페이지네이션 */}
+                {contentData.total > 0 && (
+                  <div className="flex items-center justify-between">
+                    <div className="text-xs text-gray-500">
+                      총 {Number(contentData.total).toLocaleString()}건 (페이지 {contentPage}/{Math.max(1, Math.ceil(contentData.total / CONTENT_PAGE_SIZE))})
+                    </div>
+                    <div className="flex gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
+                        disabled={contentPage <= 1 || contentLoading}
+                        onClick={() => setContentPage((p) => Math.max(1, p - 1))}
+                      >
+                        이전
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700"
+                        disabled={contentLoading || contentPage >= Math.max(1, Math.ceil(contentData.total / CONTENT_PAGE_SIZE))}
+                        onClick={() => setContentPage((p) => p + 1)}
+                      >
+                        다음
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          )}
 
           {isUsersTab && (
             <Card className="bg-gray-800 border-gray-700">
