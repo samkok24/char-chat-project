@@ -17,7 +17,7 @@ CMS 설정 API (홈 배너/홈 구좌)
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Body
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, text
 from sqlalchemy.orm import selectinload
@@ -33,6 +33,7 @@ from app.core.security import get_current_user
 from app.models.user import User
 from app.models.site_config import SiteConfig
 from app.models.character import Character
+from app.models.story import Story
 from app.schemas.cms import HomeBanner, HomeSlot, TagDisplayConfig, HomePopup, HomePopupItem, HomePopupConfig
 
 logger = logging.getLogger(__name__)
@@ -1004,3 +1005,399 @@ async def put_home_slots(
             )
 
 
+# ============================================================
+# 콘텐츠 관리 (캐릭터/웹소설/원작챗 공개·비공개 일괄 관리)
+# ============================================================
+
+CONTENT_PAGE_SIZE_DEFAULT = 20
+CONTENT_PAGE_SIZE_MAX = 100
+
+
+@router.get("/contents")
+async def get_cms_contents(
+    type: str = "all",
+    search: str = "",
+    page: int = 1,
+    page_size: int = CONTENT_PAGE_SIZE_DEFAULT,
+    is_public: str = "all",
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """관리자용: 캐릭터/웹소설/원작챗 목록 조회 (검색·필터·페이지네이션)"""
+    _ensure_admin(current_user)
+
+    page = max(1, page)
+    page_size = min(max(1, page_size), CONTENT_PAGE_SIZE_MAX)
+    offset = (page - 1) * page_size
+    search_term = str(search or "").strip()
+    type_filter = str(type or "all").strip().lower()
+
+    items = []
+    total = 0
+
+    try:
+        if type_filter == "all":
+            items, total = await _query_contents_all_unified(db, search_term, is_public, offset, page_size)
+        elif type_filter == "character":
+            items, total = await _query_characters(db, search_term, is_public, offset, page_size)
+        elif type_filter == "webnovel":
+            items, total = await _query_stories(db, search_term, is_public, False, offset, page_size)
+        elif type_filter == "origchat":
+            items, total = await _query_stories(db, search_term, is_public, True, offset, page_size)
+        else:
+            raise HTTPException(status_code=400, detail="type은 all|character|webnovel|origchat 중 하나여야 합니다.")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"[cms] get_cms_contents ORM failed: {e}")
+        # raw SQL 폴백
+        try:
+            items, total = await _query_contents_raw(db, type_filter, search_term, is_public, offset, page_size)
+        except Exception as e2:
+            logger.exception(f"[cms] get_cms_contents raw fallback failed: {e2}")
+            raise HTTPException(status_code=500, detail=f"콘텐츠 목록 조회 실패 ({_safe_exc(e2) or _safe_exc(e)})")
+
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
+@router.patch("/contents/{content_type}/{content_id}/toggle-public")
+async def toggle_content_public(
+    content_type: str,
+    content_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """관리자용: 캐릭터/스토리 공개·비공개 토글"""
+    _ensure_admin(current_user)
+
+    content_type = str(content_type or "").strip().lower()
+    if content_type not in ("character", "story"):
+        raise HTTPException(status_code=400, detail="content_type은 character 또는 story만 가능합니다.")
+
+    try:
+        uid = uuid.UUID(str(content_id))
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=400, detail="유효하지 않은 ID입니다.")
+
+    try:
+        if content_type == "character":
+            row = (await db.execute(select(Character).where(Character.id == uid))).scalar_one_or_none()
+            if not row:
+                raise HTTPException(status_code=404, detail="캐릭터를 찾을 수 없습니다.")
+            new_val = not bool(row.is_public)
+            row.is_public = new_val
+            await db.commit()
+            return {"id": str(row.id), "type": "character", "name": row.name, "is_public": new_val}
+        else:
+            row = (await db.execute(select(Story).where(Story.id == uid))).scalar_one_or_none()
+            if not row:
+                raise HTTPException(status_code=404, detail="스토리를 찾을 수 없습니다.")
+            new_val = not bool(row.is_public)
+            row.is_public = new_val
+            await db.commit()
+            stype = "origchat" if getattr(row, "is_origchat", False) else "webnovel"
+            return {"id": str(row.id), "type": stype, "name": row.title, "is_public": new_val}
+    except HTTPException:
+        raise
+    except Exception as e:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+        logger.exception(f"[cms] toggle_content_public failed: {e}")
+        raise HTTPException(status_code=500, detail=f"공개 상태 변경 실패 ({_safe_exc(e)})")
+
+
+@router.patch("/contents/{content_type}/{content_id}/public")
+async def set_content_public(
+    content_type: str,
+    content_id: str,
+    payload: dict = Body(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """관리자용: 캐릭터/스토리 공개 상태를 명시값으로 설정한다(결정적)."""
+    _ensure_admin(current_user)
+
+    content_type = str(content_type or "").strip().lower()
+    if content_type not in ("character", "story"):
+        raise HTTPException(status_code=400, detail="content_type은 character 또는 story만 가능합니다.")
+
+    try:
+        uid = uuid.UUID(str(content_id))
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=400, detail="유효하지 않은 ID입니다.")
+
+    is_public_raw = None
+    if isinstance(payload, dict):
+        is_public_raw = payload.get("is_public", None)
+
+    if isinstance(is_public_raw, bool):
+        target_public = is_public_raw
+    elif isinstance(is_public_raw, str):
+        lv = is_public_raw.strip().lower()
+        if lv in ("true", "1", "yes", "y", "on"):
+            target_public = True
+        elif lv in ("false", "0", "no", "n", "off"):
+            target_public = False
+        else:
+            raise HTTPException(status_code=400, detail="is_public은 boolean 이어야 합니다.")
+    else:
+        raise HTTPException(status_code=400, detail="is_public은 boolean 이어야 합니다.")
+
+    try:
+        if content_type == "character":
+            row = (await db.execute(select(Character).where(Character.id == uid))).scalar_one_or_none()
+            if not row:
+                raise HTTPException(status_code=404, detail="캐릭터를 찾을 수 없습니다.")
+            row.is_public = bool(target_public)
+            await db.commit()
+            return {"id": str(row.id), "type": "character", "name": row.name, "is_public": bool(row.is_public)}
+        else:
+            row = (await db.execute(select(Story).where(Story.id == uid))).scalar_one_or_none()
+            if not row:
+                raise HTTPException(status_code=404, detail="스토리를 찾을 수 없습니다.")
+            row.is_public = bool(target_public)
+            await db.commit()
+            stype = "origchat" if getattr(row, "is_origchat", False) else "webnovel"
+            return {"id": str(row.id), "type": stype, "name": row.title, "is_public": bool(row.is_public)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+        logger.exception(f"[cms] set_content_public failed: {e}")
+        raise HTTPException(status_code=500, detail=f"공개 상태 변경 실패 ({_safe_exc(e)})")
+
+
+# --- 콘텐츠 조회 헬퍼 ---
+
+def _public_filter_clause(column, is_public_str: str):
+    """is_public 필터 조건 반환 (None이면 조건 없음)"""
+    val = str(is_public_str or "all").strip().lower()
+    if val == "true":
+        return column == True  # noqa: E712
+    elif val == "false":
+        return column == False  # noqa: E712
+    return None
+
+
+async def _query_characters(db, search_term, is_public, offset, limit):
+    """캐릭터 목록 조회 (원작챗 파생 제외)"""
+    from sqlalchemy import func as sqlfunc
+
+    base = select(Character).where(Character.origin_story_id == None)  # noqa: E711
+    count_q = select(sqlfunc.count()).select_from(Character).where(Character.origin_story_id == None)  # noqa: E711
+
+    if search_term:
+        base = base.where(Character.name.ilike(f"%{search_term}%"))
+        count_q = count_q.where(Character.name.ilike(f"%{search_term}%"))
+
+    pub_clause = _public_filter_clause(Character.is_public, is_public)
+    if pub_clause is not None:
+        base = base.where(pub_clause)
+        count_q = count_q.where(pub_clause)
+
+    total = (await db.execute(count_q)).scalar() or 0
+
+    rows = (await db.execute(base.order_by(Character.created_at.desc()).offset(offset).limit(limit))).scalars().all()
+
+    items = []
+    for r in rows:
+        creator_name = ""
+        try:
+            if r.creator:
+                creator_name = r.creator.username or r.creator.email or ""
+        except Exception:
+            pass
+        items.append({
+            "id": str(r.id),
+            "type": "character",
+            "name": r.name or "",
+            "creator_name": creator_name,
+            "is_public": bool(r.is_public),
+            "created_at": r.created_at.isoformat() if r.created_at else "",
+        })
+    return items, total
+
+
+async def _query_stories(db, search_term, is_public, is_origchat: bool, offset, limit):
+    """스토리(웹소설/원작챗) 목록 조회"""
+    from sqlalchemy import func as sqlfunc
+
+    base = select(Story).where(Story.is_origchat == is_origchat)
+    count_q = select(sqlfunc.count()).select_from(Story).where(Story.is_origchat == is_origchat)
+
+    if search_term:
+        base = base.where(Story.title.ilike(f"%{search_term}%"))
+        count_q = count_q.where(Story.title.ilike(f"%{search_term}%"))
+
+    pub_clause = _public_filter_clause(Story.is_public, is_public)
+    if pub_clause is not None:
+        base = base.where(pub_clause)
+        count_q = count_q.where(pub_clause)
+
+    total = (await db.execute(count_q)).scalar() or 0
+
+    rows = (await db.execute(base.order_by(Story.created_at.desc()).offset(offset).limit(limit))).scalars().all()
+
+    stype = "origchat" if is_origchat else "webnovel"
+    items = []
+    for r in rows:
+        creator_name = ""
+        try:
+            if r.creator:
+                creator_name = r.creator.username or r.creator.email or ""
+        except Exception:
+            pass
+        items.append({
+            "id": str(r.id),
+            "type": stype,
+            "name": r.title or "",
+            "creator_name": creator_name,
+            "is_public": bool(r.is_public),
+            "created_at": r.created_at.isoformat() if r.created_at else "",
+        })
+    return items, total
+
+
+async def _query_contents_raw(db, type_filter, search_term, is_public, offset, limit):
+    """ORM 실패 시 raw SQL 폴백"""
+    is_sqlite = _is_sqlite()
+    items = []
+    total = 0
+
+    queries = []
+    if type_filter in ("all", "character"):
+        queries.append(("character", "characters", "name", "origin_story_id IS NULL", None))
+    if type_filter in ("all", "webnovel"):
+        queries.append(("webnovel", "stories", "title", "1=1", False))
+    if type_filter in ("all", "origchat"):
+        queries.append(("origchat", "stories", "title", "1=1", True))
+
+    for content_type, table, name_col, extra_where, origchat_val in queries:
+        where_parts = [extra_where]
+        params = {}
+
+        if origchat_val is not None:
+            where_parts.append(f"is_origchat = :origchat_{content_type}")
+            params[f"origchat_{content_type}"] = origchat_val
+
+        if search_term:
+            op = "LIKE" if is_sqlite else "ILIKE"
+            where_parts.append(f"{name_col} {op} :search_{content_type}")
+            params[f"search_{content_type}"] = f"%{search_term}%"
+
+        pub_val = str(is_public or "all").strip().lower()
+        if pub_val == "true":
+            where_parts.append("is_public = true")
+        elif pub_val == "false":
+            where_parts.append("is_public = false")
+
+        where_clause = " AND ".join(where_parts)
+
+        count_sql = f"SELECT COUNT(*) FROM {table} WHERE {where_clause}"
+        cnt = (await db.execute(text(count_sql), params)).scalar() or 0
+        total += cnt
+
+        if type_filter != "all":
+            data_sql = f"SELECT id, {name_col} AS name, is_public, created_at FROM {table} WHERE {where_clause} ORDER BY created_at DESC LIMIT :lim OFFSET :off"
+            params["lim"] = limit
+            params["off"] = offset
+        else:
+            data_sql = f"SELECT id, {name_col} AS name, is_public, created_at FROM {table} WHERE {where_clause} ORDER BY created_at DESC LIMIT 500"
+
+        rows = (await db.execute(text(data_sql), params)).fetchall()
+        for r in rows:
+            items.append({
+                "id": str(r[0]),
+                "type": content_type,
+                "name": str(r[1] or ""),
+                "creator_name": "",
+                "is_public": bool(r[2]),
+                "created_at": str(r[3] or ""),
+            })
+
+    if type_filter == "all":
+        items.sort(key=lambda x: x.get("created_at") or "", reverse=True)
+        items = items[offset:offset + limit]
+
+    return items, total
+
+
+async def _query_contents_all_unified(db: AsyncSession, search_term: str, is_public: str, offset: int, limit: int):
+    """type=all 전용 통합 조회: DB 레벨에서 total/정렬/페이지네이션을 일치시킨다."""
+    where_char = ["c.origin_story_id IS NULL"]
+    where_story = ["1=1"]
+    params = {"lim": int(limit), "off": int(offset)}
+
+    if search_term:
+        params["search"] = f"%{search_term}%"
+        where_char.append("c.name ILIKE :search")
+        where_story.append("s.title ILIKE :search")
+
+    pub_val = str(is_public or "all").strip().lower()
+    if pub_val in ("true", "false"):
+        params["is_public_filter"] = (pub_val == "true")
+        where_char.append("c.is_public = :is_public_filter")
+        where_story.append("s.is_public = :is_public_filter")
+
+    where_char_sql = " AND ".join(where_char)
+    where_story_sql = " AND ".join(where_story)
+
+    cte_sql = f"""
+    WITH all_contents AS (
+      SELECT
+        c.id AS id,
+        'character' AS type,
+        c.name AS name,
+        COALESCE(u.username, u.email, '') AS creator_name,
+        c.is_public AS is_public,
+        c.created_at AS created_at
+      FROM characters c
+      LEFT JOIN users u ON u.id = c.creator_id
+      WHERE {where_char_sql}
+      UNION ALL
+      SELECT
+        s.id AS id,
+        CASE WHEN s.is_origchat THEN 'origchat' ELSE 'webnovel' END AS type,
+        s.title AS name,
+        COALESCE(u.username, u.email, '') AS creator_name,
+        s.is_public AS is_public,
+        s.created_at AS created_at
+      FROM stories s
+      LEFT JOIN users u ON u.id = s.creator_id
+      WHERE {where_story_sql}
+    )
+    """
+
+    count_sql = f"{cte_sql} SELECT COUNT(*) FROM all_contents"
+    total = int((await db.execute(text(count_sql), params)).scalar() or 0)
+
+    data_sql = f"""
+    {cte_sql}
+    SELECT id, type, name, creator_name, is_public, created_at
+    FROM all_contents
+    ORDER BY created_at DESC
+    LIMIT :lim OFFSET :off
+    """
+    rows = (await db.execute(text(data_sql), params)).mappings().all()
+    items = []
+    for r in rows:
+        created = r.get("created_at")
+        try:
+            created_str = created.isoformat() if created else ""
+        except Exception:
+            created_str = str(created or "")
+        items.append({
+            "id": str(r.get("id") or ""),
+            "type": str(r.get("type") or ""),
+            "name": str(r.get("name") or ""),
+            "creator_name": str(r.get("creator_name") or ""),
+            "is_public": bool(r.get("is_public")),
+            "created_at": created_str,
+        })
+    return items, total

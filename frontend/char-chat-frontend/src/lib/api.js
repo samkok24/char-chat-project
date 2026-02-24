@@ -1192,6 +1192,11 @@ export const cmsAPI = {
   putHomeSlots: (data) => api.put('/cms/home/slots', data),
   putHomePopups: (data) => api.put('/cms/home/popups', data),
   putCharacterTagDisplay: (data) => api.put('/cms/tags/character', data),
+  // 관리자 콘텐츠 관리
+  getCmsContents: (params) => api.get('/cms/contents', { params }),
+  setContentPublic: (contentType, contentId, isPublic) =>
+    api.patch(`/cms/contents/${contentType}/${contentId}/public`, { is_public: !!isPublic }),
+  toggleContentPublic: (contentType, contentId) => api.patch(`/cms/contents/${contentType}/${contentId}/toggle-public`),
 };
 
 // 💎 포인트 관련 API
