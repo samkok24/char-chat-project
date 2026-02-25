@@ -161,6 +161,8 @@ const HomePage = () => {
   // ✅ 검색바 비노출(요구사항): 현재 검색 기능이 정상 동작하지 않아 전 탭에서 숨긴다.
   // - 추후 검색 기능 복구 시 이 플래그만 true로 되돌리면 UI가 다시 노출된다.
   const SEARCH_UI_ENABLED = false;
+  // ✅ 심사 대응: 홈 온보딩의 간편 캐릭터 생성 진입점(CTA/모달) 비노출
+  const QUICK_MEET_ENABLED = false;
   const [searchQuery, setSearchQuery] = useState('');
   const { user, isAuthenticated, logout } = useAuth();
   const isAdmin = !!user?.is_admin;
@@ -920,6 +922,7 @@ const HomePage = () => {
   }, [onboardingGender]);
 
   const openQuickMeet = (prefill = '') => {
+    if (!QUICK_MEET_ENABLED) return;
     if (!requireAuth('캐릭터 생성')) return;
     const raw = String(prefill || '').trim();
     // ✅ UX: 검색어가 "이름"인지 "느낌"인지 애매하므로, 간단한 휴리스틱으로 안전하게 매핑한다.
@@ -2663,15 +2666,17 @@ const HomePage = () => {
                             <div className="text-xs text-gray-400 mt-1">
                               바로 만들고 시작할 수 있어요.
                             </div>
-                            <div className="mt-3 flex justify-end">
-                              <Button
-                                type="button"
-                                className="h-11 rounded-xl bg-purple-600 hover:bg-purple-700 text-white"
-                                onClick={() => openQuickMeet(onboardingSearchTerm || onboardingQueryRaw)}
-                              >
-                                30초 안에 원하는 캐릭터 만나기
-                              </Button>
-                            </div>
+                            {QUICK_MEET_ENABLED && (
+                              <div className="mt-3 flex justify-end">
+                                <Button
+                                  type="button"
+                                  className="h-11 rounded-xl bg-purple-600 hover:bg-purple-700 text-white"
+                                  onClick={() => openQuickMeet(onboardingSearchTerm || onboardingQueryRaw)}
+                                >
+                                  30초 안에 원하는 캐릭터 만나기
+                                </Button>
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>
@@ -2679,25 +2684,27 @@ const HomePage = () => {
                   </div>
 
                   {/* ✅ 30초 생성 CTA(우): 모바일에서도 결과보다 위에 오도록 '컨트롤 다음'에 배치 */}
-                  <div className="lg:col-span-4 self-start">
-                    <Button
-                      type="button"
-                      className="w-full h-20 sm:h-24 rounded-xl bg-purple-600 hover:bg-purple-700 text-white shadow-sm shadow-purple-900/30 flex flex-col items-center justify-center gap-1"
-                      onClick={() => openQuickMeet(onboardingSearchTerm || onboardingQueryRaw)}
-                    >
-                      <span className="text-lg sm:text-2xl font-bold leading-none">간단 캐릭터 생성</span>
-                      <span className="text-[11px] sm:text-sm text-purple-100/90 leading-tight">
-                        90초면 나만의 캐릭터와 엔딩을 볼 수 있어요
-                      </span>
-                    </Button>
-                  </div>
+                  {QUICK_MEET_ENABLED && (
+                    <div className="lg:col-span-4 self-start">
+                      <Button
+                        type="button"
+                        className="w-full h-20 sm:h-24 rounded-xl bg-purple-600 hover:bg-purple-700 text-white shadow-sm shadow-purple-900/30 flex flex-col items-center justify-center gap-1"
+                        onClick={() => openQuickMeet(onboardingSearchTerm || onboardingQueryRaw)}
+                      >
+                        <span className="text-lg sm:text-2xl font-bold leading-none">간단 캐릭터 생성</span>
+                        <span className="text-[11px] sm:text-sm text-purple-100/90 leading-tight">
+                          90초면 나만의 캐릭터와 엔딩을 볼 수 있어요
+                        </span>
+                      </Button>
+                    </div>
+                  )}
 
                 </div>
               </div>
             </section>
           )}
 
-          {quickMeetOpen && (
+          {QUICK_MEET_ENABLED && quickMeetOpen && (
             <React.Suspense fallback={null}>
               <QuickMeetCharacterModal
                 open={quickMeetOpen}

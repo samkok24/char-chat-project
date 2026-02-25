@@ -306,6 +306,7 @@ app = FastAPI(
     version="2.0.0",
     docs_url="/docs" if settings.ENVIRONMENT == "development" else None,
     redoc_url="/redoc" if settings.ENVIRONMENT == "development" else None,
+    openapi_url="/openapi.json" if settings.ENVIRONMENT == "development" else None,
     lifespan=lifespan
 )
 UPLOAD_DIR = get_upload_dir()
