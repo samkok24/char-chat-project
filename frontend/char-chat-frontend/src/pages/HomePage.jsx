@@ -2837,20 +2837,6 @@ const HomePage = () => {
                 )}
             </div>
 
-              {/* ✅ 사이드패널 버튼은 그대로 유지 + 탭 우상단에 CTA를 한 번 더 노출(복제) */}
-              <div className="flex items-center justify-end gap-2">
-                {isCharacterTab && (
-                  <Link
-                    to="/characters/create"
-                    onClick={(e) => {
-                      handleCreateCharacterClick(e);
-                    }}
-                    className="flex w-full sm:w-auto items-center justify-center px-4 py-2.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors font-medium text-sm shadow-lg"
-                  >
-                    캐릭터 생성
-                  </Link>
-                )}
-              </div>
             </div>
           </div>
   {/* ✅ 탐색 영역 태그 UI는 비노출(요구사항). 태그 힌트 문구도 숨긴다. */}
@@ -3424,19 +3410,8 @@ const HomePage = () => {
             ) : (
               <div className="text-center py-16">
                 <p className="text-gray-400">
-                  선택한 태그에는 아직 캐릭터가 없어요.
+                  선택한 태그에는 아직 콘텐츠가 없어요.
                 </p>
-                <div className="mt-6 flex items-center justify-center">
-                  <Link
-                    to="/characters/create"
-                    onClick={(e) => {
-                      handleCreateCharacterClick(e);
-                    }}
-                    className="flex items-center justify-center px-4 py-2.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors font-medium text-sm shadow-lg"
-                  >
-                    캐릭터 생성
-                  </Link>
-                </div>
               </div>
             )}
           </section>
