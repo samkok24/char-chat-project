@@ -162,6 +162,10 @@ const HomePage = () => {
   // ✅ 검색바 비노출(요구사항): 현재 검색 기능이 정상 동작하지 않아 전 탭에서 숨긴다.
   // - 추후 검색 기능 복구 시 이 플래그만 true로 되돌리면 UI가 다시 노출된다.
   const SEARCH_UI_ENABLED = false;
+  // ✅ 심사 대응: 홈 "캐릭터" 탭 비활성화(버튼/URL 진입 모두 차단)
+  const CHARACTER_TAB_ENABLED = false;
+  // ✅ 심사 대응: 홈 온보딩의 간편 캐릭터 생성 진입점(CTA/모달) 비노출
+  const QUICK_MEET_ENABLED = false;
   const [searchQuery, setSearchQuery] = useState('');
   const { user, isAuthenticated, logout } = useAuth();
   const isAdmin = !!user?.is_admin;
@@ -1006,11 +1010,11 @@ const HomePage = () => {
   const subParam = params.get('sub'); // origserial 서브탭: novel|origchat
   const initialFilter =
     tabParam === 'origserial' ? 'ORIGSERIAL' :
-    tabParam === 'character' ? 'ORIGINAL' :
+    (tabParam === 'character' && CHARACTER_TAB_ENABLED) ? 'ORIGINAL' :
     null;
   const [sourceFilter, setSourceFilter] = useState(initialFilter);
   const [origSerialTab, setOrigSerialTab] = useState(subParam === 'origchat' ? 'origchat' : 'novel'); // 'novel' | 'origchat'
-  const isCharacterTab = sourceFilter === 'ORIGINAL';
+  const isCharacterTab = CHARACTER_TAB_ENABLED && sourceFilter === 'ORIGINAL';
   const isOrigSerialTab = sourceFilter === 'ORIGSERIAL';
   const requestSourceType = isCharacterTab
     ? 'ORIGINAL'
@@ -1031,10 +1035,10 @@ const HomePage = () => {
   useEffect(() => {
     const next =
       tabParam === 'origserial' ? 'ORIGSERIAL' :
-      tabParam === 'character' ? 'ORIGINAL' :
+      (tabParam === 'character' && CHARACTER_TAB_ENABLED) ? 'ORIGINAL' :
       null;
     setSourceFilter(next);
-  }, [tabParam]);
+  }, [tabParam, CHARACTER_TAB_ENABLED]);
 
   useEffect(() => {
     if (tabParam !== 'origserial') return;
@@ -2794,20 +2798,22 @@ const HomePage = () => {
                     </span>
                   </span>
                 </button>
-                <button
-                  type="button"
-                  onClick={() => updateTab('ORIGINAL', 'character')}
-                  className={[
-                    'relative -mb-px px-1 py-2 text-base sm:text-lg font-semibold transition-colors',
-                    'border-b-2',
-                    sourceFilter === 'ORIGINAL'
-                      ? 'text-white border-purple-500'
-                      : 'text-gray-400 border-transparent hover:text-gray-200'
-                  ].join(' ')}
-                  aria-current={sourceFilter === 'ORIGINAL' ? 'page' : undefined}
-                >
-                  캐릭터
-                </button>
+                {CHARACTER_TAB_ENABLED && (
+                  <button
+                    type="button"
+                    onClick={() => updateTab('ORIGINAL', 'character')}
+                    className={[
+                      'relative -mb-px px-1 py-2 text-base sm:text-lg font-semibold transition-colors',
+                      'border-b-2',
+                      sourceFilter === 'ORIGINAL'
+                        ? 'text-white border-purple-500'
+                        : 'text-gray-400 border-transparent hover:text-gray-200'
+                    ].join(' ')}
+                    aria-current={sourceFilter === 'ORIGINAL' ? 'page' : undefined}
+                  >
+                    캐릭터
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => navigate('/agent')}
