@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import AppLayout from '../components/layout/AppLayout';
 import { Button } from '../components/ui/button';
 import { Textarea } from '../components/ui/textarea';
-import { storiesAPI, chaptersAPI, origChatAPI, mediaAPI, charactersAPI, pointAPI, subscriptionAPI } from '../lib/api';
+import { storiesAPI, chaptersAPI, origChatAPI, mediaAPI, charactersAPI, pointAPI } from '../lib/api';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
 import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogCancel, AlertDialogAction } from '../components/ui/alert-dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
@@ -46,7 +46,6 @@ const StoryDetailPage = () => {
   const [purchasedNos, setPurchasedNos] = useState([]);
   const [purchaseConfirm, setPurchaseConfirm] = useState({ open: false, targetNo: null });
   const [purchasing, setPurchasing] = useState(false);
-  const [hasFreeChapters, setHasFreeChapters] = useState(false);
   const PAID_FROM = 6;
   const CHAPTER_COST = 10;
 
@@ -97,14 +96,11 @@ const StoryDetailPage = () => {
     setAccessDeniedModal({ open: true, message: msg });
   }, [isStoryAccessDenied, storyAccessDeniedMsg]);
 
-  // 💎 유료 회차: 루비 잔액 + 구매 내역 + 구독 상태 조회
+  // 💎 유료 회차: 루비 잔액 + 구매 내역 조회
   useEffect(() => {
     if (!isAuthenticated || !storyId) return;
     pointAPI.getBalance().then(r => setRubyBalance(r.data?.balance ?? 0)).catch(() => {});
     chaptersAPI.getPurchased(storyId).then(r => setPurchasedNos(r.data?.purchased_nos ?? [])).catch(() => {});
-    subscriptionAPI.getMySubscription().then(r => {
-      if (r.data?.free_chapters) setHasFreeChapters(true);
-    }).catch(() => {});
   }, [isAuthenticated, storyId]);
 
   useEffect(() => {
@@ -344,7 +340,7 @@ const StoryDetailPage = () => {
 
   // 💎 유료 회차 게이팅 네비게이션
   const handleChapterNavigate = (targetNo) => {
-    if (targetNo < PAID_FROM || purchasedNos.includes(targetNo) || hasFreeChapters) {
+    if (targetNo < PAID_FROM || purchasedNos.includes(targetNo)) {
       navigate(`/stories/${storyId}/chapters/${targetNo}`);
       return;
     }
@@ -1351,10 +1347,10 @@ const StoryDetailPage = () => {
                           )}
                           {Number(ch.no) >= PAID_FROM && (
                             <span className={`inline-flex items-center gap-0.5 text-xs ${
-                              purchasedNos.includes(Number(ch.no)) || hasFreeChapters ? 'text-gray-500' : 'text-pink-400'
+                              purchasedNos.includes(Number(ch.no)) ? 'text-gray-500' : 'text-pink-400'
                             }`}>
                               <Gem className="w-3 h-3" />
-                              <span>{purchasedNos.includes(Number(ch.no)) ? '구매완료' : hasFreeChapters ? '구독무료' : CHAPTER_COST}</span>
+                              <span>{purchasedNos.includes(Number(ch.no)) ? '구매완료' : CHAPTER_COST}</span>
                             </span>
                           )}
                           <span className="inline-flex items-center gap-1 text-xs text-gray-500">

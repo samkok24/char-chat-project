@@ -256,6 +256,7 @@ const CMSPage = () => {
   const [contentUpdatingByKey, setContentUpdatingByKey] = React.useState({});
   const contentUpdatingByKeyRef = React.useRef({});
   const contentUnlockTimersRef = React.useRef({});
+  const contentRefetchTimerRef = React.useRef(null);
   const contentSearchTimerRef = React.useRef(null);
   const [contentSearchDebounced, setContentSearchDebounced] = React.useState('');
 
@@ -265,6 +266,9 @@ const CMSPage = () => {
       Object.keys(timers).forEach((k) => {
         try { clearTimeout(timers[k]); } catch (_) {}
       });
+      try {
+        if (contentRefetchTimerRef.current) clearTimeout(contentRefetchTimerRef.current);
+      } catch (_) {}
     };
   }, []);
 
@@ -2440,6 +2444,17 @@ const CMSPage = () => {
                                         });
                                         try { delete contentUnlockTimersRef.current[rowKey]; } catch (_) {}
                                       }, waitMs);
+                                      // 공개/비공개 필터에서는 offset이 즉시 변하므로 서버 기준으로 재정렬 동기화가 필요하다.
+                                      // (전체 필터는 로컬 반영만으로 충분)
+                                      if (contentPublicFilter !== 'all') {
+                                        try {
+                                          if (contentRefetchTimerRef.current) clearTimeout(contentRefetchTimerRef.current);
+                                        } catch (_) {}
+                                        contentRefetchTimerRef.current = setTimeout(() => {
+                                          setContentReloadKey((k) => k + 1);
+                                          contentRefetchTimerRef.current = null;
+                                        }, 220);
+                                      }
                                     }
                                   }}
                                 />

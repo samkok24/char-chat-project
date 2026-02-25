@@ -46,7 +46,6 @@ import {
   Settings,
   ChevronLeft,
   ChevronRight,
-  ChevronDown,
 } from 'lucide-react';
 import {
   DropdownMenu,
@@ -903,7 +902,6 @@ const HomePage = () => {
   const [quickMeetOpen, setQuickMeetOpen] = useState(false);
   const [quickMeetInitialName, setQuickMeetInitialName] = useState('');
   const [quickMeetInitialSeedText, setQuickMeetInitialSeedText] = useState('');
-  const [bizInfoOpen, setBizInfoOpen] = useState(false);
 
   useEffect(() => {
     // 디바운스: 과도한 API 호출 방지(배포 안정)
@@ -3489,21 +3487,9 @@ const HomePage = () => {
           <span>|</span>
           <Link to="/legal/refund" className="hover:text-gray-300 transition-colors">환불정책</Link>
         </div>
-        <button
-          type="button"
-          onClick={() => setBizInfoOpen((v) => !v)}
-          className="mt-2 inline-flex items-center gap-1 text-gray-400 hover:text-gray-200 transition-colors"
-          aria-expanded={bizInfoOpen}
-          aria-controls="footer-business-info"
-        >
-          <span>사업자정보확인</span>
-          <ChevronDown className={`w-3.5 h-3.5 transition-transform ${bizInfoOpen ? 'rotate-180' : ''}`} />
-        </button>
-        {bizInfoOpen && (
-          <p id="footer-business-info" className="mt-2 text-gray-500 break-words">
-            {BUSINESS_INFO_TEXT}
-          </p>
-        )}
+        <p id="footer-business-info" className="mt-2 text-gray-500 break-words">
+          {BUSINESS_INFO_TEXT}
+        </p>
         <p className="mt-1 text-gray-600">&copy; 2026 챕터8. All rights reserved.</p>
       </footer>
 

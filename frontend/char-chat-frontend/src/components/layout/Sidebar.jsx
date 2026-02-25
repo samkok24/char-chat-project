@@ -1,12 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { Link, NavLink, useNavigate, useLocation } from 'react-router-dom';
-import { chatAPI, charactersAPI, storiesAPI, pointAPI, subscriptionAPI } from '../../lib/api';
+import { chatAPI, charactersAPI, storiesAPI, pointAPI } from '../../lib/api';
 import { useAuth } from '../../contexts/AuthContext';
 import { Avatar, AvatarFallback, AvatarImage } from '../ui/avatar';
 import { resolveImageUrl, getCharacterPrimaryImage } from '../../lib/images';
 import { getReadingProgress, getReadingProgressAt } from '../../lib/reading';
 import { Button } from '../ui/button';
-import { MessageSquare, Plus, Home, Star, Heart, User, History, Sparkles, UserCog, LogOut, BookOpen, LogIn, HelpCircle, Bell, Settings, Loader2, ChevronLeft, ChevronRight, Gem, Timer } from 'lucide-react';
+import { MessageSquare, Home, Star, Heart, User, History, Sparkles, UserCog, LogOut, BookOpen, LogIn, HelpCircle, Bell, Settings, Loader2, ChevronLeft, ChevronRight, Gem, Timer } from 'lucide-react';
 import { Skeleton } from '../ui/skeleton';
 import { Badge } from '../ui/badge';
 import {
@@ -40,16 +40,14 @@ const Sidebar = ({ collapsed = false, onToggleCollapsed }) => {
   const [rubyBalance, setRubyBalance] = useState(null);
   const [timerCurrent, setTimerCurrent] = useState(0);
   const [timerMax, setTimerMax] = useState(15);
-  const [myPlanName, setMyPlanName] = useState(null);
 
-  // 루비 잔액 + 구독 정보 조회
+  // 루비 잔액 + 타이머 조회
   const loadRubyRef = React.useRef(null);
   useEffect(() => {
     if (!isAuthenticated) {
       setRubyBalance(null);
       setTimerCurrent(0);
       setTimerMax(15);
-      setMyPlanName(null);
       return;
     }
     let mounted = true;
@@ -74,13 +72,6 @@ const Sidebar = ({ collapsed = false, onToggleCollapsed }) => {
     };
     loadRubyRef.current = load;
     load();
-    // 구독 정보는 1회만
-    (async () => {
-      try {
-        const subRes = await subscriptionAPI.getMySubscription();
-        if (mounted) setMyPlanName(subRes.data?.plan_name || '무료');
-      } catch { if (mounted) setMyPlanName('무료'); }
-    })();
     const intervalId = setInterval(load, 60 * 1000);
     return () => {
       mounted = false;
@@ -406,29 +397,7 @@ const Sidebar = ({ collapsed = false, onToggleCollapsed }) => {
       {/* Create 버튼 */}
       {!collapsed ? (
         <>
-          <div className="px-4 pb-2 pt-2">
-            <Link
-              to="/characters/create"
-              onClick={(e) => {
-                if (!requireAuth('캐릭터 생성')) {
-                  e.preventDefault();
-                  return;
-                }
-                // ✅ 경쟁사 UX: 임시저장된 초안이 있으면 모달을 먼저 띄운다.
-                try {
-                  if (hasCreateCharacterDraft()) {
-                    e.preventDefault();
-                    setDraftPromptOpen(true);
-                  }
-                } catch (_) {}
-              }}
-              className="flex items-center justify-center w-full px-4 py-2.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors font-medium text-sm shadow-lg"
-            >
-              <Plus className="w-5 h-5 mr-2" />
-              캐릭터 생성
-            </Link>
-          </div>
-          <div className="px-4 pb-4">
+          <div className="px-4 pb-4 pt-2">
             <Link
               to="/works/create"
               onClick={(e) => {
@@ -444,27 +413,7 @@ const Sidebar = ({ collapsed = false, onToggleCollapsed }) => {
           </div>
         </>
       ) : (
-        <div className="px-2 pb-4 pt-1 space-y-2">
-          <Link
-            to="/characters/create"
-            onClick={(e) => {
-              if (!requireAuth('캐릭터 생성')) {
-                e.preventDefault();
-                return;
-              }
-              try {
-                if (hasCreateCharacterDraft()) {
-                  e.preventDefault();
-                  setDraftPromptOpen(true);
-                }
-              } catch (_) {}
-            }}
-            className="h-10 w-10 mx-auto flex items-center justify-center rounded-lg bg-purple-600 hover:bg-purple-700 text-white shadow-lg transition-colors"
-            aria-label="캐릭터 생성"
-            title="캐릭터 생성"
-          >
-            <Plus className="w-5 h-5" />
-          </Link>
+        <div className="px-2 pb-4 pt-1">
           <Link
             to="/works/create"
             onClick={(e) => {
@@ -508,8 +457,8 @@ const Sidebar = ({ collapsed = false, onToggleCollapsed }) => {
               className={({ isActive }) =>
                 `block ${collapsed ? 'px-1' : 'px-3'} mt-2`
               }
-              aria-label="구독 플랜"
-              title="구독 플랜"
+              aria-label="루비 충전"
+              title="루비 충전"
             >
               {collapsed ? (
                 <div className="flex flex-col items-center gap-0.5 py-2 rounded-lg bg-gray-700/50 hover:bg-gray-700 transition-colors">
@@ -521,7 +470,7 @@ const Sidebar = ({ collapsed = false, onToggleCollapsed }) => {
                   <div className="flex items-center justify-between mb-1.5">
                     <div className="flex items-center gap-1.5">
                       <Gem className="w-4 h-4 text-pink-400" />
-                      <span className="text-sm font-semibold text-white">{myPlanName || '무료'}</span>
+                      <span className="text-sm font-semibold text-white">루비</span>
                     </div>
                     <span className="text-sm font-bold text-pink-400">{rubyBalance !== null ? rubyBalance.toLocaleString() : '...'}</span>
                   </div>
@@ -530,7 +479,7 @@ const Sidebar = ({ collapsed = false, onToggleCollapsed }) => {
                       <Timer className="w-3 h-3 text-purple-400" />
                       <span>{timerCurrent}/{timerMax} (+1개/2시간)</span>
                     </div>
-                    <span className="text-[11px] text-purple-400 font-medium">업그레이드</span>
+                    <span className="text-[11px] text-purple-400 font-medium">충전하기</span>
                   </div>
                   <div className="w-full h-1.5 bg-gray-700 rounded-full overflow-hidden">
                     <div
