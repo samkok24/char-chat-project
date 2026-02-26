@@ -46,7 +46,6 @@ import {
   Settings,
   ChevronLeft,
   ChevronRight,
-  ChevronDown,
 } from 'lucide-react';
 import {
   DropdownMenu,
@@ -94,7 +93,7 @@ import { resolveHomeAbVariant } from '../lib/homeAb';
 
 const CHARACTER_PAGE_SIZE = 40;
 const QuickMeetCharacterModal = React.lazy(() => import('../components/QuickMeetCharacterModal'));
-const BUSINESS_INFO_TEXT = '라이크노벨 | 327-24-00954 | 17084 경기 용인시 기흥구 공세로 150-29, B01-J207호(공세동, 테라스가든) | 제 2020-성남분당C-0039호';
+const BUSINESS_INFO_TEXT = '문의 : 070-5157-3300 | 대표자명 : 이홍산, 유중희 | cha8.team@gmail.com';
 
 // ✅ 캐릭터 탭 고정 태그칩(요구사항): "모두" 옆에 롤플/시뮬/커스텀을 항상 노출
 // - 실제 필터는 서버에서 character_type으로 해석(태그 매핑이 없는 기존 데이터도 동작하도록)
@@ -973,7 +972,6 @@ const HomePage = () => {
   const [quickMeetOpen, setQuickMeetOpen] = useState(false);
   const [quickMeetInitialName, setQuickMeetInitialName] = useState('');
   const [quickMeetInitialSeedText, setQuickMeetInitialSeedText] = useState('');
-  const [bizInfoOpen, setBizInfoOpen] = useState(false);
 
   useEffect(() => {
     // 디바운스: 과도한 API 호출 방지(배포 안정)
@@ -992,6 +990,7 @@ const HomePage = () => {
   }, [onboardingGender]);
 
   const openQuickMeet = (prefill = '') => {
+    if (!QUICK_MEET_ENABLED) return;
     if (!requireAuth('캐릭터 생성')) return;
     const raw = String(prefill || '').trim();
     // ✅ UX: 검색어가 "이름"인지 "느낌"인지 애매하므로, 간단한 휴리스틱으로 안전하게 매핑한다.
@@ -2729,15 +2728,17 @@ const HomePage = () => {
                             <div className="text-xs text-gray-400 mt-1">
                               바로 만들고 시작할 수 있어요.
                             </div>
-                            <div className="mt-3 flex justify-end">
-                              <Button
-                                type="button"
-                                className="h-11 rounded-xl bg-purple-600 hover:bg-purple-700 text-white"
-                                onClick={() => openQuickMeet(onboardingSearchTerm || onboardingQueryRaw)}
-                              >
-                                30초 안에 원하는 캐릭터 만나기
-                              </Button>
-                            </div>
+                            {QUICK_MEET_ENABLED && (
+                              <div className="mt-3 flex justify-end">
+                                <Button
+                                  type="button"
+                                  className="h-11 rounded-xl bg-purple-600 hover:bg-purple-700 text-white"
+                                  onClick={() => openQuickMeet(onboardingSearchTerm || onboardingQueryRaw)}
+                                >
+                                  30초 안에 원하는 캐릭터 만나기
+                                </Button>
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>
@@ -2745,25 +2746,27 @@ const HomePage = () => {
                   </div>
 
                   {/* ✅ 30초 생성 CTA(우): 모바일에서도 결과보다 위에 오도록 '컨트롤 다음'에 배치 */}
-                  <div className="lg:col-span-4 self-start">
-                    <Button
-                      type="button"
-                      className="w-full h-20 sm:h-24 rounded-xl bg-purple-600 hover:bg-purple-700 text-white shadow-sm shadow-purple-900/30 flex flex-col items-center justify-center gap-1"
-                      onClick={() => openQuickMeet(onboardingSearchTerm || onboardingQueryRaw)}
-                    >
-                      <span className="text-lg sm:text-2xl font-bold leading-none">간단 캐릭터 생성</span>
-                      <span className="text-[11px] sm:text-sm text-purple-100/90 leading-tight">
-                        90초면 나만의 캐릭터와 엔딩을 볼 수 있어요
-                      </span>
-                    </Button>
-                  </div>
+                  {QUICK_MEET_ENABLED && (
+                    <div className="lg:col-span-4 self-start">
+                      <Button
+                        type="button"
+                        className="w-full h-20 sm:h-24 rounded-xl bg-purple-600 hover:bg-purple-700 text-white shadow-sm shadow-purple-900/30 flex flex-col items-center justify-center gap-1"
+                        onClick={() => openQuickMeet(onboardingSearchTerm || onboardingQueryRaw)}
+                      >
+                        <span className="text-lg sm:text-2xl font-bold leading-none">간단 캐릭터 생성</span>
+                        <span className="text-[11px] sm:text-sm text-purple-100/90 leading-tight">
+                          90초면 나만의 캐릭터와 엔딩을 볼 수 있어요
+                        </span>
+                      </Button>
+                    </div>
+                  )}
 
                 </div>
               </div>
             </section>
           )}
 
-          {quickMeetOpen && (
+          {QUICK_MEET_ENABLED && quickMeetOpen && (
             <React.Suspense fallback={null}>
               <QuickMeetCharacterModal
                 open={quickMeetOpen}
@@ -3530,21 +3533,9 @@ const HomePage = () => {
           <span>|</span>
           <Link to="/legal/refund" className="hover:text-gray-300 transition-colors">환불정책</Link>
         </div>
-        <button
-          type="button"
-          onClick={() => setBizInfoOpen((v) => !v)}
-          className="mt-2 inline-flex items-center gap-1 text-gray-400 hover:text-gray-200 transition-colors"
-          aria-expanded={bizInfoOpen}
-          aria-controls="footer-business-info"
-        >
-          <span>사업자정보확인</span>
-          <ChevronDown className={`w-3.5 h-3.5 transition-transform ${bizInfoOpen ? 'rotate-180' : ''}`} />
-        </button>
-        {bizInfoOpen && (
-          <p id="footer-business-info" className="mt-2 text-gray-500 break-words">
-            {BUSINESS_INFO_TEXT}
-          </p>
-        )}
+        <p id="footer-business-info" className="mt-2 text-gray-500 break-words">
+          {BUSINESS_INFO_TEXT}
+        </p>
         <p className="mt-1 text-gray-600">&copy; 2026 챕터8. All rights reserved.</p>
       </footer>
 

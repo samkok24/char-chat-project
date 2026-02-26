@@ -207,20 +207,20 @@ def _nicepay_basic_auth(client_key: str, secret_key: str) -> str:
 
 
 def _build_return_url(http_request: Request) -> str:
-    # /payment/checkout 또는 /api/payment/checkout 호출 경로를 기준으로 동일 prefix에 return 경로 생성
-    scheme = (
-        http_request.headers.get("x-forwarded-proto")
-        or http_request.url.scheme
-        or "http"
-    )
+    # 운영 Nginx는 /api/*만 백엔드로 프록시한다.
+    # 결제 리턴 URL은 항상 /api/payment/nicepay/return 로 고정해 405(프론트로 라우팅) 위험을 제거한다.
+    forwarded_proto = str(http_request.headers.get("x-forwarded-proto") or "").split(",", 1)[0].strip().lower()
+    if _is_production_env():
+        # 운영(HTTPS 종단이 프록시/LB 앞단)에서는 경고 방지를 위해 리턴 URL을 강제로 HTTPS로 고정한다.
+        scheme = "https"
+    else:
+        scheme = forwarded_proto or http_request.url.scheme or "http"
     host = (
         http_request.headers.get("x-forwarded-host")
         or http_request.headers.get("host")
         or http_request.url.netloc
     )
-    path = (http_request.url.path or "").rstrip("/")
-    parent = path.rsplit("/", 1)[0] if "/" in path else "/payment"
-    return f"{scheme}://{host}{parent}/nicepay/return"
+    return f"{scheme}://{host}/api/payment/nicepay/return"
 
 
 def _nicepay_goods_name(ruby_amount: int, price: int) -> str:

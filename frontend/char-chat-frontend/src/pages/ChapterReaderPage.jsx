@@ -3,7 +3,7 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import AppLayout from '../components/layout/AppLayout';
 import { Button } from '../components/ui/button';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { chaptersAPI, storiesAPI, mediaAPI, storydiveAPI, pointAPI, subscriptionAPI } from '../lib/api';
+import { chaptersAPI, storiesAPI, mediaAPI, storydiveAPI, pointAPI } from '../lib/api';
 import { setReadingProgress, getReadingProgress } from '../lib/reading';
 import { ArrowLeft, ArrowRight, Home, MessageCircle, Loader2, Gem } from 'lucide-react';
 import RubyChargeModal from '../components/RubyChargeModal';
@@ -85,25 +85,19 @@ const ChapterReaderPage = () => {
   const nextNo = useMemo(() => (Number(chapterNumber) + 1), [chapterNumber]);
   const prevNo = useMemo(() => (Math.max(1, Number(chapterNumber) - 1)), [chapterNumber]);
 
-  // 구독 정보 (유료 회차 무료 바이패스용)
-  const [hasFreeChapters, setHasFreeChapters] = useState(false);
-
-  // 💎 유료 회차: 루비 잔액 + 구매 내역 + 구독 상태 조회
+  // 💎 유료 회차: 루비 잔액 + 구매 내역 조회
   useEffect(() => {
     if (!storyId || !isAuthenticated) return;
     pointAPI.getBalance().then(r => setRubyBalance(r.data?.balance ?? 0)).catch(() => {});
     chaptersAPI.getPurchased(storyId).then(r => setPurchasedNos(r.data?.purchased_nos ?? [])).catch(() => {});
-    subscriptionAPI.getMySubscription().then(r => {
-      if (r.data?.free_chapters) setHasFreeChapters(true);
-    }).catch(() => {});
   }, [storyId, isAuthenticated]);
 
   const PAID_FROM = 6;
   const CHAPTER_COST = 10;
 
   const handleNavigateToChapter = (targetNo) => {
-    // 무료 회차, 이미 구매, 또는 구독자 무료 회차
-    if (targetNo < PAID_FROM || purchasedNos.includes(targetNo) || hasFreeChapters) {
+    // 무료 회차 또는 이미 구매한 회차
+    if (targetNo < PAID_FROM || purchasedNos.includes(targetNo)) {
       navigate(`/stories/${storyId}/chapters/${targetNo}`);
       return;
     }

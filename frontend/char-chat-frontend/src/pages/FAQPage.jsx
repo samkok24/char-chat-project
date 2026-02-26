@@ -295,6 +295,17 @@ const FAQPage = () => {
             </CardContent>
           </Card>
 
+          <Alert className="mb-6 bg-blue-500/10 border-blue-500/30 text-blue-100">
+            <AlertDescription className="text-xs sm:text-sm leading-relaxed">
+              <div className="space-y-1">
+                <div>본 서비스는 웹소설 디지털 콘텐츠 판매 서비스입니다.</div>
+                <div>결제 루비는 웹소설 회차/작품 구매에만 사용되며 환전·현금화·양도·선물·회원 간 거래는 지원하지 않습니다.</div>
+                <div>캐릭터 채팅은 무료 부가 기능이며, 유료 채팅/대화권/메시지권/유저간 채팅은 제공하지 않습니다.</div>
+                <div>결제 판매주체(merchant of record)는 당사입니다.</div>
+              </div>
+            </AlertDescription>
+          </Alert>
+
           {createOpen && isAdmin && (
             <div className="mb-5 p-4 rounded-xl border border-gray-800 bg-gray-900/30">
               {createError && (
@@ -591,5 +602,4 @@ const FAQPage = () => {
 };
 
 export default FAQPage;
-
 
