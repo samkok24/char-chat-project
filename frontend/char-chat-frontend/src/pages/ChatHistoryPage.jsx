@@ -21,6 +21,7 @@ import {
 } from '../components/ui/alert-dialog';
 import AppLayout from '../components/layout/AppLayout';
 import { useAuth } from '../contexts/AuthContext';
+import { emitChatRoomsChanged, getRoomsChangedActivity, shouldRefetchForRoomsChanged } from '../lib/chatRoomsChangedEvent';
 
 const ChatHistoryPage = () => {
   const [characters, setCharacters] = useState([]);
@@ -61,6 +62,26 @@ const ChatHistoryPage = () => {
       return bt - at;
     });
   };
+
+  const applyHistoryActivityPatch = useCallback((items, activity) => {
+    const list = Array.isArray(items) ? items : [];
+    const roomId = String(activity?.roomId || '').trim();
+    if (!roomId) return { next: list, changed: false };
+    const updatedAt = String(activity?.updatedAt || '').trim() || new Date().toISOString();
+    const snippet = String(activity?.snippet || '').trim();
+    let changed = false;
+    const next = list.map((item) => {
+      if (String(item?.chat_room_id || '').trim() !== roomId) return item;
+      changed = true;
+      return {
+        ...(item || {}),
+        last_chat_time: updatedAt,
+        ...(snippet ? { last_message_snippet: snippet } : {}),
+      };
+    });
+    if (!changed) return { next: list, changed: false };
+    return { next: applyPinFlagAndSort(next), changed: true };
+  }, [pinnedKey]);
 
   const fetchChatHistory = useCallback(async (pageNum) => {
     try {
@@ -103,7 +124,35 @@ const ChatHistoryPage = () => {
 
   // ✅ 채팅방 생성/삭제/메시지 전송 등으로 목록이 바뀌면 1페이지부터 새로고침
   useEffect(() => {
-    const onRoomsChanged = () => {
+    let missRefetchTimer = null;
+    let missRefetchInFlight = false;
+    const scheduleMissRefetch = () => {
+      if (missRefetchInFlight) return;
+      if (missRefetchTimer) clearTimeout(missRefetchTimer);
+      missRefetchTimer = setTimeout(async () => {
+        if (missRefetchInFlight) return;
+        missRefetchInFlight = true;
+        try {
+          setPage(1);
+          setHasMore(true);
+          await fetchChatHistory(1);
+        } catch (_) {}
+        missRefetchInFlight = false;
+      }, 500);
+    };
+    const onRoomsChanged = (evt) => {
+      const activity = getRoomsChangedActivity(evt);
+      if (activity) {
+        let changed = false;
+        setCharacters((prev) => {
+          const result = applyHistoryActivityPatch(prev, activity);
+          changed = Boolean(result?.changed);
+          return result?.next || prev;
+        });
+        if (!changed) scheduleMissRefetch();
+        return;
+      }
+      if (!shouldRefetchForRoomsChanged(evt)) return;
       try {
         setPage(1);
         setHasMore(true);
@@ -112,9 +161,10 @@ const ChatHistoryPage = () => {
     };
     try { window.addEventListener('chat:roomsChanged', onRoomsChanged); } catch (_) {}
     return () => {
+      if (missRefetchTimer) clearTimeout(missRefetchTimer);
       try { window.removeEventListener('chat:roomsChanged', onRoomsChanged); } catch (_) {}
     };
-  }, [fetchChatHistory]);
+  }, [fetchChatHistory, applyHistoryActivityPatch]);
 
   // 무한 스크롤 설정
   useEffect(() => {
@@ -206,7 +256,7 @@ const ChatHistoryPage = () => {
       setCharacters(prev => prev.filter(char => char.chat_room_id !== chatRoomId));
       setDeleteTarget(null);
       // 사이드바 새로고침 이벤트 브로드캐스트
-      try { window.dispatchEvent(new Event('chat:roomsChanged')); } catch (_) {}
+      emitChatRoomsChanged({ kind: 'structure', reason: 'deleted', roomId: chatRoomId });
     } catch (error) {
       console.error('채팅방 삭제 실패:', error);
       setError('채팅방 삭제에 실패했습니다.');

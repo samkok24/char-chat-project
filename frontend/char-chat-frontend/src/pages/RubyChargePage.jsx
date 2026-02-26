@@ -1,12 +1,13 @@
 /**
  * 루비 페이지 (크랙 스타일, 다크 테마)
- * - 3탭: 구독플랜 / 루비 충전 / 무료 루비
+ * - 2탭: 루비 충전 / 무료 루비
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { pointAPI, subscriptionAPI } from '../lib/api';
+import { pointAPI, paymentAPI } from '../lib/api';
+import { showToastOnce } from '../lib/toastOnce';
 import AppLayout from '../components/layout/AppLayout';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
@@ -16,51 +17,70 @@ import {
   CalendarCheck,
   Timer,
   ArrowLeft,
-  Zap,
-  BookOpen,
-  Sparkles,
-  Check,
-  Crown,
 } from 'lucide-react';
 
 /* ── 충전 상품 정의 (SSOT: PRICING_AND_PAYMENT_PLAN.md) ── */
-const RUBY_PRODUCTS = [
+const RUBY_PRODUCTS_FALLBACK = [
   { id: 'lite',    name: '라이트',   ruby: 200,   bonus: 0,   price: 2000,  recommended: false },
   { id: 'basic',   name: '베이직',   ruby: 500,   bonus: 25,  price: 5000,  recommended: false },
   { id: 'premium', name: '프리미엄', ruby: 1000,  bonus: 100, price: 10000, recommended: false },
   { id: 'pro',     name: '프로',     ruby: 3000,  bonus: 400, price: 30000, recommended: true },
   { id: 'master',  name: '마스터',   ruby: 5000,  bonus: 800, price: 50000, recommended: false },
 ];
-
-/* ── 구독 플랜 메타 ── */
-const PLAN_META = {
-  free:    { icon: Gem,   gradient: 'from-gray-600 to-gray-700',    border: 'border-gray-700',    accent: 'text-gray-400' },
-  basic:   { icon: Zap,   gradient: 'from-blue-600 to-purple-600',  border: 'border-blue-500/50', accent: 'text-blue-400' },
-  premium: { icon: Crown, gradient: 'from-amber-500 to-orange-600', border: 'border-amber-500/50', accent: 'text-amber-400' },
-};
-
-/* 타이머 리필 간격 텍스트 (base=2시간, multiplier로 나눔) */
-const refillIntervalText = (multiplier) => {
-  const mins = 120 / (multiplier || 1);
-  if (mins >= 60) return `매 ${mins / 60}시간마다`;
-  return `매 ${mins}분마다`;
-};
-
-const BENEFIT_ROWS = [
-  { label: '월 기본 루비',      key: 'monthly_ruby',            fmt: (v) => v > 0 ? `${v.toLocaleString()}개` : '-' },
-  { label: '매일 로그인 보상',  key: '_daily_login',            fmt: () => '10개' },
-  { label: '루비 자동 충전',    key: 'refill_speed_multiplier', fmt: (v) => `${refillIntervalText(v)} 1개` },
-  { label: '웹소설 유료회차',   key: 'free_chapters',           fmt: (v) => v ? '무료' : '유료' },
-  { label: '고급모델 할인',     key: 'model_discount_pct',      fmt: (v) => v > 0 ? `${v}%` : '-' },
+const PAYMENT_PRIMARY_METHOD_OPTIONS = [
+  { key: 'card', label: '신용카드' },
+  { key: 'bank', label: '계좌이체' },
 ];
+const PAYMENT_EASY_METHOD_OPTIONS = [
+  { key: 'kakaopay', label: '카카오페이' },
+  { key: 'naverpayCard', label: '네이버페이' },
+  { key: 'samsungpayCard', label: '삼성페이' },
+];
+
+const NICEPAY_JS_SDK_URL = 'https://pay.nicepay.co.kr/v1/js/';
+const PAYMENT_PROCESSING_TIMEOUT_MS = 180000;
+const PENDING_RUBY_REFRESH_KEY = 'pending_ruby_refresh_after_payment';
+
+const loadNicePaySdk = (() => {
+  let pending = null;
+  return () => {
+    if (window.AUTHNICE?.requestPay) return Promise.resolve();
+    if (pending) return pending;
+
+    pending = new Promise((resolve, reject) => {
+      const existing = document.querySelector(`script[src="${NICEPAY_JS_SDK_URL}"]`);
+      if (existing) {
+        existing.addEventListener('load', () => resolve(), { once: true });
+        existing.addEventListener('error', () => reject(new Error('NICEPAY SDK 로드 실패')), { once: true });
+        return;
+      }
+
+      const script = document.createElement('script');
+      script.src = NICEPAY_JS_SDK_URL;
+      script.async = true;
+      script.onload = () => resolve();
+      script.onerror = () => reject(new Error('NICEPAY SDK 로드 실패'));
+      document.head.appendChild(script);
+    }).finally(() => {
+      pending = null;
+    });
+
+    return pending;
+  };
+})();
 
 const RubyChargePage = () => {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
 
   /* ── State ── */
-  const [activeTab, setActiveTab] = useState('subscribe');
-  const [selectedProduct, setSelectedProduct] = useState('pro');
+  const [activeTab, setActiveTab] = useState('charge');
+  const [products, setProducts] = useState([]);
+  const [productsLoading, setProductsLoading] = useState(true);
+  const [productsAvailable, setProductsAvailable] = useState(true);
+  const [selectedProduct, setSelectedProduct] = useState('');
+  const [payMethod, setPayMethod] = useState('card');
   const [isProcessing, setIsProcessing] = useState(false);
   const [balance, setBalance] = useState(0);
   const [balanceLoading, setBalanceLoading] = useState(true);
@@ -68,29 +88,145 @@ const RubyChargePage = () => {
   const [timerMax, setTimerMax] = useState(15);
   const [timerNextSeconds, setTimerNextSeconds] = useState(0);
 
-  // 구독 정보
-  const [myPlan, setMyPlan] = useState(null);
-  const [plans, setPlans] = useState([]);
-  const [plansLoading, setPlansLoading] = useState(true);
-  const [subscribing, setSubscribing] = useState(false);
   const [refillMultiplier, setRefillMultiplier] = useState(1);
 
   // 무료 루비
   const [checkedIn, setCheckedIn] = useState(false);
   const [checkingIn, setCheckingIn] = useState(false);
+  const processingWatchdogRef = useRef(null);
+
+  const clearProcessingWatchdog = useCallback(() => {
+    if (processingWatchdogRef.current) {
+      clearTimeout(processingWatchdogRef.current);
+      processingWatchdogRef.current = null;
+    }
+  }, []);
+
+  const releaseProcessing = useCallback(() => {
+    clearProcessingWatchdog();
+    setIsProcessing(false);
+  }, [clearProcessingWatchdog]);
+
+  useEffect(() => () => clearProcessingWatchdog(), [clearProcessingWatchdog]);
+
+  const refreshRubyBalance = useCallback(async () => {
+    const res = await pointAPI.getBalance();
+    setBalance(res.data?.balance ?? 0);
+    window.dispatchEvent(new CustomEvent('ruby:balanceChanged'));
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+
+    (async () => {
+      setProductsLoading(true);
+      setProductsAvailable(true);
+      try {
+        const res = await paymentAPI.getProducts();
+        const list = Array.isArray(res?.data) ? res.data : [];
+        const mapped = list.map((p) => {
+          const ruby = Number(p?.point_amount ?? 0);
+          const bonus = Number(p?.bonus_point ?? 0);
+          const name = String(p?.name ?? '');
+          return {
+            id: String(p.id),
+            name: name || '루비 상품',
+            ruby,
+            bonus,
+            price: Number(p?.price ?? 0),
+            recommended: name.includes('프로'),
+          };
+        });
+
+        if (!mounted) return;
+        const fromServer = mapped.length > 0;
+        const finalList = fromServer ? mapped : RUBY_PRODUCTS_FALLBACK;
+        setProducts(finalList);
+        setProductsAvailable(fromServer);
+        setSelectedProduct((prev) => {
+          if (prev && finalList.some((x) => x.id === prev)) return prev;
+          const rec = finalList.find((x) => x.recommended);
+          return rec?.id || finalList[0]?.id || '';
+        });
+      } catch {
+        if (!mounted) return;
+        setProducts(RUBY_PRODUCTS_FALLBACK);
+        setProductsAvailable(false);
+        setSelectedProduct((prev) => prev || 'pro');
+      } finally {
+        if (mounted) setProductsLoading(false);
+      }
+    })();
+
+    return () => { mounted = false; };
+  }, []);
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const result = params.get('payment_result');
+    if (!result) return;
+
+    const message = params.get('payment_message');
+    const orderId = params.get('payment_order_id') || 'unknown';
+    const isSuccess = result === 'success';
+    const isPending = result === 'pending';
+
+    (async () => {
+      releaseProcessing();
+      if (isSuccess) {
+        let refreshed = false;
+        try {
+          sessionStorage.setItem(PENDING_RUBY_REFRESH_KEY, '1');
+        } catch (_) {
+          // noop
+        }
+        try {
+          await refreshRubyBalance();
+          refreshed = true;
+        } catch (_) {
+          // noop
+        }
+        if (refreshed) {
+          try { sessionStorage.removeItem(PENDING_RUBY_REFRESH_KEY); } catch (_) {}
+        }
+      }
+      showToastOnce({
+        key: `payment-result:${result}:${orderId}`,
+        type: isSuccess ? 'success' : (isPending ? 'info' : 'error'),
+        message: isSuccess
+          ? '결제가 완료되었습니다. 루비가 충전되었어요.'
+          : (isPending
+            ? (message || '결제 대기 상태입니다. 입금 확인 후 자동 충전됩니다.')
+            : (message || '결제가 완료되지 않았습니다. 다시 시도해 주세요.')),
+        ttlMs: 15000,
+      });
+      navigate(location.pathname, { replace: true });
+    })();
+  }, [location.pathname, location.search, navigate, refreshRubyBalance, releaseProcessing]);
+
+  useEffect(() => {
+    if (!user) return;
+    let pending = null;
+    try {
+      pending = sessionStorage.getItem(PENDING_RUBY_REFRESH_KEY);
+    } catch (_) {
+      pending = null;
+    }
+    if (pending !== '1') return;
+
+    (async () => {
+      try {
+        await refreshRubyBalance();
+        try { sessionStorage.removeItem(PENDING_RUBY_REFRESH_KEY); } catch (_) {}
+      } catch (_) {
+        // 다음 진입/리렌더에서 재시도
+      }
+    })();
+  }, [refreshRubyBalance, user]);
 
   /* ── 초기 데이터 로드 ── */
   useEffect(() => {
     let mounted = true;
-
-    // 플랜 목록은 비로그인도 조회 가능
-    (async () => {
-      try {
-        const plansRes = await subscriptionAPI.getPlans();
-        if (mounted) setPlans(plansRes.data || []);
-      } catch { /* noop */ }
-      if (mounted) setPlansLoading(false);
-    })();
 
     if (!user) { setBalanceLoading(false); return; }
     (async () => {
@@ -116,12 +252,6 @@ const RubyChargePage = () => {
       try {
         const ciRes = await pointAPI.getCheckInStatus();
         if (mounted && ciRes.data?.checked_in) setCheckedIn(true);
-      } catch {
-        // fallback
-      }
-      try {
-        const subRes = await subscriptionAPI.getMySubscription();
-        if (mounted && subRes.data) setMyPlan(subRes.data);
       } catch {
         // fallback
       }
@@ -159,17 +289,90 @@ const RubyChargePage = () => {
     };
   }, []);
 
-  /* ── 결제 (Paddle 연동 전 placeholder) ── */
-  const handlePurchase = useCallback(() => {
-    const product = RUBY_PRODUCTS.find(p => p.id === selectedProduct);
-    if (!product) return;
+  /* ── 결제 (NICEPAY Server 승인) ── */
+  const handlePurchase = useCallback(async () => {
+    const product = products.find((p) => p.id === selectedProduct);
+    if (!product || !user) return;
+    if (!productsAvailable) {
+      window.dispatchEvent(new CustomEvent('toast', {
+        detail: {
+          type: 'error',
+          message: '결제 상품 정보를 불러오지 못했습니다. 새로고침 후 다시 시도해 주세요.',
+        },
+      }));
+      return;
+    }
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(product.id);
+    if (!isUuid) {
+      window.dispatchEvent(new CustomEvent('toast', {
+        detail: {
+          type: 'error',
+          message: '결제 상품 정보를 불러오지 못했습니다. 새로고침 후 다시 시도해 주세요.',
+        },
+      }));
+      return;
+    }
+
     setIsProcessing(true);
-    // TODO: Paddle.Checkout.open()
-    setTimeout(() => {
-      alert(`[준비 중] ${product.name} (💎${(product.ruby + product.bonus).toLocaleString()}) - ${product.price.toLocaleString()}원\n\nPaddle 결제 연동 후 활성화됩니다.`);
-      setIsProcessing(false);
-    }, 500);
-  }, [selectedProduct]);
+    clearProcessingWatchdog();
+    processingWatchdogRef.current = setTimeout(() => {
+      const isVisible = typeof document !== 'undefined' ? document.visibilityState === 'visible' : true;
+      const isFocused = typeof document !== 'undefined' && typeof document.hasFocus === 'function'
+        ? document.hasFocus()
+        : true;
+      if (isVisible && isFocused) {
+        showToastOnce({
+          key: 'payment-watchdog-timeout',
+          type: 'info',
+          message: '결제 확인이 지연되고 있습니다. 완료 후 자동 반영됩니다.',
+          ttlMs: 10000,
+        });
+      }
+    }, PAYMENT_PROCESSING_TIMEOUT_MS);
+    try {
+      const checkoutRes = await paymentAPI.checkout({
+        product_id: product.id,
+        return_url: `${window.location.origin}/ruby/charge`,
+        method: payMethod,
+      });
+      const payload = checkoutRes?.data?.request_payload;
+
+      if (!payload || typeof payload !== 'object') {
+        throw new Error('결제 요청 파라미터가 비어 있습니다.');
+      }
+
+      await loadNicePaySdk();
+      if (!window.AUTHNICE?.requestPay) {
+        throw new Error('결제 SDK를 초기화하지 못했습니다.');
+      }
+
+      const isMobileViewport = typeof window !== 'undefined'
+        ? window.matchMedia('(max-width: 767px)').matches
+        : false;
+      const requestPayload = {
+        ...payload,
+        disableScroll: isMobileViewport ? true : payload.disableScroll,
+      };
+
+      window.AUTHNICE.requestPay({
+        ...requestPayload,
+        fnError: (result) => {
+          const msg = result?.msg || result?.errorMsg || '결제창 호출 중 오류가 발생했습니다.';
+          window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', message: msg } }));
+          releaseProcessing();
+        },
+      });
+    } catch (e) {
+      const detail = e?.response?.data?.detail;
+      window.dispatchEvent(new CustomEvent('toast', {
+        detail: {
+          type: 'error',
+          message: typeof detail === 'string' && detail ? detail : '결제를 시작하지 못했습니다. 잠시 후 다시 시도해 주세요.',
+        },
+      }));
+      releaseProcessing();
+    }
+  }, [clearProcessingWatchdog, payMethod, products, productsAvailable, releaseProcessing, selectedProduct, user]);
 
   /* ── 출석 체크 ── */
   const handleCheckIn = useCallback(async () => {
@@ -193,35 +396,8 @@ const RubyChargePage = () => {
     }
   }, []);
 
-  /* ── 구독 ── */
-  const handleSubscribe = useCallback(async (planId) => {
-    if (!user) { navigate('/login'); return; }
-    if (planId === myPlan?.plan_id) return;
-
-    setSubscribing(true);
-    try {
-      const res = await subscriptionAPI.subscribe(planId);
-      if (res.data?.success) {
-        setMyPlan(res.data.plan ? { plan_id: res.data.plan.id, plan_name: res.data.plan.name } : null);
-        const ruby = res.data.ruby_granted || 0;
-        if (ruby > 0) setBalance((prev) => prev + ruby);
-        window.dispatchEvent(new CustomEvent('ruby:balanceChanged'));
-        window.dispatchEvent(new CustomEvent('toast', {
-          detail: { type: 'success', message: ruby > 0 ? `구독 완료! +${ruby} 루비 지급` : '구독이 변경되었습니다.' },
-        }));
-      }
-    } catch {
-      window.dispatchEvent(new CustomEvent('toast', {
-        detail: { type: 'error', message: '구독 처리에 실패했습니다.' },
-      }));
-    } finally {
-      setSubscribing(false);
-    }
-  }, [user, myPlan, navigate]);
-
-  const selected = RUBY_PRODUCTS.find(p => p.id === selectedProduct);
+  const selected = products.find(p => p.id === selectedProduct);
   const timerNextMinutes = Math.floor(timerNextSeconds / 60);
-  const myPlanId = myPlan?.plan_id || 'free';
 
   return (
     <AppLayout>
@@ -232,6 +408,18 @@ const RubyChargePage = () => {
             <ArrowLeft className="w-5 h-5" />
           </button>
           <h1 className="text-xl font-bold">루비</h1>
+        </div>
+
+        {/* ── 심사/정책 안내 (고정 노출) ── */}
+        <div className="bg-blue-500/10 border border-blue-500/30 rounded-xl p-4 mb-6">
+          <p className="text-sm font-semibold text-blue-300 mb-2">서비스/결제 안내</p>
+          <div className="text-xs text-gray-300 space-y-1 leading-relaxed">
+            <p>• 본 서비스는 웹소설 디지털 콘텐츠 판매 서비스입니다.</p>
+            <p>• 결제는 루비 충전 후 웹소설 회차/작품 구매에만 사용됩니다.</p>
+            <p>• 캐릭터 채팅은 무료 부가 기능이며, 유료 채팅/대화권/메시지권은 없습니다.</p>
+            <p>• 루비의 환전·현금화·양도·선물·회원 간 거래는 지원하지 않습니다.</p>
+            <p>• 결제 판매주체(merchant of record)는 당사입니다.</p>
+          </div>
         </div>
 
         {/* ── 잔액 카드 (로그인 시에만) ── */}
@@ -245,9 +433,6 @@ const RubyChargePage = () => {
                   {balanceLoading ? '...' : balance.toLocaleString()}
                 </span>
                 <span className="text-lg text-gray-500">개</span>
-                <span className="bg-purple-500/20 text-purple-400 text-xs font-semibold px-2 py-0.5 rounded ml-1">
-                  {myPlan?.plan_name || '무료'}
-                </span>
               </div>
               <button
                 onClick={() => navigate('/ruby/history')}
@@ -294,7 +479,6 @@ const RubyChargePage = () => {
         {/* ── 탭 ── */}
         <div className="flex border-b border-gray-700 mb-6">
           {[
-            { key: 'subscribe', label: '구독플랜' },
             { key: 'charge', label: '루비 충전' },
             ...(user ? [{ key: 'free', label: '무료 루비' }] : []),
           ].map(tab => (
@@ -316,148 +500,6 @@ const RubyChargePage = () => {
         </div>
 
         {/* ════════════════════════════════════════ */}
-        {/* ── 구독플랜 탭 ── */}
-        {/* ════════════════════════════════════════ */}
-        {activeTab === 'subscribe' && (
-          <div>
-            {plansLoading ? (
-              <div className="text-center py-20 text-gray-500">로딩 중...</div>
-            ) : (
-              <>
-                {/* 플랜 카드 */}
-                <div className="space-y-4 mb-8">
-                  {plans.map((plan) => {
-                    const meta = PLAN_META[plan.id] || PLAN_META.free;
-                    const Icon = meta.icon;
-                    const isCurrent = myPlanId === plan.id;
-
-                    return (
-                      <div
-                        key={plan.id}
-                        className={`relative rounded-xl border-2 p-5 transition-all ${
-                          isCurrent ? `${meta.border} bg-gray-800/80` : 'border-gray-700 bg-gray-800'
-                        }`}
-                      >
-                        {isCurrent && (
-                          <div className="absolute -top-2.5 right-4">
-                            <span className="bg-purple-500 text-white text-[10px] font-bold px-2 py-0.5 rounded">
-                              현재 플랜
-                            </span>
-                          </div>
-                        )}
-
-                        <div className="flex items-center justify-between mb-4">
-                          <div className="flex items-center gap-3">
-                            <div className={`w-10 h-10 rounded-xl bg-gradient-to-br ${meta.gradient} flex items-center justify-center`}>
-                              <Icon className="w-5 h-5 text-white" />
-                            </div>
-                            <div>
-                              <h3 className="text-lg font-bold">{plan.name}</h3>
-                              <p className={`text-sm ${meta.accent}`}>
-                                {plan.price > 0 ? `${plan.price.toLocaleString()}원/월` : '무료'}
-                              </p>
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="space-y-2 mb-4">
-                          <div className="flex items-center gap-2 text-sm text-gray-300">
-                            <Gem className="w-4 h-4 text-pink-400 flex-shrink-0" />
-                            <span>매월 루비 <strong className="text-white">{plan.monthly_ruby > 0 ? `${plan.monthly_ruby.toLocaleString()}개` : '-'}</strong> 지급</span>
-                          </div>
-                          <div className="flex items-center gap-2 text-sm text-gray-300">
-                            <CalendarCheck className="w-4 h-4 text-purple-400 flex-shrink-0" />
-                            <span>매일 로그인 시 루비 <strong className="text-white">10개</strong></span>
-                          </div>
-                          <div className="flex items-center gap-2 text-sm text-gray-300">
-                            <Zap className="w-4 h-4 text-yellow-400 flex-shrink-0" />
-                            <span><strong className="text-white">{refillIntervalText(plan.refill_speed_multiplier)}</strong> 루비 1개 충전</span>
-                          </div>
-                          <div className="flex items-center gap-2 text-sm text-gray-300">
-                            <BookOpen className="w-4 h-4 text-green-400 flex-shrink-0" />
-                            <span>웹소설 유료회차 <strong className="text-white">{plan.free_chapters ? '무료' : '유료'}</strong></span>
-                          </div>
-                          <div className="flex items-center gap-2 text-sm text-gray-300">
-                            <Sparkles className="w-4 h-4 text-purple-400 flex-shrink-0" />
-                            <span>고급 AI 모델 <strong className="text-white">{plan.model_discount_pct > 0 ? `${plan.model_discount_pct}%` : '-'}</strong> 할인</span>
-                          </div>
-                        </div>
-
-                        {plan.id !== 'free' && (
-                          <Button
-                            onClick={() => handleSubscribe(plan.id)}
-                            disabled={isCurrent || subscribing}
-                            className={`w-full h-11 text-sm font-semibold rounded-xl border-0 ${
-                              isCurrent
-                                ? 'bg-gray-700 text-gray-400 cursor-default'
-                                : 'bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white'
-                            }`}
-                          >
-                            {isCurrent ? (
-                              <span className="flex items-center gap-1.5"><Check className="w-4 h-4" /> 구독 중</span>
-                            ) : subscribing ? '처리 중...' : '구독하기'}
-                          </Button>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-
-                {/* 혜택 비교표 */}
-                <div className="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden">
-                  <div className="p-4 border-b border-gray-700">
-                    <h3 className="text-base font-semibold">혜택 비교</h3>
-                  </div>
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-sm">
-                      <thead>
-                        <tr className="border-b border-gray-700">
-                          <th className="text-left px-4 py-3 text-gray-400 font-medium"></th>
-                          {plans.map((p) => (
-                            <th key={p.id} className="text-center px-3 py-3 text-gray-300 font-semibold">
-                              {p.name}
-                            </th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {BENEFIT_ROWS.map((row) => (
-                          <tr key={row.key} className="border-b border-gray-700/50 last:border-0">
-                            <td className="px-4 py-3 text-gray-400 whitespace-nowrap">{row.label}</td>
-                            {plans.map((p) => (
-                              <td key={p.id} className="text-center px-3 py-3 text-gray-200 font-medium">
-                                {row.fmt(p[row.key])}
-                              </td>
-                            ))}
-                          </tr>
-                        ))}
-                        <tr>
-                          <td className="px-4 py-3 text-gray-400">가격</td>
-                          {plans.map((p) => (
-                            <td key={p.id} className="text-center px-3 py-3 text-gray-200 font-semibold">
-                              {p.price > 0 ? `${p.price.toLocaleString()}원` : '무료'}
-                            </td>
-                          ))}
-                        </tr>
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-
-                {/* 구독 안내 */}
-                <div className="mt-6 text-xs text-gray-500 space-y-1">
-                  <p className="font-semibold text-gray-400 mb-2">구독 안내</p>
-                  <p>• 구독은 결제일로부터 30일간 유지됩니다.</p>
-                  <p>• 월 루비는 구독 시작 시 즉시 지급됩니다.</p>
-                  <p>• 플랜 변경 시 즉시 적용되며, 기존 플랜은 자동 해지됩니다.</p>
-                  <p>• 구독 해지 후에도 만료일까지 혜택이 유지됩니다.</p>
-                </div>
-              </>
-            )}
-          </div>
-        )}
-
-        {/* ════════════════════════════════════════ */}
         {/* ── 루비 충전 탭 ── */}
         {/* ════════════════════════════════════════ */}
         {activeTab === 'charge' && (
@@ -466,11 +508,11 @@ const RubyChargePage = () => {
 
             {/* 상품 그리드 (2열) */}
             <div className="grid grid-cols-2 gap-3 mb-6">
-              {RUBY_PRODUCTS.map((product, idx) => {
+              {products.map((product, idx) => {
                 const total = product.ruby + product.bonus;
                 const isSelected = selectedProduct === product.id;
-                const isLast = idx === RUBY_PRODUCTS.length - 1;
-                const isOddLast = isLast && RUBY_PRODUCTS.length % 2 !== 0;
+                const isLast = idx === products.length - 1;
+                const isOddLast = isLast && products.length % 2 !== 0;
 
                 return (
                   <button
@@ -535,13 +577,54 @@ const RubyChargePage = () => {
               })}
             </div>
 
+            {/* 결제수단 선택 */}
+            <div className="mb-6">
+              <p className="text-sm text-gray-300 mb-2">결제수단</p>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                {PAYMENT_PRIMARY_METHOD_OPTIONS.map((m) => {
+                  const active = payMethod === m.key;
+                  return (
+                    <button
+                      key={m.key}
+                      type="button"
+                      onClick={() => setPayMethod(m.key)}
+                      className={`rounded-lg border px-3 py-2.5 text-sm font-medium transition-colors ${
+                        active
+                          ? 'border-purple-500 bg-purple-500/10 text-purple-200'
+                          : 'border-gray-700 bg-gray-800 text-gray-300 hover:border-gray-500'
+                      }`}
+                    >
+                      {m.label}
+                    </button>
+                  );
+                })}
+                {PAYMENT_EASY_METHOD_OPTIONS.map((m) => {
+                  const active = payMethod === m.key;
+                  return (
+                    <button
+                      key={m.key}
+                      type="button"
+                      onClick={() => setPayMethod(m.key)}
+                      className={`rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
+                        active
+                          ? 'border-purple-500 bg-purple-500/10 text-purple-200'
+                          : 'border-gray-700 bg-gray-800 text-gray-300 hover:border-gray-500'
+                      }`}
+                    >
+                      {m.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
             {/* 결제 버튼 */}
             <Button
               onClick={user ? handlePurchase : () => navigate('/login')}
-              disabled={user ? (isProcessing || !selectedProduct) : false}
+              disabled={user ? (isProcessing || productsLoading || !productsAvailable || !selectedProduct) : false}
               className="w-full h-12 text-base font-semibold bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white rounded-xl border-0"
             >
-              {!user ? '로그인 후 결제하기' : isProcessing ? '처리 중...' : (
+              {!user ? '로그인 후 결제하기' : productsLoading ? '상품 불러오는 중...' : !productsAvailable ? '결제 준비 중...' : isProcessing ? '처리 중...' : (
                 selected ? `${selected.price.toLocaleString()}원 결제하기` : '상품을 선택해주세요'
               )}
             </Button>
@@ -559,10 +642,11 @@ const RubyChargePage = () => {
             {/* 환불 정책 */}
             <div className="mt-6 text-xs text-gray-500 space-y-1">
               <p className="font-semibold text-gray-400 mb-2">환불 정책 및 루비 이용 안내</p>
-              <p>• 결제일로부터 7일 이내, 미사용 유상 루비에 대해 환불을 요청할 수 있습니다.</p>
-              <p>• 일부 사용 시 사용분을 제외한 미사용 유상 루비를 기준으로 환불됩니다.</p>
+              <p>• 결제일(승인일) 포함 7일 이내, 해당 결제로 충전된 유상 루비 미사용 건은 환불 요청이 가능합니다.</p>
+              <p>• 일부 사용 시 환불액 = 결제금액 × (미사용 유상 루비 ÷ 해당 결제 유상 루비) 기준으로 산정됩니다.</p>
               <p>• 이벤트/보너스 등 무상 지급 루비는 환불 대상에서 제외됩니다.</p>
               <p>• 주관적인 답변 생성의 불만족으로 인한 환불은 불가능합니다.</p>
+              <p>• 환불 접수 후 영업일 기준 7일 이내 처리 결과를 안내합니다.</p>
               <p>• 루비는 획득 시점으로부터 1년 이내에 사용할 수 있습니다.</p>
               <p>• 환불 요청 및 문의: cha8.team@gmail.com</p>
             </div>

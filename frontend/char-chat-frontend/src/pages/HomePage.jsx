@@ -105,6 +105,29 @@ const CHARACTER_TAB_FIXED_MODE_TAGS = [
 ];
 const CHARACTER_TAB_FIXED_MODE_SLUG_SET = new Set(CHARACTER_TAB_FIXED_MODE_TAGS.map((t) => t.slug));
 
+// 메인 탐색 격자: 화면 폭별 "2줄 단위" 노출 개수 계산
+// - <640: 2열 x 2줄 = 4
+// - 640~767: 3열 x 2줄 = 6
+// - 768~1023: 4열 x 2줄 = 8
+// - >=1024: 5열 x 2줄 = 10
+const getExploreStepByWidth = (width) => {
+  const w = Number(width);
+  if (!Number.isFinite(w)) return 10;
+  if (w >= 1024) return 10;
+  if (w >= 768) return 8;
+  if (w >= 640) return 6;
+  return 4;
+};
+
+// CMS 커스텀 구좌(2/4/5열): 화면폭별 "2줄 단위" 페이지 크기
+const getCustomSlotStepByWidth = (width) => {
+  const w = Number(width);
+  if (!Number.isFinite(w)) return 10;
+  if (w >= 1024) return 10; // 5열 x 2줄
+  if (w >= 768) return 8;   // 4열 x 2줄
+  return 4;                 // 2열 x 2줄
+};
+
 // ===== CMS 커스텀 구좌(홈) 유틸 =====
 // 요구사항: "랜덤 정렬"은 새로고침(페이지 로드)할 때마다 순서가 바뀌되,
 // 같은 세션(리렌더) 중에는 순서가 흔들리지 않도록 "세션 시드" + "슬롯 ID" 기반으로 섞는다.
@@ -144,6 +167,19 @@ const _cmsShuffleWithSeed = (arr, seed) => {
 const HomePage = () => {
   const isMobile = useIsMobile();
   const MOBILE_SLOT_STEP = 4;
+  const [viewportWidth, setViewportWidth] = useState(() => {
+    try { return window.innerWidth; } catch (_) { return 1280; }
+  });
+  useEffect(() => {
+    const onResize = () => {
+      try { setViewportWidth(window.innerWidth); } catch (_) {}
+    };
+    try { window.addEventListener('resize', onResize); } catch (_) {}
+    return () => {
+      try { window.removeEventListener('resize', onResize); } catch (_) {}
+    };
+  }, []);
+  const explorePageStep = useMemo(() => getExploreStepByWidth(viewportWidth), [viewportWidth]);
   // 모바일 "4개 격자 + <> 페이지"용: 구좌별 페이지 상태
   const [slotPageById, setSlotPageById] = React.useState({});
   const shiftSlotPage = React.useCallback((slotId, delta, pageCount) => {
@@ -411,6 +447,22 @@ const HomePage = () => {
       return false;
     }
   }, []);
+  const prefetchPcMobileDetailCharacter = React.useCallback((rawId) => {
+    try {
+      const id = String(rawId || '').trim();
+      if (!id) return;
+      queryClient
+        .prefetchQuery({
+          queryKey: ['pc-mobile-detail', 'character', id],
+          queryFn: async () => {
+            const res = await charactersAPI.getCharacter(id);
+            return res?.data || null;
+          },
+          staleTime: 30_000,
+        })
+        .catch(() => {});
+    } catch (_) {}
+  }, [queryClient]);
   const openPcMobileDetail = React.useCallback((c) => {
     try {
       const id = String(c?.id || c?.character_id || c?.characterId || '').trim();
@@ -429,11 +481,12 @@ const HomePage = () => {
         navigate(`/characters/${id}`);
         return;
       }
+      prefetchPcMobileDetailCharacter(id);
       setPcMobileDetailInitialData(c || null);
       setPcMobileDetailCharacterId(id);
       setPcMobileDetailOpen(true);
     } catch (_) {}
-  }, [isMobile, isEligibleHomePcModal, navigate]);
+  }, [isMobile, isEligibleHomePcModal, navigate, prefetchPcMobileDetailCharacter]);
 
   // ✅ 홈(PC) 어디서든(트렌딩/추천/CMS 포함) "home:pc-mobile-detail" 이벤트로 모달을 열 수 있게 한다.
   useEffect(() => {
@@ -445,6 +498,7 @@ const HomePage = () => {
         if (isMobile || isNarrowViewport) return;
         const id = String(e?.detail?.characterId || '').trim();
         if (!id) return;
+        prefetchPcMobileDetailCharacter(id);
         setPcMobileDetailCharacterId(id);
         setPcMobileDetailOpen(true);
       } catch (_) {}
@@ -455,7 +509,7 @@ const HomePage = () => {
     } catch (_) {
       return undefined;
     }
-  }, [isMobile]);
+  }, [isMobile, prefetchPcMobileDetailCharacter]);
 
   // ===== Google tag (gtag.js) - 메인(홈) 페이지만 우선 적용 =====
   // 배경/의도:
@@ -747,6 +801,14 @@ const HomePage = () => {
   // - 이 스냅샷에 chat_count가 없거나(구버전 데이터), 혹은 오래되어 0으로 보일 수 있어 홈 UX가 깨진다.
   // - 홈 렌더 직전에, 화면에 실제로 보이는 캐릭터들의 최신 count만 가볍게 보정한다.
   const [cmsLiveCountsByCharId, setCmsLiveCountsByCharId] = React.useState({});
+  // ✅ 상단 쿼리/effect에서 TDZ 없이 탭 상태를 판별하기 위한 URL 기반 플래그
+  const tabParamByUrl = React.useMemo(() => {
+    try { return String(new URLSearchParams(location.search).get('tab') || '').trim().toLowerCase(); }
+    catch (_) { return ''; }
+  }, [location.search]);
+  const isCharacterTabByUrl = CHARACTER_TAB_ENABLED && tabParamByUrl === 'character';
+  const isOrigSerialTabByUrl = tabParamByUrl === 'origserial';
+  const isMainTabByUrl = !isCharacterTabByUrl && !isOrigSerialTabByUrl;
   const cmsVisibleCustomCharIds = React.useMemo(() => {
     try {
       // ⚠️ 주의: 이 블록은 파일 상단(초기 훅 구간)에서 실행되므로,
@@ -782,12 +844,14 @@ const HomePage = () => {
         // 홈 커스텀 구좌 렌더 정책과 동일(최대 24개, 모바일은 4개 페이징)
         const MAX_ITEMS = 24;
         const capped = items.slice(0, MAX_ITEMS);
-        const pageSize = isMobile ? MOBILE_SLOT_STEP : capped.length;
+        const pageSize = Math.max(
+          1,
+          Math.min(capped.length || 1, getCustomSlotStepByWidth(viewportWidth))
+        );
         const pageCount = Math.max(1, Math.ceil(capped.length / Math.max(1, pageSize)));
-        const page = Number(slotPageById?.[sid] || 0) || 0;
-        const visible = isMobile
-          ? capped.slice(page * pageSize, page * pageSize + pageSize)
-          : capped;
+        const pageRaw = Number(slotPageById?.[sid] || 0) || 0;
+        const page = ((pageRaw % pageCount) + pageCount) % pageCount;
+        const visible = capped.slice(page * pageSize, page * pageSize + pageSize);
 
         for (const x of (visible || [])) {
           if (x?.type !== 'character') continue;
@@ -803,11 +867,12 @@ const HomePage = () => {
     } catch (_) {
       return [];
     }
-  }, [homeSlots, isMobile, slotPageById]);
+  }, [homeSlots, slotPageById, viewportWidth]);
 
   React.useEffect(() => {
     let cancelled = false;
     const load = async () => {
+      if (!isMainTabByUrl) return;
       const ids = Array.isArray(cmsVisibleCustomCharIds) ? cmsVisibleCustomCharIds : [];
       if (ids.length === 0) return;
 
@@ -889,9 +954,10 @@ const HomePage = () => {
       setCmsLiveCountsByCharId((prev) => ({ ...(prev || {}), ...results }));
     };
 
-    load();
-    return () => { cancelled = true; };
-  }, [cmsVisibleCustomCharIds, cmsLiveCountsByCharId]);
+    // 초기 격자 렌더를 우선하기 위해 보정 호출을 미세 지연
+    const t = setTimeout(load, 250);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [cmsVisibleCustomCharIds, cmsLiveCountsByCharId, isMainTabByUrl]);
 
   // ===== 온보딩(메인 탭): 검색(성별+키워드) + 30초 생성 =====
   // 요구사항:
@@ -973,15 +1039,7 @@ const HomePage = () => {
      * - 여기서 선참조하면 런타임 ReferenceError로 홈 전체가 렌더링 실패(=빈 화면)할 수 있다.
      * - 온보딩 검색은 "메인 탭"에서만 동작하면 되므로, URL 쿼리(tab)로 안전하게 판별한다.
      */
-    enabled: onboardingSearchEnabled && (() => {
-      try {
-        const p = new URLSearchParams(location.search);
-        const tab = p.get('tab');
-        return tab !== 'character' && tab !== 'origserial';
-      } catch (_) {
-        return true; // 파싱 실패 시에도 홈이 죽지 않도록 기본 허용
-      }
-    })(),
+    enabled: onboardingSearchEnabled && isMainTabByUrl,
     queryFn: async () => {
       try {
         const params2 = {
@@ -1069,6 +1127,7 @@ const HomePage = () => {
         return [];
       }
     },
+    enabled: isMainTabByUrl,
     staleTime: 5 * 60 * 1000,
   });
 
@@ -1085,7 +1144,7 @@ const HomePage = () => {
         return [];
       }
     },
-    enabled: isAuthenticated && !!user?.id,
+    enabled: isMainTabByUrl && isAuthenticated && !!user?.id,
     staleTime: 5 * 60 * 1000,
   });
 
@@ -1113,7 +1172,7 @@ const HomePage = () => {
         return [];
       }
     },
-    enabled: !isCharacterTab && !isOrigSerialTab,
+    enabled: isMainTabByUrl,
     staleTime: 5 * 60 * 1000,
   });
 
@@ -1124,8 +1183,13 @@ const HomePage = () => {
   //   - 모바일: 4개씩 추가(경쟁사처럼 '한 구좌당 4개' 흐름 유지)
   //   - 데스크탑: 12개씩 추가(2줄 단위)
   const EXPLORE_PAGE_SIZE = 12;
-  const LIMIT = EXPLORE_PAGE_SIZE;
-  const [exploreVisibleCount, setExploreVisibleCount] = useState(isMobile ? MOBILE_SLOT_STEP : EXPLORE_PAGE_SIZE);
+  // ✅ 캐릭터탭 첫 렌더 체감 개선:
+  // - 기존 limit=12는 캐릭터탭의 초기 40개 노출을 위해 연속 3~4회 호출이 필요해 RTT 누적이 컸다.
+  // - 캐릭터탭에서는 1회에 40개를 가져오고, 메인탭/탐색은 기존 12개 정책을 유지한다.
+  const characterFetchLimit = isCharacterTab ? CHARACTER_PAGE_SIZE : EXPLORE_PAGE_SIZE;
+  const [exploreVisibleCount, setExploreVisibleCount] = useState(() => {
+    try { return getExploreStepByWidth(window.innerWidth); } catch (_) { return 10; }
+  });
   const [selectedTags, setSelectedTags] = useState([]); // slug 배열
   const [showAllTags, setShowAllTags] = useState(false);
   const visibleTagLimit = 18;
@@ -1143,6 +1207,7 @@ const HomePage = () => {
       }
       return all.filter((t) => typeof t?.slug === 'string' && !t.slug.startsWith('cover:'));
     },
+    enabled: isCharacterTabByUrl,
     staleTime: 5 * 60 * 1000,
     retry: 2,
     retryDelay: (attempt) => Math.min(1000 * (2 ** Math.max(0, attempt - 1)), 4000),
@@ -1160,6 +1225,7 @@ const HomePage = () => {
         return [];
       }
     },
+    enabled: isCharacterTabByUrl,
     staleTime: 5 * 60 * 1000,
   });
   const arrangedTags = React.useMemo(() => {
@@ -1248,25 +1314,28 @@ const HomePage = () => {
     hasNextPage,
     fetchNextPage
   } = useInfiniteQuery({
-    queryKey: ['characters', 'infinite', searchQuery, effectiveTagsKey, sourceFilter],
+    queryKey: ['characters', 'infinite', searchQuery, effectiveTagsKey, sourceFilter, characterFetchLimit],
     queryFn: async ({ pageParam = 0 }) => {
       try {
         const response = await charactersAPI.getCharacters({
           search: searchQuery || undefined,
           skip: pageParam,
-          limit: LIMIT,
+          limit: characterFetchLimit,
           tags: effectiveTags.length ? effectiveTags.join(',') : undefined,
           source_type: requestSourceType,
         });
         const items = response.data || [];
-        return { items, nextSkip: items.length === LIMIT ? pageParam + LIMIT : null };
+        return {
+          items,
+          nextSkip: items.length === characterFetchLimit ? pageParam + characterFetchLimit : null,
+        };
       } catch (error) {
         console.error('캐릭터 목록 로드 실패:', error);
         return { items: [], nextSkip: null };
       }
     },
     getNextPageParam: (lastPage) => lastPage.nextSkip,
-    staleTime: 30 * 1000,
+    staleTime: isCharacterTab ? 60 * 1000 : 30 * 1000,
     cacheTime: 10 * 60 * 1000,
     refetchOnWindowFocus: false,
   });
@@ -1386,9 +1455,7 @@ const HomePage = () => {
         };
         const trimmed = searchQuery?.trim();
         if (trimmed) params.search = trimmed;
-        console.log('[원작연재] API 요청 params:', params);
         const res = await storiesAPI.getStories(params);
-        console.log('[원작연재] API 응답:', res.data);
         const list = Array.isArray(res.data?.stories) ? res.data.stories : [];
         // 웹툰 제외, 공개된 것만 (프론트 필터링)
         const filtered = list.filter(s => !s?.is_webtoon && s?.is_public !== false);
@@ -1452,8 +1519,9 @@ const HomePage = () => {
         return list.filter(s => s?.is_public !== false);
       } catch (_) { return []; }
     },
-    staleTime: 0,
-    refetchOnMount: 'always'
+    enabled: !isOrigSerialTabByUrl,
+    staleTime: 60 * 1000,
+    refetchOnMount: false,
   });
   /**
    * 캐릭터 목록 더보기(원작챗/메인탐색에서 공용)
@@ -1723,17 +1791,7 @@ const HomePage = () => {
     navigate(`/ws/chat/${characterId}`);
   };
 
-  // 관심 캐릭터(좋아요한 캐릭터) 불러오기
-  const { data: favoriteChars = [], isLoading: favLoading } = useQuery({
-    queryKey: ['liked-characters', isAuthenticated],
-    enabled: !!isAuthenticated,
-    queryFn: async () => {
-      const res = await usersAPI.getLikedCharacters({ limit: 12 });
-      return res.data || [];
-    },
-    staleTime: 0,
-    refetchOnMount: 'always'
-  });
+  // 관심 캐릭터 섹션은 현재 비노출 상태이므로 API 호출을 제거한다(초기 홈 로딩 최적화).
 
   const createCharacter = () => {
     if (!requireAuth('캐릭터 생성')) return;
@@ -1841,15 +1899,15 @@ const HomePage = () => {
    */
   useEffect(() => {
     if (isCharacterTab || isOrigSerialTab) return;
-    setExploreVisibleCount(isMobile ? MOBILE_SLOT_STEP : EXPLORE_PAGE_SIZE);
-  }, [isCharacterTab, isOrigSerialTab, searchQuery, effectiveTagsKey, sourceFilter, isMobile, MOBILE_SLOT_STEP]);
+    setExploreVisibleCount(explorePageStep);
+  }, [isCharacterTab, isOrigSerialTab, searchQuery, effectiveTagsKey, sourceFilter, explorePageStep]);
 
   const visibleGridItems = React.useMemo(() => {
     if (isCharacterTab) return displayGridItems;
     if (isOrigSerialTab) return displayGridItems; // 방어(탐색 섹션은 숨김)
-    const safeCount = Number.isFinite(exploreVisibleCount) ? Math.max(0, exploreVisibleCount) : EXPLORE_PAGE_SIZE;
+    const safeCount = Number.isFinite(exploreVisibleCount) ? Math.max(0, exploreVisibleCount) : explorePageStep;
     return displayGridItems.slice(0, safeCount);
-  }, [isCharacterTab, isOrigSerialTab, displayGridItems, exploreVisibleCount]);
+  }, [isCharacterTab, isOrigSerialTab, displayGridItems, exploreVisibleCount, explorePageStep]);
 
   const hasGridItems = visibleGridItems.length > 0;
   // ✅ 캐릭터탭은 페이지네이션을 제거하고 무한스크롤로 전환
@@ -1911,7 +1969,7 @@ const HomePage = () => {
    * - visibleCount를 20개 증가시키고, 아직 로드된 아이템이 부족하면 다음 페이지를 추가 fetch 한다.
    */
   const handleExploreLoadMore = React.useCallback(async () => {
-    const step = isMobile ? MOBILE_SLOT_STEP : EXPLORE_PAGE_SIZE;
+    const step = explorePageStep;
     const nextCount = (Number.isFinite(exploreVisibleCount) ? exploreVisibleCount : step) + step;
     setExploreVisibleCount(nextCount);
     // 이미 로드된 데이터로 충분하면 네트워크 요청은 생략(성능/UX)
@@ -1922,7 +1980,7 @@ const HomePage = () => {
     } catch (e) {
       console.error('[홈] 탐색 더보기 실패:', e);
     }
-  }, [exploreVisibleCount, displayGridItems.length, hasNextPage, isFetchingNextPage, fetchNextPage, isMobile, MOBILE_SLOT_STEP]);
+  }, [exploreVisibleCount, displayGridItems.length, hasNextPage, isFetchingNextPage, fetchNextPage, explorePageStep]);
 
   const paginationPages = React.useMemo(() => {
     if (!shouldShowPagination) return [];
@@ -2300,13 +2358,15 @@ const HomePage = () => {
       const MAX_ITEMS = 24;
       const slotId = id;
       const capped = ordered.slice(0, MAX_ITEMS);
-      const pageSize = isMobile ? MOBILE_SLOT_STEP : capped.length;
+      const pageSize = Math.max(
+        1,
+        Math.min(capped.length || 1, getCustomSlotStepByWidth(viewportWidth))
+      );
       const pageCount = Math.max(1, Math.ceil(capped.length / Math.max(1, pageSize)));
-      const page = Number(slotPageById?.[slotId] || 0) || 0;
-      const visible = isMobile
-        ? capped.slice(page * pageSize, page * pageSize + pageSize)
-        : capped;
-      const showMobileOverlayArrows = Boolean(isMobile && capped.length > pageSize);
+      const pageRaw = Number(slotPageById?.[slotId] || 0) || 0;
+      const page = ((pageRaw % pageCount) + pageCount) % pageCount;
+      const visible = capped.slice(page * pageSize, page * pageSize + pageSize);
+      const showOverlayArrows = Boolean(capped.length > pageSize);
 
       return (
         <ErrorBoundary>
@@ -2365,8 +2425,8 @@ const HomePage = () => {
                 })}
               </div>
 
-              {/* 모바일: 4개씩 <> 페이지 이동 */}
-              {showMobileOverlayArrows && (
+              {/* 화면폭 기준 2줄 단위 <> 페이지 이동 */}
+              {showOverlayArrows && (
                 <>
                   <button
                     type="button"

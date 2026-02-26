@@ -783,6 +783,10 @@ export const chatAPI = {
   
   getChatRoom: (id) =>
     api.get(`/chat/rooms/${id}`),
+
+  // 캐릭터별 최신 채팅방 1개 조회 (모달 CTA 최적화)
+  getLatestRoomByCharacter: (characterId) =>
+    api.get(`/chat/rooms/latest-by-character/${characterId}`),
   
   getMessages: (roomId, params = {}) =>
     api.get(`/chat/rooms/${roomId}/messages`, { params }),
