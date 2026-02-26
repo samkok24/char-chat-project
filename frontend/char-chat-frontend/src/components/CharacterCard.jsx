@@ -1,5 +1,6 @@
 import React from 'react';
 import { useNavigate, Link } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import { LazyLoadImage } from 'react-lazy-load-image-component';
 import 'react-lazy-load-image-component/src/effects/blur.css';
 import { Skeleton } from './ui/skeleton';
@@ -10,7 +11,7 @@ import { Heart } from 'lucide-react';
 import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
 import { Badge } from './ui/badge';
 import { formatCount } from '../lib/format';
-import { storiesAPI } from '../lib/api';
+import { storiesAPI, charactersAPI } from '../lib/api';
 import { useAuth } from '../contexts/AuthContext';
 import { replacePromptTokens } from '../lib/prompt';
 import { buildCharacterTagChipLabels } from '../lib/characterTagChips';
@@ -36,6 +37,7 @@ export const CharacterCard = ({
   variant = 'explore', // 'explore' | 'home'
 }) => {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const { profileVersion } = useAuth();
   const charId = character?.id || character?.character_id || character?.characterId || character?.target_id;
   const isWebNovel = character?.source_type === 'IMPORTED';
@@ -114,6 +116,30 @@ export const CharacterCard = ({
       navigate(`/ws/chat/${charId}`);
     }
   };
+
+  const prefetchHomePcDetail = React.useCallback(() => {
+    try {
+      const id = String(charId || '').trim();
+      if (!id) return;
+      const isHomeVariant = variant === 'home';
+      const path = typeof window !== 'undefined' ? String(window.location?.pathname || '') : '';
+      const isDashboard = path === '/dashboard';
+      const isMobileViewport = typeof window !== 'undefined' ? (window.matchMedia && window.matchMedia('(max-width: 1023px)').matches) : false;
+      const isEligibleForHomePcModal = isFromOrigChat || (!isFromOrigChat && !isWebNovel);
+      if (!(isHomeVariant && isDashboard && !isMobileViewport && isEligibleForHomePcModal)) return;
+
+      queryClient
+        .prefetchQuery({
+          queryKey: ['pc-mobile-detail', 'character', id],
+          queryFn: async () => {
+            const res = await charactersAPI.getCharacter(id);
+            return res?.data || null;
+          },
+          staleTime: 30_000,
+        })
+        .catch(() => {});
+    } catch (_) {}
+  }, [charId, variant, isFromOrigChat, isWebNovel, queryClient]);
 
   React.useEffect(() => {
     let active = true;
@@ -284,7 +310,13 @@ export const CharacterCard = ({
     const showBadges = Array.isArray(badgeLabels) && badgeLabels.length > 0;
 
     return (
-      <div role="button" className="flex w-full flex-col" onClick={handleCardClick}>
+      <div
+        role="button"
+        className="flex w-full flex-col"
+        onClick={handleCardClick}
+        onMouseEnter={prefetchHomePcDetail}
+        onFocus={prefetchHomePcDetail}
+      >
         <div className="group relative aspect-square w-full rounded-xl bg-gray-900">
           <img
             alt={character?.name}

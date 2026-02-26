@@ -3,10 +3,11 @@
  * - 2탭: 루비 충전 / 무료 루비
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { pointAPI } from '../lib/api';
+import { pointAPI, paymentAPI } from '../lib/api';
+import { showToastOnce } from '../lib/toastOnce';
 import AppLayout from '../components/layout/AppLayout';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
@@ -19,21 +20,67 @@ import {
 } from 'lucide-react';
 
 /* ── 충전 상품 정의 (SSOT: PRICING_AND_PAYMENT_PLAN.md) ── */
-const RUBY_PRODUCTS = [
+const RUBY_PRODUCTS_FALLBACK = [
   { id: 'lite',    name: '라이트',   ruby: 200,   bonus: 0,   price: 2000,  recommended: false },
   { id: 'basic',   name: '베이직',   ruby: 500,   bonus: 25,  price: 5000,  recommended: false },
   { id: 'premium', name: '프리미엄', ruby: 1000,  bonus: 100, price: 10000, recommended: false },
   { id: 'pro',     name: '프로',     ruby: 3000,  bonus: 400, price: 30000, recommended: true },
   { id: 'master',  name: '마스터',   ruby: 5000,  bonus: 800, price: 50000, recommended: false },
 ];
+const PAYMENT_PRIMARY_METHOD_OPTIONS = [
+  { key: 'card', label: '신용카드' },
+  { key: 'bank', label: '계좌이체' },
+];
+const PAYMENT_EASY_METHOD_OPTIONS = [
+  { key: 'kakaopay', label: '카카오페이' },
+  { key: 'naverpayCard', label: '네이버페이' },
+  { key: 'samsungpayCard', label: '삼성페이' },
+];
+
+const NICEPAY_JS_SDK_URL = 'https://pay.nicepay.co.kr/v1/js/';
+const PAYMENT_PROCESSING_TIMEOUT_MS = 180000;
+const PENDING_RUBY_REFRESH_KEY = 'pending_ruby_refresh_after_payment';
+
+const loadNicePaySdk = (() => {
+  let pending = null;
+  return () => {
+    if (window.AUTHNICE?.requestPay) return Promise.resolve();
+    if (pending) return pending;
+
+    pending = new Promise((resolve, reject) => {
+      const existing = document.querySelector(`script[src="${NICEPAY_JS_SDK_URL}"]`);
+      if (existing) {
+        existing.addEventListener('load', () => resolve(), { once: true });
+        existing.addEventListener('error', () => reject(new Error('NICEPAY SDK 로드 실패')), { once: true });
+        return;
+      }
+
+      const script = document.createElement('script');
+      script.src = NICEPAY_JS_SDK_URL;
+      script.async = true;
+      script.onload = () => resolve();
+      script.onerror = () => reject(new Error('NICEPAY SDK 로드 실패'));
+      document.head.appendChild(script);
+    }).finally(() => {
+      pending = null;
+    });
+
+    return pending;
+  };
+})();
 
 const RubyChargePage = () => {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
 
   /* ── State ── */
   const [activeTab, setActiveTab] = useState('charge');
-  const [selectedProduct, setSelectedProduct] = useState('pro');
+  const [products, setProducts] = useState([]);
+  const [productsLoading, setProductsLoading] = useState(true);
+  const [productsAvailable, setProductsAvailable] = useState(true);
+  const [selectedProduct, setSelectedProduct] = useState('');
+  const [payMethod, setPayMethod] = useState('card');
   const [isProcessing, setIsProcessing] = useState(false);
   const [balance, setBalance] = useState(0);
   const [balanceLoading, setBalanceLoading] = useState(true);
@@ -46,6 +93,136 @@ const RubyChargePage = () => {
   // 무료 루비
   const [checkedIn, setCheckedIn] = useState(false);
   const [checkingIn, setCheckingIn] = useState(false);
+  const processingWatchdogRef = useRef(null);
+
+  const clearProcessingWatchdog = useCallback(() => {
+    if (processingWatchdogRef.current) {
+      clearTimeout(processingWatchdogRef.current);
+      processingWatchdogRef.current = null;
+    }
+  }, []);
+
+  const releaseProcessing = useCallback(() => {
+    clearProcessingWatchdog();
+    setIsProcessing(false);
+  }, [clearProcessingWatchdog]);
+
+  useEffect(() => () => clearProcessingWatchdog(), [clearProcessingWatchdog]);
+
+  const refreshRubyBalance = useCallback(async () => {
+    const res = await pointAPI.getBalance();
+    setBalance(res.data?.balance ?? 0);
+    window.dispatchEvent(new CustomEvent('ruby:balanceChanged'));
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+
+    (async () => {
+      setProductsLoading(true);
+      setProductsAvailable(true);
+      try {
+        const res = await paymentAPI.getProducts();
+        const list = Array.isArray(res?.data) ? res.data : [];
+        const mapped = list.map((p) => {
+          const ruby = Number(p?.point_amount ?? 0);
+          const bonus = Number(p?.bonus_point ?? 0);
+          const name = String(p?.name ?? '');
+          return {
+            id: String(p.id),
+            name: name || '루비 상품',
+            ruby,
+            bonus,
+            price: Number(p?.price ?? 0),
+            recommended: name.includes('프로'),
+          };
+        });
+
+        if (!mounted) return;
+        const fromServer = mapped.length > 0;
+        const finalList = fromServer ? mapped : RUBY_PRODUCTS_FALLBACK;
+        setProducts(finalList);
+        setProductsAvailable(fromServer);
+        setSelectedProduct((prev) => {
+          if (prev && finalList.some((x) => x.id === prev)) return prev;
+          const rec = finalList.find((x) => x.recommended);
+          return rec?.id || finalList[0]?.id || '';
+        });
+      } catch {
+        if (!mounted) return;
+        setProducts(RUBY_PRODUCTS_FALLBACK);
+        setProductsAvailable(false);
+        setSelectedProduct((prev) => prev || 'pro');
+      } finally {
+        if (mounted) setProductsLoading(false);
+      }
+    })();
+
+    return () => { mounted = false; };
+  }, []);
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const result = params.get('payment_result');
+    if (!result) return;
+
+    const message = params.get('payment_message');
+    const orderId = params.get('payment_order_id') || 'unknown';
+    const isSuccess = result === 'success';
+    const isPending = result === 'pending';
+
+    (async () => {
+      releaseProcessing();
+      if (isSuccess) {
+        let refreshed = false;
+        try {
+          sessionStorage.setItem(PENDING_RUBY_REFRESH_KEY, '1');
+        } catch (_) {
+          // noop
+        }
+        try {
+          await refreshRubyBalance();
+          refreshed = true;
+        } catch (_) {
+          // noop
+        }
+        if (refreshed) {
+          try { sessionStorage.removeItem(PENDING_RUBY_REFRESH_KEY); } catch (_) {}
+        }
+      }
+      showToastOnce({
+        key: `payment-result:${result}:${orderId}`,
+        type: isSuccess ? 'success' : (isPending ? 'info' : 'error'),
+        message: isSuccess
+          ? '결제가 완료되었습니다. 루비가 충전되었어요.'
+          : (isPending
+            ? (message || '결제 대기 상태입니다. 입금 확인 후 자동 충전됩니다.')
+            : (message || '결제가 완료되지 않았습니다. 다시 시도해 주세요.')),
+        ttlMs: 15000,
+      });
+      navigate(location.pathname, { replace: true });
+    })();
+  }, [location.pathname, location.search, navigate, refreshRubyBalance, releaseProcessing]);
+
+  useEffect(() => {
+    if (!user) return;
+    let pending = null;
+    try {
+      pending = sessionStorage.getItem(PENDING_RUBY_REFRESH_KEY);
+    } catch (_) {
+      pending = null;
+    }
+    if (pending !== '1') return;
+
+    (async () => {
+      try {
+        await refreshRubyBalance();
+        try { sessionStorage.removeItem(PENDING_RUBY_REFRESH_KEY); } catch (_) {}
+      } catch (_) {
+        // 다음 진입/리렌더에서 재시도
+      }
+    })();
+  }, [refreshRubyBalance, user]);
 
   /* ── 초기 데이터 로드 ── */
   useEffect(() => {
@@ -112,17 +289,90 @@ const RubyChargePage = () => {
     };
   }, []);
 
-  /* ── 결제 (PortOne 연동 전 placeholder) ── */
-  const handlePurchase = useCallback(() => {
-    const product = RUBY_PRODUCTS.find(p => p.id === selectedProduct);
-    if (!product) return;
+  /* ── 결제 (NICEPAY Server 승인) ── */
+  const handlePurchase = useCallback(async () => {
+    const product = products.find((p) => p.id === selectedProduct);
+    if (!product || !user) return;
+    if (!productsAvailable) {
+      window.dispatchEvent(new CustomEvent('toast', {
+        detail: {
+          type: 'error',
+          message: '결제 상품 정보를 불러오지 못했습니다. 새로고침 후 다시 시도해 주세요.',
+        },
+      }));
+      return;
+    }
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(product.id);
+    if (!isUuid) {
+      window.dispatchEvent(new CustomEvent('toast', {
+        detail: {
+          type: 'error',
+          message: '결제 상품 정보를 불러오지 못했습니다. 새로고침 후 다시 시도해 주세요.',
+        },
+      }));
+      return;
+    }
+
     setIsProcessing(true);
-    // TODO: PortOne 결제창 연동
-    setTimeout(() => {
-      alert(`[준비 중] ${product.name} (💎${(product.ruby + product.bonus).toLocaleString()}) - ${product.price.toLocaleString()}원\n\nPortOne 결제 연동 후 활성화됩니다.`);
-      setIsProcessing(false);
-    }, 500);
-  }, [selectedProduct]);
+    clearProcessingWatchdog();
+    processingWatchdogRef.current = setTimeout(() => {
+      const isVisible = typeof document !== 'undefined' ? document.visibilityState === 'visible' : true;
+      const isFocused = typeof document !== 'undefined' && typeof document.hasFocus === 'function'
+        ? document.hasFocus()
+        : true;
+      if (isVisible && isFocused) {
+        showToastOnce({
+          key: 'payment-watchdog-timeout',
+          type: 'info',
+          message: '결제 확인이 지연되고 있습니다. 완료 후 자동 반영됩니다.',
+          ttlMs: 10000,
+        });
+      }
+    }, PAYMENT_PROCESSING_TIMEOUT_MS);
+    try {
+      const checkoutRes = await paymentAPI.checkout({
+        product_id: product.id,
+        return_url: `${window.location.origin}/ruby/charge`,
+        method: payMethod,
+      });
+      const payload = checkoutRes?.data?.request_payload;
+
+      if (!payload || typeof payload !== 'object') {
+        throw new Error('결제 요청 파라미터가 비어 있습니다.');
+      }
+
+      await loadNicePaySdk();
+      if (!window.AUTHNICE?.requestPay) {
+        throw new Error('결제 SDK를 초기화하지 못했습니다.');
+      }
+
+      const isMobileViewport = typeof window !== 'undefined'
+        ? window.matchMedia('(max-width: 767px)').matches
+        : false;
+      const requestPayload = {
+        ...payload,
+        disableScroll: isMobileViewport ? true : payload.disableScroll,
+      };
+
+      window.AUTHNICE.requestPay({
+        ...requestPayload,
+        fnError: (result) => {
+          const msg = result?.msg || result?.errorMsg || '결제창 호출 중 오류가 발생했습니다.';
+          window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', message: msg } }));
+          releaseProcessing();
+        },
+      });
+    } catch (e) {
+      const detail = e?.response?.data?.detail;
+      window.dispatchEvent(new CustomEvent('toast', {
+        detail: {
+          type: 'error',
+          message: typeof detail === 'string' && detail ? detail : '결제를 시작하지 못했습니다. 잠시 후 다시 시도해 주세요.',
+        },
+      }));
+      releaseProcessing();
+    }
+  }, [clearProcessingWatchdog, payMethod, products, productsAvailable, releaseProcessing, selectedProduct, user]);
 
   /* ── 출석 체크 ── */
   const handleCheckIn = useCallback(async () => {
@@ -146,7 +396,7 @@ const RubyChargePage = () => {
     }
   }, []);
 
-  const selected = RUBY_PRODUCTS.find(p => p.id === selectedProduct);
+  const selected = products.find(p => p.id === selectedProduct);
   const timerNextMinutes = Math.floor(timerNextSeconds / 60);
 
   return (
@@ -258,11 +508,11 @@ const RubyChargePage = () => {
 
             {/* 상품 그리드 (2열) */}
             <div className="grid grid-cols-2 gap-3 mb-6">
-              {RUBY_PRODUCTS.map((product, idx) => {
+              {products.map((product, idx) => {
                 const total = product.ruby + product.bonus;
                 const isSelected = selectedProduct === product.id;
-                const isLast = idx === RUBY_PRODUCTS.length - 1;
-                const isOddLast = isLast && RUBY_PRODUCTS.length % 2 !== 0;
+                const isLast = idx === products.length - 1;
+                const isOddLast = isLast && products.length % 2 !== 0;
 
                 return (
                   <button
@@ -327,13 +577,54 @@ const RubyChargePage = () => {
               })}
             </div>
 
+            {/* 결제수단 선택 */}
+            <div className="mb-6">
+              <p className="text-sm text-gray-300 mb-2">결제수단</p>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                {PAYMENT_PRIMARY_METHOD_OPTIONS.map((m) => {
+                  const active = payMethod === m.key;
+                  return (
+                    <button
+                      key={m.key}
+                      type="button"
+                      onClick={() => setPayMethod(m.key)}
+                      className={`rounded-lg border px-3 py-2.5 text-sm font-medium transition-colors ${
+                        active
+                          ? 'border-purple-500 bg-purple-500/10 text-purple-200'
+                          : 'border-gray-700 bg-gray-800 text-gray-300 hover:border-gray-500'
+                      }`}
+                    >
+                      {m.label}
+                    </button>
+                  );
+                })}
+                {PAYMENT_EASY_METHOD_OPTIONS.map((m) => {
+                  const active = payMethod === m.key;
+                  return (
+                    <button
+                      key={m.key}
+                      type="button"
+                      onClick={() => setPayMethod(m.key)}
+                      className={`rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
+                        active
+                          ? 'border-purple-500 bg-purple-500/10 text-purple-200'
+                          : 'border-gray-700 bg-gray-800 text-gray-300 hover:border-gray-500'
+                      }`}
+                    >
+                      {m.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
             {/* 결제 버튼 */}
             <Button
               onClick={user ? handlePurchase : () => navigate('/login')}
-              disabled={user ? (isProcessing || !selectedProduct) : false}
+              disabled={user ? (isProcessing || productsLoading || !productsAvailable || !selectedProduct) : false}
               className="w-full h-12 text-base font-semibold bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white rounded-xl border-0"
             >
-              {!user ? '로그인 후 결제하기' : isProcessing ? '처리 중...' : (
+              {!user ? '로그인 후 결제하기' : productsLoading ? '상품 불러오는 중...' : !productsAvailable ? '결제 준비 중...' : isProcessing ? '처리 중...' : (
                 selected ? `${selected.price.toLocaleString()}원 결제하기` : '상품을 선택해주세요'
               )}
             </Button>

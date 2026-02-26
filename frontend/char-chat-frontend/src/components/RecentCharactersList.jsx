@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { usersAPI } from '../lib/api';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Skeleton } from './ui/skeleton';
 import { Alert, AlertDescription } from './ui/alert';
 import { formatDistanceToNow } from 'date-fns';
@@ -22,10 +22,12 @@ import {
 } from './ui/alert-dialog';
 import { RecentChatCard, RecentChatCardSkeleton } from './RecentChatCard';
 import { useAuth } from '../contexts/AuthContext';
+import { emitChatRoomsChanged, getRoomsChangedActivity, shouldRefetchForRoomsChanged } from '../lib/chatRoomsChangedEvent';
 
 export const RecentCharactersList = ({ limit = 4 }) => {
   const navigate = useNavigate();
   const { user } = useAuth();
+  const queryClient = useQueryClient();
 
   const { data: characters = [], isLoading: loading, isError, refetch } = useQuery({
     queryKey: ['recent-characters', limit],
@@ -37,23 +39,75 @@ export const RecentCharactersList = ({ limit = 4 }) => {
     refetchOnMount: 'always'
   });
 
+  const patchRecentCharactersForActivity = React.useCallback((items, activity) => {
+    const list = Array.isArray(items) ? items : [];
+    const roomId = String(activity?.roomId || '').trim();
+    if (!roomId) return { next: list, changed: false };
+    const updatedAt = String(activity?.updatedAt || '').trim() || new Date().toISOString();
+    const snippet = String(activity?.snippet || '').trim();
+    let changed = false;
+    const next = list.map((item) => {
+      if (String(item?.chat_room_id || '').trim() !== roomId) return item;
+      changed = true;
+      return {
+        ...(item || {}),
+        last_chat_time: updatedAt,
+        ...(snippet ? { last_message_snippet: snippet } : {}),
+      };
+    });
+    if (!changed) return { next: list, changed: false };
+    next.sort((a, b) => {
+      const at = new Date(a?.last_chat_time || a?.created_at || 0).getTime() || 0;
+      const bt = new Date(b?.last_chat_time || b?.created_at || 0).getTime() || 0;
+      return bt - at;
+    });
+    return { next, changed: true };
+  }, []);
+
   // 토큰 갱신/가시성 회복 시 재요청
   useEffect(() => {
+    let missRefetchTimer = null;
+    let missRefetchInFlight = false;
+    const scheduleMissRefetch = () => {
+      if (missRefetchInFlight) return;
+      if (missRefetchTimer) clearTimeout(missRefetchTimer);
+      missRefetchTimer = setTimeout(async () => {
+        if (missRefetchInFlight) return;
+        missRefetchInFlight = true;
+        try { await refetch(); } catch (_) {}
+        missRefetchInFlight = false;
+      }, 500);
+    };
     const onTokenRefreshed = () => refetch();
     const onVisibility = () => {
       if (document.visibilityState === 'visible') refetch();
     };
-    // ✅ 채팅방 생성/삭제/메시지 전송 등으로 목록이 바뀌면 즉시 갱신
-    const onRoomsChanged = () => refetch();
+    // ✅ 구조 변경(생성/삭제)만 즉시 재조회하고, 메시지 activity는 폭주 방지를 위해 무시
+    const onRoomsChanged = (evt) => {
+      const activity = getRoomsChangedActivity(evt);
+      if (activity) {
+        let changed = false;
+        queryClient.setQueryData(['recent-characters', limit], (prev) => {
+          const result = patchRecentCharactersForActivity(prev, activity);
+          changed = Boolean(result?.changed);
+          return result?.next || prev;
+        });
+        if (!changed) scheduleMissRefetch();
+        return;
+      }
+      if (!shouldRefetchForRoomsChanged(evt)) return;
+      refetch();
+    };
     window.addEventListener('auth:tokenRefreshed', onTokenRefreshed);
     document.addEventListener('visibilitychange', onVisibility);
     window.addEventListener('chat:roomsChanged', onRoomsChanged);
     return () => {
+      if (missRefetchTimer) clearTimeout(missRefetchTimer);
       window.removeEventListener('auth:tokenRefreshed', onTokenRefreshed);
       document.removeEventListener('visibilitychange', onVisibility);
       window.removeEventListener('chat:roomsChanged', onRoomsChanged);
     };
-  }, [refetch]);
+  }, [refetch, queryClient, limit, patchRecentCharactersForActivity]);
 
   const handleCharacterClick = (character) => {
     /**
@@ -106,6 +160,7 @@ export const RecentCharactersList = ({ limit = 4 }) => {
     try {
       await chatAPI.deleteChatRoom(chatRoomId);
       refetch();
+      emitChatRoomsChanged({ kind: 'structure', reason: 'deleted', roomId: chatRoomId });
     } catch (error) {
       console.error('채팅방 삭제 실패:', error);
     }

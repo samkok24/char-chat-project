@@ -98,8 +98,8 @@ export default function CharacterMobileDetailModal({
     } catch (_) { return ''; }
   }, [character?.start_sets?.items, selectedOpeningId]);
 
-  const { data: recentRooms = [] } = useQuery({
-    queryKey: ['pc-mobile-detail', 'recent-rooms', cid, user?.id || 'anon'],
+  const { data: latestRoomLookup = { has_room: false, room_id: '', updated_at: null } } = useQuery({
+    queryKey: ['pc-mobile-detail', 'latest-room', cid, user?.id || 'anon'],
     queryFn: async () => {
       /**
        * ✅ 모달 CTA 분기(계속 대화/새로 대화)
@@ -107,16 +107,42 @@ export default function CharacterMobileDetailModal({
        * 요구사항:
        * - 해당 캐릭터의 "대화 이력(룸)"이 있으면 CTA를 2개로 분기한다.
        *
-       * 정책/방어:
-       * - 백엔드에 character_id 필터가 없으므로, 최근 룸 목록을 받아서 프론트에서 필터링한다.
-       * - 너무 큰 limit은 피하되(성능), 모달 진입 UX를 위해 충분히 넉넉한 범위로 가져온다.
+       * 최적화:
+       * - 우선 경량 API(`/chat/rooms/latest-by-character/:id`)를 사용해 최신 룸 1개만 조회한다.
+       * - 구버전 백엔드(신규 API 미배포, 404)에서는 기존 `/chat/rooms?limit=200` 방식으로 폴백한다.
        */
       try {
-        const res = await chatAPI.getChatRooms({ limit: 200 });
-        return Array.isArray(res?.data) ? res.data : [];
+        const res = await chatAPI.getLatestRoomByCharacter(cid);
+        const data = res?.data || {};
+        const rid = String(data?.room_id || '').trim();
+        return {
+          has_room: Boolean(data?.has_room) && !!rid,
+          room_id: rid,
+          updated_at: data?.updated_at || null,
+        };
       } catch (e) {
-        console.error('[pc-mobile-detail] recent rooms load failed:', e);
-        return [];
+        const status = Number(e?.response?.status || 0);
+        if (status === 404) {
+          // 백엔드가 아직 신규 API를 제공하지 않는 배포 윈도우에서는 기존 방식으로 안전 폴백
+          try {
+            const legacy = await chatAPI.getChatRooms({ limit: 200 });
+            const rooms = Array.isArray(legacy?.data) ? legacy.data : [];
+            const matched = rooms.filter((r) => String(r?.character?.id || r?.character_id || '').trim() === cid);
+            if (!matched.length) return { has_room: false, room_id: '', updated_at: null };
+            matched.sort((a, b) => {
+              const ta = Date.parse(a?.last_message_time || a?.updated_at || a?.created_at || '') || 0;
+              const tb = Date.parse(b?.last_message_time || b?.updated_at || b?.created_at || '') || 0;
+              return tb - ta;
+            });
+            const rid = String(matched[0]?.id || '').trim();
+            return { has_room: !!rid, room_id: rid, updated_at: matched[0]?.updated_at || null };
+          } catch (legacyErr) {
+            console.error('[pc-mobile-detail] fallback recent rooms load failed:', legacyErr);
+            return { has_room: false, room_id: '', updated_at: null };
+          }
+        }
+        console.error('[pc-mobile-detail] latest room lookup failed:', e);
+        return { has_room: false, room_id: '', updated_at: null };
       }
     },
     enabled: open && !!cid && !!isAuthenticated,
@@ -125,20 +151,11 @@ export default function CharacterMobileDetailModal({
 
   const lastRoomIdForThisCharacter = React.useMemo(() => {
     try {
-      const rooms = Array.isArray(recentRooms) ? recentRooms : [];
-      const matched = rooms.filter((r) => String(r?.character?.id || r?.character_id || '').trim() === cid);
-      if (!matched.length) return '';
-      // 최신 룸 1개 선택(last_message_time > updated_at > created_at)
-      matched.sort((a, b) => {
-        const ta = Date.parse(a?.last_message_time || a?.updated_at || a?.created_at || '') || 0;
-        const tb = Date.parse(b?.last_message_time || b?.updated_at || b?.created_at || '') || 0;
-        return tb - ta;
-      });
-      return String(matched[0]?.id || '').trim();
+      return String(latestRoomLookup?.room_id || '').trim();
     } catch (_) {
       return '';
     }
-  }, [recentRooms, cid]);
+  }, [latestRoomLookup?.room_id]);
 
   const { data: tags = [] } = useQuery({
     queryKey: ['pc-mobile-detail', 'character-tags', cid],

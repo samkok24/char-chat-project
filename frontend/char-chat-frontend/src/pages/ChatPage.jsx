@@ -74,6 +74,7 @@ import ModelSelectionModal from '../components/ModelSelectionModal';
 import Sidebar from '../components/layout/Sidebar';
 import { useLoginModal } from '../contexts/LoginModalContext';
 import { consumePostLoginDraft, setPostLoginRedirect } from '../lib/postLoginRedirect';
+import { emitChatRoomsChanged } from '../lib/chatRoomsChangedEvent';
 
 function dedupeMessagesById(items) {
   const arr = Array.isArray(items) ? items : [];
@@ -126,6 +127,14 @@ function resolveChatStreamErrorMessage(err, fallbackMessage = '전송에 실패�
   }
 
   return fallbackMessage;
+}
+
+function pickLastActivityMeta({ savedEnding = null, savedAi = null, savedUser = null, fallbackSnippet = '' } = {}) {
+  const candidate = savedEnding || savedAi || savedUser || null;
+  const updatedAt = String(candidate?.created_at || '').trim() || new Date().toISOString();
+  const snippetRaw = String(savedEnding?.content || savedAi?.content || savedUser?.content || fallbackSnippet || '').trim();
+  const snippet = snippetRaw.slice(0, 280);
+  return { updatedAt, snippet };
 }
 
 const ChatPage = () => {
@@ -2266,7 +2275,7 @@ const ChatPage = () => {
               // - 룸 생성만 하고 첫 메시지를 안 보낼 수도 있으므로(예: 인사말만 보고 뒤로가기),
               //   생성 즉시 갱신 이벤트를 쏴서 목록에 방이 나타나게 한다.
               if (createdByThisInit) {
-                try { window.dispatchEvent(new Event('chat:roomsChanged')); } catch (_) {}
+                emitChatRoomsChanged({ kind: 'structure', reason: 'created', roomId });
               }
               if (!roomId) {
                 // 최후 폴백: 일반 시작
@@ -2364,7 +2373,7 @@ const ChatPage = () => {
               }
 
               if (createdByThisInit) {
-                try { window.dispatchEvent(new Event('chat:roomsChanged')); } catch (_) {}
+                emitChatRoomsChanged({ kind: 'structure', reason: 'created', roomId });
               }
             } else {
               // URL에 room 파라미터가 있으면 그대로 사용, 없으면 최신 방 찾기
@@ -3859,7 +3868,14 @@ const ChatPage = () => {
         setRangeWarning(typeof warn === 'string' ? warn : '');
 
         // ✅ 최근대화/대화내역 갱신(룸의 last_chat_time/snippet이 바뀜)
-        try { window.dispatchEvent(new Event('chat:roomsChanged')); } catch (_) {}
+        emitChatRoomsChanged({
+          kind: 'activity',
+          reason: 'message',
+          roomId: roomIdForSend,
+          characterId,
+          updatedAt: new Date().toISOString(),
+          snippet: String(assistantText || messageContent || '').trim().slice(0, 280),
+        });
       } catch (err) {
         console.error('원작챗 턴 실패', err);
         try { setSseAwaitingFirstDelta(false); } catch (_) {}
@@ -4080,7 +4096,22 @@ const ChatPage = () => {
         try { setRangeWarning(typeof meta?.warning === 'string' ? meta.warning : ''); } catch (_) {}
 
         // ✅ 최근대화/대화내역 갱신(룸의 last_chat_time/snippet이 바뀜)
-        try { window.dispatchEvent(new Event('chat:roomsChanged')); } catch (_) {}
+        {
+          const activityMeta = pickLastActivityMeta({
+            savedEnding,
+            savedAi,
+            savedUser,
+            fallbackSnippet: messageContent,
+          });
+          emitChatRoomsChanged({
+            kind: 'activity',
+            reason: 'message',
+            roomId: roomIdForSend,
+            characterId,
+            updatedAt: activityMeta.updatedAt,
+            snippet: activityMeta.snippet,
+          });
+        }
       } catch (err) {
         console.error('SSE 전송 실패', err);
         try { setSseAwaitingFirstDelta(false); } catch (_) {}
@@ -5610,7 +5641,22 @@ const ChatPage = () => {
         try { await refreshGeneralChatProgress(chatRoomId); } catch (_) {}
         try { setPendingChoices(Array.isArray(meta?.choices) ? meta.choices : []); } catch (_) {}
         try { setRangeWarning(typeof meta?.warning === 'string' ? meta.warning : ''); } catch (_) {}
-        try { window.dispatchEvent(new Event('chat:roomsChanged')); } catch (_) {}
+        {
+          const activityMeta = pickLastActivityMeta({
+            savedEnding,
+            savedAi,
+            savedUser,
+            fallbackSnippet: contentToSend,
+          });
+          emitChatRoomsChanged({
+            kind: 'activity',
+            reason: 'message',
+            roomId: chatRoomId,
+            characterId,
+            updatedAt: activityMeta.updatedAt,
+            snippet: activityMeta.snippet,
+          });
+        }
         try {
           if (nextActionFailSafeTimerRef.current) clearTimeout(nextActionFailSafeTimerRef.current);
         } catch (_) {}
@@ -5751,7 +5797,22 @@ const ChatPage = () => {
       settingsSyncedRef.current = true;
       try { setSseAwaitingFirstDelta(false); } catch (_) {}
       try { clearTypingPersist(chatRoomId); } catch (_) {}
-      try { window.dispatchEvent(new Event('chat:roomsChanged')); } catch (_) {}
+      {
+        const activityMeta = pickLastActivityMeta({
+          savedEnding,
+          savedAi,
+          savedUser: null,
+          fallbackSnippet: '',
+        });
+        emitChatRoomsChanged({
+          kind: 'activity',
+          reason: 'message',
+          roomId: chatRoomId,
+          characterId,
+          updatedAt: activityMeta.updatedAt,
+          snippet: activityMeta.snippet,
+        });
+      }
     } catch (err) {
       console.error('[ChatPage] continue SSE send failed:', err);
       try { setSseAwaitingFirstDelta(false); } catch (_) {}

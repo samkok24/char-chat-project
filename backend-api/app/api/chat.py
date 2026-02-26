@@ -43,6 +43,7 @@ from app.services.memory_note_service import get_active_memory_notes_by_characte
 from app.services.user_persona_service import get_active_persona_by_user
 from app.schemas.chat import (
     ChatRoomResponse, 
+    ChatRoomLookupResponse,
     ChatMessageResponse, 
     CreateChatRoomRequest, 
     SendMessageRequest,
@@ -6864,6 +6865,41 @@ async def get_user_chat_rooms_legacy(
 ):
     """사용자의 채팅방 목록 조회 (레거시 호환성)"""
     return await get_chat_sessions(limit, current_user, db)
+
+
+@router.get("/rooms/latest-by-character/{character_id}", response_model=ChatRoomLookupResponse)
+async def get_latest_room_by_character(
+    character_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    현재 유저가 특정 캐릭터와 가진 최신 채팅방 1개를 조회한다.
+
+    의도/효과:
+    - 모달 CTA(계속 대화/새로 대화) 판단에서 `/chat/rooms?limit=200` 전체 조회를 피하고,
+      정확히 1개 룸만 빠르게 확인한다.
+    """
+    room = await chat_service.get_latest_chat_room_for_user_character(
+        db,
+        user_id=current_user.id,
+        character_id=character_id,
+    )
+    if not room:
+        return ChatRoomLookupResponse(has_room=False, room_id=None, updated_at=None)
+
+    # 비공개 캐릭터/작품 접근 제한이 걸린 경우에는 "기존 방 없음"으로 취급(정보 노출 최소화)
+    try:
+        await _ensure_private_content_access(db, current_user, character=getattr(room, "character", None))
+    except HTTPException:
+        return ChatRoomLookupResponse(has_room=False, room_id=None, updated_at=None)
+
+    return ChatRoomLookupResponse(
+        has_room=True,
+        room_id=room.id,
+        updated_at=getattr(room, "updated_at", None),
+    )
+
 
 @router.get("/rooms/{room_id}", response_model=ChatRoomResponse)
 async def get_chat_room(

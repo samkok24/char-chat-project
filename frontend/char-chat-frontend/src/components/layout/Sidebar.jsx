@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Link, NavLink, useNavigate, useLocation } from 'react-router-dom';
-import { chatAPI, charactersAPI, storiesAPI, pointAPI } from '../../lib/api';
+import { usersAPI, storiesAPI, pointAPI } from '../../lib/api';
 import { useAuth } from '../../contexts/AuthContext';
 import { Avatar, AvatarFallback, AvatarImage } from '../ui/avatar';
 import { resolveImageUrl, getCharacterPrimaryImage } from '../../lib/images';
@@ -22,15 +22,17 @@ import useRequireAuth from '../../hooks/useRequireAuth';
 import { useLoginModal } from '../../contexts/LoginModalContext';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../ui/dialog';
 import { clearCreateCharacterDraft, hasCreateCharacterDraft } from '../../lib/createCharacterDraft';
+import { getRoomsChangedActivity, shouldRefetchForRoomsChanged } from '../../lib/chatRoomsChangedEvent';
 
 const Sidebar = ({ collapsed = false, onToggleCollapsed }) => {
   const [chatRooms, setChatRooms] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [characterImageById, setCharacterImageById] = useState({});
   const [recentStories, setRecentStories] = useState([]);
   const [showPersonaModal, setShowPersonaModal] = useState(false);
   const { user, logout, isAuthenticated } = useAuth();
+  const activeUserId = React.useMemo(() => String(user?.id || '').trim(), [user?.id]);
+  const prevUserIdRef = React.useRef('');
   const navigate = useNavigate();
   const location = useLocation();
   const [avatarVersion, setAvatarVersion] = useState(Date.now());
@@ -127,6 +129,32 @@ const Sidebar = ({ collapsed = false, onToggleCollapsed }) => {
     } catch (_) { return ''; }
   };
 
+  const patchChatRoomsForActivity = React.useCallback((rooms, activity) => {
+    const list = Array.isArray(rooms) ? rooms : [];
+    const roomId = String(activity?.roomId || '').trim();
+    if (!roomId) return { next: list, changed: false };
+    const updatedAt = String(activity?.updatedAt || '').trim() || new Date().toISOString();
+    const snippet = String(activity?.snippet || '').trim();
+    let changed = false;
+    const next = list.map((room) => {
+      if (String(room?.id || '').trim() !== roomId) return room;
+      changed = true;
+      return {
+        ...(room || {}),
+        updated_at: updatedAt,
+        last_message_time: updatedAt,
+        ...(snippet ? { last_message_snippet: snippet } : {}),
+      };
+    });
+    if (!changed) return { next: list, changed: false };
+    next.sort((a, b) => {
+      const at = new Date(a?.last_message_time || a?.updated_at || a?.created_at || 0).getTime() || 0;
+      const bt = new Date(b?.last_message_time || b?.updated_at || b?.created_at || 0).getTime() || 0;
+      return bt - at;
+    });
+    return { next, changed: true };
+  }, []);
+
   const handleLogout = () => {
     logout();
     navigate('/');
@@ -163,10 +191,12 @@ const Sidebar = ({ collapsed = false, onToggleCollapsed }) => {
     }
   };
 
-  const [roomMetaById, setRoomMetaById] = React.useState({});
-
   // 캐시 설정
-  const CACHE_KEY = 'sidebar:chatRooms:cache';
+  // ✅ 계정별 캐시 분리: 계정 전환 시 다른 유저 히스토리가 섞여 보이는 문제 방지
+  const CACHE_KEY = React.useMemo(
+    () => `sidebar:chatRooms:cache:${activeUserId || 'guest'}`,
+    [activeUserId]
+  );
   const CACHE_DURATION = 5 * 60 * 1000; // 5분 
 
   const loadRooms = async (forceRefresh = false) => {
@@ -188,10 +218,8 @@ const Sidebar = ({ collapsed = false, onToggleCollapsed }) => {
             const age = Date.now() - timestamp;
             
             // 5분 이내 캐시는 그대로 사용
-            if (age < CACHE_DURATION && data.rooms && data.roomMetaById) {
+            if (age < CACHE_DURATION && data.rooms) {
               setChatRooms(data.rooms);
-              setRoomMetaById(data.roomMetaById);
-              setCharacterImageById(data.characterImageById || {});
               if (Array.isArray(data.recentStories)) setRecentStories(data.recentStories);
               setLoading(false);
               setRefreshing(false);
@@ -203,41 +231,34 @@ const Sidebar = ({ collapsed = false, onToggleCollapsed }) => {
       if (isInitial) setLoading(true);
       else setRefreshing(true);
 
-      // 백엔드에서 최근 15개만 가져오기 (성능/안정성)
-      const response = await chatAPI.getChatRooms({ limit: 15 });
-      const rooms = response.data || [];
+      // ✅ 대화내역(HistoryPage)과 동일한 SSOT 사용: /me/characters/recent
+      // - 기존 chat/rooms + meta + character 상세 N+1 호출을 제거해 사이드바 체감 속도를 개선한다.
+      const response = await usersAPI.getRecentCharacters({ limit: 15, page: 1 });
+      const recent = Array.isArray(response?.data) ? response.data : [];
+      const rooms = recent
+        .map((item) => {
+          const roomId = String(item?.chat_room_id || '').trim();
+          const charId = String(item?.id || '').trim();
+          if (!roomId || !charId) return null;
+          const ts = String(item?.last_chat_time || item?.created_at || '').trim();
+          return {
+            id: roomId,
+            character: {
+              id: charId,
+              name: item?.name || '캐릭터',
+              avatar_url: item?.avatar_url || null,
+              origin_story_id: item?.origin_story_id || null,
+              creator_id: item?.creator_id || null,
+              is_public: (item?.is_public !== false),
+              image_descriptions: Array.isArray(item?.image_descriptions) ? item.image_descriptions : [],
+            },
+            last_message_time: ts || null,
+            updated_at: ts || null,
+            created_at: ts || null,
+          };
+        })
+        .filter(Boolean);
       setChatRooms(rooms);
-      
-      // 룸 메타 동시 조회(모드 파악용) - 모든 rooms에 대해 조회 (이미 50개로 제한됨)
-      let metaById = {};
-      try {
-        const entries = await Promise.all(
-          rooms.map(async (r) => {
-            try {
-              const res = await chatAPI.getRoomMeta(r.id);
-              return [String(r.id), res?.data || {}];
-            } catch (_) { return [String(r.id), {}]; }
-          })
-        );
-        metaById = Object.fromEntries(entries);
-        setRoomMetaById(metaById);
-      } catch (_) {}
-
-      let charImageById = {};
-      const ids = Array.from(new Set(rooms.map(r => r?.character?.id).filter(Boolean)));
-      if (ids.length) {
-        const entries = await Promise.all(ids.map(async (id) => {
-          try {
-            const res = await charactersAPI.getCharacter(id);
-            const url = getCharacterPrimaryImage(res.data);
-            return [id, url];
-          } catch (_) {
-            return [id, ''];
-          }
-        }));
-        charImageById = Object.fromEntries(entries);
-        setCharacterImageById(charImageById);
-      }
       
       const recentList = await loadRecentStories();
       
@@ -246,8 +267,6 @@ const Sidebar = ({ collapsed = false, onToggleCollapsed }) => {
         localStorage.setItem(CACHE_KEY, JSON.stringify({
           data: {
             rooms,
-            roomMetaById: metaById,
-            characterImageById: charImageById,
             recentStories: recentList,
           },
           timestamp: Date.now()
@@ -264,8 +283,20 @@ const Sidebar = ({ collapsed = false, onToggleCollapsed }) => {
 
   useEffect(() => {
     if (isAuthenticated) {
-      loadRooms();
+      // 인증 직후 user가 아직 hydrate되지 않은 틈에 이전 계정 목록이 보이는 현상 방지
+      if (!activeUserId) {
+        setLoading(true);
+        setChatRooms([]);
+        return;
+      }
+      const userChanged = !!prevUserIdRef.current && prevUserIdRef.current !== activeUserId;
+      prevUserIdRef.current = activeUserId;
+      if (userChanged) {
+        setChatRooms([]);
+      }
+      loadRooms(userChanged);
     } else {
+      prevUserIdRef.current = '';
       // 비로그인 상태에서도 최근 본 웹소설은 노출
       (async () => {
         try {
@@ -277,14 +308,13 @@ const Sidebar = ({ collapsed = false, onToggleCollapsed }) => {
         }
       })();
     }
-  }, [isAuthenticated]);
+  }, [isAuthenticated, activeUserId]);
 
   // 프로필 업데이트 신호 수신 시 즉시 리렌더/리로드 (디바운스 적용)
   useEffect(() => {
     let debounceTimer = null;
     const onProfileUpdated = () => {
       setAvatarVersion(Date.now());
-      try { setCharacterImageById(prev => ({ ...prev })); } catch (_) {}
       // 디바운스: 1초 내 여러 번 호출되어도 마지막 호출만 실행
       if (debounceTimer) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
@@ -322,8 +352,32 @@ const Sidebar = ({ collapsed = false, onToggleCollapsed }) => {
     if (!isAuthenticated) return;
     let suppressOnce = false;
     let debounceTimer = null;
-    const handler = () => {
+    let missRefetchTimer = null;
+    let missRefetchInFlight = false;
+    const scheduleMissRefetch = () => {
+      if (missRefetchInFlight) return;
+      if (missRefetchTimer) clearTimeout(missRefetchTimer);
+      missRefetchTimer = setTimeout(async () => {
+        if (missRefetchInFlight) return;
+        missRefetchInFlight = true;
+        try { await loadRooms(true); } catch (_) {}
+        missRefetchInFlight = false;
+      }, 500);
+    };
+    const handler = (evt) => {
       if (suppressOnce) { suppressOnce = false; return; }
+      const activity = getRoomsChangedActivity(evt);
+      if (activity) {
+        let changed = false;
+        setChatRooms((prev) => {
+          const result = patchChatRoomsForActivity(prev, activity);
+          changed = Boolean(result?.changed);
+          return result?.next || prev;
+        });
+        if (!changed) scheduleMissRefetch();
+        return;
+      }
+      if (!shouldRefetchForRoomsChanged(evt)) return;
       // 디바운스: 2초 내 여러 번 호출되어도 마지막 호출만 실행
       if (debounceTimer) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
@@ -335,10 +389,11 @@ const Sidebar = ({ collapsed = false, onToggleCollapsed }) => {
     try { window.addEventListener('chat:roomsChanged:suppressOnce', handlerSuppress); } catch (_) {}
     return () => {
       if (debounceTimer) clearTimeout(debounceTimer);
+      if (missRefetchTimer) clearTimeout(missRefetchTimer);
       try { window.removeEventListener('chat:roomsChanged', handler); } catch (_) {}
       try { window.removeEventListener('chat:roomsChanged:suppressOnce', handlerSuppress); } catch (_) {}
     };
-  }, [isAuthenticated]);
+  }, [isAuthenticated, patchChatRoomsForActivity]);
 
   const NavItem = ({ to, icon: Icon, children, requireAuth: mustAuth = false, authReason }) => (
     <NavLink
@@ -528,14 +583,7 @@ const Sidebar = ({ collapsed = false, onToggleCollapsed }) => {
                 const chatItems = (chatRooms || [])
                   .filter((room) => Boolean(room?.id) && Boolean(room?.character?.id))
                   .map((room) => {
-                  const meta = roomMetaById[String(room.id)] || {};
                   const isOrig = !!(room?.character?.origin_story_id);
-                  const rawMode = String(meta.mode || '').toLowerCase();
-                  // ✅ 서비스 정책: 원작챗은 plain 모드만 사용한다.
-                  // - 과거/레거시로 meta.mode가 canon/parallel로 남아있어도, UI에는 노출되지 않게 plain으로 정규화한다.
-                  const mode = (rawMode === 'canon' || rawMode === 'parallel')
-                    ? 'plain'
-                    : (rawMode || (isOrig ? 'plain' : ''));
                   const suffix = '';
                   // ✅ 비공개 캐릭터 접근 차단(요구사항)
                   // - 히스토리에 남아있더라도, 크리에이터가 비공개로 바꾸면 클릭 진입을 막고 토스트만 보여준다.
@@ -553,7 +601,7 @@ const Sidebar = ({ collapsed = false, onToggleCollapsed }) => {
                     kind: 'chat',
                     id: room.id,
                     title: `${room.character?.name || '캐릭터'}${suffix}`,
-                    thumb: characterImageById[room.character?.id] || getCharacterPrimaryImage(room.character || {}),
+                    thumb: getCharacterPrimaryImage(room.character || {}),
                     at: new Date(room.last_message_time || room.updated_at || room.created_at || 0).getTime() || 0,
                     href: (() => {
                       // ✅ 원작챗 캐릭터는 origchat plain 모드로 진입하도록 쿼리를 보강한다.

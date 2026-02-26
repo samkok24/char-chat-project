@@ -74,6 +74,12 @@ class Settings(BaseSettings):
     ORIGCHAT_DEFAULT_AVATAR_URL: str | None = None
     # 결제 웹훅 서명 검증용 시크릿(미설정 시 dev에서만 완화)
     PAYMENT_WEBHOOK_SECRET: str | None = None
+    # NICEPAY (Server 승인 모델)
+    NICEPAY_CLIENT_KEY: str | None = None
+    NICEPAY_SECRET_KEY: str | None = None
+    NICEPAY_USE_SANDBOX: bool = True
+    NICEPAY_API_BASE_URL: str | None = None
+    NICEPAY_JS_SDK_URL: str = "https://pay.nicepay.co.kr/v1/js/"
     # Paddle 전환 대비(추후 사용)
     PADDLE_WEBHOOK_SECRET: str | None = None
 

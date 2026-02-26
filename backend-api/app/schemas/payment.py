@@ -4,6 +4,7 @@
 
 from typing import Optional, List
 from datetime import datetime
+from uuid import UUID
 from pydantic import BaseModel, Field, validator
 
 
@@ -33,7 +34,7 @@ class PaymentProductUpdate(BaseModel):
 
 
 class PaymentProductResponse(PaymentProductBase):
-    id: str
+    id: UUID
     created_at: datetime
     updated_at: Optional[datetime]
     
@@ -43,14 +44,18 @@ class PaymentProductResponse(PaymentProductBase):
 
 # 결제 요청 스키마
 class PaymentCheckoutRequest(BaseModel):
-    product_id: str
+    product_id: UUID
     return_url: Optional[str] = None  # 결제 완료 후 리턴 URL
+    method: Optional[str] = None  # card, cardAndEasyPay, bank, vbank ...
+    vbank_holder: Optional[str] = Field(None, max_length=40)  # 가상계좌 예금주명
 
 
 class PaymentCheckoutResponse(BaseModel):
-    checkout_url: str  # PG사 결제 페이지 URL
+    provider: str = "nicepay"
+    checkout_url: Optional[str] = None  # 리다이렉트형 PG 호환 필드(미사용)
     order_id: str
     amount: int
+    request_payload: Optional[dict] = None  # AUTHNICE.requestPay(...) 파라미터
 
 
 # 결제 웹훅 스키마
@@ -64,9 +69,9 @@ class PaymentWebhookRequest(BaseModel):
 
 # 결제 내역 스키마
 class PaymentResponse(BaseModel):
-    id: str
-    user_id: str
-    product_id: Optional[str]
+    id: UUID
+    user_id: UUID
+    product_id: Optional[UUID]
     amount: int
     point_amount: int
     status: str
@@ -81,7 +86,7 @@ class PaymentResponse(BaseModel):
 
 # 포인트 잔액 스키마
 class UserPointResponse(BaseModel):
-    user_id: str
+    user_id: UUID
     balance: int
     total_charged: int
     total_used: int
@@ -115,14 +120,14 @@ class PointUseResponse(BaseModel):
 
 # 포인트 거래 내역 스키마
 class PointTransactionResponse(BaseModel):
-    id: str
-    user_id: str
+    id: UUID
+    user_id: UUID
     type: str  # charge, use, refund, bonus
     amount: int
     balance_after: int
     description: Optional[str]
     reference_type: Optional[str]
-    reference_id: Optional[str]
+    reference_id: Optional[UUID]
     created_at: datetime
     
     @validator('type')

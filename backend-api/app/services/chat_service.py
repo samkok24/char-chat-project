@@ -240,6 +240,23 @@ async def get_chat_rooms_for_user(
     result = await db.execute(query)
     return result.scalars().all()
 
+
+async def get_latest_chat_room_for_user_character(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    character_id: uuid.UUID,
+) -> Optional[ChatRoom]:
+    """사용자+캐릭터 기준 최신 채팅방 1개를 반환"""
+    result = await db.execute(
+        select(ChatRoom)
+        .where(ChatRoom.user_id == user_id, ChatRoom.character_id == character_id)
+        .options(selectinload(ChatRoom.character))
+        .order_by(ChatRoom.updated_at.desc(), ChatRoom.created_at.desc())
+        .limit(1)
+    )
+    return result.scalars().first()
+
+
 async def get_chat_room_by_id(
     db: AsyncSession, room_id: uuid.UUID
 ) -> Optional[ChatRoom]:
