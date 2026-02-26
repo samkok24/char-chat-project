@@ -93,7 +93,7 @@ import { resolveHomeAbVariant } from '../lib/homeAb';
 
 const CHARACTER_PAGE_SIZE = 40;
 const QuickMeetCharacterModal = React.lazy(() => import('../components/QuickMeetCharacterModal'));
-const BUSINESS_INFO_TEXT = '라이크노벨 | 327-24-00954 | 17084 경기 용인시 기흥구 공세로 150-29, B01-J207호(공세동, 테라스가든) | 제 2020-성남분당C-0039호';
+const BUSINESS_INFO_TEXT = '문의 : 070-5157-3300 | 대표자명 : 이홍산, 유중희 | cha8.team@gmail.com';
 
 // ✅ 캐릭터 탭 고정 태그칩(요구사항): "모두" 옆에 롤플/시뮬/커스텀을 항상 노출
 // - 실제 필터는 서버에서 character_type으로 해석(태그 매핑이 없는 기존 데이터도 동작하도록)
