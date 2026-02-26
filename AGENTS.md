@@ -38,3 +38,12 @@
 ## 6) Review Priority
 - Prioritize findings by severity: `critical` → `high` → `medium` → `low`.
 - Focus on regressions, security risks, and broken user flows before style improvements.
+
+## 7) Git Release Workflow (Mandatory)
+- Unless the user explicitly overrides, always follow this release order:
+  1. Commit on `dev`
+  2. Push `dev`
+  3. Merge `dev` into `main`
+  4. Push `main`
+  5. Create and push version tag (e.g. `v1.5.8`)
+- Do not skip or reorder these steps.
