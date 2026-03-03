@@ -199,7 +199,7 @@ const HomePage = () => {
   // - 추후 검색 기능 복구 시 이 플래그만 true로 되돌리면 UI가 다시 노출된다.
   const SEARCH_UI_ENABLED = false;
   // ✅ 심사 대응: 홈 "캐릭터" 탭 비활성화(버튼/URL 진입 모두 차단)
-  const CHARACTER_TAB_ENABLED = false;
+  const CHARACTER_TAB_ENABLED = true;
   // ✅ 심사 대응: 홈 온보딩의 간편 캐릭터 생성 진입점(CTA/모달) 비노출
   const QUICK_MEET_ENABLED = false;
   const [searchQuery, setSearchQuery] = useState('');
