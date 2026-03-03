@@ -66,11 +66,16 @@ const formatKST = (iso) => {
       year: 'numeric',
       month: '2-digit',
       day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
     }).formatToParts(d);
     const y = parts.find((p) => p.type === 'year')?.value;
     const m = parts.find((p) => p.type === 'month')?.value;
     const dd = parts.find((p) => p.type === 'day')?.value;
-    return y && m && dd ? `${y}.${m}.${dd}` : '';
+    const hh = parts.find((p) => p.type === 'hour')?.value;
+    const mm = parts.find((p) => p.type === 'minute')?.value;
+    return y && m && dd && hh && mm ? `${y}.${m}.${dd} ${hh}:${mm}` : '';
   } catch {
     return '';
   }
