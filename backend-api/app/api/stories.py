@@ -1145,65 +1145,52 @@ async def get_stories(
     # 모든 스토리 ID 수집
     story_ids = [s.id for s in stories]
     
-    # episode_count / 최신 회차 업로드 시각 일괄 조회 (DB 집계 쿼리로 효율화)
+    # episode_count / 최신 회차 업로드 시각 일괄 조회 (집계 쿼리 1회로 통합)
     episode_counts = {}
     latest_chapter_created_at_map = {}
     if story_ids:
         try:
-            from app.models.story_chapter import StoryChapter
             rows = await db.execute(
-                select(StoryChapter.story_id, func.count(StoryChapter.id))
+                select(
+                    StoryChapter.story_id,
+                    func.count(StoryChapter.id).label("episode_count"),
+                    func.max(StoryChapter.created_at).label("latest_chapter_created_at"),
+                )
                 .where(StoryChapter.story_id.in_(story_ids))
                 .group_by(StoryChapter.story_id)
             )
-            episode_counts = {str(row[0]): row[1] for row in rows.all()}
+            for sid, episode_count, latest_created_at in rows.all():
+                key = str(sid)
+                episode_counts[key] = int(episode_count or 0)
+                latest_chapter_created_at_map[key] = latest_created_at
         except Exception:
             episode_counts = {}
-        try:
-            rows2 = await db.execute(
-                select(StoryChapter.story_id, func.max(StoryChapter.created_at))
-                .where(StoryChapter.story_id.in_(story_ids))
-                .group_by(StoryChapter.story_id)
-            )
-            latest_chapter_created_at_map = {str(row[0]): row[1] for row in rows2.all()}
-        except Exception:
             latest_chapter_created_at_map = {}
     
     # 모든 스토리의 extracted_characters에서 character_id 수집
-    all_char_ids = []
+    all_char_ids = set()
     for s in stories:
         for ec in (getattr(s, "extracted_characters", []) or []):
             char_id = getattr(ec, "character_id", None)
             if char_id:
-                all_char_ids.append(char_id)
+                all_char_ids.add(char_id)
     
-    # Character 모델 일괄 조회
+    # Character 최소 필드(id/avatar_url/is_public)만 일괄 조회
     char_map = {}
     if all_char_ids:
         try:
             char_rows = await db.execute(
-                select(Character).where(Character.id.in_(all_char_ids))
+                select(Character.id, Character.avatar_url, Character.is_public).where(Character.id.in_(all_char_ids))
             )
-            char_map = {str(c.id): c for c in char_rows.scalars().all()}
+            char_map = {
+                str(char_id): {
+                    "avatar_url": avatar_url,
+                    "is_public": is_public,
+                }
+                for char_id, avatar_url, is_public in char_rows.all()
+            }
         except Exception:
             char_map = {}
-    
-    # for s in stories:
-    #     for ec in (getattr(s, "extracted_characters", []) or []):
-    #         char_id = getattr(ec, "character_id", None)
-    #         if char_id:
-    #             all_char_ids.append(char_id)
-    
-    # # Character 모델 일괄 조회
-    # char_map = {}
-    # if all_char_ids:
-    #     try:
-    #         char_rows = await db.execute(
-    #             select(Character).where(Character.id.in_(all_char_ids))
-    #         )
-    #         char_map = {str(c.id): c for c in char_rows.scalars().all()}
-    #     except Exception:
-    #         char_map = {}
     
     for s in stories:
         try:
@@ -1249,7 +1236,7 @@ async def get_stories(
                     "name": ec.name,
                     "initial": ec.initial,
                     "avatar_url": (
-                        char_map[str(ec.character_id)].avatar_url
+                        char_map[str(ec.character_id)]["avatar_url"]
                         if (not ec.avatar_url)
                         and getattr(ec, "character_id", None)
                         and str(ec.character_id) in char_map
@@ -1261,7 +1248,7 @@ async def get_stories(
                 if not (
                     getattr(ec, "character_id", None)
                     and str(ec.character_id) in char_map
-                    and getattr(char_map.get(str(ec.character_id)), "is_public", True) == False
+                    and bool(char_map.get(str(ec.character_id), {}).get("is_public", True)) == False
                 )
             ]
         ))
