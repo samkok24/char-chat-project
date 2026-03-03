@@ -11,12 +11,10 @@ import { Heart } from 'lucide-react';
 import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
 import { Badge } from './ui/badge';
 import { formatCount } from '../lib/format';
-import { storiesAPI, charactersAPI } from '../lib/api';
+import { charactersAPI } from '../lib/api';
 import { useAuth } from '../contexts/AuthContext';
 import { replacePromptTokens } from '../lib/prompt';
 import { buildCharacterTagChipLabels } from '../lib/characterTagChips';
-const originStoryTitleCache = new Map();
-const originStoryTitleInFlight = new Map();
 
 /**
  * 캐릭터 카드(재사용 컴포넌트)
@@ -44,7 +42,6 @@ export const CharacterCard = ({
   const isFromOrigChat = !!(character?.origin_story_id || character?.is_origchat || character?.source === 'origchat');
   const borderClass = isFromOrigChat ? 'border-orange-500/60' : (isWebNovel ? 'border-blue-500/40' : 'border-purple-500/40');
   const hoverBorderClass = isFromOrigChat ? 'hover:border-orange-500' : (isWebNovel ? 'hover:border-blue-500' : 'hover:border-purple-500');
-  const [originTitle, setOriginTitle] = React.useState(character?.origin_story_title || '');
   // ✅ 초기 런칭 UX:
   // - "대화수"는 초기엔 0이 많아 '사람 없음'으로 읽히기 쉬워 카드에서 아예 숨긴다.
   // - 좋아요도 0이면 굳이 표시하지 않는다(>0일 때만 노출).
@@ -140,47 +137,6 @@ export const CharacterCard = ({
         .catch(() => {});
     } catch (_) {}
   }, [charId, variant, isFromOrigChat, isWebNovel, queryClient]);
-
-  React.useEffect(() => {
-    let active = true;
-    const fetchTitleIfNeeded = async () => {
-      if (!showOriginBadge) return;
-      const sid = String(character?.origin_story_id || '').trim();
-      if (!sid) return;
-      if (character?.origin_story_title) {
-        const initial = String(character.origin_story_title).trim();
-        if (!initial) return;
-        originStoryTitleCache.set(sid, initial);
-        setOriginTitle(initial);
-        return;
-      }
-
-      const cached = originStoryTitleCache.get(sid);
-      if (cached) {
-        setOriginTitle(cached);
-        return;
-      }
-
-      let pending = originStoryTitleInFlight.get(sid);
-      if (!pending) {
-        pending = storiesAPI
-          .getStory(sid)
-          .then((res) => String(res?.data?.title || '').trim())
-          .catch(() => '')
-          .finally(() => {
-            originStoryTitleInFlight.delete(sid);
-          });
-        originStoryTitleInFlight.set(sid, pending);
-      }
-
-      const title = await pending;
-      if (!active || !title) return;
-      originStoryTitleCache.set(sid, title);
-      setOriginTitle(title);
-    };
-    fetchTitleIfNeeded();
-    return () => { active = false; };
-  }, [showOriginBadge, character?.origin_story_id, character?.origin_story_title]);
 
   const avatarSrc = (() => {
     /**
@@ -304,7 +260,7 @@ export const CharacterCard = ({
     // - 원작챗 카드는 "크리에이터 닉네임"보다 "어떤 웹소설의 원작인지"가 더 중요한 정보다.
     // - 그래서 원작챗 격자에서는 크리에이터 닉네임 대신 "웹소설 원작 배지(원작 제목)"를 노출한다.
     const originStoryId = String(character?.origin_story_id || '').trim();
-    const originBadgeText = String(character?.origin_story_title || originTitle || '').trim() || '웹소설 원작';
+    const originBadgeText = String(character?.origin_story_title || '').trim() || '웹소설 원작';
 
     const creatorUsername = String(character?.creator_username || '').trim();
     const creatorId = String(character?.creator_id || '').trim();

@@ -520,6 +520,8 @@ class CharacterListResponse(BaseModel):
     chat_count: int
     like_count: int
     origin_story_id: Optional[uuid.UUID] = None
+    # 원작챗 카드/격자에서 원작 제목 배지 즉시 렌더용
+    origin_story_title: Optional[str] = None
     is_origchat: bool = False
     is_public: bool
     created_at: datetime
@@ -663,4 +665,3 @@ class CharacterSettingUpdate(BaseModel):
     max_tokens: Optional[int] = Field(None, ge=1)
     use_memory: Optional[bool] = None
     memory_length: Optional[int] = Field(None, ge=1)
-
