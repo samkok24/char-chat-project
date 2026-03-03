@@ -47,8 +47,9 @@ const TopStories = ({ title } = {}) => {
       if (isMobile || baseItems.length >= target) return baseItems;
 
       try {
-        const extraRes = await storiesAPI.getStories({ sort: 'views', limit: 60 });
-        const extraRaw = Array.isArray(extraRes?.data) ? extraRes.data : [];
+        // 보강 호출은 최소 범위로 제한해 홈 초기 과부하를 줄인다.
+        const extraRes = await storiesAPI.getStories({ sort: 'views', only: 'webnovel', limit: 20 });
+        const extraRaw = Array.isArray(extraRes?.data?.stories) ? extraRes.data.stories : [];
         const extraItems = extraRaw.filter((s) => !s?.is_webtoon);
         const seen = new Set(baseItems.map((x) => String(x?.id || '')));
         const merged = [...baseItems];

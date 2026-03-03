@@ -1145,8 +1145,9 @@ async def get_stories(
     # 모든 스토리 ID 수집
     story_ids = [s.id for s in stories]
     
-    # episode_count 일괄 조회 (DB COUNT 쿼리로 효율화)
+    # episode_count / 최신 회차 업로드 시각 일괄 조회 (DB 집계 쿼리로 효율화)
     episode_counts = {}
+    latest_chapter_created_at_map = {}
     if story_ids:
         try:
             from app.models.story_chapter import StoryChapter
@@ -1158,6 +1159,15 @@ async def get_stories(
             episode_counts = {str(row[0]): row[1] for row in rows.all()}
         except Exception:
             episode_counts = {}
+        try:
+            rows2 = await db.execute(
+                select(StoryChapter.story_id, func.max(StoryChapter.created_at))
+                .where(StoryChapter.story_id.in_(story_ids))
+                .group_by(StoryChapter.story_id)
+            )
+            latest_chapter_created_at_map = {str(row[0]): row[1] for row in rows2.all()}
+        except Exception:
+            latest_chapter_created_at_map = {}
     
     # 모든 스토리의 extracted_characters에서 character_id 수집
     all_char_ids = []
@@ -1197,7 +1207,8 @@ async def get_stories(
     
     for s in stories:
         try:
-            text = (s.content or "").strip()
+            # 목록 응답은 summary 기반 발췌만 사용해 본문(content) 로드 비용을 줄인다.
+            text = (s.summary or "").strip()
         except Exception:
             text = ""
         # 간단 발췌: 줄바꿈/공백 정리 후 앞부분 140자
@@ -1211,16 +1222,8 @@ async def get_stories(
                     tag_slugs.append(slug)
         except Exception:
             pass
-            # 최신 회차 업로드 시각
-        latest_chapter_created_at = None
-        try:
-            if getattr(s, "chapters", None):
-                latest_chapter_created_at = max(
-                    (c.created_at for c in s.chapters if getattr(c, "created_at", None)),
-                    default=None
-                )
-        except Exception:
-            latest_chapter_created_at = None
+        # 최신 회차 업로드 시각(회차 목록 eager-load 대신 집계맵 사용)
+        latest_chapter_created_at = latest_chapter_created_at_map.get(str(s.id))
         items.append(StoryListItem(
             id=s.id,
             title=s.title,

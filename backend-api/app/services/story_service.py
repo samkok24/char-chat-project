@@ -4,7 +4,7 @@
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, delete, func, and_, or_, insert
-from sqlalchemy.orm import selectinload, joinedload
+from sqlalchemy.orm import selectinload, joinedload, load_only
 from typing import List, Optional, Dict, Any
 import uuid
 import asyncio
@@ -469,11 +469,36 @@ async def get_public_stories(
     query = (
         select(Story)
         .options(
-            selectinload(Story.creator),
-            selectinload(Story.character),
-            selectinload(Story.chapters),
-            selectinload(Story.tags),
-            selectinload(Story.extracted_characters),
+            load_only(
+                Story.id,
+                Story.creator_id,
+                Story.character_id,
+                Story.title,
+                Story.summary,
+                Story.cover_url,
+                Story.genre,
+                Story.is_public,
+                Story.is_origchat,
+                Story.is_webtoon,
+                Story.like_count,
+                Story.view_count,
+                Story.comment_count,
+                Story.created_at,
+                Story.updated_at,
+            ),
+            selectinload(Story.creator).load_only(User.id, User.username, User.avatar_url),
+            selectinload(Story.character).load_only(Character.id, Character.name),
+            selectinload(Story.tags).load_only(Tag.id, Tag.slug),
+            selectinload(Story.extracted_characters).load_only(
+                StoryExtractedCharacter.id,
+                StoryExtractedCharacter.story_id,
+                StoryExtractedCharacter.name,
+                StoryExtractedCharacter.initial,
+                StoryExtractedCharacter.avatar_url,
+                StoryExtractedCharacter.character_id,
+                StoryExtractedCharacter.order_index,
+                StoryExtractedCharacter.created_at,
+            ),
         )
         .where(Story.is_public == True)
     )
