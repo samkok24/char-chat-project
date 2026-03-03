@@ -91,7 +91,8 @@ import {
 } from '../lib/cmsPopups';
 import { resolveHomeAbVariant } from '../lib/homeAb';
 
-const CHARACTER_PAGE_SIZE = 40;
+const CHARACTER_PAGE_SIZE_MOBILE = 12;
+const CHARACTER_PAGE_SIZE_DESKTOP = 20;
 const QuickMeetCharacterModal = React.lazy(() => import('../components/QuickMeetCharacterModal'));
 const BUSINESS_INFO_LINE_1 = '라이크노벨 | 327-24-00954 | 17084 경기 용인시 기흥구 공세로 150-29, B01-J207호(공세동, 테라스가든) | 제 2020-성남분당C-0039호';
 const BUSINESS_INFO_LINE_2 = '문의 : 070-5157-3300 | 대표자명 : 이홍산 | cha8.team@gmail.com';
@@ -180,6 +181,10 @@ const HomePage = () => {
     };
   }, []);
   const explorePageStep = useMemo(() => getExploreStepByWidth(viewportWidth), [viewportWidth]);
+  const characterPageSize = useMemo(
+    () => (isMobile ? CHARACTER_PAGE_SIZE_MOBILE : CHARACTER_PAGE_SIZE_DESKTOP),
+    [isMobile]
+  );
   // 모바일 "4개 격자 + <> 페이지"용: 구좌별 페이지 상태
   const [slotPageById, setSlotPageById] = React.useState({});
   const shiftSlotPage = React.useCallback((slotId, delta, pageCount) => {
@@ -1198,9 +1203,9 @@ const HomePage = () => {
   //   - 데스크탑: 12개씩 추가(2줄 단위)
   const EXPLORE_PAGE_SIZE = 12;
   // ✅ 캐릭터탭 첫 렌더 체감 개선:
-  // - 기존 limit=12는 캐릭터탭의 초기 40개 노출을 위해 연속 3~4회 호출이 필요해 RTT 누적이 컸다.
-  // - 캐릭터탭에서는 1회에 40개를 가져오고, 메인탭/탐색은 기존 12개 정책을 유지한다.
-  const characterFetchLimit = isCharacterTab ? CHARACTER_PAGE_SIZE : EXPLORE_PAGE_SIZE;
+  // - 모바일 12개, 데스크톱 20개로 첫 호출량을 낮춰 초기 대기시간을 줄인다.
+  // - 메인탭/탐색은 기존 12개 정책을 유지한다.
+  const characterFetchLimit = isCharacterTab ? characterPageSize : EXPLORE_PAGE_SIZE;
   const [exploreVisibleCount, setExploreVisibleCount] = useState(() => {
     try { return getExploreStepByWidth(window.innerWidth); } catch (_) { return 10; }
   });
@@ -1325,7 +1330,7 @@ const HomePage = () => {
   /**
    * 캐릭터 탭 1페이지 프리패치
    * - 목적: 탭 전환 직후 빈 로딩 대기 시간을 줄인다.
-   * - 범위: 캐릭터 탭 첫 페이지(40개)만 선로딩한다.
+   * - 범위: 캐릭터 탭 첫 페이지(모바일 12 / 데스크톱 20)만 선로딩한다.
    */
   const prefetchCharacterTabFirstPage = useCallback(() => {
     try {
@@ -1333,7 +1338,7 @@ const HomePage = () => {
       const signature = `${String(searchQuery || '').trim()}::${String(effectiveTagsKey || '').trim()}`;
       if (characterTabPrefetchSigRef.current === signature) return;
 
-      const queryKey = ['characters', 'infinite', searchQuery, effectiveTagsKey, 'ORIGINAL', CHARACTER_PAGE_SIZE];
+      const queryKey = ['characters', 'infinite', searchQuery, effectiveTagsKey, 'ORIGINAL', characterPageSize];
       const cached = queryClient.getQueryState(queryKey);
       if (cached?.data) {
         characterTabPrefetchSigRef.current = signature;
@@ -1349,14 +1354,14 @@ const HomePage = () => {
               const response = await charactersAPI.getCharacters({
                 search: searchQuery || undefined,
                 skip: pageParam,
-                limit: CHARACTER_PAGE_SIZE,
+                limit: characterPageSize,
                 tags: effectiveTags.length ? effectiveTags.join(',') : undefined,
                 source_type: 'ORIGINAL',
               });
               const items = response?.data || [];
               return {
                 items,
-                nextSkip: items.length === CHARACTER_PAGE_SIZE ? pageParam + CHARACTER_PAGE_SIZE : null,
+                nextSkip: items.length === characterPageSize ? pageParam + characterPageSize : null,
               };
             },
             getNextPageParam: (lastPage) => lastPage?.nextSkip ?? undefined,
@@ -1376,7 +1381,7 @@ const HomePage = () => {
         run();
       }
     } catch (_) {}
-  }, [CHARACTER_TAB_ENABLED, queryClient, searchQuery, effectiveTagsKey, effectiveTags]);
+  }, [CHARACTER_TAB_ENABLED, queryClient, searchQuery, effectiveTagsKey, effectiveTags, characterPageSize]);
 
   // 메인 탭 유휴 시점에 캐릭터 탭 첫 페이지를 선로딩한다.
   useEffect(() => {
@@ -1729,8 +1734,8 @@ const HomePage = () => {
 
   const totalCharacterPages = React.useMemo(() => {
     if (!isCharacterTab) return 1;
-    return Math.max(1, Math.ceil(generalCharacters.length / CHARACTER_PAGE_SIZE));
-  }, [isCharacterTab, generalCharacters.length]);
+    return Math.max(1, Math.ceil(generalCharacters.length / characterPageSize));
+  }, [isCharacterTab, generalCharacters.length, characterPageSize]);
 
   // 페이지 범위 보정
   useEffect(() => {
@@ -1745,7 +1750,7 @@ const HomePage = () => {
   // 캐릭터 탭에서 필요한 만큼 데이터 확보
   useEffect(() => {
     if (!isCharacterTab) return;
-    const requiredItems = characterPage * CHARACTER_PAGE_SIZE;
+    const requiredItems = characterPage * characterPageSize;
     if (generalCharacters.length >= requiredItems) return;
     if (!hasNextPage || isFetchingNextPage) return;
     if (characterTabAutoFetchLockRef.current) return;
@@ -1771,7 +1776,7 @@ const HomePage = () => {
    * ✅ 캐릭터 탭 무한스크롤(페이지네이션 제거)
    *
    * 원리:
-   * - 하단 센티넬이 뷰포트에 들어오면 `characterPage`를 +1 해서 "다음 묶음(40개)"을 누적 노출한다.
+   * - 하단 센티넬이 뷰포트에 들어오면 `characterPage`를 +1 해서 "다음 묶음(12/20개)"을 누적 노출한다.
    * - 데이터가 부족하면 위의 "필요한 만큼 데이터 확보" effect가 `fetchNextPage()`로 채운다.
    */
   useEffect(() => {
@@ -1789,7 +1794,7 @@ const HomePage = () => {
         if (!first?.isIntersecting) return;
         if (isFetchingNextPage) return;
 
-        const nextEnd = (characterPage + 1) * CHARACTER_PAGE_SIZE;
+        const nextEnd = (characterPage + 1) * characterPageSize;
         const hasMoreLoaded = generalCharacters.length >= nextEnd;
         const canFetchMore = !!hasNextPage;
         if (!hasMoreLoaded && !canFetchMore) return;
@@ -1820,7 +1825,8 @@ const HomePage = () => {
     isFetchingNextPage,
     hasNextPage,
     characterPage,
-    generalCharacters.length
+    generalCharacters.length,
+    characterPageSize
   ]);
 
   /**
@@ -2025,8 +2031,8 @@ const HomePage = () => {
 
   const displayGridItems = React.useMemo(() => {
     if (isCharacterTab) {
-      // ✅ 캐릭터탭: 무한스크롤(누적) - 1페이지/2페이지...가 아니라 40개씩 점진적으로 "쌓아서" 보여준다.
-      const end = characterPage * CHARACTER_PAGE_SIZE;
+      // ✅ 캐릭터탭: 무한스크롤(누적) - 1페이지/2페이지...가 아니라 12/20개씩 점진적으로 "쌓아서" 보여준다.
+      const end = characterPage * characterPageSize;
       const slice = generalCharacters.slice(0, end);
       return slice.map((c) => ({ kind: 'character', data: c }));
     }
@@ -2036,12 +2042,12 @@ const HomePage = () => {
     return mixedItems.length
       ? mixedItems
       : characters.map((c) => ({ kind: 'character', data: c }));
-  }, [isCharacterTab, isOrigSerialTab, generalCharacters, origSerialCharacters, mixedItems, characters, characterPage]);
+  }, [isCharacterTab, isOrigSerialTab, generalCharacters, origSerialCharacters, mixedItems, characters, characterPage, characterPageSize]);
 
   /**
    * 메인탭 탐색 그리드 노출 개수 제어
    * - "메인탭 탐색영역"에서는 초기 20개만 보이고, 더보기 버튼을 누를 때마다 20개씩 추가 노출한다.
-   * - 캐릭터 탭(페이지네이션)은 기존 동작 유지(40개/페이지).
+   * - 캐릭터 탭은 viewport 기준(12/20개)으로 누적 로드를 유지한다.
    */
   useEffect(() => {
     if (isCharacterTab || isOrigSerialTab) return;
@@ -3533,14 +3539,14 @@ const HomePage = () => {
 
                 {/* ✅ 캐릭터 탭: 무한스크롤 센티넬(하단 진입 시 다음 묶음 누적 노출) */}
                 {isCharacterTab &&
-                  (hasNextPage || generalCharacters.length > characterPage * CHARACTER_PAGE_SIZE) && (
+                  (hasNextPage || generalCharacters.length > characterPage * characterPageSize) && (
                     <div ref={characterTabSentinelRef} className="h-10" aria-hidden="true" />
                   )}
 
                 {/* ✅ IO 미지원(극소수) fallback: 버튼으로 누적 로드 */}
                 {isCharacterTab &&
                   !supportsIntersectionObserver &&
-                  (hasNextPage || generalCharacters.length > characterPage * CHARACTER_PAGE_SIZE) && (
+                  (hasNextPage || generalCharacters.length > characterPage * characterPageSize) && (
                     <div className="mt-8 flex justify-center">
                       <button
                         type="button"
