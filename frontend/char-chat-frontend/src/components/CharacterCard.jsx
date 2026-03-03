@@ -192,7 +192,8 @@ export const CharacterCard = ({
      * - 캐시 버스터는 "안정적인 버전 키"(updated_at/created_at)로만 붙인다.
      * - 버전 키가 없으면 URL을 그대로 사용해 캐시를 살린다.
      */
-    const base = String(character?.avatar_url || character?.thumbnail_url || '').trim();
+    // 격자 성능 최적화: 가능한 경우 thumbnail_url을 우선 사용한다.
+    const base = String(character?.thumbnail_url || character?.avatar_url || '').trim();
     if (!base) return DEFAULT_SQUARE_URI;
     // data: URL은 버전 파라미터를 붙이면 더 무거워질 수 있어 그대로 사용
     if (/^data:/i.test(base)) return resolveImageUrl(base) || base;
@@ -213,6 +214,8 @@ export const CharacterCard = ({
       if (Number.isFinite(t) && t > 0) ver = String(t);
     } catch (_) {}
 
+    // 이미 v 파라미터가 있으면 중복 부착하지 않아 캐시 키 분산을 막는다.
+    if (/[?&]v=/.test(base)) return resolveImageUrl(base) || base || DEFAULT_SQUARE_URI;
     const joined = `${base}${base.includes('?') ? '&' : '?'}v=${encodeURIComponent(ver)}`;
     return resolveImageUrl(joined) || joined || DEFAULT_SQUARE_URI;
   })();
@@ -307,7 +310,8 @@ export const CharacterCard = ({
     const creatorId = String(character?.creator_id || '').trim();
     const showCreator = Boolean(creatorUsername && creatorId);
     const badgeLabels = buildCharacterTagChipLabels({ character, tags: character?.tags });
-    const showBadges = Array.isArray(badgeLabels) && badgeLabels.length > 0;
+    // 원작챗 격자는 태그칩을 숨긴다(요구사항).
+    const showBadges = !isFromOrigChat && Array.isArray(badgeLabels) && badgeLabels.length > 0;
 
     return (
       <div
@@ -482,6 +486,7 @@ export const CharacterCard = ({
 
       {/* ✅ 격자 배지(롤플/시뮬/커스텀 → 남성향/여성향) */}
       {(() => {
+        if (isFromOrigChat) return null;
         const badgeLabels = buildCharacterTagChipLabels({ character, tags: character?.tags });
         if (!Array.isArray(badgeLabels) || badgeLabels.length <= 0) return null;
         return (
