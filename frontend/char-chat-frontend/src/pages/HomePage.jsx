@@ -1320,6 +1320,70 @@ const HomePage = () => {
   );
 
   const visibleTags = showAllTags ? arrangedTags : arrangedTags.slice(0, visibleTagLimit);
+  const characterTabPrefetchSigRef = useRef('');
+
+  /**
+   * 캐릭터 탭 1페이지 프리패치
+   * - 목적: 탭 전환 직후 빈 로딩 대기 시간을 줄인다.
+   * - 범위: 캐릭터 탭 첫 페이지(40개)만 선로딩한다.
+   */
+  const prefetchCharacterTabFirstPage = useCallback(() => {
+    try {
+      if (!CHARACTER_TAB_ENABLED) return;
+      const signature = `${String(searchQuery || '').trim()}::${String(effectiveTagsKey || '').trim()}`;
+      if (characterTabPrefetchSigRef.current === signature) return;
+
+      const queryKey = ['characters', 'infinite', searchQuery, effectiveTagsKey, 'ORIGINAL', CHARACTER_PAGE_SIZE];
+      const cached = queryClient.getQueryState(queryKey);
+      if (cached?.data) {
+        characterTabPrefetchSigRef.current = signature;
+        return;
+      }
+
+      const run = () => {
+        queryClient
+          .prefetchInfiniteQuery({
+            queryKey,
+            initialPageParam: 0,
+            queryFn: async ({ pageParam = 0 }) => {
+              const response = await charactersAPI.getCharacters({
+                search: searchQuery || undefined,
+                skip: pageParam,
+                limit: CHARACTER_PAGE_SIZE,
+                tags: effectiveTags.length ? effectiveTags.join(',') : undefined,
+                source_type: 'ORIGINAL',
+              });
+              const items = response?.data || [];
+              return {
+                items,
+                nextSkip: items.length === CHARACTER_PAGE_SIZE ? pageParam + CHARACTER_PAGE_SIZE : null,
+              };
+            },
+            getNextPageParam: (lastPage) => lastPage?.nextSkip ?? undefined,
+            staleTime: 60 * 1000,
+          })
+          .catch(() => {});
+      };
+
+      characterTabPrefetchSigRef.current = signature;
+      try {
+        if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
+          window.requestIdleCallback(() => run(), { timeout: 1200 });
+        } else {
+          window.setTimeout(run, 0);
+        }
+      } catch (_) {
+        run();
+      }
+    } catch (_) {}
+  }, [CHARACTER_TAB_ENABLED, queryClient, searchQuery, effectiveTagsKey, effectiveTags]);
+
+  // 메인 탭 유휴 시점에 캐릭터 탭 첫 페이지를 선로딩한다.
+  useEffect(() => {
+    if (!CHARACTER_TAB_ENABLED) return;
+    if (isCharacterTab || isOrigSerialTab) return;
+    prefetchCharacterTabFirstPage();
+  }, [CHARACTER_TAB_ENABLED, isCharacterTab, isOrigSerialTab, prefetchCharacterTabFirstPage]);
 
   const {
     data: characterPages,
@@ -1453,6 +1517,65 @@ const HomePage = () => {
 
   // 원작연재 탭용 스토리 무한스크롤
   const STORY_LIMIT = 20;
+  const webnovelTabPrefetchSigRef = useRef('');
+
+  /**
+   * 웹소설 탭 1페이지 프리패치
+   * - 목적: 웹소설 탭 전환 직후 목록 대기시간을 줄인다.
+   * - 범위: 첫 페이지만 선로딩(과도한 트래픽 방지).
+   */
+  const prefetchWebnovelTabFirstPage = useCallback(() => {
+    try {
+      const signature = String(searchQuery || '').trim();
+      if (webnovelTabPrefetchSigRef.current === signature) return;
+
+      const queryKey = ['serial-stories', 'infinite', searchQuery];
+      const cached = queryClient.getQueryState(queryKey);
+      if (cached?.data) {
+        webnovelTabPrefetchSigRef.current = signature;
+        return;
+      }
+
+      const run = () => {
+        queryClient
+          .prefetchInfiniteQuery({
+            queryKey,
+            initialPageParam: 0,
+            queryFn: async ({ pageParam = 0 }) => {
+              const params = {
+                skip: pageParam,
+                limit: STORY_LIMIT,
+                sort: 'recent',
+              };
+              const trimmed = searchQuery?.trim();
+              if (trimmed) params.search = trimmed;
+              const res = await storiesAPI.getStories(params);
+              const list = Array.isArray(res.data?.stories) ? res.data.stories : [];
+              const filtered = list.filter(s => !s?.is_webtoon && s?.is_public !== false);
+              return {
+                items: filtered,
+                nextSkip: list.length === STORY_LIMIT ? pageParam + STORY_LIMIT : null,
+              };
+            },
+            getNextPageParam: (lastPage) => lastPage?.nextSkip ?? undefined,
+            staleTime: 30 * 1000,
+          })
+          .catch(() => {});
+      };
+
+      webnovelTabPrefetchSigRef.current = signature;
+      try {
+        if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
+          window.requestIdleCallback(() => run(), { timeout: 1200 });
+        } else {
+          window.setTimeout(run, 0);
+        }
+      } catch (_) {
+        run();
+      }
+    } catch (_) {}
+  }, [queryClient, searchQuery]);
+
   const {
     data: serialStoryPages,
     isLoading: serialStoriesLoading,
@@ -1489,6 +1612,12 @@ const HomePage = () => {
     cacheTime: 10 * 60 * 1000,
     enabled: isOrigSerialTab && origSerialTab === 'novel', // 원작챗 서브탭에서는 불필요 호출 차단
   });
+
+  // 메인/다른 탭에 있을 때 유휴 시점에 웹소설 탭 첫 페이지를 선로딩한다.
+  useEffect(() => {
+    if (isOrigSerialTab) return;
+    prefetchWebnovelTabFirstPage();
+  }, [isOrigSerialTab, prefetchWebnovelTabFirstPage]);
 
   // const serialStories = (serialStoryPages?.pages || []).flatMap(p => p.items);
   // const novelStories = React.useMemo(
@@ -2817,6 +2946,8 @@ const HomePage = () => {
                 <button
                   type="button"
                   onClick={() => updateTab('ORIGSERIAL', 'origserial')}
+                  onMouseEnter={prefetchWebnovelTabFirstPage}
+                  onFocus={prefetchWebnovelTabFirstPage}
                   className={[
                     'relative -mb-px px-1 py-2 text-base sm:text-lg font-semibold transition-colors',
                     isOrigSerialTab
@@ -2883,6 +3014,8 @@ const HomePage = () => {
                   <button
                     type="button"
                     onClick={() => updateTab('ORIGINAL', 'character')}
+                    onMouseEnter={prefetchCharacterTabFirstPage}
+                    onFocus={prefetchCharacterTabFirstPage}
                     className={[
                       'relative -mb-px px-1 py-2 text-base sm:text-lg font-semibold transition-colors',
                       'border-b-2',
