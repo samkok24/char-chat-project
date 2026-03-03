@@ -472,20 +472,39 @@ const ChapterReaderPage = () => {
                 회차 이용 방식을 선택해 주세요
               </AlertDialogDescription>
             </AlertDialogHeader>
+            <div className="flex items-center justify-center gap-1.5 text-sm text-gray-300">
+              <span>현재 보유</span>
+              <Gem className="w-4 h-4 text-pink-400" />
+              <span className="font-medium text-white">
+                {rubyBalance == null ? '-' : Number(rubyBalance).toLocaleString()}
+              </span>
+            </div>
             <div className="space-y-2">
               <AlertDialogAction
                 className="w-full bg-pink-600 hover:bg-pink-700 text-white text-sm"
                 disabled={purchasing}
                 onClick={(e) => { e.preventDefault(); executeOwnPurchase(); }}
               >
-                {purchasing ? '소장 처리 중...' : `소장 ${CHAPTER_OWN_COST}`}
+                {purchasing ? (
+                  '소장 처리 중...'
+                ) : (
+                  <span className="inline-flex items-center gap-1.5">
+                    <span>소장</span>
+                    <Gem className="w-3.5 h-3.5" />
+                    <span>{CHAPTER_OWN_COST}</span>
+                  </span>
+                )}
               </AlertDialogAction>
               <AlertDialogAction
                 className="w-full bg-gray-700 hover:bg-gray-600 text-white text-sm"
                 disabled={purchasing}
                 onClick={(e) => { e.preventDefault(); executeRent(); }}
               >
-                대여 {CHAPTER_RENT_COST}
+                <span className="inline-flex items-center gap-1.5">
+                  <span>대여</span>
+                  <Gem className="w-3.5 h-3.5" />
+                  <span>{CHAPTER_RENT_COST}</span>
+                </span>
               </AlertDialogAction>
               <AlertDialogCancel
                 className="w-full bg-transparent border border-gray-700 text-gray-200 hover:bg-gray-800 text-sm"
@@ -744,20 +763,39 @@ const ChapterReaderPage = () => {
                 회차 이용 방식을 선택해 주세요
               </AlertDialogDescription>
             </AlertDialogHeader>
+            <div className="flex items-center justify-center gap-1.5 text-sm text-gray-300">
+              <span>현재 보유</span>
+              <Gem className="w-4 h-4 text-pink-400" />
+              <span className="font-medium text-white">
+                {rubyBalance == null ? '-' : Number(rubyBalance).toLocaleString()}
+              </span>
+            </div>
             <div className="space-y-2">
               <AlertDialogAction
                 className="w-full bg-pink-600 hover:bg-pink-700 text-white text-sm"
                 disabled={purchasing}
                 onClick={(e) => { e.preventDefault(); executeOwnPurchase(); }}
               >
-                {purchasing ? '소장 처리 중...' : `소장 ${CHAPTER_OWN_COST}`}
+                {purchasing ? (
+                  '소장 처리 중...'
+                ) : (
+                  <span className="inline-flex items-center gap-1.5">
+                    <span>소장</span>
+                    <Gem className="w-3.5 h-3.5" />
+                    <span>{CHAPTER_OWN_COST}</span>
+                  </span>
+                )}
               </AlertDialogAction>
               <AlertDialogAction
                 className="w-full bg-gray-700 hover:bg-gray-600 text-white text-sm"
                 disabled={purchasing}
                 onClick={(e) => { e.preventDefault(); executeRent(); }}
               >
-                대여 {CHAPTER_RENT_COST}
+                <span className="inline-flex items-center gap-1.5">
+                  <span>대여</span>
+                  <Gem className="w-3.5 h-3.5" />
+                  <span>{CHAPTER_RENT_COST}</span>
+                </span>
               </AlertDialogAction>
               <AlertDialogCancel
                 className="w-full bg-transparent border border-gray-700 text-gray-200 hover:bg-gray-800 text-sm"

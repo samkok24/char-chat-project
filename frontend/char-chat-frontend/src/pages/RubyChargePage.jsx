@@ -8,6 +8,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { pointAPI, paymentAPI } from '../lib/api';
 import { showToastOnce } from '../lib/toastOnce';
+import { getCachedRubyBalance, setCachedRubyBalance } from '../lib/rubyBalanceCache';
 import AppLayout from '../components/layout/AppLayout';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
@@ -29,13 +30,8 @@ const RUBY_PRODUCTS_FALLBACK = [
 ];
 const PAYMENT_PRIMARY_METHOD_OPTIONS = [
   { key: 'card', label: '신용카드' },
-  { key: 'bank', label: '계좌이체' },
 ];
-const PAYMENT_EASY_METHOD_OPTIONS = [
-  { key: 'kakaopay', label: '카카오페이' },
-  { key: 'naverpayCard', label: '네이버페이' },
-  { key: 'samsungpayCard', label: '삼성페이' },
-];
+const PAYMENT_EASY_METHOD_OPTIONS = [];
 
 const NICEPAY_JS_SDK_URL = 'https://pay.nicepay.co.kr/v1/js/';
 const PAYMENT_PROCESSING_TIMEOUT_MS = 180000;
@@ -73,6 +69,7 @@ const RubyChargePage = () => {
   const { user } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  const activeUserId = String(user?.id || '').trim();
 
   /* ── State ── */
   const [activeTab, setActiveTab] = useState('charge');
@@ -82,8 +79,11 @@ const RubyChargePage = () => {
   const [selectedProduct, setSelectedProduct] = useState('');
   const [payMethod, setPayMethod] = useState('card');
   const [isProcessing, setIsProcessing] = useState(false);
-  const [balance, setBalance] = useState(0);
-  const [balanceLoading, setBalanceLoading] = useState(true);
+  const [balance, setBalance] = useState(() => {
+    const cached = getCachedRubyBalance(activeUserId);
+    return cached ?? 0;
+  });
+  const [balanceLoading, setBalanceLoading] = useState(() => getCachedRubyBalance(activeUserId) === null);
   const [timerCurrent, setTimerCurrent] = useState(0);
   const [timerMax, setTimerMax] = useState(15);
   const [timerNextSeconds, setTimerNextSeconds] = useState(0);
@@ -109,11 +109,35 @@ const RubyChargePage = () => {
 
   useEffect(() => () => clearProcessingWatchdog(), [clearProcessingWatchdog]);
 
+  const applyBalance = useCallback((raw) => {
+    const nextBalance = Number(raw ?? 0);
+    setBalance(nextBalance);
+    if (activeUserId) {
+      setCachedRubyBalance(activeUserId, nextBalance);
+    }
+    window.dispatchEvent(new CustomEvent('ruby:balanceChanged', { detail: { balance: nextBalance, source: 'ruby-charge' } }));
+    return nextBalance;
+  }, [activeUserId]);
+
+  useEffect(() => {
+    if (!activeUserId) {
+      setBalance(0);
+      setBalanceLoading(false);
+      return;
+    }
+    const cached = getCachedRubyBalance(activeUserId);
+    if (cached === null) {
+      setBalanceLoading(true);
+      return;
+    }
+    setBalance(cached);
+    setBalanceLoading(false);
+  }, [activeUserId]);
+
   const refreshRubyBalance = useCallback(async () => {
     const res = await pointAPI.getBalance();
-    setBalance(res.data?.balance ?? 0);
-    window.dispatchEvent(new CustomEvent('ruby:balanceChanged'));
-  }, []);
+    applyBalance(res.data?.balance ?? 0);
+  }, [applyBalance]);
 
   useEffect(() => {
     let mounted = true;
@@ -205,7 +229,7 @@ const RubyChargePage = () => {
   }, [location.pathname, location.search, navigate, refreshRubyBalance, releaseProcessing]);
 
   useEffect(() => {
-    if (!user) return;
+    if (!activeUserId) return;
     let pending = null;
     try {
       pending = sessionStorage.getItem(PENDING_RUBY_REFRESH_KEY);
@@ -222,17 +246,17 @@ const RubyChargePage = () => {
         // 다음 진입/리렌더에서 재시도
       }
     })();
-  }, [refreshRubyBalance, user]);
+  }, [activeUserId, refreshRubyBalance]);
 
   /* ── 초기 데이터 로드 ── */
   useEffect(() => {
     let mounted = true;
 
-    if (!user) { setBalanceLoading(false); return; }
+    if (!activeUserId) { setBalanceLoading(false); return; }
     (async () => {
       try {
         const res = await pointAPI.getBalance();
-        if (mounted) setBalance(res.data?.balance ?? 0);
+        if (mounted) applyBalance(res.data?.balance ?? 0);
       } catch {
         // fallback
       } finally {
@@ -257,7 +281,7 @@ const RubyChargePage = () => {
       }
     })();
     return () => { mounted = false; };
-  }, [user]);
+  }, [activeUserId, applyBalance]);
 
   // 1초 카운트다운(표시용)
   useEffect(() => {
@@ -333,7 +357,7 @@ const RubyChargePage = () => {
       const checkoutRes = await paymentAPI.checkout({
         product_id: product.id,
         return_url: `${window.location.origin}/ruby/charge`,
-        method: payMethod,
+        method: 'card',
       });
       const payload = checkoutRes?.data?.request_payload;
 
@@ -381,8 +405,14 @@ const RubyChargePage = () => {
       const res = await pointAPI.checkIn();
       setCheckedIn(true);
       const reward = res.data?.reward ?? 10;
-      setBalance((prev) => prev + reward);
-      window.dispatchEvent(new CustomEvent('ruby:balanceChanged'));
+      const serverBalance = Number(res?.data?.balance);
+      if (Number.isFinite(serverBalance)) {
+        applyBalance(serverBalance);
+      } else {
+        const cached = getCachedRubyBalance(activeUserId);
+        const base = Number.isFinite(cached) ? cached : Number(balance || 0);
+        applyBalance(base + reward);
+      }
       window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'success', message: `출석체크 완료! +${reward} 루비` } }));
     } catch (e) {
       const status = e?.response?.status;
@@ -394,7 +424,7 @@ const RubyChargePage = () => {
     } finally {
       setCheckingIn(false);
     }
-  }, []);
+  }, [activeUserId, applyBalance, balance]);
 
   const selected = products.find(p => p.id === selectedProduct);
   const timerNextMinutes = Math.floor(timerNextSeconds / 60);
@@ -645,6 +675,7 @@ const RubyChargePage = () => {
               <p>• 결제일(승인일) 포함 7일 이내, 해당 결제로 충전된 유상 루비 미사용 건은 환불 요청이 가능합니다.</p>
               <p>• 일부 사용 시 환불액 = 결제금액 × (미사용 유상 루비 ÷ 해당 결제 유상 루비) 기준으로 산정됩니다.</p>
               <p>• 이벤트/보너스 등 무상 지급 루비는 환불 대상에서 제외됩니다.</p>
+              <p>• 카드결제를 통한 구매 건의 환불은 원칙적으로 카드 매출 취소 환불을 통해서만 가능합니다.</p>
               <p>• 주관적인 답변 생성의 불만족으로 인한 환불은 불가능합니다.</p>
               <p>• 환불 접수 후 영업일 기준 7일 이내 처리 결과를 안내합니다.</p>
               <p>• 루비는 획득 시점으로부터 1년 이내에 사용할 수 있습니다.</p>
