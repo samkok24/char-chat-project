@@ -377,10 +377,19 @@ const HomePage = () => {
 
     const onBannerReady = (e) => {
       try {
-        if (Number(perfState.bannerAt) > 0) return;
+        const nextReason = String(e?.detail?.reason || '').trim() || 'unknown';
+        if (Number(perfState.bannerAt) > 0) {
+          const prevReason = String(perfState.bannerReason || '').trim() || 'unknown';
+          const prevIsProvisional =
+            prevReason === 'banner-without-image' ||
+            prevReason === 'no-active-banner' ||
+            prevReason === 'unknown';
+          const nextIsDefinitive = nextReason === 'image-loaded' || nextReason === 'image-error';
+          if (!(prevIsProvisional && nextIsDefinitive)) return;
+        }
         const at = Number(e?.detail?.at);
         perfState.bannerAt = Number.isFinite(at) && at > 0 ? at : now();
-        perfState.bannerReason = String(e?.detail?.reason || '').trim() || 'unknown';
+        perfState.bannerReason = nextReason;
       } catch (_) {
         perfState.bannerAt = now();
         perfState.bannerReason = 'unknown';
@@ -625,6 +634,7 @@ const HomePage = () => {
   useEffect(() => {
     let active = true;
     const load = async () => {
+      if (!CHARACTER_TAB_ENABLED) return;
       try {
         const res = await cmsAPI.getCharacterTagDisplay();
         if (!active) return;
@@ -665,6 +675,10 @@ const HomePage = () => {
   useEffect(() => {
     let active = true;
     const load = async () => {
+      let tabByUrl = '';
+      try { tabByUrl = String(new URLSearchParams(location.search).get('tab') || ''); } catch (_) {}
+      const isMainByUrl = !(tabByUrl === 'origserial' || (tabByUrl === 'character' && CHARACTER_TAB_ENABLED));
+      if (!isMainByUrl) return;
       try {
         const res = await cmsAPI.getHomeSlots();
         if (!active) return;
@@ -690,7 +704,7 @@ const HomePage = () => {
     };
     load();
     return () => { active = false; };
-  }, [refreshHomeSlots, isAdmin]);
+  }, [refreshHomeSlots, isAdmin, location.search]);
 
   // ===== CMS 홈 팝업 설정(운영 SSOT + 유저 로컬 "N일간 안보기") =====
   const [homePopupsConfig, setHomePopupsConfigState] = useState(() => {
@@ -1315,6 +1329,8 @@ const HomePage = () => {
     fetchNextPage
   } = useInfiniteQuery({
     queryKey: ['characters', 'infinite', searchQuery, effectiveTagsKey, sourceFilter, characterFetchLimit],
+    // 렌더 기준(sourceFilter 상태)과 동일하게 탭별 활성화 기준을 맞춘다.
+    enabled: !isOrigSerialTab,
     queryFn: async ({ pageParam = 0 }) => {
       try {
         const response = await charactersAPI.getCharacters({
@@ -1452,6 +1468,7 @@ const HomePage = () => {
           skip: pageParam,
           limit: STORY_LIMIT,
           sort: 'recent', // 최근 업데이트순
+          only: 'webnovel', // 서버에서 선필터링해 응답/정렬 비용 축소
         };
         const trimmed = searchQuery?.trim();
         if (trimmed) params.search = trimmed;
@@ -1471,7 +1488,7 @@ const HomePage = () => {
     getNextPageParam: (lastPage) => lastPage.nextSkip,
     staleTime: 30 * 1000,
     cacheTime: 10 * 60 * 1000,
-    enabled: isOrigSerialTab, // 원작연재 탭일 때만 쿼리 실행
+    enabled: isOrigSerialTab && origSerialTab === 'novel', // 원작챗 서브탭에서는 불필요 호출 차단
   });
 
   // const serialStories = (serialStoryPages?.pages || []).flatMap(p => p.items);
@@ -1519,7 +1536,8 @@ const HomePage = () => {
         return list.filter(s => s?.is_public !== false);
       } catch (_) { return []; }
     },
-    enabled: !isOrigSerialTabByUrl,
+    // 렌더 기준(sourceFilter 상태)과 동일하게 메인 탭에서만 호출한다.
+    enabled: !isCharacterTab && !isOrigSerialTab,
     staleTime: 60 * 1000,
     refetchOnMount: false,
   });
@@ -2168,7 +2186,7 @@ const HomePage = () => {
                   const name = String(char?.name || '').trim() || '이름 없음';
                   const rawDesc = String(char?.description || '').trim();
                   const title = replacePromptTokens(rawDesc, { assistantName: name || '캐릭터', userName: '당신' }).trim();
-                  const baseImg = char?.avatar_url || char?.thumbnail_url || '';
+                  const baseImg = char?.thumbnail_url || char?.avatar_url || '';
                   const imgSrc =
                     getThumbnailUrl(baseImg, 240) ||
                     resolveImageUrl(baseImg) ||
@@ -2254,7 +2272,7 @@ const HomePage = () => {
                   const name = String(char?.name || '').trim() || '이름 없음';
                   const rawDesc = String(char?.description || '').trim();
                   const title = replacePromptTokens(rawDesc, { assistantName: name || '캐릭터', userName: '당신' }).trim();
-                  const baseImg = char?.avatar_url || char?.thumbnail_url || '';
+                  const baseImg = char?.thumbnail_url || char?.avatar_url || '';
                   const imgSrc =
                     getThumbnailUrl(baseImg, 240) ||
                     resolveImageUrl(baseImg) ||
