@@ -443,6 +443,7 @@ async def get_characters_by_creator(
         .options(
             joinedload(Character.creator),
             selectinload(Character.tags),
+            selectinload(Character.origin_story),
         )
         .where(Character.creator_id == creator_id)
     )
@@ -507,6 +508,7 @@ async def get_public_characters(
         .options(
             joinedload(Character.creator),
             selectinload(Character.tags),
+            selectinload(Character.origin_story),
         )
         .outerjoin(Story, Character.origin_story_id == Story.id)
         .where(and_(Character.is_public == True, Character.is_active == True))

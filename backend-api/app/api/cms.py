@@ -584,7 +584,10 @@ async def _enrich_slot_character_picks(db: AsyncSession, slots: List[dict]) -> L
 
         rows = await db.execute(
             select(Character)
-            .options(selectinload(Character.tags))
+            .options(
+                selectinload(Character.tags),
+                selectinload(Character.origin_story),
+            )
             .where(Character.id.in_(list(id_map.values())))
         )
         characters = rows.scalars().all() if rows else []
@@ -604,6 +607,9 @@ async def _enrich_slot_character_picks(db: AsyncSession, slots: List[dict]) -> L
                     "tags": tags_out,
                     "chat_count": int(getattr(c, "chat_count", 0) or 0),
                     "like_count": int(getattr(c, "like_count", 0) or 0),
+                    "origin_story_title": str(
+                        getattr(getattr(c, "origin_story", None), "title", "") or ""
+                    ).strip() or None,
                     "created_at": getattr(c, "created_at", None),
                     "updated_at": getattr(c, "updated_at", None),
                 }
@@ -648,6 +654,9 @@ async def _enrich_slot_character_picks(db: AsyncSession, slots: List[dict]) -> L
                     next_item["tags"] = tags
                 next_item["chat_count"] = int(meta.get("chat_count", 0) or 0)
                 next_item["like_count"] = int(meta.get("like_count", 0) or 0)
+                origin_story_title = str(meta.get("origin_story_title") or "").strip()
+                if origin_story_title:
+                    next_item["origin_story_title"] = origin_story_title
 
                 created_at = meta.get("created_at")
                 updated_at = meta.get("updated_at")
