@@ -1468,7 +1468,6 @@ const HomePage = () => {
           skip: pageParam,
           limit: STORY_LIMIT,
           sort: 'recent', // 최근 업데이트순
-          only: 'webnovel', // 서버에서 선필터링해 응답/정렬 비용 축소
         };
         const trimmed = searchQuery?.trim();
         if (trimmed) params.search = trimmed;
