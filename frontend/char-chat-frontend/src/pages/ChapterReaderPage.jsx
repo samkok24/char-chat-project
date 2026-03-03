@@ -34,7 +34,7 @@ const ChapterReaderPage = () => {
   const [chargeModalOpen, setChargeModalOpen] = useState(false);
   const [rubyBalance, setRubyBalance] = useState(null);
   const [purchasedNos, setPurchasedNos] = useState([]);
-  const [purchaseConfirm, setPurchaseConfirm] = useState({ open: false, targetNo: null });
+  const [purchaseConfirm, setPurchaseConfirm] = useState({ open: false, targetNo: null, targetTitle: '' });
   const [purchasing, setPurchasing] = useState(false);
   // 스토리 상세 (헤더/좌측 표지용)
   const { data: story, error: storyLoadError } = useQuery({
@@ -93,7 +93,17 @@ const ChapterReaderPage = () => {
   }, [storyId, isAuthenticated]);
 
   const PAID_FROM = 6;
-  const CHAPTER_COST = 10;
+  const CHAPTER_OWN_COST = 5;
+  const CHAPTER_RENT_COST = 1;
+
+  const _resolveChapterTitleByNo = (targetNo) => {
+    try {
+      const hit = (Array.isArray(chapterList) ? chapterList : []).find((c) => Number(c?.no || 0) === Number(targetNo));
+      return String(hit?.title || '').trim();
+    } catch (_) {
+      return '';
+    }
+  };
 
   const handleNavigateToChapter = (targetNo) => {
     // 무료 회차 또는 이미 구매한 회차
@@ -103,18 +113,18 @@ const ChapterReaderPage = () => {
     }
     // 비로그인 → 로그인 유도
     if (!isAuthenticated) { openLoginModal(); return; }
-    // 루비 부족 → 충전 모달
-    if (rubyBalance < CHAPTER_COST) {
+    // 유료 회차 → 소장/대여 선택 모달
+    setPurchaseConfirm({ open: true, targetNo, targetTitle: _resolveChapterTitleByNo(targetNo) });
+  };
+
+  const executeOwnPurchase = async () => {
+    const { targetNo } = purchaseConfirm;
+    if (!targetNo) return;
+    if (Number(rubyBalance ?? 0) < CHAPTER_OWN_COST) {
+      setPurchaseConfirm({ open: false, targetNo: null, targetTitle: '' });
       setChargeModalOpen(true);
       return;
     }
-    // 루비 충분 → 구매 확인 모달
-    setPurchaseConfirm({ open: true, targetNo });
-  };
-
-  const executePurchase = async () => {
-    const { targetNo } = purchaseConfirm;
-    if (!targetNo) return;
     setPurchasing(true);
     try {
       const res = await chaptersAPI.purchase(storyId, targetNo);
@@ -122,11 +132,11 @@ const ChapterReaderPage = () => {
       if (data.purchased) {
         setPurchasedNos(prev => [...prev, targetNo]);
         if (data.ruby_balance != null) setRubyBalance(data.ruby_balance);
-        setPurchaseConfirm({ open: false, targetNo: null });
+        setPurchaseConfirm({ open: false, targetNo: null, targetTitle: '' });
         navigate(`/stories/${storyId}/chapters/${targetNo}`);
       }
     } catch (err) {
-      setPurchaseConfirm({ open: false, targetNo: null });
+      setPurchaseConfirm({ open: false, targetNo: null, targetTitle: '' });
       if (err.response?.status === 402) {
         setRubyBalance(err.response.data?.detail?.balance ?? 0);
         setChargeModalOpen(true);
@@ -136,6 +146,14 @@ const ChapterReaderPage = () => {
     } finally {
       setPurchasing(false);
     }
+  };
+
+  const executeRent = () => {
+    const { targetNo } = purchaseConfirm;
+    if (!targetNo) return;
+    // 임시 정책: 대여는 무차감 하드코딩(서버 연동 없음)
+    setPurchaseConfirm({ open: false, targetNo: null, targetTitle: '' });
+    navigate(`/stories/${storyId}/chapters/${targetNo}`);
   };
 
   // 갤러리: media_assets 우선, 없으면 cover_url + keywords의 cover: 항목들
@@ -444,28 +462,37 @@ const ChapterReaderPage = () => {
         <RubyChargeModal open={chargeModalOpen} onOpenChange={(v) => { setChargeModalOpen(v); if (!v) pointAPI.getBalance().then(r => setRubyBalance(r.data?.balance ?? 0)).catch(() => {}); }} />
 
         {/* 💎 유료 회차 구매 확인 */}
-        <AlertDialog open={purchaseConfirm.open} onOpenChange={(v) => { if (!v) setPurchaseConfirm({ open: false, targetNo: null }); }}>
+        <AlertDialog open={purchaseConfirm.open} onOpenChange={(v) => { if (!v) setPurchaseConfirm({ open: false, targetNo: null, targetTitle: '' }); }}>
           <AlertDialogContent className="bg-gray-900 border-gray-700 text-white max-w-xs">
             <AlertDialogHeader>
-              <AlertDialogTitle className="text-base">유료 회차 구매</AlertDialogTitle>
+              <AlertDialogTitle className="text-base text-center">
+                {purchaseConfirm.targetNo}화{purchaseConfirm.targetTitle ? ` - ${purchaseConfirm.targetTitle}` : ''}
+              </AlertDialogTitle>
               <AlertDialogDescription className="text-gray-300 text-sm">
-                {purchaseConfirm.targetNo}화를 <Gem className="w-3.5 h-3.5 inline text-pink-400" /> {CHAPTER_COST} 루비로 구매하시겠습니까?
+                회차 이용 방식을 선택해 주세요
               </AlertDialogDescription>
             </AlertDialogHeader>
-            <div className="flex gap-2 justify-end">
+            <div className="space-y-2">
+              <AlertDialogAction
+                className="w-full bg-pink-600 hover:bg-pink-700 text-white text-sm"
+                disabled={purchasing}
+                onClick={(e) => { e.preventDefault(); executeOwnPurchase(); }}
+              >
+                {purchasing ? '소장 처리 중...' : `소장 ${CHAPTER_OWN_COST}`}
+              </AlertDialogAction>
+              <AlertDialogAction
+                className="w-full bg-gray-700 hover:bg-gray-600 text-white text-sm"
+                disabled={purchasing}
+                onClick={(e) => { e.preventDefault(); executeRent(); }}
+              >
+                대여 {CHAPTER_RENT_COST}
+              </AlertDialogAction>
               <AlertDialogCancel
-                className="bg-gray-700 hover:bg-gray-600 text-white text-sm border-0"
+                className="w-full bg-transparent border border-gray-700 text-gray-200 hover:bg-gray-800 text-sm"
                 disabled={purchasing}
               >
                 취소
               </AlertDialogCancel>
-              <AlertDialogAction
-                className="bg-pink-600 hover:bg-pink-700 text-white text-sm"
-                disabled={purchasing}
-                onClick={(e) => { e.preventDefault(); executePurchase(); }}
-              >
-                {purchasing ? '구매 중...' : '구매하기'}
-              </AlertDialogAction>
             </div>
           </AlertDialogContent>
         </AlertDialog>
@@ -707,28 +734,37 @@ const ChapterReaderPage = () => {
         <RubyChargeModal open={chargeModalOpen} onOpenChange={(v) => { setChargeModalOpen(v); if (!v) pointAPI.getBalance().then(r => setRubyBalance(r.data?.balance ?? 0)).catch(() => {}); }} />
 
         {/* 💎 유료 회차 구매 확인 */}
-        <AlertDialog open={purchaseConfirm.open} onOpenChange={(v) => { if (!v) setPurchaseConfirm({ open: false, targetNo: null }); }}>
+        <AlertDialog open={purchaseConfirm.open} onOpenChange={(v) => { if (!v) setPurchaseConfirm({ open: false, targetNo: null, targetTitle: '' }); }}>
           <AlertDialogContent className="bg-gray-900 border-gray-700 text-white max-w-xs">
             <AlertDialogHeader>
-              <AlertDialogTitle className="text-base">유료 회차 구매</AlertDialogTitle>
+              <AlertDialogTitle className="text-base text-center">
+                {purchaseConfirm.targetNo}화{purchaseConfirm.targetTitle ? ` - ${purchaseConfirm.targetTitle}` : ''}
+              </AlertDialogTitle>
               <AlertDialogDescription className="text-gray-300 text-sm">
-                {purchaseConfirm.targetNo}화를 <Gem className="w-3.5 h-3.5 inline text-pink-400" /> {CHAPTER_COST} 루비로 구매하시겠습니까?
+                회차 이용 방식을 선택해 주세요
               </AlertDialogDescription>
             </AlertDialogHeader>
-            <div className="flex gap-2 justify-end">
+            <div className="space-y-2">
+              <AlertDialogAction
+                className="w-full bg-pink-600 hover:bg-pink-700 text-white text-sm"
+                disabled={purchasing}
+                onClick={(e) => { e.preventDefault(); executeOwnPurchase(); }}
+              >
+                {purchasing ? '소장 처리 중...' : `소장 ${CHAPTER_OWN_COST}`}
+              </AlertDialogAction>
+              <AlertDialogAction
+                className="w-full bg-gray-700 hover:bg-gray-600 text-white text-sm"
+                disabled={purchasing}
+                onClick={(e) => { e.preventDefault(); executeRent(); }}
+              >
+                대여 {CHAPTER_RENT_COST}
+              </AlertDialogAction>
               <AlertDialogCancel
-                className="bg-gray-700 hover:bg-gray-600 text-white text-sm border-0"
+                className="w-full bg-transparent border border-gray-700 text-gray-200 hover:bg-gray-800 text-sm"
                 disabled={purchasing}
               >
                 취소
               </AlertDialogCancel>
-              <AlertDialogAction
-                className="bg-pink-600 hover:bg-pink-700 text-white text-sm"
-                disabled={purchasing}
-                onClick={(e) => { e.preventDefault(); executePurchase(); }}
-              >
-                {purchasing ? '구매 중...' : '구매하기'}
-              </AlertDialogAction>
             </div>
           </AlertDialogContent>
         </AlertDialog>

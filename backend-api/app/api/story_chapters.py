@@ -27,7 +27,7 @@ from app.models.subscription import UserSubscription, SubscriptionPlan
 logger = logging.getLogger(__name__)
 
 PAID_FROM_CHAPTER = 6
-CHAPTER_RUBY_COST = 10
+CHAPTER_RUBY_COST = 5
 
 router = APIRouter()
 
