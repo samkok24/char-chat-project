@@ -3,13 +3,19 @@ import { useQuery } from '@tanstack/react-query';
 import { usersAPI } from '../lib/api';
 import AppLayout from '../components/layout/AppLayout';
 import { CharacterCard, CharacterCardSkeleton } from '../components/CharacterCard';
+import { ORIGCHAT_PUBLIC_ENABLED, WEBNOVEL_PUBLIC_ENABLED } from '../lib/featureFlags';
 
 const FavoritesPage = () => {
   const { data = [], isLoading } = useQuery({
     queryKey: ['liked-characters-page'],
     queryFn: async () => {
       const res = await usersAPI.getLikedCharacters({ limit: 48 });
-      return res.data || [];
+      const list = Array.isArray(res.data) ? res.data : [];
+      return list.filter((c) => {
+        if (!ORIGCHAT_PUBLIC_ENABLED && c?.origin_story_id) return false;
+        if (!WEBNOVEL_PUBLIC_ENABLED && String(c?.source_type || '').toUpperCase() === 'IMPORTED') return false;
+        return true;
+      });
     },
     staleTime: 30000,
   });

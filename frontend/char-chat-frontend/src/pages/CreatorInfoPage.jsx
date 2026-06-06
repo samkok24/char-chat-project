@@ -11,6 +11,7 @@ import { CharacterCard as SharedCharacterCard, CharacterCardSkeleton as SharedCh
 import StoryExploreCard from '../components/StoryExploreCard';
 import { resolveImageUrl } from '../lib/images';
 import { Loader2, ArrowLeft, AlertCircle } from 'lucide-react';
+import { ORIGCHAT_PUBLIC_ENABLED, WEBNOVEL_PUBLIC_ENABLED } from '../lib/featureFlags';
 
 const CreatorInfoPage = () => {
   const { userId } = useParams();
@@ -38,7 +39,14 @@ const CreatorInfoPage = () => {
       });
       const list = res.data || [];
       // 공개 캐릭터만 노출
-      return Array.isArray(list) ? list.filter(c => c?.is_public !== false) : [];
+      return Array.isArray(list)
+        ? list.filter((c) => {
+            if (c?.is_public === false) return false;
+            if (!ORIGCHAT_PUBLIC_ENABLED && c?.origin_story_id) return false;
+            if (!WEBNOVEL_PUBLIC_ENABLED && String(c?.source_type || '').toUpperCase() === 'IMPORTED') return false;
+            return true;
+          })
+        : [];
     },
     enabled: !!userId,
     staleTime: 5 * 60 * 1000,
@@ -56,7 +64,7 @@ const CreatorInfoPage = () => {
       const list = Array.isArray(res.data?.stories) ? res.data.stories : (Array.isArray(res.data) ? res.data : []);
       return list.filter(s => s?.is_public !== false);
     },
-    enabled: !!userId,
+    enabled: WEBNOVEL_PUBLIC_ENABLED && !!userId,
     staleTime: 5 * 60 * 1000,
   });
 
@@ -185,11 +193,11 @@ const CreatorInfoPage = () => {
                   id: c.id,
                   data: c,
                 }));
-                const storyItems = (Array.isArray(stories) ? stories : []).map((s) => ({
+                const storyItems = WEBNOVEL_PUBLIC_ENABLED ? (Array.isArray(stories) ? stories : []).map((s) => ({
                   type: 'story',
                   id: s.id,
                   data: s,
-                }));
+                })) : [];
                 const mixed = [...charItems, ...storyItems];
                 if (mixed.length === 0) {
                   return (

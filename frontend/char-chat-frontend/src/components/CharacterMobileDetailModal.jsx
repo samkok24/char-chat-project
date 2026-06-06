@@ -13,6 +13,7 @@ import CharacterInfoHeader from './CharacterInfoHeader';
 import CharacterDetails from './CharacterDetails';
 import ErrorBoundary from './ErrorBoundary';
 import StoryExploreCard from './StoryExploreCard';
+import { ORIGCHAT_PUBLIC_ENABLED, WEBNOVEL_PUBLIC_ENABLED } from '../lib/featureFlags';
 
 const dispatchToast = (type, message) => {
   try {
@@ -44,9 +45,20 @@ export default function CharacterMobileDetailModal({
     placeholderData: initialData || undefined,
   });
 
-  const isOrigChatCharacter = !!character?.origin_story_id;
-  const originStoryId = String(character?.origin_story_id || '').trim();
-  const isWebNovelCharacter = character?.source_type === 'IMPORTED';
+  const isOrigChatCharacter = ORIGCHAT_PUBLIC_ENABLED && !!character?.origin_story_id;
+  const originStoryId = ORIGCHAT_PUBLIC_ENABLED ? String(character?.origin_story_id || '').trim() : '';
+  const isWebNovelCharacter = WEBNOVEL_PUBLIC_ENABLED && character?.source_type === 'IMPORTED';
+  const displayCharacter = React.useMemo(() => {
+    if (!character) return character;
+    if (ORIGCHAT_PUBLIC_ENABLED && WEBNOVEL_PUBLIC_ENABLED) return character;
+    return {
+      ...character,
+      origin_story_id: ORIGCHAT_PUBLIC_ENABLED ? character.origin_story_id : null,
+      is_origchat: ORIGCHAT_PUBLIC_ENABLED ? character.is_origchat : false,
+      source: (!ORIGCHAT_PUBLIC_ENABLED && character.source === 'origchat') ? undefined : character.source,
+      source_type: (!WEBNOVEL_PUBLIC_ENABLED && character.source_type === 'IMPORTED') ? 'ORIGINAL' : character.source_type,
+    };
+  }, [character, ORIGCHAT_PUBLIC_ENABLED, WEBNOVEL_PUBLIC_ENABLED]);
   /**
    * 모달 이미지 상단 "턴수 배지" 텍스트 계산
    *
@@ -666,7 +678,7 @@ export default function CharacterMobileDetailModal({
 
                     {/* ✅ (모바일 상세페이지) 정보 헤더 */}
                     <CharacterInfoHeader
-                      character={character}
+                      character={displayCharacter}
                       likeCount={likeCount}
                       isLiked={isLiked}
                       handleLike={handleLike}
@@ -714,7 +726,7 @@ export default function CharacterMobileDetailModal({
 
                     {/* ✅ (모바일 상세페이지) 상세 섹션 */}
                     <CharacterDetails
-                      character={character}
+                      character={displayCharacter}
                       comments={Array.isArray(comments) ? comments : []}
                       commentText={commentText}
                       setCommentText={setCommentText}

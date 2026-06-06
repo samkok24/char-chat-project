@@ -39,6 +39,7 @@ import { CharacterCard as SharedCharacterCard, CharacterCardSkeleton as SharedCh
 import StoryExploreCard from '../components/StoryExploreCard';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../components/ui/tabs';
 import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogAction, AlertDialogCancel, AlertDialogFooter } from '../components/ui/alert-dialog';
+import { ORIGCHAT_PUBLIC_ENABLED, WEBNOVEL_WORK_CREATE_ENABLED } from '../lib/featureFlags';
 
 const PAGE_SIZE = 24;
 
@@ -236,9 +237,9 @@ const MyCharactersPage = () => {
       case '#mine':
         return 'mine';
       case '#stories':
-        return 'stories';
+        return WEBNOVEL_WORK_CREATE_ENABLED ? 'stories' : 'favorites';
       case '#origchat':
-        return 'origchat';
+        return ORIGCHAT_PUBLIC_ENABLED ? 'origchat' : 'favorites';
       default:
         return 'favorites';
     }
@@ -460,7 +461,9 @@ const MyCharactersPage = () => {
     </Card>
   );
 
-  const isStoryContext = activeTab === 'stories' || activeTab === 'origchat';
+  const isStoryContext =
+    (WEBNOVEL_WORK_CREATE_ENABLED && activeTab === 'stories') ||
+    (ORIGCHAT_PUBLIC_ENABLED && activeTab === 'origchat');
 
   const renderPrimaryAction = () => {
     if (isStoryContext) {
@@ -560,14 +563,18 @@ const MyCharactersPage = () => {
               <span className="sm:hidden">내 캐릭터</span>
               <span className="hidden sm:inline">내가 만든 캐릭터</span>
             </TabsTrigger>
-            <TabsTrigger value="stories" className="text-xs sm:text-sm text-gray-200 data-[state=active]:bg-yellow-500 data-[state=active]:text-black">
-              <span className="sm:hidden">내 작품</span>
-              <span className="hidden sm:inline">내가 쓴 작품</span>
-            </TabsTrigger>
-            <TabsTrigger value="origchat" className="text-xs sm:text-sm text-gray-200 data-[state=active]:bg-yellow-500 data-[state=active]:text-black">
-              <span className="sm:hidden">원작챗</span>
-              <span className="hidden sm:inline">내가 만든 원작챗</span>
-            </TabsTrigger>
+            {WEBNOVEL_WORK_CREATE_ENABLED && (
+              <TabsTrigger value="stories" className="text-xs sm:text-sm text-gray-200 data-[state=active]:bg-yellow-500 data-[state=active]:text-black">
+                <span className="sm:hidden">내 작품</span>
+                <span className="hidden sm:inline">내가 쓴 작품</span>
+              </TabsTrigger>
+            )}
+            {ORIGCHAT_PUBLIC_ENABLED && (
+              <TabsTrigger value="origchat" className="text-xs sm:text-sm text-gray-200 data-[state=active]:bg-yellow-500 data-[state=active]:text-black">
+                <span className="sm:hidden">원작챗</span>
+                <span className="hidden sm:inline">내가 만든 원작챗</span>
+              </TabsTrigger>
+            )}
           </TabsList>
           {/* 내가 좋아하는 캐릭터 탭 */}
           <TabsContent value="favorites">
@@ -644,14 +651,18 @@ const MyCharactersPage = () => {
           </TabsContent>
 
           {/* 내가 쓴 작품 탭 */}
-          <TabsContent value="stories">
-            <MyStoriesTab />
-          </TabsContent>
+          {WEBNOVEL_WORK_CREATE_ENABLED && (
+            <TabsContent value="stories">
+              <MyStoriesTab />
+            </TabsContent>
+          )}
 
           {/* 내가 만든 원작챗 탭 */}
-          <TabsContent value="origchat">
-            <MyOrigChatTab />
-          </TabsContent>
+          {ORIGCHAT_PUBLIC_ENABLED && (
+            <TabsContent value="origchat">
+              <MyOrigChatTab />
+            </TabsContent>
+          )}
         </Tabs>
         <AlertDialog open={doneModal.open} onOpenChange={(v)=> setDoneModal(prev => ({ ...prev, open: v }))}>
           <AlertDialogContent>

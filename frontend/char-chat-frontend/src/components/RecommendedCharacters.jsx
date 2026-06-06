@@ -4,6 +4,7 @@ import { charactersAPI } from '../lib/api';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { useIsMobile } from '../hooks/use-mobile';
 import { CharacterCard, CharacterCardSkeleton } from './CharacterCard';
+import { ORIGCHAT_PUBLIC_ENABLED } from '../lib/featureFlags';
 
 /**
  * 홈 "추천 캐릭터" 구좌
@@ -30,12 +31,13 @@ const RecommendedSkeleton = () => (
 const RecommendedCharacters = ({ title } = {}) => {
   const isMobile = useIsMobile();
   const RECOMMENDED_LIMIT = 60;
+  const includeOrigChat = ORIGCHAT_PUBLIC_ENABLED;
   // 추천 구좌는 "캐릭터챗(일반) : 원작챗"을 적당히 섞어서 노출한다.
   // - 패턴: 캐릭터챗 2개 → 원작챗 1개 (2:1)
   const MIX_PATTERN = ['regular', 'regular', 'origchat'];
 
   const { data = [], isLoading, isFetching, isError, refetch } = useQuery({
-    queryKey: ['recommended-characters-home', 'likes', 'mixed', 'regular+origchat', isMobile ? 'm' : 'd'],
+    queryKey: ['recommended-characters-home', 'likes', includeOrigChat ? 'regular+origchat' : 'regular', isMobile ? 'm' : 'd'],
     queryFn: async () => {
       /**
        * 추천 캐릭터 데이터 구성(방어적으로 동작)
@@ -45,6 +47,16 @@ const RecommendedCharacters = ({ title } = {}) => {
        * - 한쪽 데이터가 부족하면, 남은 쪽을 이어붙여서 RECOMMENDED_LIMIT까지만 채운다.
        */
       const safeArr = (v) => (Array.isArray(v) ? v : []);
+      if (!includeOrigChat) {
+        const res = await charactersAPI.getCharacters({
+          sort: 'likes',
+          limit: RECOMMENDED_LIMIT,
+          only: 'regular',
+          source_type: 'ORIGINAL',
+        });
+        return safeArr(res?.data);
+      }
+
       const mixByPattern = (regularItems, origChatItems, limit) => {
         const regular = safeArr(regularItems);
         const origchat = safeArr(origChatItems);
@@ -237,5 +249,4 @@ const RecommendedCharacters = ({ title } = {}) => {
 };
 
 export default RecommendedCharacters;
-
 

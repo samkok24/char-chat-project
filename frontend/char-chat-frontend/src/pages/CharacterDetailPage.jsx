@@ -36,6 +36,7 @@ import StoryExploreCard from '../components/StoryExploreCard';
 import ImageGenerateInsertModal from '../components/ImageGenerateInsertModal';
 import { getReadingProgress } from '../lib/reading';
 import AppLayout from '../components/layout/AppLayout';
+import { ORIGCHAT_PUBLIC_ENABLED, WEBNOVEL_PUBLIC_ENABLED } from '../lib/featureFlags';
 
 const dispatchToast = (type, message) => {
   try {
@@ -330,7 +331,8 @@ const CharacterDetailPage = () => {
 
   const isOwner = !authLoading && user && character?.creator_id === user.id;
   const isAdmin = !authLoading && user && !!user?.is_admin;
-  const originStoryId = character?.origin_story_id || null;
+  const rawOriginStoryId = character?.origin_story_id || null;
+  const originStoryId = ORIGCHAT_PUBLIC_ENABLED ? rawOriginStoryId : null;
 
   const togglePublicMutation = useMutation({
     mutationFn: () => charactersAPI.toggleCharacterPublic(characterId),
@@ -352,8 +354,23 @@ const CharacterDetailPage = () => {
 
   // 웹소설 원작 표시/연동 판단
   const searchParams = new URLSearchParams(location.search || '');
-  const isWebNovel = (character?.source_type === 'IMPORTED') || (location.state?.source === 'webnovel') || (searchParams.get('source') === 'webnovel');
-  const workId = location.state?.workId || searchParams.get('workId') || null;
+  const isWebNovel = WEBNOVEL_PUBLIC_ENABLED && (
+    (character?.source_type === 'IMPORTED') ||
+    (location.state?.source === 'webnovel') ||
+    (searchParams.get('source') === 'webnovel')
+  );
+  const workId = WEBNOVEL_PUBLIC_ENABLED ? (location.state?.workId || searchParams.get('workId') || null) : null;
+  const displayCharacter = React.useMemo(() => {
+    if (!character) return character;
+    if (ORIGCHAT_PUBLIC_ENABLED && WEBNOVEL_PUBLIC_ENABLED) return character;
+    return {
+      ...character,
+      origin_story_id: ORIGCHAT_PUBLIC_ENABLED ? character.origin_story_id : null,
+      is_origchat: ORIGCHAT_PUBLIC_ENABLED ? character.is_origchat : false,
+      source: (!ORIGCHAT_PUBLIC_ENABLED && character.source === 'origchat') ? undefined : character.source,
+      source_type: (!WEBNOVEL_PUBLIC_ENABLED && character.source_type === 'IMPORTED') ? 'ORIGINAL' : character.source_type,
+    };
+  }, [character, ORIGCHAT_PUBLIC_ENABLED, WEBNOVEL_PUBLIC_ENABLED]);
 
   // 상세 이미지 좌상단 "턴수 배지" 텍스트(일반 캐릭터챗만 기본값으로 ∞ 표시)
   // - SSOT: start_sets.sim_options.max_turns (목록 응답은 start_sets 미포함이므로 max_turns 파생 필드도 함께 사용)
@@ -546,14 +563,14 @@ const CharacterDetailPage = () => {
                 })()}
               </div>
               <div className="absolute top-2 left-2">
-                {(turnBadgeText || originStoryId || isWebNovel || character?.source_type === 'IMPORTED') ? (
+                {(turnBadgeText || originStoryId || isWebNovel || displayCharacter?.source_type === 'IMPORTED') ? (
                   <div className="flex flex-col items-start gap-1">
                     {turnBadgeText ? (
                       <Badge className="bg-purple-600/90 text-white hover:bg-purple-600 px-1.5 py-0.5 text-[11px]">
                         {turnBadgeText}
                       </Badge>
                     ) : null}
-                    {(originStoryId || isWebNovel || character?.source_type === 'IMPORTED') ? (
+                    {(originStoryId || isWebNovel || displayCharacter?.source_type === 'IMPORTED') ? (
                       originStoryId ? (
                         <Badge className="bg-orange-400 text-black hover:bg-orange-400 px-1.5 py-0.5 text-[11px]">
                           원작챗
@@ -587,8 +604,8 @@ const CharacterDetailPage = () => {
 
           {/* Right: 캐릭터 정보 */}
           <div className="lg:col-span-2 space-y-6 sm:space-y-8">
-              <CharacterInfoHeader 
-              character={character}
+              <CharacterInfoHeader
+              character={displayCharacter}
               likeCount={likeCount}
               isLiked={isLiked}
               handleLike={handleLike}
@@ -680,8 +697,8 @@ const CharacterDetailPage = () => {
               openingId={selectedOpeningId}
               openingName={selectedOpeningName}
             />
-            <CharacterDetails 
-              character={character}
+            <CharacterDetails
+              character={displayCharacter}
               comments={comments}
               commentText={commentText}
               setCommentText={setCommentText}

@@ -104,7 +104,7 @@ const CharacterInfoHeader = ({
        * - 원작챗: 기존대로 비노출(이미지 위 배지만 유지)
        * - 웹소설(IMPORTED): 필요 시에만 유지
        */}
-      {!character?.origin_story_id && (isWebNovel || character?.source_type === 'IMPORTED') && (
+      {!character?.origin_story_id && isWebNovel && (
         <div className="flex items-center gap-2">
           <Badge className="bg-blue-600 text-white hover:bg-blue-600">웹소설</Badge>
         </div>

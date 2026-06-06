@@ -20,6 +20,7 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '
 import { resolveImageUrl, getThumbnailUrl } from '../lib/images';
 import { replacePromptTokens } from '../lib/prompt';
 import { applyTagDisplayConfig } from '../lib/tagOrder';
+import { ORIGCHAT_PUBLIC_ENABLED, WEBNOVEL_PUBLIC_ENABLED, WEBNOVEL_WORK_CREATE_ENABLED } from '../lib/featureFlags';
 import {
   CHARACTER_TAG_DISPLAY_STORAGE_KEY,
   CHARACTER_TAG_DISPLAY_CHANGED_EVENT,
@@ -203,8 +204,10 @@ const HomePage = () => {
   // ✅ 검색바 비노출(요구사항): 현재 검색 기능이 정상 동작하지 않아 전 탭에서 숨긴다.
   // - 추후 검색 기능 복구 시 이 플래그만 true로 되돌리면 UI가 다시 노출된다.
   const SEARCH_UI_ENABLED = false;
-  // ✅ 심사 대응: 홈 "캐릭터" 탭 비활성화(버튼/URL 진입 모두 차단)
-  const CHARACTER_TAB_ENABLED = false;
+  // ✅ 캐릭터 탭 노출 제어: 심사 대응 종료 후 정상 노출
+  const CHARACTER_TAB_ENABLED = true;
+  // ✅ 웹소설 탭 노출 제어: 홈 탭에서만 숨기고 상세/구매 경로는 유지한다.
+  const WEBNOVEL_TAB_ENABLED = WEBNOVEL_PUBLIC_ENABLED;
   // ✅ 심사 대응: 홈 온보딩의 간편 캐릭터 생성 진입점(CTA/모달) 비노출
   const QUICK_MEET_ENABLED = false;
   const [searchQuery, setSearchQuery] = useState('');
@@ -452,15 +455,15 @@ const HomePage = () => {
       if (!c) return false;
       const isFromOrigChat = !!(c?.origin_story_id || c?.is_origchat || c?.source === 'origchat');
       const st = String(c?.source_type || '').trim().toUpperCase();
-      // ✅ 원작챗은 모달 프리뷰 허용(요청)
-      if (isFromOrigChat) return true;
+      // 원작챗은 현재 공개 서비스 표면에서 비활성화한다.
+      if (isFromOrigChat) return ORIGCHAT_PUBLIC_ENABLED;
       // ✅ 원작이 아닌 IMPORTED(웹소설/연재 기반)는 기존대로 상세 페이지 랜딩 유지
       if (st === 'IMPORTED') return false;
       return true; // 일반 캐릭터챗
     } catch (_) {
       return false;
     }
-  }, []);
+  }, [ORIGCHAT_PUBLIC_ENABLED]);
   const prefetchPcMobileDetailCharacter = React.useCallback((rawId) => {
     try {
       const id = String(rawId || '').trim();
@@ -682,7 +685,7 @@ const HomePage = () => {
     const load = async () => {
       let tabByUrl = '';
       try { tabByUrl = String(new URLSearchParams(location.search).get('tab') || ''); } catch (_) {}
-      const isMainByUrl = !(tabByUrl === 'origserial' || (tabByUrl === 'character' && CHARACTER_TAB_ENABLED));
+      const isMainByUrl = !((tabByUrl === 'origserial' && WEBNOVEL_TAB_ENABLED) || (tabByUrl === 'character' && CHARACTER_TAB_ENABLED));
       if (!isMainByUrl) return;
       try {
         const res = await cmsAPI.getHomeSlots();
@@ -826,7 +829,7 @@ const HomePage = () => {
     catch (_) { return ''; }
   }, [location.search]);
   const isCharacterTabByUrl = CHARACTER_TAB_ENABLED && tabParamByUrl === 'character';
-  const isOrigSerialTabByUrl = tabParamByUrl === 'origserial';
+  const isOrigSerialTabByUrl = WEBNOVEL_TAB_ENABLED && tabParamByUrl === 'origserial';
   const isMainTabByUrl = !isCharacterTabByUrl && !isOrigSerialTabByUrl;
   const cmsVisibleCustomCharIds = React.useMemo(() => {
     try {
@@ -1030,7 +1033,8 @@ const HomePage = () => {
     // ✅ 온보딩/검색은 항상 새 대화로 시작 (예측 가능 UX)
     const originStoryId = String(c?.origin_story_id || '').trim();
     const isOrig = !!originStoryId || !!(c?.is_origchat || c?.source === 'origchat');
-    if (isOrig && originStoryId) {
+    if (isOrig) {
+      if (!ORIGCHAT_PUBLIC_ENABLED || !originStoryId) return;
       // ✅ 원작챗 캐릭터는 일반챗이 아니라 origchat plain 모드로 진입해야 한다.
       navigate(`/ws/chat/${id}?source=origchat&storyId=${originStoryId}&mode=plain&new=1`);
       return;
@@ -1086,13 +1090,13 @@ const HomePage = () => {
   const tabParam = params.get('tab');
   const subParam = params.get('sub'); // origserial 서브탭: novel|origchat
   const initialFilter =
-    tabParam === 'origserial' ? 'ORIGSERIAL' :
+    (tabParam === 'origserial' && WEBNOVEL_TAB_ENABLED) ? 'ORIGSERIAL' :
     (tabParam === 'character' && CHARACTER_TAB_ENABLED) ? 'ORIGINAL' :
     null;
   const [sourceFilter, setSourceFilter] = useState(initialFilter);
-  const [origSerialTab, setOrigSerialTab] = useState(subParam === 'origchat' ? 'origchat' : 'novel'); // 'novel' | 'origchat'
+  const [origSerialTab, setOrigSerialTab] = useState((ORIGCHAT_PUBLIC_ENABLED && subParam === 'origchat') ? 'origchat' : 'novel'); // 'novel' | 'origchat'
   const isCharacterTab = CHARACTER_TAB_ENABLED && sourceFilter === 'ORIGINAL';
-  const isOrigSerialTab = sourceFilter === 'ORIGSERIAL';
+  const isOrigSerialTab = WEBNOVEL_TAB_ENABLED && sourceFilter === 'ORIGSERIAL';
   const requestSourceType = isCharacterTab
     ? 'ORIGINAL'
     : sourceFilter === 'IMPORTED'
@@ -1111,18 +1115,18 @@ const HomePage = () => {
   // ✅ URL 쿼리로 탭 상태 동기화(더보기 링크 등으로 이동 시 UI가 안 바뀌는 문제 방지)
   useEffect(() => {
     const next =
-      tabParam === 'origserial' ? 'ORIGSERIAL' :
+      (tabParam === 'origserial' && WEBNOVEL_TAB_ENABLED) ? 'ORIGSERIAL' :
       (tabParam === 'character' && CHARACTER_TAB_ENABLED) ? 'ORIGINAL' :
       null;
     setSourceFilter(next);
-  }, [tabParam, CHARACTER_TAB_ENABLED]);
+  }, [tabParam, CHARACTER_TAB_ENABLED, WEBNOVEL_TAB_ENABLED]);
 
   useEffect(() => {
-    if (tabParam !== 'origserial') return;
-    if (subParam === 'novel' || subParam === 'origchat') {
+    if (tabParam !== 'origserial' || !WEBNOVEL_TAB_ENABLED) return;
+    if (subParam === 'novel' || (ORIGCHAT_PUBLIC_ENABLED && subParam === 'origchat')) {
       setOrigSerialTab(subParam);
     }
-  }, [tabParam, subParam]);
+  }, [tabParam, subParam, WEBNOVEL_TAB_ENABLED, ORIGCHAT_PUBLIC_ENABLED]);
 
   /**
    * 검색 UI를 숨긴 상태에서 searchQuery 값이 남아있으면
@@ -1146,7 +1150,7 @@ const HomePage = () => {
         return [];
       }
     },
-    enabled: isMainTabByUrl,
+    enabled: WEBNOVEL_PUBLIC_ENABLED && isMainTabByUrl,
     staleTime: 5 * 60 * 1000,
   });
 
@@ -1163,7 +1167,7 @@ const HomePage = () => {
         return [];
       }
     },
-    enabled: isMainTabByUrl && isAuthenticated && !!user?.id,
+    enabled: WEBNOVEL_PUBLIC_ENABLED && isMainTabByUrl && isAuthenticated && !!user?.id,
     staleTime: 5 * 60 * 1000,
   });
 
@@ -1408,6 +1412,7 @@ const HomePage = () => {
           limit: characterFetchLimit,
           tags: effectiveTags.length ? effectiveTags.join(',') : undefined,
           source_type: requestSourceType,
+          only: ORIGCHAT_PUBLIC_ENABLED ? undefined : 'regular',
         });
         const items = response.data || [];
         return {
@@ -1462,8 +1467,10 @@ const HomePage = () => {
 
   const origSerialCharacters = React.useMemo(
     () =>
-      characters.filter((ch) => !!(ch?.origin_story_id || ch?.is_origchat || ch?.source === 'origchat')),
-    [characters]
+      ORIGCHAT_PUBLIC_ENABLED
+        ? characters.filter((ch) => !!(ch?.origin_story_id || ch?.is_origchat || ch?.source === 'origchat'))
+        : [],
+    [characters, ORIGCHAT_PUBLIC_ENABLED]
   );
 
   /**
@@ -1488,7 +1495,7 @@ const HomePage = () => {
     fetchNextPage: fetchNextOrigChatCharacters,
   } = useInfiniteQuery({
     queryKey: ['characters', 'origchat', 'infinite', searchQuery],
-    enabled: isOrigSerialTab && origSerialTab === 'origchat',
+    enabled: ORIGCHAT_PUBLIC_ENABLED && isOrigSerialTab && origSerialTab === 'origchat',
     queryFn: async ({ pageParam = 0 }) => {
       try {
         const params2 = {
@@ -1531,6 +1538,7 @@ const HomePage = () => {
    */
   const prefetchWebnovelTabFirstPage = useCallback(() => {
     try {
+      if (!WEBNOVEL_TAB_ENABLED) return;
       const signature = String(searchQuery || '').trim();
       if (webnovelTabPrefetchSigRef.current === signature) return;
 
@@ -1579,7 +1587,7 @@ const HomePage = () => {
         run();
       }
     } catch (_) {}
-  }, [queryClient, searchQuery]);
+  }, [queryClient, searchQuery, WEBNOVEL_TAB_ENABLED]);
 
   const {
     data: serialStoryPages,
@@ -1620,9 +1628,10 @@ const HomePage = () => {
 
   // 메인/다른 탭에 있을 때 유휴 시점에 웹소설 탭 첫 페이지를 선로딩한다.
   useEffect(() => {
+    if (!WEBNOVEL_TAB_ENABLED) return;
     if (isOrigSerialTab) return;
     prefetchWebnovelTabFirstPage();
-  }, [isOrigSerialTab, prefetchWebnovelTabFirstPage]);
+  }, [isOrigSerialTab, prefetchWebnovelTabFirstPage, WEBNOVEL_TAB_ENABLED]);
 
   // const serialStories = (serialStoryPages?.pages || []).flatMap(p => p.items);
   // const novelStories = React.useMemo(
@@ -1670,7 +1679,7 @@ const HomePage = () => {
       } catch (_) { return []; }
     },
     // 렌더 기준(sourceFilter 상태)과 동일하게 메인 탭에서만 호출한다.
-    enabled: !isCharacterTab && !isOrigSerialTab,
+    enabled: WEBNOVEL_PUBLIC_ENABLED && !isCharacterTab && !isOrigSerialTab,
     staleTime: 60 * 1000,
     refetchOnMount: false,
   });
@@ -1691,9 +1700,10 @@ const HomePage = () => {
   const mixedItems = React.useMemo(() => {
     const result = [];
     const interval = 5; // 캐릭터 5개마다 스토리 1개 삽입
-  const storyQueue = [...(exploreStories || [])];
+  const storyQueue = WEBNOVEL_PUBLIC_ENABLED ? [...(exploreStories || [])] : [];
 
-    characters.forEach((ch, idx) => {
+    const characterItems = ORIGCHAT_PUBLIC_ENABLED ? characters : generalCharacters;
+    characterItems.forEach((ch, idx) => {
       // 썸네일 적용: 89px 표시 크기의 2배 = 178px (Retina 대응)
       const thumbnailCh = {
         ...ch,
@@ -1720,7 +1730,7 @@ const HomePage = () => {
       }
     }
     return result;
-  }, [characters, exploreStories, sourceFilter]);
+  }, [characters, generalCharacters, exploreStories, sourceFilter, ORIGCHAT_PUBLIC_ENABLED, WEBNOVEL_PUBLIC_ENABLED]);
 
   // 페이지 진입/검색 변경 시 첫 페이지 새로고침
   // 캐릭터 탭 페이지 초기화
@@ -1846,7 +1856,7 @@ const HomePage = () => {
   }, [hasNextOrigChatCharacters, isFetchingNextOrigChatCharacters, fetchNextOrigChatCharacters]);
 
   useEffect(() => {
-    if (!isOrigSerialTab || origSerialTab !== 'origchat') return;
+    if (!ORIGCHAT_PUBLIC_ENABLED || !isOrigSerialTab || origSerialTab !== 'origchat') return;
     if (!supportsIntersectionObserver) return;
     const el = origChatTabSentinelRef.current;
     if (!el) return;
@@ -1877,6 +1887,7 @@ const HomePage = () => {
       try { observer.disconnect(); } catch (_) {}
     };
   }, [
+    ORIGCHAT_PUBLIC_ENABLED,
     isOrigSerialTab,
     origSerialTab,
     supportsIntersectionObserver,
@@ -2254,6 +2265,7 @@ const HomePage = () => {
     if (!id) return null;
 
     if (id === 'slot_top_origchat') {
+      if (!ORIGCHAT_PUBLIC_ENABLED) return null;
   return (
         <ErrorBoundary>
           <TopOrigChat title={title} />
@@ -2270,6 +2282,7 @@ const HomePage = () => {
     }
 
     if (id === 'slot_top_stories') {
+      if (!WEBNOVEL_PUBLIC_ENABLED) return null;
       return (
         <ErrorBoundary>
           <TopStories title={title} />
@@ -2482,8 +2495,15 @@ const HomePage = () => {
           const t = String(p?.type || '').trim().toLowerCase();
           const it = p?.item;
           if (!it) return null;
-          if (t === 'character') return { type: 'character', item: it };
-          if (t === 'story') return { type: 'story', item: it };
+          if (t === 'character') {
+            const isOrigChat = !!(it?.origin_story_id || it?.is_origchat || it?.source === 'origchat');
+            if (!ORIGCHAT_PUBLIC_ENABLED && isOrigChat) return null;
+            return { type: 'character', item: it };
+          }
+          if (t === 'story') {
+            if (!WEBNOVEL_PUBLIC_ENABLED) return null;
+            return { type: 'story', item: it };
+          }
           return null;
         })
         .filter(Boolean);
@@ -2949,73 +2969,75 @@ const HomePage = () => {
                 >
                   추천
                 </button>
-                <button
-                  type="button"
-                  onClick={() => updateTab('ORIGSERIAL', 'origserial')}
-                  onMouseEnter={prefetchWebnovelTabFirstPage}
-                  onFocus={prefetchWebnovelTabFirstPage}
-                  className={[
-                    'relative -mb-px px-1 py-2 text-base sm:text-lg font-semibold transition-colors',
-                    isOrigSerialTab
-                      ? 'text-white'
-                      : 'text-gray-400 hover:text-gray-200'
-                  ].join(' ')}
-                  aria-current={isOrigSerialTab ? 'page' : undefined}
-                >
-                  <span className="inline-flex items-center">
-                    <span className={[
-                      'relative -mb-px border-b-2',
+                {WEBNOVEL_TAB_ENABLED && (
+                  <button
+                    type="button"
+                    onClick={() => updateTab('ORIGSERIAL', 'origserial')}
+                    onMouseEnter={prefetchWebnovelTabFirstPage}
+                    onFocus={prefetchWebnovelTabFirstPage}
+                    className={[
+                      'relative -mb-px px-1 py-2 text-base sm:text-lg font-semibold transition-colors',
                       isOrigSerialTab
-                        ? 'border-purple-500'
-                        : 'border-transparent'
-                    ].join(' ')}>웹소설</span>
-                    <span
-                      className={[
-                        // ✅ 모바일 최적화:
-                        // - 긴 문구는 작은 화면에서 탭 줄바꿈을 유발해 "웹소설 탭이 내려앉는" UX를 만든다.
-                        // - 그래서 sm 미만에서는 짧은 배지로 대체한다.
-                        'ml-2 relative hidden sm:inline-flex items-center',
-                        'whitespace-nowrap',
-                        'px-2.5 py-1 rounded-full',
-                        'text-[11px] font-semibold leading-none',
-                        'border',
-                        'cc-float-2',
-                        // ✅ 다크 배경 가독성: 따뜻한 톤(프로모션) + 과한 채도 방지
+                        ? 'text-white'
+                        : 'text-gray-400 hover:text-gray-200'
+                    ].join(' ')}
+                    aria-current={isOrigSerialTab ? 'page' : undefined}
+                  >
+                    <span className="inline-flex items-center">
+                      <span className={[
+                        'relative -mb-px border-b-2',
                         isOrigSerialTab
-                          ? 'bg-amber-400/15 border-amber-300/40 text-amber-100'
-                          : 'bg-amber-400/10 border-amber-300/25 text-amber-200',
-                      ].join(' ')}
-                    >
-                      {/* 말풍선 꼬리(좌측) */}
+                          ? 'border-purple-500'
+                          : 'border-transparent'
+                      ].join(' ')}>웹소설</span>
                       <span
-                        aria-hidden="true"
                         className={[
-                          'pointer-events-none absolute -left-[6px] top-1/2 -translate-y-1/2',
-                          'w-0 h-0',
-                          'border-y-[6px] border-y-transparent border-r-[6px]',
-                          isOrigSerialTab ? 'border-r-amber-400/15' : 'border-r-amber-400/10',
+                          // ✅ 모바일 최적화:
+                          // - 긴 문구는 작은 화면에서 탭 줄바꿈을 유발해 "웹소설 탭이 내려앉는" UX를 만든다.
+                          // - 그래서 sm 미만에서는 짧은 배지로 대체한다.
+                          'ml-2 relative hidden sm:inline-flex items-center',
+                          'whitespace-nowrap',
+                          'px-2.5 py-1 rounded-full',
+                          'text-[11px] font-semibold leading-none',
+                          'border',
+                          'cc-float-2',
+                          // ✅ 다크 배경 가독성: 따뜻한 톤(프로모션) + 과한 채도 방지
+                          isOrigSerialTab
+                            ? 'bg-amber-400/15 border-amber-300/40 text-amber-100'
+                            : 'bg-amber-400/10 border-amber-300/25 text-amber-200',
                         ].join(' ')}
-                      />
-                      지금 웹소설 작품 등록만 해도 5000원 지급
+                      >
+                        {/* 말풍선 꼬리(좌측) */}
+                        <span
+                          aria-hidden="true"
+                          className={[
+                            'pointer-events-none absolute -left-[6px] top-1/2 -translate-y-1/2',
+                            'w-0 h-0',
+                            'border-y-[6px] border-y-transparent border-r-[6px]',
+                            isOrigSerialTab ? 'border-r-amber-400/15' : 'border-r-amber-400/10',
+                          ].join(' ')}
+                        />
+                        지금 웹소설 작품 등록만 해도 5000원 지급
+                      </span>
+                      {/* ✅ 모바일(좁은 화면)용 축약 배지: 탭 줄바꿈 방지 */}
+                      <span
+                        className={[
+                          'ml-2 relative inline-flex sm:hidden items-center',
+                          'whitespace-nowrap',
+                          'px-2 py-1 rounded-full',
+                          'text-[11px] font-semibold leading-none',
+                          'border',
+                          'cc-float-2',
+                          isOrigSerialTab
+                            ? 'bg-amber-400/15 border-amber-300/40 text-amber-100'
+                            : 'bg-amber-400/10 border-amber-300/25 text-amber-200',
+                        ].join(' ')}
+                      >
+                        작품 등록시 5000원
+                      </span>
                     </span>
-                    {/* ✅ 모바일(좁은 화면)용 축약 배지: 탭 줄바꿈 방지 */}
-                    <span
-                      className={[
-                        'ml-2 relative inline-flex sm:hidden items-center',
-                        'whitespace-nowrap',
-                        'px-2 py-1 rounded-full',
-                        'text-[11px] font-semibold leading-none',
-                        'border',
-                        'cc-float-2',
-                        isOrigSerialTab
-                          ? 'bg-amber-400/15 border-amber-300/40 text-amber-100'
-                          : 'bg-amber-400/10 border-amber-300/25 text-amber-200',
-                      ].join(' ')}
-                    >
-                      작품 등록시 5000원
-                    </span>
-                  </span>
-                </button>
+                  </button>
+                )}
                 {CHARACTER_TAB_ENABLED && (
                   <button
                     type="button"
@@ -3082,33 +3104,37 @@ const HomePage = () => {
                   >
                     웹소설
                   </button>
-                  <button
-                    onClick={() => setOrigSerialTab('origchat')}
-                    className={`px-3 py-1 rounded-full border text-sm ${
-                      origSerialTab === 'origchat'
-                        ? 'bg-white text-black border-white'
-                        : 'bg-gray-800 text-gray-200 border-gray-700'
-                    }`}
-                  >
-                    원작챗
-                  </button>
+                  {ORIGCHAT_PUBLIC_ENABLED && (
+                    <button
+                      onClick={() => setOrigSerialTab('origchat')}
+                      className={`px-3 py-1 rounded-full border text-sm ${
+                        origSerialTab === 'origchat'
+                          ? 'bg-white text-black border-white'
+                          : 'bg-gray-800 text-gray-200 border-gray-700'
+                      }`}
+                    >
+                      원작챗
+                    </button>
+                  )}
                 </div>
               </div>
 
               {/* ✅ 원작연재 탭: "원작 쓰기"는 서브탭(원작소설/원작챗) 바로 아래 + 리스트 바로 위에 풀폭으로 노출 */}
-              <div className="mb-4">
-                <Link
-                  to="/works/create"
-                  onClick={(e) => {
-                    if (!requireAuth('원작 쓰기')) {
-                      e.preventDefault();
-                    }
-                  }}
-                  className="flex w-full items-center justify-center px-4 py-2.5 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors font-medium text-sm"
-                >
-                  웹소설 원작 쓰기
-                </Link>
-                    </div>
+              {WEBNOVEL_WORK_CREATE_ENABLED && (
+                <div className="mb-4">
+                  <Link
+                    to="/works/create"
+                    onClick={(e) => {
+                      if (!requireAuth('원작 쓰기')) {
+                        e.preventDefault();
+                      }
+                    }}
+                    className="flex w-full items-center justify-center px-4 py-2.5 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors font-medium text-sm"
+                  >
+                    웹소설 원작 쓰기
+                  </Link>
+                </div>
+              )}
               
               {/* 원작소설 탭: 스토리 리스트 */}
               {origSerialTab === 'novel' && (
@@ -3159,7 +3185,7 @@ const HomePage = () => {
               )}
 
               {/* 원작챗 탭: 캐릭터 격자 */}
-              {origSerialTab === 'origchat' && (
+              {ORIGCHAT_PUBLIC_ENABLED && origSerialTab === 'origchat' && (
                 <>
                   {origChatCharactersLoading ? (
                     <div className={gridColumnClasses}>
@@ -3230,6 +3256,7 @@ const HomePage = () => {
 
           {/* 5) 주인공으로 다시 몰입하는 원작소설 - 스토리다이브 */}
           {(() => {
+            if (!WEBNOVEL_PUBLIC_ENABLED) return null;
             // ✅ 구좌 구성:
             // - 스토리다이브 사용 이력이 있으면: 최근 스토리다이브(최근 콘텐츠)
             // - 사용 이력이 없으면: 추천(기준 기반)

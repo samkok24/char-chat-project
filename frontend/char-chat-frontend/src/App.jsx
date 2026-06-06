@@ -19,6 +19,7 @@ import PresenceHeartbeatBridge from './components/PresenceHeartbeatBridge';
 import PostLoginRedirectBridge from './components/PostLoginRedirectBridge';
 import TrafficEventsBridge from './components/TrafficEventsBridge';
 import ErrorBoundary from './components/ErrorBoundary';
+import { WEBNOVEL_PUBLIC_ENABLED, WEBNOVEL_WORK_CREATE_ENABLED } from './lib/featureFlags';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -196,7 +197,16 @@ const PublicRoute = ({ children }) => {
           <Route path="/ws/chat/:characterId" element={<ChatPage />} />
 
           {/* 🏊 스토리 다이브 라우트 */}
-          <Route path="/storydive/novels/:novelId" element={<ProtectedRoute><StoryDiveNovelPage /></ProtectedRoute>} />
+          <Route
+            path="/storydive/novels/:novelId"
+            element={
+              WEBNOVEL_PUBLIC_ENABLED ? (
+                <ProtectedRoute><StoryDiveNovelPage /></ProtectedRoute>
+              ) : (
+                <Navigate to="/dashboard" replace />
+              )
+            }
+          />
 
           {/* ⏳ 나중에 필요한 페이지들 (지연 로딩) */}
           <Route
@@ -273,9 +283,13 @@ const PublicRoute = ({ children }) => {
           <Route
             path="/favorites/stories"
             element={
-              <ProtectedRoute>
-                <FavoriteStoriesPage />
-              </ProtectedRoute>
+              WEBNOVEL_PUBLIC_ENABLED ? (
+                <ProtectedRoute>
+                  <FavoriteStoriesPage />
+                </ProtectedRoute>
+              ) : (
+                <Navigate to="/favorites" replace />
+              )
             }
           />
 
@@ -285,21 +299,29 @@ const PublicRoute = ({ children }) => {
           <Route
             path="/works/create"
             element={
-              <ProtectedRoute>
-                <WorkCreatePage />
-              </ProtectedRoute>
+              WEBNOVEL_WORK_CREATE_ENABLED ? (
+                <ProtectedRoute>
+                  <WorkCreatePage />
+                </ProtectedRoute>
+              ) : (
+                <Navigate to="/dashboard" replace />
+              )
             }
           />
-          <Route path="/stories/:storyId" element={<StoryDetailPage />} />
-          <Route path="/stories/:storyId/chapters/:chapterNumber" element={<ChapterReaderPage />} />
+          <Route path="/stories/:storyId" element={WEBNOVEL_PUBLIC_ENABLED ? <StoryDetailPage /> : <Navigate to="/dashboard" replace />} />
+          <Route path="/stories/:storyId/chapters/:chapterNumber" element={WEBNOVEL_PUBLIC_ENABLED ? <ChapterReaderPage /> : <Navigate to="/dashboard" replace />} />
           {/* 개발용 메트릭 요약(네비에서 숨김) */}
           <Route path="/metrics/summary" element={<ProtectedRoute><MetricsSummaryPage /></ProtectedRoute>} />
           <Route
             path="/stories/:storyId/edit"
             element={
-              <ProtectedRoute>
-                <StoryEditPage />
-              </ProtectedRoute>
+              WEBNOVEL_PUBLIC_ENABLED ? (
+                <ProtectedRoute>
+                  <StoryEditPage />
+                </ProtectedRoute>
+              ) : (
+                <Navigate to="/dashboard" replace />
+              )
             }
           />
 
@@ -315,9 +337,13 @@ const PublicRoute = ({ children }) => {
           <Route
             path="/story-importer"
             element={
-              <ProtectedRoute>
-                <StoryImporterPage />
-              </ProtectedRoute>
+              WEBNOVEL_WORK_CREATE_ENABLED ? (
+                <ProtectedRoute>
+                  <StoryImporterPage />
+                </ProtectedRoute>
+              ) : (
+                <Navigate to="/dashboard" replace />
+              )
             }
           />
 

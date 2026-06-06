@@ -6,7 +6,7 @@ import { Avatar, AvatarFallback, AvatarImage } from '../ui/avatar';
 import { resolveImageUrl, getCharacterPrimaryImage } from '../../lib/images';
 import { getReadingProgress, getReadingProgressAt } from '../../lib/reading';
 import { Button } from '../ui/button';
-import { MessageSquare, Home, Star, Heart, User, History, Sparkles, UserCog, LogOut, BookOpen, LogIn, HelpCircle, Bell, Settings, Loader2, ChevronLeft, ChevronRight, Gem, Timer } from 'lucide-react';
+import { MessageSquare, Plus, Home, Star, Heart, User, History, Sparkles, UserCog, LogOut, BookOpen, LogIn, HelpCircle, Bell, Settings, Loader2, ChevronLeft, ChevronRight, Gem, Timer } from 'lucide-react';
 import { Skeleton } from '../ui/skeleton';
 import { Badge } from '../ui/badge';
 import {
@@ -23,6 +23,13 @@ import { useLoginModal } from '../../contexts/LoginModalContext';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../ui/dialog';
 import { clearCreateCharacterDraft, hasCreateCharacterDraft } from '../../lib/createCharacterDraft';
 import { getRoomsChangedActivity, shouldRefetchForRoomsChanged } from '../../lib/chatRoomsChangedEvent';
+import { ORIGCHAT_PUBLIC_ENABLED, WEBNOVEL_PUBLIC_ENABLED, WEBNOVEL_WORK_CREATE_ENABLED } from '../../lib/featureFlags';
+
+const filterVisibleChatRooms = (rooms) => {
+  const list = Array.isArray(rooms) ? rooms : [];
+  if (ORIGCHAT_PUBLIC_ENABLED) return list;
+  return list.filter((room) => !room?.character?.origin_story_id);
+};
 
 const Sidebar = ({ collapsed = false, onToggleCollapsed }) => {
   const [chatRooms, setChatRooms] = useState([]);
@@ -162,6 +169,10 @@ const Sidebar = ({ collapsed = false, onToggleCollapsed }) => {
 
   const loadRecentStories = async () => {
     // 최근 본 웹소설: localStorage 키 스캔 후 존재하는 스토리만 로드
+    if (!WEBNOVEL_PUBLIC_ENABLED) {
+      setRecentStories([]);
+      return [];
+    }
     try {
       const keys = Object.keys(localStorage || {}).filter(k => k.startsWith('reader_progress:'));
       const pairs = keys.map(k => {
@@ -219,7 +230,7 @@ const Sidebar = ({ collapsed = false, onToggleCollapsed }) => {
             
             // 5분 이내 캐시는 그대로 사용
             if (age < CACHE_DURATION && data.rooms) {
-              setChatRooms(data.rooms);
+              setChatRooms(filterVisibleChatRooms(data.rooms));
               if (Array.isArray(data.recentStories)) setRecentStories(data.recentStories);
               setLoading(false);
               setRefreshing(false);
@@ -235,7 +246,7 @@ const Sidebar = ({ collapsed = false, onToggleCollapsed }) => {
       // - 기존 chat/rooms + meta + character 상세 N+1 호출을 제거해 사이드바 체감 속도를 개선한다.
       const response = await usersAPI.getRecentCharacters({ limit: 15, page: 1 });
       const recent = Array.isArray(response?.data) ? response.data : [];
-      const rooms = recent
+      const rooms = filterVisibleChatRooms(recent
         .map((item) => {
           const roomId = String(item?.chat_room_id || '').trim();
           const charId = String(item?.id || '').trim();
@@ -257,7 +268,7 @@ const Sidebar = ({ collapsed = false, onToggleCollapsed }) => {
             created_at: ts || null,
           };
         })
-        .filter(Boolean);
+        .filter(Boolean));
       setChatRooms(rooms);
       
       const recentList = await loadRecentStories();
@@ -297,6 +308,11 @@ const Sidebar = ({ collapsed = false, onToggleCollapsed }) => {
       loadRooms(userChanged);
     } else {
       prevUserIdRef.current = '';
+      if (!WEBNOVEL_PUBLIC_ENABLED) {
+        setRecentStories([]);
+        setLoading(false);
+        return;
+      }
       // 비로그인 상태에서도 최근 본 웹소설은 노출
       (async () => {
         try {
@@ -337,7 +353,7 @@ const Sidebar = ({ collapsed = false, onToggleCollapsed }) => {
         // 디바운스: 1초 내 여러 번 호출되어도 마지막 호출만 실행
         if (debounceTimer) clearTimeout(debounceTimer);
         debounceTimer = setTimeout(() => {
-        loadRecentStories();
+        if (WEBNOVEL_PUBLIC_ENABLED) loadRecentStories();
         }, 1000);
       }
     };
@@ -452,7 +468,67 @@ const Sidebar = ({ collapsed = false, onToggleCollapsed }) => {
       {/* Create 버튼 */}
       {!collapsed ? (
         <>
-          <div className="px-4 pb-4 pt-2">
+          <div className="px-4 pb-2 pt-2">
+            <Link
+              to="/characters/create"
+              onClick={(e) => {
+                if (!requireAuth('캐릭터 생성')) {
+                  e.preventDefault();
+                  return;
+                }
+                try {
+                  if (hasCreateCharacterDraft()) {
+                    e.preventDefault();
+                    setDraftPromptOpen(true);
+                  }
+                } catch (_) {}
+              }}
+              className="flex items-center justify-center w-full px-4 py-2.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors font-medium text-sm shadow-lg"
+            >
+              <Plus className="w-5 h-5 mr-2" />
+              캐릭터 생성
+            </Link>
+          </div>
+          {WEBNOVEL_WORK_CREATE_ENABLED && (
+            <div className="px-4 pb-4">
+              <Link
+                to="/works/create"
+                onClick={(e) => {
+                  if (!requireAuth('원작 쓰기')) {
+                    e.preventDefault();
+                  }
+                }}
+                className="flex items-center justify-center w-full px-4 py-2.5 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors font-medium text-sm"
+              >
+                <BookOpen className="w-5 h-5 mr-2" />
+                웹소설 원작 쓰기
+              </Link>
+            </div>
+          )}
+        </>
+      ) : (
+        <div className="px-2 pb-4 pt-1 space-y-2">
+          <Link
+            to="/characters/create"
+            onClick={(e) => {
+              if (!requireAuth('캐릭터 생성')) {
+                e.preventDefault();
+                return;
+              }
+              try {
+                if (hasCreateCharacterDraft()) {
+                  e.preventDefault();
+                  setDraftPromptOpen(true);
+                }
+              } catch (_) {}
+            }}
+            className="h-10 w-10 mx-auto flex items-center justify-center rounded-lg bg-purple-600 hover:bg-purple-700 text-white shadow-lg transition-colors"
+            aria-label="캐릭터 생성"
+            title="캐릭터 생성"
+          >
+            <Plus className="w-5 h-5" />
+          </Link>
+          {WEBNOVEL_WORK_CREATE_ENABLED && (
             <Link
               to="/works/create"
               onClick={(e) => {
@@ -460,35 +536,20 @@ const Sidebar = ({ collapsed = false, onToggleCollapsed }) => {
                   e.preventDefault();
                 }
               }}
-              className="flex items-center justify-center w-full px-4 py-2.5 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors font-medium text-sm"
+              className="h-10 w-10 mx-auto flex items-center justify-center rounded-lg bg-gray-700 hover:bg-gray-600 text-white transition-colors"
+              aria-label="웹소설 원작 쓰기"
+              title="웹소설 원작 쓰기"
             >
-              <BookOpen className="w-5 h-5 mr-2" />
-              웹소설 원작 쓰기
+              <BookOpen className="w-5 h-5" />
             </Link>
-          </div>
-        </>
-      ) : (
-        <div className="px-2 pb-4 pt-1">
-          <Link
-            to="/works/create"
-            onClick={(e) => {
-              if (!requireAuth('원작 쓰기')) {
-                e.preventDefault();
-              }
-            }}
-            className="h-10 w-10 mx-auto flex items-center justify-center rounded-lg bg-gray-700 hover:bg-gray-600 text-white transition-colors"
-            aria-label="웹소설 원작 쓰기"
-            title="웹소설 원작 쓰기"
-          >
-            <BookOpen className="w-5 h-5" />
-          </Link>
+          )}
         </div>
       )}
 
       {/* 메인 네비게이션 */}
       <nav className="flex-1 min-h-0 space-y-1 overflow-y-auto overscroll-contain scrollbar-dark">
         <NavItem to="/dashboard" icon={Home}>홈</NavItem>
-        <NavItem to="/favorites/stories" icon={Heart} requireAuth authReason="선호작">선호작</NavItem>
+        <NavItem to={WEBNOVEL_PUBLIC_ENABLED ? '/favorites/stories' : '/favorites'} icon={Heart} requireAuth authReason="선호작">선호작</NavItem>
         <NavItem to="/agent" icon={Sparkles} requireAuth authReason="스토리 에이전트">스토리 에이전트</NavItem>
 
         {/* 로그인 시에만 표시되는 메뉴들 */}
@@ -582,6 +643,7 @@ const Sidebar = ({ collapsed = false, onToggleCollapsed }) => {
                  */
                 const chatItems = (chatRooms || [])
                   .filter((room) => Boolean(room?.id) && Boolean(room?.character?.id))
+                  .filter((room) => ORIGCHAT_PUBLIC_ENABLED || !room?.character?.origin_story_id)
                   .map((room) => {
                   const isOrig = !!(room?.character?.origin_story_id);
                   const suffix = '';
