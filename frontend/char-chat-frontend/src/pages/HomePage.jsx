@@ -207,6 +207,7 @@ const HomePage = () => {
   const CHARACTER_TAB_ENABLED = false;
   // ✅ 심사 대응: 홈 온보딩의 간편 캐릭터 생성 진입점(CTA/모달) 비노출
   const QUICK_MEET_ENABLED = false;
+  const SHOW_HOME_BANNER = false;
   const [searchQuery, setSearchQuery] = useState('');
   const { user, isAuthenticated, logout } = useAuth();
   const isAdmin = !!user?.is_admin;
@@ -243,6 +244,10 @@ const HomePage = () => {
     perfState.bannerReason = '';
     perfState.done = false;
     perfState.settleTimer = null;
+    if (!SHOW_HOME_BANNER) {
+      perfState.bannerAt = perfState.startAt;
+      perfState.bannerReason = 'banner-disabled';
+    }
     try { performance.mark('home:render:start'); } catch (_) {}
 
     const root = homeMainRootRef.current;
@@ -2781,7 +2786,8 @@ const HomePage = () => {
           </div>
 
           {/* ✅ 캐러셀 배너(상단 탭 ↔ 필터 탭 사이) */}
-          <HomeBannerCarousel className="mb-5 sm:mb-6" />
+          {/* 메인 배너는 심사 대응으로 비노출. 재오픈 시 docs/home-banner-restore.md 기준으로 새 배너 버전만 노출한다. */}
+          {SHOW_HOME_BANNER && <HomeBannerCarousel className="mb-5 sm:mb-6" />}
 
           {/* ===== 온보딩(메인 탭): PG 심사 시 비노출 ===== */}
           {false && !isCharacterTab && !isOrigSerialTab && (
