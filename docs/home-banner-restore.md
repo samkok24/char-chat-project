@@ -36,4 +36,3 @@ If the banner causes review, layout, or content risk:
 1. Set `SHOW_HOME_BANNER = false`.
 2. Disable the problematic CMS banner set.
 3. Rebuild and redeploy.
-
